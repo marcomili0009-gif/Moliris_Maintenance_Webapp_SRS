@@ -438,6 +438,7 @@ document.addEventListener("DOMContentLoaded", () => {
               ? '<button class="btn btn-accent btn-sm" id="btn-detail-repair">🛠 Ripara Registrazione</button>'
               : ''}
           <button class="btn btn-secondary btn-sm" id="btn-detail-open-fs">📁 Esplora Server FS</button>
+          ${feat.remoteFs ? '<button class="btn btn-primary btn-sm" id="btn-detail-open-remote-fs">🌐 Esplora Remoto</button>' : ''}
         </div>
 
         <!-- Funzionalità Autorizzate per Utente/Robot (RF-ROB-011, CA-ROB-010) -->
@@ -476,9 +477,9 @@ document.addEventListener("DOMContentLoaded", () => {
                   <span>🌐 Filesystem Remoto</span>
                   <span class="feature-status ${feat.remoteFs ? 'badge-attivo' : 'badge-disabilitato'}">${feat.remoteFs ? 'Disponibile' : 'Disabilitato'}</span>
                 </div>
-                <div class="feature-reason">${feat.remoteFs ? 'Segnaposto: disponibile nel Prompt 9.' : (feat.reasons.remoteFs || 'Non disponibile')}</div>
+                <div class="feature-reason">${feat.remoteFs ? 'Navigazione SFTP attiva nel filesystem del robot.' : (feat.reasons.remoteFs || 'Non disponibile')}</div>
               </div>
-              <button class="btn btn-secondary btn-sm" style="margin-top: 0.5rem;" ${feat.remoteFs ? '' : 'disabled'}>Esplora Remoto (P9)</button>
+              <button class="btn btn-primary btn-sm" id="btn-card-remote-fs" style="margin-top: 0.5rem;" ${feat.remoteFs ? '' : 'disabled'}>🌐 Esplora Filesystem Remoto</button>
             </div>
 
             <!-- Filesystem Server -->
@@ -542,6 +543,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
       document.getElementById("btn-detail-open-fs")?.addEventListener("click", loadFsAction);
       document.getElementById("btn-card-server-fs")?.addEventListener("click", loadFsAction);
+
+      const loadRemoteFsAction = () => {
+        modalDetail.classList.add("hidden");
+        document.getElementById("btn-tab-fs-remote")?.click();
+        const remoteInput = document.getElementById("fs-remote-robot-id");
+        if (remoteInput) remoteInput.value = robot.id;
+        loadRemoteFilesystem(robot.id, "");
+        document.getElementById("fs-browser-section")?.scrollIntoView({ behavior: "smooth" });
+      };
+
+      document.getElementById("btn-detail-open-remote-fs")?.addEventListener("click", loadRemoteFsAction);
+      document.getElementById("btn-card-remote-fs")?.addEventListener("click", loadRemoteFsAction);
 
     } catch (err) {
       detailBody.innerHTML = `<div class="alert-box alert-danger">Errore di comunicazione: ${escapeHtml(err.message)}</div>`;
@@ -1166,6 +1179,151 @@ document.addEventListener("DOMContentLoaded", () => {
     segments.pop();
     const parentPath = segments.join("/");
     loadServerFilesystem(robotId, parentPath);
+  });
+
+  // =========================================================================
+  // TAB CONTROLS FILESYSTEM: SERVER VS REMOTO (Step 9)
+  // =========================================================================
+  const btnTabFsServer = document.getElementById("btn-tab-fs-server");
+  const btnTabFsRemote = document.getElementById("btn-tab-fs-remote");
+  const fsPanelServer = document.getElementById("fs-panel-server");
+  const fsPanelRemote = document.getElementById("fs-panel-remote");
+
+  btnTabFsServer?.addEventListener("click", () => {
+    btnTabFsServer.classList.add("active");
+    btnTabFsRemote.classList.remove("active");
+    fsPanelServer?.classList.remove("hidden");
+    fsPanelRemote?.classList.add("hidden");
+  });
+
+  btnTabFsRemote?.addEventListener("click", () => {
+    btnTabFsRemote.classList.add("active");
+    btnTabFsServer.classList.remove("active");
+    fsPanelRemote?.classList.remove("hidden");
+    fsPanelServer?.classList.add("hidden");
+  });
+
+  // =========================================================================
+  // MODULO FILESYSTEM REMOTO DEL ROBOT (RF-FS-001..003, CA-FS-001, RNF-UX-001/002)
+  // =========================================================================
+  const fsRemoteRobotIdInput = document.getElementById("fs-remote-robot-id");
+  const btnFsRemoteLoad = document.getElementById("btn-fs-remote-load");
+  const btnFsRemoteUp = document.getElementById("btn-fs-remote-up");
+  const fsRemoteCurrentPathEl = document.getElementById("fs-remote-current-path");
+  const fsRemoteTableBody = document.getElementById("fs-remote-table-body");
+  const fsRemoteError = document.getElementById("fs-remote-error");
+  const btnFsRemoteDlPlaceholder = document.getElementById("btn-fs-remote-dl-placeholder");
+  const btnFsRemoteUlPlaceholder = document.getElementById("btn-fs-remote-ul-placeholder");
+
+  let currentRemoteFsPath = "";
+  let currentRemoteParentPath = null;
+
+  async function loadRemoteFilesystem(robotId, targetPath = "") {
+    fsRemoteError.classList.add("hidden");
+    fsRemoteTableBody.innerHTML = '<tr><td colspan="4" class="fs-empty-msg">Caricamento directory remota via SFTP in corso...</td></tr>';
+
+    // Aggiornamento visibilità dei pulsanti segnaposto per permessi (Step 9)
+    const canDownload = currentUser?.roles.includes("amministratore") || (currentUser?.permissions && currentUser?.permissions.includes("FS_REMOTE_DOWNLOAD"));
+    const canUpload = currentUser?.roles.includes("amministratore") || (currentUser?.permissions && currentUser?.permissions.includes("FS_REMOTE_UPLOAD"));
+
+    if (btnFsRemoteDlPlaceholder) {
+      btnFsRemoteDlPlaceholder.style.display = canDownload ? "inline-block" : "none";
+    }
+    if (btnFsRemoteUlPlaceholder) {
+      btnFsRemoteUlPlaceholder.style.display = canUpload ? "inline-block" : "none";
+    }
+
+    try {
+      const url = `/api/robots/${encodeURIComponent(robotId)}/fs/remote/list?path=${encodeURIComponent(targetPath)}`;
+      const res = await apiRequest(url);
+      const data = await res.json();
+
+      if (!res.ok) {
+        fsRemoteError.textContent = data.message || "Impossibile accedere al filesystem remoto del robot.";
+        fsRemoteError.classList.remove("hidden");
+        fsRemoteTableBody.innerHTML = '<tr><td colspan="4" class="fs-empty-msg">Errore durante la lettura della directory remota.</td></tr>';
+        return;
+      }
+
+      currentRemoteFsPath = data.currentPath || "/";
+      currentRemoteParentPath = data.parentPath;
+      fsRemoteCurrentPathEl.textContent = currentRemoteFsPath;
+
+      if (!data.items || data.items.length === 0) {
+        fsRemoteTableBody.innerHTML = '<tr><td colspan="4" class="fs-empty-msg">Directory remota vuota.</td></tr>';
+        return;
+      }
+
+      fsRemoteTableBody.innerHTML = "";
+      for (const item of data.items) {
+        const tr = document.createElement("tr");
+
+        // Colonna Tipo (RF-FS-002)
+        const typeTd = document.createElement("td");
+        if (item.type === "directory") {
+          typeTd.innerHTML = '<span class="badge-status badge-attivo">📁 [DIR]</span>';
+        } else if (item.type === "link") {
+          typeTd.innerHTML = '<span class="badge-status badge-avviso fs-item-link">🔗 [LINK]</span>';
+        } else if (item.type === "special") {
+          typeTd.innerHTML = '<span class="badge-status badge-avviso fs-item-special">⚙️ [SPECIAL]</span>';
+        } else {
+          typeTd.innerHTML = '<span class="badge-status badge-raggiungibile">📄 [FILE]</span>';
+        }
+        tr.appendChild(typeTd);
+
+        // Colonna Nome
+        const nameTd = document.createElement("td");
+        if (item.type === "directory") {
+          const a = document.createElement("span");
+          a.className = "fs-item-dir";
+          a.textContent = item.name;
+          a.title = "Apri directory";
+          a.addEventListener("click", () => {
+            const nextPath = currentRemoteFsPath.endsWith("/")
+              ? `${currentRemoteFsPath}${item.name}`
+              : `${currentRemoteFsPath}/${item.name}`;
+            loadRemoteFilesystem(robotId, nextPath);
+          });
+          nameTd.appendChild(a);
+        } else {
+          nameTd.textContent = item.name;
+        }
+        tr.appendChild(nameTd);
+
+        // Colonna Dimensione (null se non applicabile)
+        const sizeTd = document.createElement("td");
+        sizeTd.textContent = item.size !== null ? formatBytes(item.size) : "-";
+        tr.appendChild(sizeTd);
+
+        // Colonna Data Modifica (null se non disponibile)
+        const dateTd = document.createElement("td");
+        dateTd.textContent = item.modifiedAt ? formatDate(item.modifiedAt) : "non disponibile";
+        tr.appendChild(dateTd);
+
+        fsRemoteTableBody.appendChild(tr);
+      }
+
+      if (data.truncated) {
+        const truncTr = document.createElement("tr");
+        truncTr.innerHTML = '<td colspan="4" style="text-align: center; color: #b06000; font-size: 0.85rem; font-style: italic; background-color: #fff9e6;">⚠️ Elenco parziale: superato il limite massimo di elementi configurato per singola directory (RNF-PERF-002).</td>';
+        fsRemoteTableBody.appendChild(truncTr);
+      }
+    } catch (err) {
+      fsRemoteError.textContent = `Errore di rete durante la lettura del filesystem remoto: ${err.message}`;
+      fsRemoteError.classList.remove("hidden");
+      fsRemoteTableBody.innerHTML = '<tr><td colspan="4" class="fs-empty-msg">Errore di comunicazione.</td></tr>';
+    }
+  }
+
+  btnFsRemoteLoad?.addEventListener("click", () => {
+    const robotId = fsRemoteRobotIdInput.value.trim();
+    if (robotId) loadRemoteFilesystem(robotId, "");
+  });
+
+  btnFsRemoteUp?.addEventListener("click", () => {
+    const robotId = fsRemoteRobotIdInput.value.trim();
+    if (!robotId || !currentRemoteParentPath) return;
+    loadRemoteFilesystem(robotId, currentRemoteParentPath);
   });
 
   initSession();

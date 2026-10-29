@@ -124,12 +124,12 @@ export class MolirisAppError extends Error {
   public readonly classification: ErrorSeverity;
   public readonly diagnosticDetail: string;
 
-  constructor(code: ErrorCode, diagnosticDetail: string) {
+  constructor(code: ErrorCode, diagnosticDetail: string, customUserMessage?: string) {
     const catalogEntry = ERROR_CATALOG[code];
-    super(catalogEntry.userMessage);
+    super(customUserMessage || catalogEntry.userMessage);
     this.name = "MolirisAppError";
     this.code = code;
-    this.userMessage = catalogEntry.userMessage;
+    this.userMessage = customUserMessage || catalogEntry.userMessage;
     this.classification = catalogEntry.classification;
     this.diagnosticDetail = diagnosticDetail;
   }

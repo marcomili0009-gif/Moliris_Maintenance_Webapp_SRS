@@ -67,6 +67,13 @@ export interface SystemConfiguration {
   maxConcurrentTerminalSessionsPerRobot?: number;
   terminalDisconnectPolicy?: "chiudi_immediatamente" | "mantieni_in_background";
 
+  // 20. Parametri per navigazione e accesso al filesystem remoto del robot [opzionali] (§5.5, §10.3, §11.5, §11.6, §11.7)
+  remoteFsInitialPath?: string;
+  remoteFsAllowedPaths?: string[];
+  remoteFsMaxDirectoryEntries?: number;
+  remoteFsOverwritePolicy?: "rifiuta" | "sovrascrivi";
+  remoteFsConnectionIdleTimeoutMs?: number;
+
   // Default unico ammesso: porta SSH 22 (RF-ROB-005)
   defaultSshPort: number;
 }
@@ -185,6 +192,30 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     ? (rawDisconnectPolicy as "chiudi_immediatamente" | "mantieni_in_background")
     : undefined;
 
+  // Parametri opzionali Filesystem Remoto Robot (§5.5, §10.3, §11.5, §11.6, §11.7)
+  const rawRemoteFsInitialPath = env["MOLIRIS_REMOTE_FS_INITIAL_PATH"]?.trim();
+  const remoteFsInitialPath = rawRemoteFsInitialPath && rawRemoteFsInitialPath.length > 0
+    ? rawRemoteFsInitialPath
+    : undefined;
+
+  const rawRemoteFsAllowed = env["MOLIRIS_REMOTE_FS_ALLOWED_PATHS"]?.trim();
+  const remoteFsAllowedPaths = rawRemoteFsAllowed
+    ? rawRemoteFsAllowed.split(",").map(p => p.trim()).filter(Boolean)
+    : undefined;
+
+  const remoteFsMaxDirectoryEntries = env["MOLIRIS_REMOTE_FS_MAX_ENTRIES"] && !isNaN(Number(env["MOLIRIS_REMOTE_FS_MAX_ENTRIES"]))
+    ? Number(env["MOLIRIS_REMOTE_FS_MAX_ENTRIES"])
+    : undefined;
+
+  const rawOverwritePolicy = env["MOLIRIS_REMOTE_FS_OVERWRITE_POLICY"]?.trim().toLowerCase();
+  const remoteFsOverwritePolicy = (rawOverwritePolicy === "rifiuta" || rawOverwritePolicy === "sovrascrivi")
+    ? (rawOverwritePolicy as "rifiuta" | "sovrascrivi")
+    : undefined;
+
+  const remoteFsConnectionIdleTimeoutMs = env["MOLIRIS_REMOTE_FS_IDLE_TIMEOUT_MS"] && !isNaN(Number(env["MOLIRIS_REMOTE_FS_IDLE_TIMEOUT_MS"]))
+    ? Number(env["MOLIRIS_REMOTE_FS_IDLE_TIMEOUT_MS"])
+    : undefined;
+
   // L'unico default ammesso dalla SRS è la porta SSH 22 (RF-ROB-005)
   const defaultSshPort = env["MOLIRIS_DEFAULT_SSH_PORT"] && !isNaN(Number(env["MOLIRIS_DEFAULT_SSH_PORT"]))
     ? Number(env["MOLIRIS_DEFAULT_SSH_PORT"])
@@ -219,6 +250,11 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     maxConcurrentTerminalSessionsPerUser,
     maxConcurrentTerminalSessionsPerRobot,
     terminalDisconnectPolicy,
+    remoteFsInitialPath,
+    remoteFsAllowedPaths,
+    remoteFsMaxDirectoryEntries,
+    remoteFsOverwritePolicy,
+    remoteFsConnectionIdleTimeoutMs,
     defaultSshPort,
   };
 }

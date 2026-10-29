@@ -86,40 +86,96 @@
           </div>
         </section>
 
-        <!-- Componente Navigazione Filesystem Server (RF-SRVFS-002, RNF-UX-002/003) -->
+        <!-- Componente Navigazione Filesystem Server e Remoto (RF-SRVFS-002, RF-FS-001..003, RNF-UX-001/002/003) -->
         <section id="fs-browser-section" class="fs-browser-card">
-          <div class="fs-header">
-            <h3>Esplora Filesystem Server del Robot</h3>
-            <div class="fs-robot-selector">
-              <label for="fs-robot-id">ID Robot:</label>
-              <input type="text" id="fs-robot-id" placeholder="es. robot_01" value="">
-              <button id="btn-fs-load" class="btn btn-secondary">Carica Directory</button>
+          <!-- Barra Selettore Tab: Distinzione netta Server vs Robot Remoto (Step 9) -->
+          <div class="fs-tab-bar">
+            <button id="btn-tab-fs-server" class="fs-tab-btn active" type="button">🗄️ File sul Server (Archivio Locale)</button>
+            <button id="btn-tab-fs-remote" class="fs-tab-btn" type="button">🌐 File sul Robot (Filesystem Remoto SFTP)</button>
+          </div>
+
+          <!-- PANNELLO 1: Filesystem Server (RF-SRVFS-002) -->
+          <div id="fs-panel-server" class="fs-panel">
+            <div class="fs-header">
+              <div>
+                <h3>Esplora Filesystem Server del Robot</h3>
+                <small class="fs-subtitle">File e directory archiviati nella root server dedicata al robot selezionato.</small>
+              </div>
+              <div class="fs-robot-selector">
+                <label for="fs-robot-id">ID Robot:</label>
+                <input type="text" id="fs-robot-id" placeholder="es. robot_01" value="">
+                <button id="btn-fs-load" class="btn btn-secondary">Carica Directory Server</button>
+              </div>
+            </div>
+
+            <div class="fs-navigation-bar">
+              <button id="btn-fs-up" class="btn btn-secondary" title="Torna al livello superiore">⬆ Torna su</button>
+              <span class="fs-breadcrumb">Percorso Server: <strong id="fs-current-path">/</strong></span>
+            </div>
+
+            <div id="fs-error" class="error-message hidden"></div>
+
+            <div class="fs-table-container">
+              <table class="fs-table">
+                <thead>
+                  <tr>
+                    <th style="width: 12%;">Tipo</th>
+                    <th style="width: 48%;">Nome</th>
+                    <th style="width: 20%;">Dimensione</th>
+                    <th style="width: 20%;">Ultima Modifica</th>
+                  </tr>
+                </thead>
+                <tbody id="fs-table-body">
+                  <tr>
+                    <td colspan="4" class="fs-empty-msg">Nessuna directory caricata. Selezionare un robot o inserire un ID e premere 'Carica Directory Server'.</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
 
-          <div class="fs-navigation-bar">
-            <button id="btn-fs-up" class="btn btn-secondary" title="Torna al livello superiore">⬆ Torna su</button>
-            <span class="fs-breadcrumb">Percorso: <strong id="fs-current-path">/</strong></span>
-          </div>
+          <!-- PANNELLO 2: Filesystem Remoto Robot (RF-FS-001, RF-FS-002, RF-FS-003, CA-FS-001) -->
+          <div id="fs-panel-remote" class="fs-panel hidden">
+            <div class="fs-header">
+              <div>
+                <h3>Esplora Filesystem del Robot (Remoto SFTP)</h3>
+                <small class="fs-subtitle">Navigazione diretta nel filesystem remoto del robot tramite SFTP via backend (§1.2, vincolo 2.4). Nessun file archiviato sul server locale.</small>
+              </div>
+              <div class="fs-robot-selector">
+                <label for="fs-remote-robot-id">ID Robot:</label>
+                <input type="text" id="fs-remote-robot-id" placeholder="es. robot_01" value="">
+                <button id="btn-fs-remote-load" class="btn btn-primary">Carica Directory Remota</button>
+              </div>
+            </div>
 
-          <div id="fs-error" class="error-message hidden"></div>
+            <div class="fs-navigation-bar">
+              <button id="btn-fs-remote-up" class="btn btn-secondary" title="Torna al livello precedente (RF-FS-003)">⬆ Torna al livello precedente</button>
+              <span class="fs-breadcrumb">Percorso Remoto: <strong id="fs-remote-current-path">/</strong></span>
+              <div class="fs-actions-placeholders" style="margin-left: auto; display: flex; gap: 0.5rem;">
+                <button id="btn-fs-remote-dl-placeholder" class="btn btn-secondary btn-sm" disabled title="Download di file dal robot disponibile nel Prompt 10 (RF-FS-004)">⬇️ Scarica dal Robot (P10)</button>
+                <button id="btn-fs-remote-ul-placeholder" class="btn btn-secondary btn-sm" disabled title="Upload di file verso il robot disponibile nel Prompt 10 (RF-FS-005)">⬆️ Carica verso il Robot (P10)</button>
+              </div>
+            </div>
 
-          <div class="fs-table-container">
-            <table class="fs-table">
-              <thead>
-                <tr>
-                  <th style="width: 10%;">Tipo</th>
-                  <th style="width: 50%;">Nome</th>
-                  <th style="width: 20%;">Dimensione</th>
-                  <th style="width: 20%;">Ultima Modifica</th>
-                </tr>
-              </thead>
-              <tbody id="fs-table-body">
-                <tr>
-                  <td colspan="4" class="fs-empty-msg">Nessuna directory caricata. Selezionare un robot o inserire un ID e premere 'Carica Directory'.</td>
-                </tr>
-              </tbody>
-            </table>
+            <div id="fs-remote-error" class="error-message hidden"></div>
+
+            <div class="fs-table-container">
+              <table class="fs-table">
+                <thead>
+                  <tr>
+                    <th style="width: 12%;">Tipo (RF-FS-002)</th>
+                    <th style="width: 48%;">Nome</th>
+                    <th style="width: 20%;">Dimensione</th>
+                    <th style="width: 20%;">Ultima Modifica</th>
+                  </tr>
+                </thead>
+                <tbody id="fs-remote-table-body">
+                  <tr>
+                    <td colspan="4" class="fs-empty-msg">Nessuna directory remota caricata. Selezionare un robot attivo e premere 'Carica Directory Remota'.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </section>
       </main>

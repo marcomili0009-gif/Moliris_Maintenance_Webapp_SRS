@@ -27,6 +27,8 @@ import { registerMonitoringRoutes } from "./monitoring/monitoring-routes.ts";
 import websocket from "@fastify/websocket";
 import { TerminalService } from "./terminal/terminal-service.ts";
 import { registerTerminalRoutes } from "./terminal/terminal-routes.ts";
+import { RemoteFilesystemService } from "./remote-fs/remote-fs-service.ts";
+import { registerRemoteFsRoutes } from "./remote-fs/remote-fs-routes.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,6 +47,7 @@ export interface ServerDependencies {
   remoteRobotReader?: RemoteRobotReader;
   monitoringService?: MonitoringService;
   terminalService?: TerminalService;
+  remoteFsService?: RemoteFilesystemService;
   roleMapping?: RolePermissionMapping;
 }
 
@@ -147,6 +150,15 @@ export function createServer(
   );
   (fleetService as any).terminalService = terminalService;
 
+  // Servizio di navigazione filesystem remoto del robot (Prompt 9, RF-FS-001..007, §5.5)
+  const remoteFsService = deps.remoteFsService || new RemoteFilesystemService(
+    config,
+    connectionManager,
+    auditRepository,
+    logger,
+    roleMapping
+  );
+
   // Registrazione endpoint di autenticazione e autorizzazione (RF-AUTH-001..006)
   registerAuthRoutes(
     app,
@@ -181,6 +193,16 @@ export function createServer(
     authMiddleware
   );
 
+  // Registrazione endpoint filesystem remoto del robot (RF-FS-001..007, §5.5)
+  registerRemoteFsRoutes(
+    app,
+    remoteFsService,
+    robotRepository,
+    sessionManager,
+    authMiddleware,
+    roleMapping
+  );
+
   // Registrazione endpoint terminale remoto interattivo PTY (RF-SSH-001..008, §5.4, §6.4)
   app.register(async (terminalScope) => {
     registerTerminalRoutes(
@@ -196,6 +218,7 @@ export function createServer(
   // Rilascio risorse, arresto polling periodico e chiusura sessioni alla chiusura del server (RNF-REL-005)
   app.decorate("monitoringService", monitoringService);
   app.decorate("terminalService", terminalService);
+  app.decorate("remoteFsService", remoteFsService);
   app.addHook("onClose", async () => {
     monitoringService.stopPolling();
     await terminalService.closeAll("SERVICE_SHUTDOWN");
