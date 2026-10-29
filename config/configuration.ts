@@ -36,6 +36,9 @@ export interface SystemConfiguration {
   // 10. Modalità di registrazione: rigorosa o differita (§8.1, §11.3)
   registrationMode: "rigorosa" | "differita";
 
+  // 11. Politica di conservazione degli eventi di audit (in giorni) (§10.4, RNF-SEC-009, §11.1)
+  auditLogRetentionDays: number;
+
   // Default unico ammesso: porta SSH 22 (RF-ROB-005)
   defaultSshPort: number;
 }
@@ -75,6 +78,7 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
   const inactiveSessionTimeoutMinutes = requireNumber("MOLIRIS_SESSION_TIMEOUT_MIN");
   const tlsCertPath = requireString("MOLIRIS_TLS_CERT_PATH");
   const tlsKeyPath = requireString("MOLIRIS_TLS_KEY_PATH");
+  const auditLogRetentionDays = requireNumber("MOLIRIS_AUDIT_RETENTION_DAYS");
 
   const rawRegMode = requireString("MOLIRIS_REGISTRATION_MODE");
   let registrationMode: "rigorosa" | "differita" = "rigorosa";
@@ -123,6 +127,7 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     tlsKeyPath,
     standardSubdirectories,
     registrationMode,
+    auditLogRetentionDays,
     defaultSshPort,
   };
 }

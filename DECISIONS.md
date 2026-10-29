@@ -22,14 +22,28 @@ Il presente registro traccia le decisioni progettuali aperte, delegate alla conf
 
 ---
 
-## 3. Gestione Stesso Username con Host Differenti (§8.2)
+## 3. Gestione Stesso Username con Host Differenti (§8.2, §11.3)
 - **Stato**: APERTA
-- **Decisione**: [Valore da definire: convenzione per evitare collisioni sul filesystem, es. `<username>` se univoco; `<username>_<host>` o `<username>_<robot_id>` in caso di duplicati].
-- **Requisiti correlati**: §8.2, RF-ROB-006, RF-SRVFS-001, CA-ROB-006.
+- **Decisione**: [Valore da definire: convenzione definitiva per evitare collisioni sul filesystem quando due robot hanno lo stesso username remoto su host diversi. Implementata nel codice l'interfaccia `RobotDirectoryNamingPolicy` e l'implementazione predefinita `StandardRobotDirectoryNamingPolicy` che usa lo username con validazione di unicità sul DB per bloccare assegnazioni duplicate della stessa directory].
+- **Requisiti correlati**: §8.2, §11.3, RF-ROB-006, RF-ROB-008, RF-SRVFS-001, CA-ROB-006.
 
 ---
 
-## 4. Sezione 11 – Requisiti da Definire in Fase di Progettazione
+## 4. Valori Ammessi per lo Stato di Connessione (§10.2, RF-ROB-014)
+- **Stato**: APERTA (in attesa di conferma dall'utente)
+- **Decisione**: [Valori modellati secondo i requisiti SRS: `non_verificato` (CA-ROB-003), `raggiungibile` (RF-ROB-001), `non_raggiungibile` (RF-ROB-001), `errore` (CA-ROB-012, RF-ROB-014), `avviso` (RF-ROB-014). Da confermare se la lista deve includere ulteriori sotto-stati].
+- **Requisiti correlati**: §10.2, RF-ROB-001, RF-ROB-014, CA-ROB-003, CA-ROB-012.
+
+---
+
+## 5. Politica di Conservazione dei Log di Audit (§10.4, §11.1)
+- **Stato**: APERTA (in attesa di conferma dall'utente)
+- **Decisione**: [Valore da definire: parametro reso configurabile all'avvio fail-closed tramite `MOLIRIS_AUDIT_RETENTION_DAYS` (in giorni) senza valore predefinito inventato].
+- **Requisiti correlati**: §10.4, RNF-SEC-009, RNF-MNT-001, §11.1.
+
+---
+
+## 6. Sezione 11 – Requisiti da Definire in Fase di Progettazione
 
 ### 11.1 Organizzazione del Filesystem Server
 - **Percorso assoluto della root**: APERTA. Requisiti: RF-SRVFS-001, RNF-MNT-001. Decisione: [Valore da definire].

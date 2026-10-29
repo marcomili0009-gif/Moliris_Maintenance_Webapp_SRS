@@ -32,6 +32,7 @@ try {
     MOLIRIS_TLS_CERT_PATH: "/certs/cert.pem",
     MOLIRIS_TLS_KEY_PATH: "/certs/key.pem",
     MOLIRIS_REGISTRATION_MODE: "non_valida",
+    MOLIRIS_AUDIT_RETENTION_DAYS: "90",
   });
   assert.fail("Avrebbe dovuto fallire per modalità registrazione non valida");
 } catch (err: any) {
@@ -52,12 +53,14 @@ const validEnv: Record<string, string> = {
   MOLIRIS_TLS_CERT_PATH: "/certs/cert.pem",
   MOLIRIS_TLS_KEY_PATH: "/certs/key.pem",
   MOLIRIS_REGISTRATION_MODE: "rigorosa",
+  MOLIRIS_AUDIT_RETENTION_DAYS: "180",
 };
 
 const config = loadAndValidateConfig(validEnv);
 assert.strictEqual(config.serverFilesystemRoot, "/home/robots");
 assert.strictEqual(config.pollingIntervalSeconds, 10);
 assert.strictEqual(config.sshConnectionTimeoutMs, 5000);
+assert.strictEqual(config.auditLogRetentionDays, 180);
 assert.strictEqual(config.maxConcurrentTransfersPerUser, 2);
 assert.strictEqual(config.maxConcurrentTransfersPerRobot, 2);
 assert.strictEqual(config.maxConcurrentTransfersServer, 10);

@@ -35,6 +35,7 @@ const invalidConfig: SystemConfiguration = {
   tlsCertPath: "/percorso/inesistente/cert.pem",
   tlsKeyPath: "/percorso/inesistente/key.pem",
   registrationMode: "rigorosa",
+  auditLogRetentionDays: 90,
   defaultSshPort: 22,
 };
 
