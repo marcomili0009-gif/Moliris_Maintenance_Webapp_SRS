@@ -50,6 +50,7 @@ export class FleetService {
   private logger: MolirisLogger;
   private roleMapping: RolePermissionMapping;
   private directoryNamingPolicy: StandardRobotDirectoryNamingPolicy;
+  private terminalService?: any;
 
   constructor(
     config: SystemConfiguration,
@@ -60,7 +61,8 @@ export class FleetService {
     hostKeyVerifier: HostKeyVerifier,
     connectionManager: RobotConnectionManager,
     logger: MolirisLogger,
-    roleMapping: RolePermissionMapping = DEFAULT_ROLE_PERMISSIONS
+    roleMapping: RolePermissionMapping = DEFAULT_ROLE_PERMISSIONS,
+    terminalService?: any
   ) {
     this.config = config;
     this.robotRepository = robotRepository;
@@ -71,6 +73,7 @@ export class FleetService {
     this.connectionManager = connectionManager;
     this.logger = logger;
     this.roleMapping = roleMapping;
+    this.terminalService = terminalService;
     this.destinationValidator = new DestinationValidator(
       config.allowedDestinations,
       config.maxConcurrentRegistrationVerifications
@@ -967,6 +970,9 @@ export class FleetService {
 
     // Politica verso sessioni già aperte alla disabilitazione (§11.3, §8.4)
     if (this.config.activeSessionPolicyOnDisable === "chiudi_immediatamente") {
+      if (this.terminalService) {
+        await this.terminalService.closeSessionsForRobot(robotId, "ADMIN_DISABLED");
+      }
       await this.connectionManager.closeConnectionsForRobot(robotId);
     }
 
@@ -1031,7 +1037,10 @@ export class FleetService {
       throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${robotId}' non trovato.`);
     }
 
-    // Chiude eventuali connessioni attive
+    // Chiude eventuali connessioni e sessioni terminale attive
+    if (this.terminalService) {
+      await this.terminalService.closeSessionsForRobot(robotId, "ADMIN_DISABLED");
+    }
     await this.connectionManager.closeConnectionsForRobot(robotId);
 
     // Cambia stato anagrafico a 'rimosso' (preservando database storico e file su filesystem)

@@ -7,6 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Moliris Maintenance Webapp - Gestione Flotta</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="/vendor/xterm.css">
 </head>
 <body>
   <div id="app">
@@ -368,8 +369,34 @@
         </div>
       </div>
     </div>
+
+    <!-- MODAL 6: Terminale Remoto Interattivo PTY (§5.4, §6.4, RF-SSH-001..008, RNF-UX-004) -->
+    <div id="modal-terminal" class="modal hidden">
+      <div class="modal-content modal-terminal-window">
+        <div class="modal-header terminal-modal-header">
+          <div class="terminal-title-container">
+            <h3 id="terminal-robot-title">💻 Terminale Remoto</h3>
+            <span id="terminal-session-status" class="badge-status badge-non_verificato">In connessione...</span>
+          </div>
+          <div class="terminal-header-actions">
+            <button class="btn btn-danger btn-sm" id="btn-terminal-disconnect">Disconnetti</button>
+            <button class="btn-close" id="btn-close-terminal">&times;</button>
+          </div>
+        </div>
+        <div class="terminal-body" id="terminal-container">
+          <!-- Montaggio istanza xterm.js -->
+        </div>
+        <div class="terminal-footer">
+          <span id="terminal-footer-info">Connessione PTY interattiva bidirezionale (RF-SSH-002, RF-SSH-004)</span>
+          <span id="terminal-footer-dims" class="badge">80 x 24</span>
+        </div>
+      </div>
+    </div>
   </div>
 
+  <!-- Emulatore terminale xterm.js e Addon Fit (§5.1, RNF-UX-004) -->
+  <script src="/vendor/xterm.js"></script>
+  <script src="/vendor/xterm-addon-fit.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -60,6 +60,13 @@ export interface SystemConfiguration {
   // 18. Soglia di età per marcatura dati obsoleti (in secondi) [opzionale, §11.4]
   staleDataThresholdSeconds?: number;
 
+  // 19. Parametri per sessioni di terminale remoto [opzionali] (§5.4, §6.4 passo 7, §11.6, §11.7, RNF-PERF-003)
+  terminalSessionTimeoutMinutes?: number;
+  maxConcurrentTerminalSessionsServer?: number;
+  maxConcurrentTerminalSessionsPerUser?: number;
+  maxConcurrentTerminalSessionsPerRobot?: number;
+  terminalDisconnectPolicy?: "chiudi_immediatamente" | "mantieni_in_background";
+
   // Default unico ammesso: porta SSH 22 (RF-ROB-005)
   defaultSshPort: number;
 }
@@ -157,6 +164,27 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     ? Number(env["MOLIRIS_STALE_DATA_THRESHOLD_SEC"])
     : undefined;
 
+  const terminalSessionTimeoutMinutes = env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"] && !isNaN(Number(env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"]))
+    ? Number(env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"])
+    : undefined;
+
+  const maxConcurrentTerminalSessionsServer = env["MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"] && !isNaN(Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"]))
+    ? Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"])
+    : undefined;
+
+  const maxConcurrentTerminalSessionsPerUser = env["MOLIRIS_MAX_TERMINAL_SESSIONS_PER_USER"] && !isNaN(Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_PER_USER"]))
+    ? Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_PER_USER"])
+    : undefined;
+
+  const maxConcurrentTerminalSessionsPerRobot = env["MOLIRIS_MAX_TERMINAL_SESSIONS_PER_ROBOT"] && !isNaN(Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_PER_ROBOT"]))
+    ? Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_PER_ROBOT"])
+    : undefined;
+
+  const rawDisconnectPolicy = env["MOLIRIS_TERMINAL_DISCONNECT_POLICY"]?.trim().toLowerCase();
+  const terminalDisconnectPolicy = (rawDisconnectPolicy === "chiudi_immediatamente" || rawDisconnectPolicy === "mantieni_in_background")
+    ? (rawDisconnectPolicy as "chiudi_immediatamente" | "mantieni_in_background")
+    : undefined;
+
   // L'unico default ammesso dalla SRS è la porta SSH 22 (RF-ROB-005)
   const defaultSshPort = env["MOLIRIS_DEFAULT_SSH_PORT"] && !isNaN(Number(env["MOLIRIS_DEFAULT_SSH_PORT"]))
     ? Number(env["MOLIRIS_DEFAULT_SSH_PORT"])
@@ -186,6 +214,11 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     existingDirectoryPolicy,
     activeSessionPolicyOnDisable,
     staleDataThresholdSeconds,
+    terminalSessionTimeoutMinutes,
+    maxConcurrentTerminalSessionsServer,
+    maxConcurrentTerminalSessionsPerUser,
+    maxConcurrentTerminalSessionsPerRobot,
+    terminalDisconnectPolicy,
     defaultSshPort,
   };
 }

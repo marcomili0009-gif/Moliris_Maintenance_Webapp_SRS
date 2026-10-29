@@ -50,6 +50,20 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnConfirmRemove = document.getElementById("btn-confirm-remove");
   let pendingRemoveRobotId = null;
 
+  // Elementi Finestra Terminale Remoto (Prompt 8, RF-SSH-001..008, RNF-UX-004)
+  const modalTerminal = document.getElementById("modal-terminal");
+  const terminalRobotTitle = document.getElementById("terminal-robot-title");
+  const terminalSessionStatus = document.getElementById("terminal-session-status");
+  const terminalContainer = document.getElementById("terminal-container");
+  const terminalFooterDims = document.getElementById("terminal-footer-dims");
+  const btnTerminalDisconnect = document.getElementById("btn-terminal-disconnect");
+  const btnCloseTerminal = document.getElementById("btn-close-terminal");
+
+  let activeTerminalSessionId = null;
+  let activeXterm = null;
+  let activeFitAddon = null;
+  let terminalWebSocket = null;
+
   let sessionToken = sessionStorage.getItem("moliris_token") || null;
   let currentUser = null;
 
@@ -412,6 +426,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <!-- Barra Pulsanti Azione Robot -->
         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid #e0e0e0;">
           <button class="btn btn-primary btn-sm" id="btn-detail-refresh-status">🔄 Aggiorna Stato (Refresh)</button>
+          ${feat.terminal ? '<button class="btn btn-primary btn-sm" id="btn-detail-open-terminal">💻 Apri Terminale</button>' : ''}
           <button class="btn btn-secondary btn-sm" id="btn-detail-reverify">🔍 Ripeti Verifica Connessione</button>
           ${hasUpdatePerm ? '<button class="btn btn-secondary btn-sm" id="btn-detail-edit">✏️ Modifica Configurazione</button>' : ''}
           ${hasDisablePerm ? (robot.anagraphicState === "attivo"
@@ -449,9 +464,9 @@ document.addEventListener("DOMContentLoaded", () => {
                   <span>💻 Terminale Remoto</span>
                   <span class="feature-status ${feat.terminal ? 'badge-attivo' : 'badge-disabilitato'}">${feat.terminal ? 'Disponibile' : 'Disabilitato'}</span>
                 </div>
-                <div class="feature-reason">${feat.terminal ? 'Segnaposto: disponibile nel Prompt 8.' : (feat.reasons.terminal || 'Non disponibile')}</div>
+                <div class="feature-reason">${feat.terminal ? 'Sessione PTY interattiva bidirezionale pronta (Prompt 8).' : (feat.reasons.terminal || 'Non disponibile')}</div>
               </div>
-              <button class="btn btn-secondary btn-sm" style="margin-top: 0.5rem;" ${feat.terminal ? '' : 'disabled'}>Apri Terminale (P8)</button>
+              <button class="btn btn-primary btn-sm" id="btn-feature-open-terminal" style="margin-top: 0.5rem;" ${feat.terminal ? '' : 'disabled'}>💻 Apri Terminale Remoto</button>
             </div>
 
             <!-- Filesystem Remoto -->
@@ -496,6 +511,13 @@ document.addEventListener("DOMContentLoaded", () => {
       detailBody.innerHTML = html;
 
       // Aggancio eventi ai pulsanti del dettaglio
+      const triggerTerminal = () => {
+        modalDetail.classList.add("hidden");
+        openTerminalForRobot(robot.id, robot.displayName);
+      };
+      document.getElementById("btn-detail-open-terminal")?.addEventListener("click", triggerTerminal);
+      document.getElementById("btn-feature-open-terminal")?.addEventListener("click", triggerTerminal);
+
       document.getElementById("btn-detail-refresh-status")?.addEventListener("click", () => refreshRobotStatus(robot.id));
       document.getElementById("btn-feature-refresh-status")?.addEventListener("click", () => refreshRobotStatus(robot.id));
       document.getElementById("btn-detail-reverify")?.addEventListener("click", () => reverifyConnection(robot.id));
@@ -698,6 +720,188 @@ document.addEventListener("DOMContentLoaded", () => {
       showNotification(`Errore durante l'aggiornamento dello stato: ${err.message}`, "danger");
     }
   }
+
+  // =========================================================================
+  // PROMPT 8 – COMPONENTE TERMINALE REMOTO INTERATTIVO PTY (RF-SSH-001..008, §5.4, §6.4)
+  // =========================================================================
+  async function openTerminalForRobot(robotId, displayName) {
+    if (activeTerminalSessionId) {
+      closeTerminal();
+    }
+
+    modalTerminal.classList.remove("hidden");
+    terminalRobotTitle.textContent = `💻 Terminale Remoto: ${escapeHtml(displayName)} (${escapeHtml(robotId)})`;
+    terminalSessionStatus.className = "badge-status badge-non_verificato";
+    terminalSessionStatus.textContent = "Allocazione PTY in corso...";
+    terminalContainer.innerHTML = "";
+
+    try {
+      // 1. Richiesta di allocazione sessione PTY lato server (RF-SSH-001, RF-SSH-004)
+      const res = await apiRequest(`/api/robots/${encodeURIComponent(robotId)}/terminal/sessions`, {
+        method: "POST",
+        body: JSON.stringify({ cols: 80, rows: 24 }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        terminalSessionStatus.className = "badge-status badge-errore";
+        terminalSessionStatus.textContent = "Errore Connessione";
+        terminalContainer.innerHTML = `<div class="alert-box alert-danger" style="margin: 1rem;">${escapeHtml(data.message || "Impossibile aprire la sessione terminale.")}</div>`;
+        return;
+      }
+
+      activeTerminalSessionId = data.sessionId;
+      terminalSessionStatus.className = "badge-status badge-non_verificato";
+      terminalSessionStatus.textContent = "Connessione WebSocket...";
+
+      // 2. Inizializzazione xterm.js (RF-SSH-003, RNF-UX-004)
+      if (typeof Terminal === "undefined") {
+        terminalContainer.innerHTML = '<div class="alert-box alert-danger">Libreria xterm.js non disponibile nel browser.</div>';
+        return;
+      }
+
+      activeXterm = new Terminal({
+        cursorBlink: true,
+        cursorStyle: "block",
+        fontSize: 14,
+        fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+        theme: {
+          background: "#1e1e1e",
+          foreground: "#f1f1f1",
+          cursor: "#ffffff",
+        },
+        cols: data.cols || 80,
+        rows: data.rows || 24,
+      });
+
+      if (typeof FitAddon !== "undefined" && FitAddon.FitAddon) {
+        activeFitAddon = new FitAddon.FitAddon();
+        activeXterm.loadAddon(activeFitAddon);
+      }
+
+      activeXterm.open(terminalContainer);
+
+      if (activeFitAddon) {
+        try {
+          activeFitAddon.fit();
+        } catch {}
+      }
+
+      // 3. Apertura canale WebSocket bidirezionale (RF-SSH-004)
+      const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${wsProto}//${window.location.host}/api/terminal/ws/${encodeURIComponent(data.sessionId)}`;
+      terminalWebSocket = new WebSocket(wsUrl);
+
+      terminalWebSocket.onopen = () => {
+        terminalSessionStatus.className = "badge-status badge-attivo";
+        terminalSessionStatus.textContent = "Attivo";
+        if (activeFitAddon) {
+          const dims = activeFitAddon.proposeDimensions();
+          if (dims && dims.cols && dims.rows) {
+            activeXterm.resize(dims.cols, dims.rows);
+            terminalFooterDims.textContent = `${dims.cols} x ${dims.rows}`;
+            terminalWebSocket.send(JSON.stringify({ type: "resize", cols: dims.cols, rows: dims.rows }));
+          }
+        }
+        activeXterm.focus();
+      };
+
+      // Output progressivo dal PTY remoto (CA-SSH-003)
+      terminalWebSocket.onmessage = (event) => {
+        const msg = event.data;
+        if (typeof msg === "string" && msg.startsWith("{") && msg.endsWith("}")) {
+          try {
+            const parsed = JSON.parse(msg);
+            if (parsed.type === "session_closed") {
+              terminalSessionStatus.className = "badge-status badge-disabilitato";
+              terminalSessionStatus.textContent = `Chiuso (${parsed.reason || "terminato"})`;
+              activeXterm.writeln(`\r\n\x1b[33m[Connessione terminale chiusa dal server: ${escapeHtml(parsed.message || parsed.reason)}]\x1b[0m\r\n`);
+              return;
+            }
+            if (parsed.type === "error") {
+              terminalSessionStatus.className = "badge-status badge-errore";
+              terminalSessionStatus.textContent = "Errore";
+              activeXterm.writeln(`\r\n\x1b[31m[Errore: ${escapeHtml(parsed.message)}]\x1b[0m\r\n`);
+              return;
+            }
+          } catch {}
+        }
+
+        activeXterm.write(msg);
+      };
+
+      terminalWebSocket.onclose = () => {
+        terminalSessionStatus.className = "badge-status badge-disabilitato";
+        terminalSessionStatus.textContent = "Connessione Chiusa";
+        if (activeXterm) {
+          activeXterm.writeln("\r\n\x1b[90m[Canale terminale disconnesso]\x1b[0m\r\n");
+        }
+      };
+
+      terminalWebSocket.onerror = () => {
+        terminalSessionStatus.className = "badge-status badge-errore";
+        terminalSessionStatus.textContent = "Errore Canale";
+      };
+
+      // Input da tastiera verso il PTY (RF-SSH-002, CA-SSH-002)
+      activeXterm.onData((inputData) => {
+        if (terminalWebSocket && terminalWebSocket.readyState === WebSocket.OPEN) {
+          terminalWebSocket.send(inputData);
+        }
+      });
+
+      // Ridimensionamento PTY propagato al backend (CA-SSH-002)
+      activeXterm.onResize(({ cols, rows }) => {
+        terminalFooterDims.textContent = `${cols} x ${rows}`;
+        if (terminalWebSocket && terminalWebSocket.readyState === WebSocket.OPEN) {
+          terminalWebSocket.send(JSON.stringify({ type: "resize", cols, rows }));
+        }
+      });
+
+    } catch (err) {
+      terminalSessionStatus.className = "badge-status badge-errore";
+      terminalSessionStatus.textContent = "Errore";
+      terminalContainer.innerHTML = `<div class="alert-box alert-danger">Errore apertura terminale: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function closeTerminal() {
+    if (activeTerminalSessionId && terminalWebSocket && terminalWebSocket.readyState === WebSocket.OPEN) {
+      try {
+        terminalWebSocket.send(JSON.stringify({ type: "close" }));
+      } catch {}
+    }
+
+    if (terminalWebSocket) {
+      try {
+        terminalWebSocket.close();
+      } catch {}
+      terminalWebSocket = null;
+    }
+
+    if (activeXterm) {
+      try {
+        activeXterm.dispose();
+      } catch {}
+      activeXterm = null;
+      activeFitAddon = null;
+    }
+
+    activeTerminalSessionId = null;
+    modalTerminal.classList.add("hidden");
+    terminalContainer.innerHTML = "";
+  }
+
+  btnTerminalDisconnect.addEventListener("click", closeTerminal);
+  btnCloseTerminal.addEventListener("click", closeTerminal);
+
+  window.addEventListener("resize", () => {
+    if (activeFitAddon && activeXterm && !modalTerminal.classList.contains("hidden")) {
+      try {
+        activeFitAddon.fit();
+      } catch {}
+    }
+  });
 
   // =========================================================================
   // STEP 5 & 6 – RIPETI VERIFICA E RIPARA REGISTRAZIONE (§8.1, §6.3, CA-ROB-008)

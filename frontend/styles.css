@@ -597,3 +597,72 @@ input:focus {
   font-weight: 500;
 }
 
+/* Stili Finestra Terminale Remoto PTY (RF-SSH-003, RNF-UX-004) */
+.modal-terminal-window {
+  max-width: 1000px;
+  width: 95%;
+  height: 82vh;
+  background-color: #1e1e1e;
+  color: #f1f1f1;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+
+.terminal-modal-header {
+  background-color: #252526;
+  border-bottom: 1px solid #333;
+  padding: 0.75rem 1.25rem;
+  color: #fff;
+}
+
+.terminal-title-container {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.terminal-title-container h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: #fff;
+}
+
+.terminal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.terminal-header-actions .btn-close {
+  color: #aaa;
+}
+.terminal-header-actions .btn-close:hover {
+  color: #fff;
+}
+
+.terminal-body {
+  flex: 1;
+  padding: 8px;
+  background-color: #1e1e1e;
+  overflow: hidden;
+  position: relative;
+}
+
+.terminal-body .xterm {
+  height: 100%;
+}
+
+.terminal-footer {
+  background-color: #252526;
+  border-top: 1px solid #333;
+  padding: 0.4rem 1.25rem;
+  font-size: 0.8rem;
+  color: #888;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+

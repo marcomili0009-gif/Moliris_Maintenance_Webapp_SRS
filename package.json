@@ -6,14 +6,16 @@
   "main": "backend/server.ts",
   "scripts": {
     "dev": "MOLIRIS_SERVER_HOST=127.0.0.1 node --watch --experimental-strip-types --import dotenv/config backend/server.ts",
-    "test": "node --experimental-strip-types config/configuration.test.ts && node --experimental-strip-types logging/logger.test.ts && node --experimental-strip-types errors/app-errors.test.ts && node --experimental-strip-types backend/server.test.ts && node --experimental-strip-types storage/storage.test.ts && node --experimental-strip-types backend/auth/auth.test.ts && node --experimental-strip-types storage/server-fs.test.ts && node --experimental-strip-types backend/connection/connection.test.ts && node --experimental-strip-types backend/fleet/fleet.test.ts && node --experimental-strip-types backend/monitoring/monitoring.test.ts"
+    "test": "node --experimental-strip-types config/configuration.test.ts && node --experimental-strip-types logging/logger.test.ts && node --experimental-strip-types errors/app-errors.test.ts && node --experimental-strip-types backend/server.test.ts && node --experimental-strip-types storage/storage.test.ts && node --experimental-strip-types backend/auth/auth.test.ts && node --experimental-strip-types storage/server-fs.test.ts && node --experimental-strip-types backend/connection/connection.test.ts && node --experimental-strip-types backend/fleet/fleet.test.ts && node --experimental-strip-types backend/monitoring/monitoring.test.ts && node --experimental-strip-types backend/terminal/terminal.test.ts"
   },
   "dependencies": {
-    "@fastify/websocket": "^10.0.1",
-    "fastify": "^5.12.7",
+    "@fastify/websocket": "^11.3.4",
     "dotenv": "^18.0.9",
+    "fastify": "^5.12.7",
     "mongodb": "^6.5.0",
-    "ssh2": "^1.15.0"
+    "ssh2": "^1.15.0",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.24",

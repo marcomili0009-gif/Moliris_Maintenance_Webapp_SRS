@@ -24,6 +24,9 @@ import { type StateFileParser, ProvisionalDevelopmentStateFileParser } from "./m
 import { RemoteRobotReader } from "./monitoring/robot-reader.ts";
 import { MonitoringService } from "./monitoring/monitoring-service.ts";
 import { registerMonitoringRoutes } from "./monitoring/monitoring-routes.ts";
+import websocket from "@fastify/websocket";
+import { TerminalService } from "./terminal/terminal-service.ts";
+import { registerTerminalRoutes } from "./terminal/terminal-routes.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,6 +44,7 @@ export interface ServerDependencies {
   stateFileParser?: StateFileParser;
   remoteRobotReader?: RemoteRobotReader;
   monitoringService?: MonitoringService;
+  terminalService?: TerminalService;
   roleMapping?: RolePermissionMapping;
 }
 
@@ -63,6 +67,9 @@ export function createServer(
     https: httpsOptions,
     logger: false, // Disabilitato il logger standard in favore del logger applicativo con redazione attiva
   });
+
+  // Registrazione supporto WebSocket per canale terminale interattivo (RF-SSH-004, §5.4)
+  app.register(websocket);
 
   // Dipendenze di autenticazione e sicurezza
   const sessionManager = deps.sessionManager || new SessionManager(config.inactiveSessionTimeoutMinutes);
@@ -128,6 +135,18 @@ export function createServer(
     logger
   );
 
+  // Servizio di terminale remoto interattivo PTY (Prompt 8, RF-SSH-001..008, §5.4, §6.4)
+  const terminalService = deps.terminalService || new TerminalService(
+    config,
+    robotRepository,
+    auditRepository,
+    connectionManager,
+    sessionManager,
+    roleMapping,
+    logger
+  );
+  (fleetService as any).terminalService = terminalService;
+
   // Registrazione endpoint di autenticazione e autorizzazione (RF-AUTH-001..006)
   registerAuthRoutes(
     app,
@@ -162,10 +181,24 @@ export function createServer(
     authMiddleware
   );
 
-  // Rilascio risorse e arresto polling periodico alla chiusura del server (RNF-REL-005)
+  // Registrazione endpoint terminale remoto interattivo PTY (RF-SSH-001..008, §5.4, §6.4)
+  app.register(async (terminalScope) => {
+    registerTerminalRoutes(
+      terminalScope,
+      terminalService,
+      sessionManager,
+      userRepository,
+      auditRepository,
+      authMiddleware
+    );
+  });
+
+  // Rilascio risorse, arresto polling periodico e chiusura sessioni alla chiusura del server (RNF-REL-005)
   app.decorate("monitoringService", monitoringService);
+  app.decorate("terminalService", terminalService);
   app.addHook("onClose", async () => {
     monitoringService.stopPolling();
+    await terminalService.closeAll("SERVICE_SHUTDOWN");
   });
 
   // Singolo endpoint tecnico di verifica dello stato del servizio (senza dati sensibili)
@@ -203,6 +236,36 @@ export function createServer(
       reply.type("application/javascript").send(fs.readFileSync(jsPath));
     } else {
       reply.status(404).send("File app.js non trovato");
+    }
+  });
+
+  // Risorse statiche per emulatore terminale xterm.js (§5.1, RNF-UX-004)
+  const nodeModulesDir = path.resolve(__dirname, "../node_modules");
+
+  app.get("/vendor/xterm.js", async (_request, reply) => {
+    const xtermPath = path.join(nodeModulesDir, "xterm/lib/xterm.js");
+    if (fs.existsSync(xtermPath)) {
+      reply.type("application/javascript").send(fs.readFileSync(xtermPath));
+    } else {
+      reply.status(404).send("File xterm.js non trovato");
+    }
+  });
+
+  app.get("/vendor/xterm.css", async (_request, reply) => {
+    const cssPath = path.join(nodeModulesDir, "xterm/css/xterm.css");
+    if (fs.existsSync(cssPath)) {
+      reply.type("text/css").send(fs.readFileSync(cssPath));
+    } else {
+      reply.status(404).send("File xterm.css non trovato");
+    }
+  });
+
+  app.get("/vendor/xterm-addon-fit.js", async (_request, reply) => {
+    const fitPath = path.join(nodeModulesDir, "xterm-addon-fit/lib/xterm-addon-fit.js");
+    if (fs.existsSync(fitPath)) {
+      reply.type("application/javascript").send(fs.readFileSync(fitPath));
+    } else {
+      reply.status(404).send("File xterm-addon-fit.js non trovato");
     }
   });
 
