@@ -30,6 +30,7 @@ export interface RobotSummaryDto {
   anagraphicState: AnagraphicState;
   hasWarningsOrErrors: boolean;
   lastAttemptOutcome: LastAttemptOutcome | null;
+  isStale?: boolean;
 }
 
 /**
@@ -58,16 +59,25 @@ export interface RobotDetailDto {
   customParameters?: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
+  isStale?: boolean;
 }
 
 /**
  * Converte l'entità interna nel DTO sintetico per l'elenco (RF-ROB-001).
+ * Calcola se i dati operativi sono obsoleti o non più verificati (RF-MON-006, §11.4).
  */
-export function toRobotSummaryDto(robot: RobotEntity): RobotSummaryDto {
+export function toRobotSummaryDto(robot: RobotEntity, staleThresholdSeconds?: number): RobotSummaryDto {
   const hasWarningsOrErrors =
     robot.connectionState === "errore" ||
     robot.connectionState === "avviso" ||
     (robot.lastAttemptOutcome !== null && !robot.lastAttemptOutcome.success);
+
+  const isStale =
+    (robot.lastAttemptOutcome !== null && !robot.lastAttemptOutcome.success && robot.operationalState !== null) ||
+    (staleThresholdSeconds !== undefined &&
+      staleThresholdSeconds > 0 &&
+      robot.lastValidUpdateAt !== null &&
+      Date.now() - new Date(robot.lastValidUpdateAt).getTime() > staleThresholdSeconds * 1000);
 
   return {
     id: robot.id,
@@ -81,6 +91,7 @@ export function toRobotSummaryDto(robot: RobotEntity): RobotSummaryDto {
     anagraphicState: robot.anagraphicState,
     hasWarningsOrErrors,
     lastAttemptOutcome: robot.lastAttemptOutcome,
+    isStale,
   };
 }
 
@@ -88,7 +99,14 @@ export function toRobotSummaryDto(robot: RobotEntity): RobotSummaryDto {
  * Converte l'entità interna nel DTO di dettaglio (RF-ROB-002, RF-ROB-003).
  * RNF-SEC-002: elimina tassativamente 'credentialReference' e campi sensibili.
  */
-export function toRobotDetailDto(robot: RobotEntity): RobotDetailDto {
+export function toRobotDetailDto(robot: RobotEntity, staleThresholdSeconds?: number): RobotDetailDto {
+  const isStale =
+    (robot.lastAttemptOutcome !== null && !robot.lastAttemptOutcome.success && robot.operationalState !== null) ||
+    (staleThresholdSeconds !== undefined &&
+      staleThresholdSeconds > 0 &&
+      robot.lastValidUpdateAt !== null &&
+      Date.now() - new Date(robot.lastValidUpdateAt).getTime() > staleThresholdSeconds * 1000);
+
   return {
     id: robot.id,
     displayName: robot.displayName,
@@ -111,5 +129,6 @@ export function toRobotDetailDto(robot: RobotEntity): RobotDetailDto {
     customParameters: robot.customParameters ? { ...robot.customParameters } : undefined,
     createdAt: robot.createdAt,
     updatedAt: robot.updatedAt,
+    isStale,
   };
 }

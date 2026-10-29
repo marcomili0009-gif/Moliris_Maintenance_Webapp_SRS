@@ -20,6 +20,10 @@ import { type HostKeyVerifier, DefaultHostKeyVerifier } from "./connection/host-
 import { RobotConnectionManager } from "./connection/robot-connection-manager.ts";
 import { FleetService } from "./fleet/fleet-service.ts";
 import { registerFleetRoutes } from "./fleet/fleet-routes.ts";
+import { type StateFileParser, ProvisionalDevelopmentStateFileParser } from "./monitoring/state-file-parser.ts";
+import { RemoteRobotReader } from "./monitoring/robot-reader.ts";
+import { MonitoringService } from "./monitoring/monitoring-service.ts";
+import { registerMonitoringRoutes } from "./monitoring/monitoring-routes.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,6 +38,9 @@ export interface ServerDependencies {
   hostKeyVerifier?: HostKeyVerifier;
   connectionManager?: RobotConnectionManager;
   fleetService?: FleetService;
+  stateFileParser?: StateFileParser;
+  remoteRobotReader?: RemoteRobotReader;
+  monitoringService?: MonitoringService;
   roleMapping?: RolePermissionMapping;
 }
 
@@ -104,6 +111,23 @@ export function createServer(
     roleMapping
   );
 
+  // Servizio di monitoraggio remoto (Prompt 7, RF-MON-001..006, §5.3, §11.4)
+  const stateFileParser = deps.stateFileParser || new ProvisionalDevelopmentStateFileParser();
+  const remoteRobotReader = deps.remoteRobotReader || new RemoteRobotReader(
+    connectionManager,
+    config.sshConnectionTimeoutMs,
+    logger
+  );
+  const monitoringService = deps.monitoringService || new MonitoringService(
+    config,
+    robotRepository,
+    auditRepository,
+    remoteRobotReader,
+    stateFileParser,
+    roleMapping,
+    logger
+  );
+
   // Registrazione endpoint di autenticazione e autorizzazione (RF-AUTH-001..006)
   registerAuthRoutes(
     app,
@@ -130,6 +154,19 @@ export function createServer(
     fleetService,
     authMiddleware
   );
+
+  // Registrazione endpoint monitoraggio stato robot (RF-MON-001..006, §5.3)
+  registerMonitoringRoutes(
+    app,
+    monitoringService,
+    authMiddleware
+  );
+
+  // Rilascio risorse e arresto polling periodico alla chiusura del server (RNF-REL-005)
+  app.decorate("monitoringService", monitoringService);
+  app.addHook("onClose", async () => {
+    monitoringService.stopPolling();
+  });
 
   // Singolo endpoint tecnico di verifica dello stato del servizio (senza dati sensibili)
   app.get("/healthz", async (_request, reply) => {
@@ -187,6 +224,7 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
         process.exit(1);
       }
       logger.info(`Backend HTTPS avviato con successo su ${address}`);
+      (server as any).monitoringService?.startPolling();
     });
   } catch (error: any) {
     logger.error("Errore inizializzazione backend", error.message);

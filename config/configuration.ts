@@ -57,6 +57,9 @@ export interface SystemConfiguration {
   // 17. Politica per sessioni attive alla disabilitazione [opzionale] (§8.4, §11.3)
   activeSessionPolicyOnDisable?: "chiudi_immediatamente" | "lascia_terminare";
 
+  // 18. Soglia di età per marcatura dati obsoleti (in secondi) [opzionale, §11.4]
+  staleDataThresholdSeconds?: number;
+
   // Default unico ammesso: porta SSH 22 (RF-ROB-005)
   defaultSshPort: number;
 }
@@ -150,6 +153,10 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     ? (rawSessionPolicy as "chiudi_immediatamente" | "lascia_terminare")
     : undefined;
 
+  const staleDataThresholdSeconds = env["MOLIRIS_STALE_DATA_THRESHOLD_SEC"] && !isNaN(Number(env["MOLIRIS_STALE_DATA_THRESHOLD_SEC"]))
+    ? Number(env["MOLIRIS_STALE_DATA_THRESHOLD_SEC"])
+    : undefined;
+
   // L'unico default ammesso dalla SRS è la porta SSH 22 (RF-ROB-005)
   const defaultSshPort = env["MOLIRIS_DEFAULT_SSH_PORT"] && !isNaN(Number(env["MOLIRIS_DEFAULT_SSH_PORT"]))
     ? Number(env["MOLIRIS_DEFAULT_SSH_PORT"])
@@ -178,6 +185,7 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     maxConcurrentRegistrationVerifications,
     existingDirectoryPolicy,
     activeSessionPolicyOnDisable,
+    staleDataThresholdSeconds,
     defaultSshPort,
   };
 }

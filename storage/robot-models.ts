@@ -32,6 +32,7 @@ export interface LastAttemptOutcome {
   success: boolean;
   stage: "connection" | "monitoring";
   errorCode?: string;
+  subType?: "missing" | "empty" | "incomplete" | "malformed" | "timeout" | "connection_error" | "read_error";
   diagnosticMessage?: string;
 }
 

@@ -5,13 +5,14 @@
   "description": "Web Application per la Gestione e il Monitoraggio di una Flotta di Robot Mobili (SRS v1.0)",
   "main": "backend/server.ts",
   "scripts": {
-    "test": "node --experimental-strip-types config/configuration.test.ts && node --experimental-strip-types logging/logger.test.ts && node --experimental-strip-types errors/app-errors.test.ts && node --experimental-strip-types backend/server.test.ts && node --experimental-strip-types storage/storage.test.ts && node --experimental-strip-types backend/auth/auth.test.ts && node --experimental-strip-types storage/server-fs.test.ts && node --experimental-strip-types backend/connection/connection.test.ts && node --experimental-strip-types backend/fleet/fleet.test.ts"
+    "dev": "node --watch --experimental-strip-types backend/server.ts",
+    "test": "node --experimental-strip-types config/configuration.test.ts && node --experimental-strip-types logging/logger.test.ts && node --experimental-strip-types errors/app-errors.test.ts && node --experimental-strip-types backend/server.test.ts && node --experimental-strip-types storage/storage.test.ts && node --experimental-strip-types backend/auth/auth.test.ts && node --experimental-strip-types storage/server-fs.test.ts && node --experimental-strip-types backend/connection/connection.test.ts && node --experimental-strip-types backend/fleet/fleet.test.ts && node --experimental-strip-types backend/monitoring/monitoring.test.ts"
   },
   "dependencies": {
-    "fastify": "^4.26.2",
     "@fastify/websocket": "^10.0.1",
-    "ssh2": "^1.15.0",
-    "mongodb": "^6.5.0"
+    "fastify": "^5.12.7",
+    "mongodb": "^6.5.0",
+    "ssh2": "^1.15.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.24",

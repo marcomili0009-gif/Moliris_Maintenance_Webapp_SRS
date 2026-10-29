@@ -200,7 +200,7 @@ export class FleetService {
 
       // Filtro per robot visibili secondo i permessi specifici dell'utente (Prompt 3)
       if (hasPermission(user, AppPermission.FLEET_VIEW, robot.id, this.roleMapping)) {
-        visibleRobots.push(toRobotSummaryDto(robot));
+        visibleRobots.push(toRobotSummaryDto(robot, this.config.staleDataThresholdSeconds));
       }
     }
 
@@ -233,7 +233,7 @@ export class FleetService {
     const availableFeatures = this.getAvailableFeatures(robot, user);
 
     return {
-      robot: toRobotDetailDto(robot),
+      robot: toRobotDetailDto(robot, this.config.staleDataThresholdSeconds),
       availableFeatures,
     };
   }
@@ -657,7 +657,7 @@ export class FleetService {
 
     return {
       outcome: savedRobot.registrationState,
-      robot: toRobotDetailDto(savedRobot),
+      robot: toRobotDetailDto(savedRobot, this.config.staleDataThresholdSeconds),
       availableFeatures,
       performedActions,
       skippedActions,
@@ -825,7 +825,7 @@ export class FleetService {
 
     return {
       outcome: updated!.registrationState,
-      robot: toRobotDetailDto(updated!),
+      robot: toRobotDetailDto(updated!, this.config.staleDataThresholdSeconds),
       availableFeatures,
       performedActions,
       skippedActions,
@@ -944,7 +944,7 @@ export class FleetService {
       updatedFields: Object.keys(update).filter(k => k !== "password" && k !== "privateKey"),
     });
 
-    return toRobotDetailDto(updatedEntity);
+    return toRobotDetailDto(updatedEntity, this.config.staleDataThresholdSeconds);
   }
 
   /**
@@ -976,7 +976,7 @@ export class FleetService {
       sessionPolicy: this.config.activeSessionPolicyOnDisable,
     });
 
-    return toRobotDetailDto(updated);
+    return toRobotDetailDto(updated, this.config.staleDataThresholdSeconds);
   }
 
   /**
@@ -999,7 +999,7 @@ export class FleetService {
       action: "ENABLE_ROBOT",
     });
 
-    return toRobotDetailDto(updated);
+    return toRobotDetailDto(updated, this.config.staleDataThresholdSeconds);
   }
 
   /**

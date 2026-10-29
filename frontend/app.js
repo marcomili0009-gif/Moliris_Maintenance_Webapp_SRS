@@ -262,12 +262,16 @@ document.addEventListener("DOMContentLoaded", () => {
         tdConn.innerHTML = `<span class="badge-status ${connClass}">${escapeHtml(robot.connectionState.replace(/_/g, " "))}</span>`;
         tr.appendChild(tdConn);
 
-        // Stato Operativo (§10.2, RF-MON-005: non inventare valori se non disponibile)
+        // Stato Operativo (§10.2, RF-MON-005, RF-MON-006: non inventare valori se non disponibile)
         const tdOp = document.createElement("td");
         if (robot.operationalState) {
-          tdOp.textContent = JSON.stringify(robot.operationalState);
+          let opHtml = `<code>${escapeHtml(JSON.stringify(robot.operationalState))}</code>`;
+          if (robot.isStale) {
+            opHtml += ` <span class="badge-status badge-avviso" title="Dato non aggiornato o non più verificato">[Non più verificato]</span>`;
+          }
+          tdOp.innerHTML = opHtml;
         } else {
-          tdOp.innerHTML = `<span class="badge-status badge-nodata">dato non disponibile</span>`;
+          tdOp.innerHTML = `<span class="badge-status badge-nodata">dato non disponibile (RF-MON-005)</span>`;
         }
         tr.appendChild(tdOp);
 
@@ -374,9 +378,26 @@ document.addEventListener("DOMContentLoaded", () => {
             <strong>Stato Registrazione (§10.2)</strong>
             <span><code>${escapeHtml(robot.registrationState)}</code></span>
           </div>
+          <div class="detail-item" style="grid-column: span 2;">
+            <strong>Stato Operativo File Remoti (§10.2, RF-MON-005)</strong>
+            <span>
+              ${robot.operationalState ? `<code>${escapeHtml(JSON.stringify(robot.operationalState))}</code>` : '<span class="badge-status badge-nodata">dato non disponibile (RF-MON-005)</span>'}
+              ${robot.isStale ? '<span class="badge-status badge-avviso" style="margin-left: 0.5rem;" title="Dato non aggiornato o non più verificato">[Non più verificato]</span>' : ''}
+            </span>
+          </div>
           <div class="detail-item">
-            <strong>Stato Operativo File Remoti (§10.2)</strong>
-            <span>${robot.operationalState ? escapeHtml(JSON.stringify(robot.operationalState)) : '<span class="badge-status badge-nodata">dato non disponibile (RF-MON-005)</span>'}</span>
+            <strong>Ultimo Aggiornamento Valido</strong>
+            <span>${formatDate(robot.lastValidUpdateAt)}</span>
+          </div>
+          <div class="detail-item">
+            <strong>Esito Ultimo Tentativo Monitoraggio</strong>
+            <span>
+              ${robot.lastAttemptOutcome ? (
+                robot.lastAttemptOutcome.success
+                  ? `<span class="badge-status badge-attivo">Riuscito (${formatDate(robot.lastAttemptOutcome.timestamp)})</span>`
+                  : `<span class="badge-status badge-errore">Fallito: ${escapeHtml(robot.lastAttemptOutcome.diagnosticMessage || robot.lastAttemptOutcome.errorCode || '')} (${robot.lastAttemptOutcome.subType || ''})</span>`
+              ) : '-'}
+            </span>
           </div>
           <div class="detail-item">
             <strong>Ultima Verifica Connessione</strong>
@@ -390,6 +411,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         <!-- Barra Pulsanti Azione Robot -->
         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid #e0e0e0;">
+          <button class="btn btn-primary btn-sm" id="btn-detail-refresh-status">🔄 Aggiorna Stato (Refresh)</button>
           <button class="btn btn-secondary btn-sm" id="btn-detail-reverify">🔍 Ripeti Verifica Connessione</button>
           ${hasUpdatePerm ? '<button class="btn btn-secondary btn-sm" id="btn-detail-edit">✏️ Modifica Configurazione</button>' : ''}
           ${hasDisablePerm ? (robot.anagraphicState === "attivo"
@@ -415,9 +437,9 @@ document.addEventListener("DOMContentLoaded", () => {
                   <span>📊 Monitoraggio Flotta</span>
                   <span class="feature-status ${feat.monitoring ? 'badge-attivo' : 'badge-disabilitato'}">${feat.monitoring ? 'Disponibile' : 'Disabilitato'}</span>
                 </div>
-                <div class="feature-reason">${feat.monitoring ? 'Segnaposto: disponibile nel Prompt 7.' : (feat.reasons.monitoring || 'Non disponibile')}</div>
+                <div class="feature-reason">${feat.monitoring ? 'Servizio di monitoraggio remoto attivo.' : (feat.reasons.monitoring || 'Non disponibile')}</div>
               </div>
-              <button class="btn btn-secondary btn-sm" style="margin-top: 0.5rem;" ${feat.monitoring ? '' : 'disabled'}>Apri Monitoraggio (P7)</button>
+              <button class="btn btn-primary btn-sm" id="btn-feature-refresh-status" style="margin-top: 0.5rem;" ${feat.monitoring ? '' : 'disabled'}>🔄 Aggiorna Stato Remoto</button>
             </div>
 
             <!-- Terminale Remoto -->
@@ -474,6 +496,8 @@ document.addEventListener("DOMContentLoaded", () => {
       detailBody.innerHTML = html;
 
       // Aggancio eventi ai pulsanti del dettaglio
+      document.getElementById("btn-detail-refresh-status")?.addEventListener("click", () => refreshRobotStatus(robot.id));
+      document.getElementById("btn-feature-refresh-status")?.addEventListener("click", () => refreshRobotStatus(robot.id));
       document.getElementById("btn-detail-reverify")?.addEventListener("click", () => reverifyConnection(robot.id));
       document.getElementById("btn-detail-edit")?.addEventListener("click", () => {
         modalDetail.classList.add("hidden");
@@ -651,6 +675,29 @@ document.addEventListener("DOMContentLoaded", () => {
 
   btnCloseOutcome.addEventListener("click", () => modalOutcome.classList.add("hidden"));
   btnDismissOutcome.addEventListener("click", () => modalOutcome.classList.add("hidden"));
+
+  // =========================================================================
+  // PROMPT 7 – AGGIORNAMENTO MANUALE DELLO STATO (RF-MON-004, CA-MON-003)
+  // =========================================================================
+  async function refreshRobotStatus(robotId) {
+    showNotification("Aggiornamento dello stato operativo in corso...", "warning");
+    try {
+      const res = await apiRequest(`/api/robots/${encodeURIComponent(robotId)}/status/refresh`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showNotification("Stato operativo aggiornato con successo!", "success");
+      } else {
+        const errorMsg = data.message || "Impossibile aggiornare lo stato operativo.";
+        showNotification(`Aggiornamento stato non riuscito: ${errorMsg}`, "danger");
+      }
+      openRobotDetail(robotId);
+      loadFleetData();
+    } catch (err) {
+      showNotification(`Errore durante l'aggiornamento dello stato: ${err.message}`, "danger");
+    }
+  }
 
   // =========================================================================
   // STEP 5 & 6 – RIPETI VERIFICA E RIPARA REGISTRAZIONE (§8.1, §6.3, CA-ROB-008)
