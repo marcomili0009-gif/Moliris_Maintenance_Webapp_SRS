@@ -69,11 +69,11 @@ export class RobotConnectionManager {
     userId: string,
     robot: RobotEntity
   ): Promise<ManagedRobotConnection> {
-    // 1. Verifica stato anagrafico del robot (§6.3 punto 2)
-    if (robot.anagraphicState === "disabilitato") {
+    // 1. Verifica stato anagrafico del robot (§6.3 punto 2, §8.4)
+    if (robot.anagraphicState === "disabilitato" || robot.anagraphicState === "rimosso") {
       throw new MolirisAppError(
         ErrorCode.INSUFFICIENT_PERMISSIONS,
-        "Impossibile aprire connessioni verso un robot disabilitato."
+        `Impossibile aprire connessioni verso un robot ${robot.anagraphicState}.`
       );
     }
 
@@ -320,6 +320,24 @@ export class RobotConnectionManager {
     };
 
     return managed;
+  }
+
+  public async closeConnectionsForRobot(robotId: string): Promise<void> {
+    for (const [connId, entry] of this.activeConnections.entries()) {
+      if (entry.robotId === robotId) {
+        try {
+          entry.client.end();
+          entry.client.destroy();
+        } catch {}
+        this.activeConnections.delete(connId);
+      }
+    }
+    this.robotConnectionCounts.delete(robotId);
+    this.userConnectionCounts.clear();
+    for (const entry of this.activeConnections.values()) {
+      const current = this.userConnectionCounts.get(entry.userId) || 0;
+      this.userConnectionCounts.set(entry.userId, current + 1);
+    }
   }
 
   public async closeAll(): Promise<void> {

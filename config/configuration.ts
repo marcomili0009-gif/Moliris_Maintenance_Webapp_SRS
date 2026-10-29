@@ -51,6 +51,12 @@ export interface SystemConfiguration {
   // 15. Limite verifiche di connessione simultanee in registrazione [opzionali] (RNF-SEC-006)
   maxConcurrentRegistrationVerifications?: number;
 
+  // 16. Politica in caso di directory già esistente [opzionale] (§11.3, RF-SRVFS-006)
+  existingDirectoryPolicy?: "accetta" | "rifiuta";
+
+  // 17. Politica per sessioni attive alla disabilitazione [opzionale] (§8.4, §11.3)
+  activeSessionPolicyOnDisable?: "chiudi_immediatamente" | "lascia_terminare";
+
   // Default unico ammesso: porta SSH 22 (RF-ROB-005)
   defaultSshPort: number;
 }
@@ -134,6 +140,16 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     ? Number(env["MOLIRIS_MAX_REG_VERIFICATIONS"])
     : undefined;
 
+  const rawExistingDirPolicy = env["MOLIRIS_EXISTING_DIR_POLICY"]?.trim().toLowerCase();
+  const existingDirectoryPolicy = (rawExistingDirPolicy === "accetta" || rawExistingDirPolicy === "rifiuta")
+    ? (rawExistingDirPolicy as "accetta" | "rifiuta")
+    : undefined;
+
+  const rawSessionPolicy = env["MOLIRIS_ON_DISABLE_SESSION_POLICY"]?.trim().toLowerCase();
+  const activeSessionPolicyOnDisable = (rawSessionPolicy === "chiudi_immediatamente" || rawSessionPolicy === "lascia_terminare")
+    ? (rawSessionPolicy as "chiudi_immediatamente" | "lascia_terminare")
+    : undefined;
+
   // L'unico default ammesso dalla SRS è la porta SSH 22 (RF-ROB-005)
   const defaultSshPort = env["MOLIRIS_DEFAULT_SSH_PORT"] && !isNaN(Number(env["MOLIRIS_DEFAULT_SSH_PORT"]))
     ? Number(env["MOLIRIS_DEFAULT_SSH_PORT"])
@@ -160,6 +176,8 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     allowedSshAuthMethods,
     allowedDestinations,
     maxConcurrentRegistrationVerifications,
+    existingDirectoryPolicy,
+    activeSessionPolicyOnDisable,
     defaultSshPort,
   };
 }

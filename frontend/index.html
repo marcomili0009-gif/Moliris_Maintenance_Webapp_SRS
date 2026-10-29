@@ -1,15 +1,16 @@
 <!DOCTYPE html>
-<!-- Requisiti: SRS §2.5 (Google Chrome), §5.1, §6.1 punti 1-5, RNF-UX-002, RNF-UX-003 -->
+<!-- Requisiti: SRS §2.5 (Google Chrome), §5.1, §6.1 punti 1-5, §6.2, §6.3, §8.1..8.4,
+     RF-AUTH-001..006, RF-ROB-001..014, RNF-UX-001..003 -->
 <html lang="it">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Moliris Maintenance Webapp - Accesso e Flotta</title>
+  <title>Moliris Maintenance Webapp - Gestione Flotta</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div id="app">
-    <!-- Banner Notifiche e Errori di Sessione -->
+    <!-- Banner Notifiche e Errori Globali -->
     <div id="notification-banner" class="banner hidden" role="alert"></div>
 
     <!-- 1. Schermata di Login (§6.1 punto 1, RF-AUTH-001) -->
@@ -36,7 +37,7 @@
       <div id="login-error" class="error-message hidden"></div>
     </section>
 
-    <!-- 2. Schermata della Flotta Autenticata (§6.1 punto 5, RF-AUTH-003, RF-ROB-001) -->
+    <!-- 2. Schermata della Flotta Autenticata (RF-AUTH-003, RF-ROB-001, RF-ROB-014, CA-ROB-012) -->
     <section id="dashboard-section" class="card hidden">
       <header class="dashboard-header">
         <div>
@@ -50,20 +51,39 @@
       </header>
 
       <main class="dashboard-content">
-        <!-- Azioni visibili solo se l'utente ha i relativi permessi (comodità UI, sicurezza sul server) -->
+        <!-- Barra Azioni Flotta -->
         <div class="actions-bar">
-          <button id="btn-register-robot" class="btn btn-accent hidden">Registra Nuovo Robot</button>
-          <button id="btn-refresh-fleet" class="btn btn-secondary">Aggiorna Flotta</button>
+          <button id="btn-register-robot" class="btn btn-accent hidden">＋ Registra Nuovo Robot</button>
+          <button id="btn-refresh-fleet" class="btn btn-secondary">🔄 Aggiorna Flotta</button>
         </div>
 
-        <!-- Sezione lista flotta (Placeholder Prompt 6) -->
-        <div id="fleet-container" class="fleet-box">
-          <div class="placeholder-notice">
-            <h3>Flotta Robot (SRS §6.1 punto 5)</h3>
-            <p>Sessione autenticata attiva. L'anagrafica e le connessioni ai robot saranno visualizzate qui (Prompt 6).</p>
-            <div id="fleet-status-text" class="status-indicator">In attesa dei componenti della flotta...</div>
+        <!-- Sezione Elenco Flotta (RF-ROB-001, RF-ROB-014, CA-ROB-012) -->
+        <section class="fleet-section">
+          <h3>Flotta Robot Registrati</h3>
+          <div class="table-responsive">
+            <table class="data-table" id="fleet-table">
+              <thead>
+                <tr>
+                  <th>Nome Visualizzato</th>
+                  <th>ID</th>
+                  <th>Host : Porta</th>
+                  <th>Username Remoto</th>
+                  <th>Stato Anagrafico</th>
+                  <th>Stato Connessione</th>
+                  <th>Stato Operativo</th>
+                  <th>Ultimo Aggiornamento</th>
+                  <th>Avvisi / Errori</th>
+                  <th>Azioni</th>
+                </tr>
+              </thead>
+              <tbody id="fleet-table-body">
+                <tr>
+                  <td colspan="10" class="empty-cell">Caricamento flotta in corso...</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
-        </div>
+        </section>
 
         <!-- Componente Navigazione Filesystem Server (RF-SRVFS-002, RNF-UX-002/003) -->
         <section id="fs-browser-section" class="fs-browser-card">
@@ -71,7 +91,7 @@
             <h3>Esplora Filesystem Server del Robot</h3>
             <div class="fs-robot-selector">
               <label for="fs-robot-id">ID Robot:</label>
-              <input type="text" id="fs-robot-id" placeholder="es. robot_test_01" value="robot_test_01">
+              <input type="text" id="fs-robot-id" placeholder="es. robot_01" value="">
               <button id="btn-fs-load" class="btn btn-secondary">Carica Directory</button>
             </div>
           </div>
@@ -95,7 +115,7 @@
               </thead>
               <tbody id="fs-table-body">
                 <tr>
-                  <td colspan="4" class="fs-empty-msg">Nessuna directory caricata. Inserire un ID robot e premere 'Carica Directory'.</td>
+                  <td colspan="4" class="fs-empty-msg">Nessuna directory caricata. Selezionare un robot o inserire un ID e premere 'Carica Directory'.</td>
                 </tr>
               </tbody>
             </table>
@@ -103,6 +123,251 @@
         </section>
       </main>
     </section>
+
+    <!-- MODAL 1: Dettaglio Robot e Funzionalità Autorizzate (RF-ROB-002, RF-ROB-003, RF-ROB-011) -->
+    <div id="modal-robot-detail" class="modal hidden">
+      <div class="modal-content modal-large">
+        <div class="modal-header">
+          <h3 id="detail-title">Dettaglio Robot</h3>
+          <button class="btn-close" id="btn-close-detail">&times;</button>
+        </div>
+        <div class="modal-body" id="detail-body">
+          <!-- Popolato dinamicamente da app.js -->
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL 2: Form di Registrazione Nuovo Robot (RF-ROB-004, RF-ROB-005, §6.2 passi 1-3) -->
+    <div id="modal-robot-register" class="modal hidden">
+      <div class="modal-content modal-large">
+        <div class="modal-header">
+          <h3>Registrazione Nuovo Robot</h3>
+          <button class="btn-close" id="btn-close-register">&times;</button>
+        </div>
+        <div class="modal-body">
+          <form id="form-register-robot">
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="reg-displayName">Nome visualizzato <span class="required">*</span>:</label>
+                <input type="text" id="reg-displayName" name="displayName" required placeholder="es. Robot Ispettivo 1">
+                <div class="field-error" id="err-displayName"></div>
+              </div>
+
+              <div class="form-group">
+                <label for="reg-id">Identificativo interno univoco <span class="required">*</span>:</label>
+                <input type="text" id="reg-id" name="id" required placeholder="es. robot_01">
+                <div class="field-error" id="err-id"></div>
+              </div>
+
+              <div class="form-group">
+                <label for="reg-remoteUsername">Username remoto <span class="required">*</span>:</label>
+                <input type="text" id="reg-remoteUsername" name="remoteUsername" required placeholder="es. moliris_op">
+                <div class="field-error" id="err-remoteUsername"></div>
+              </div>
+
+              <div class="form-group">
+                <label for="reg-host">Hostname o Indirizzo IP <span class="required">*</span>:</label>
+                <input type="text" id="reg-host" name="host" required placeholder="es. 192.168.1.10 o robot1.local">
+                <div class="field-error" id="err-host"></div>
+              </div>
+
+              <div class="form-group">
+                <label for="reg-sshPort">Porta SSH <span class="required">*</span> (default 22):</label>
+                <input type="number" id="reg-sshPort" name="sshPort" value="22" required min="1" max="65535">
+                <div class="field-error" id="err-sshPort"></div>
+              </div>
+
+              <div class="form-group">
+                <label for="reg-sshAuthMethod">Metodo di autenticazione SSH <span class="required">*</span>:</label>
+                <select id="reg-sshAuthMethod" name="sshAuthMethod" required>
+                  <option value="password">Password</option>
+                  <option value="key">Chiave Privata SSH</option>
+                </select>
+                <div class="field-error" id="err-sshAuthMethod"></div>
+              </div>
+
+              <!-- Credenziali dinamiche -->
+              <div class="form-group full-width" id="group-password">
+                <label for="reg-password">Password di accesso remoto <span class="required">*</span>:</label>
+                <input type="password" id="reg-password" name="password" autocomplete="new-password">
+                <div class="field-error" id="err-password"></div>
+              </div>
+
+              <div class="form-group full-width hidden" id="group-key">
+                <label for="reg-privateKey">Chiave privata SSH (PEM) <span class="required">*</span>:</label>
+                <textarea id="reg-privateKey" name="privateKey" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----..."></textarea>
+                <label for="reg-passphrase" style="margin-top: 0.5rem;">Passphrase chiave (opzionale):</label>
+                <input type="password" id="reg-passphrase" name="passphrase" autocomplete="new-password">
+                <div class="field-error" id="err-privateKey"></div>
+              </div>
+
+              <!-- Configurazione Verifica Chiave Host SSH (RNF-SEC-003) -->
+              <div class="form-group full-width">
+                <fieldset class="form-fieldset">
+                  <legend>Verifica crittografica chiave host SSH (RNF-SEC-003) <span class="required">*</span></legend>
+                  <div class="form-group">
+                    <label for="reg-fingerprint">Impronta crittografica SHA256 attesa:</label>
+                    <input type="text" id="reg-fingerprint" name="fingerprint" placeholder="es. SHA256:4y+0w... o esadecimale">
+                    <small class="field-hint">Necessaria per la verifica rigorosa senza fidarsi di host sconosciuti.</small>
+                    <div class="field-error" id="err-hostKeyVerification"></div>
+                  </div>
+                  <div class="form-group">
+                    <label for="reg-knownHosts">Percorso file known_hosts locale al server (alternativo):</label>
+                    <input type="text" id="reg-knownHosts" name="knownHostsPath" placeholder="/etc/moliris/known_hosts">
+                  </div>
+                  <div class="form-check">
+                    <input type="checkbox" id="reg-strictHostKey" name="strictHostKeyChecking" checked disabled>
+                    <label for="reg-strictHostKey">StrictHostKeyChecking (Sempre attivo, RNF-SEC-003 vieta bypass)</label>
+                  </div>
+                </fieldset>
+              </div>
+
+              <!-- Percorsi di monitoraggio (RF-MON-001) -->
+              <div class="form-group full-width">
+                <label for="reg-remoteMonitoringPath">Percorso remoto file di stato del robot (opzionale):</label>
+                <input type="text" id="reg-remoteMonitoringPath" name="remoteMonitoringPath" placeholder="es. /opt/moliris/status/robot.txt">
+                <small class="field-hint">Se non specificato, verranno usati i percorsi di stato definiti dalla configurazione di sistema.</small>
+                <div class="field-error" id="err-remoteMonitoringPath"></div>
+              </div>
+
+              <!-- Parametri SFTP opzionali (RF-ROB-005) -->
+              <div class="form-group full-width">
+                <details>
+                  <summary style="cursor: pointer; font-weight: 500; margin-bottom: 0.5rem;">
+                    Parametri di accesso SFTP (SOLO se differenti da SSH)
+                  </summary>
+                  <div class="sftp-subgrid">
+                    <div class="form-group">
+                      <label for="reg-sftpHost">Host SFTP:</label>
+                      <input type="text" id="reg-sftpHost" name="sftpHost" placeholder="Lasciare vuoto se uguale a SSH">
+                    </div>
+                    <div class="form-group">
+                      <label for="reg-sftpPort">Porta SFTP:</label>
+                      <input type="number" id="reg-sftpPort" name="sftpPort" placeholder="Lasciare vuoto se uguale a SSH">
+                    </div>
+                    <div class="form-group">
+                      <label for="reg-sftpUser">Username SFTP:</label>
+                      <input type="text" id="reg-sftpUser" name="sftpUser" placeholder="Lasciare vuoto se uguale a SSH">
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </div>
+
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" id="btn-cancel-register">Annulla</button>
+              <button type="submit" class="btn btn-primary" id="btn-submit-register">Registra Robot</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL 3: Esito della Registrazione (RF-ROB-012, Step 7) -->
+    <div id="modal-registration-outcome" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="outcome-modal-title">Riepilogo Esito Registrazione</h3>
+          <button class="btn-close" id="btn-close-outcome">&times;</button>
+        </div>
+        <div class="modal-body" id="outcome-modal-body">
+          <!-- Popolato dinamicamente -->
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-primary" id="btn-dismiss-outcome">Chiudi</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL 4: Modifica Configurazione Robot (§8.3, Step 9) -->
+    <div id="modal-robot-edit" class="modal hidden">
+      <div class="modal-content modal-large">
+        <div class="modal-header">
+          <h3>Modifica Configurazione Robot</h3>
+          <button class="btn-close" id="btn-close-edit">&times;</button>
+        </div>
+        <div class="modal-body">
+          <form id="form-edit-robot">
+            <input type="hidden" id="edit-robotId">
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="edit-displayName">Nome visualizzato <span class="required">*</span>:</label>
+                <input type="text" id="edit-displayName" name="displayName" required>
+              </div>
+
+              <div class="form-group">
+                <label for="edit-remoteUsername">Username remoto (Immutabile, §11.3):</label>
+                <input type="text" id="edit-remoteUsername" name="remoteUsername" disabled title="Il cambio di username remoto non è consentito perché associato alla directory del server">
+              </div>
+
+              <div class="form-group">
+                <label for="edit-host">Hostname o IP <span class="required">*</span>:</label>
+                <input type="text" id="edit-host" name="host" required>
+              </div>
+
+              <div class="form-group">
+                <label for="edit-sshPort">Porta SSH <span class="required">*</span>:</label>
+                <input type="number" id="edit-sshPort" name="sshPort" required min="1" max="65535">
+              </div>
+
+              <div class="form-group">
+                <label for="edit-sshAuthMethod">Metodo SSH:</label>
+                <select id="edit-sshAuthMethod" name="sshAuthMethod">
+                  <option value="password">Password</option>
+                  <option value="key">Chiave Privata</option>
+                </select>
+              </div>
+
+              <div class="form-group" id="edit-group-password">
+                <label for="edit-password">Nuova password (lasciare vuoto per mantenere):</label>
+                <input type="password" id="edit-password" name="password" autocomplete="new-password">
+              </div>
+
+              <div class="form-group full-width hidden" id="edit-group-key">
+                <label for="edit-privateKey">Nuova chiave privata (lasciare vuoto per mantenere):</label>
+                <textarea id="edit-privateKey" name="privateKey" rows="3"></textarea>
+              </div>
+
+              <div class="form-group full-width">
+                <label for="edit-fingerprint">Impronta crittografica SHA256 attesa:</label>
+                <input type="text" id="edit-fingerprint" name="fingerprint">
+              </div>
+
+              <div class="form-group full-width">
+                <label for="edit-monitoringPath">Percorso file di stato:</label>
+                <input type="text" id="edit-monitoringPath" name="remoteMonitoringPath">
+              </div>
+            </div>
+
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" id="btn-cancel-edit">Annulla</button>
+              <button type="submit" class="btn btn-primary" id="btn-submit-edit">Salva Modifiche</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL 5: Conferma Rimozione Robot dall'Anagrafica Attiva (§8.4, Step 10) -->
+    <div id="modal-confirm-remove" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Conferma Rimozione Robot</h3>
+          <button class="btn-close" id="btn-close-remove">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p>Sei sicuro di voler rimuovere il robot <strong id="remove-robot-name"></strong> dall'anagrafica attiva?</p>
+          <div class="alert-box alert-warning" style="margin-top: 1rem;">
+            <strong>Nota di sicurezza (RF-ROB-013, CA-ROB-011):</strong>
+            La rimozione esclude il robot dalle operazioni attive ma <em>NON cancella</em> i file e le cartelle archiviati sul filesystem del server né l'anagrafica storica.
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-remove">Annulla</button>
+          <button type="button" class="btn btn-danger" id="btn-confirm-remove">Conferma Rimozione</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="app.js"></script>

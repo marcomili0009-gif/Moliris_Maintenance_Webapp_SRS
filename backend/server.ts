@@ -15,6 +15,11 @@ import { AuthMiddleware } from "./auth/auth-middleware.ts";
 import { registerAuthRoutes } from "./auth/auth-routes.ts";
 import { registerServerFsRoutes } from "./server-fs-routes.ts";
 import { type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "./auth/permissions.ts";
+import { type CredentialProvider, InMemoryCredentialProvider } from "./connection/credential-provider.ts";
+import { type HostKeyVerifier, DefaultHostKeyVerifier } from "./connection/host-key-verifier.ts";
+import { RobotConnectionManager } from "./connection/robot-connection-manager.ts";
+import { FleetService } from "./fleet/fleet-service.ts";
+import { registerFleetRoutes } from "./fleet/fleet-routes.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,6 +30,10 @@ export interface ServerDependencies {
   auditRepository?: AuditRepository;
   robotRepository?: RobotRepository;
   serverFsService?: ServerFilesystemService;
+  credentialProvider?: CredentialProvider;
+  hostKeyVerifier?: HostKeyVerifier;
+  connectionManager?: RobotConnectionManager;
+  fleetService?: FleetService;
   roleMapping?: RolePermissionMapping;
 }
 
@@ -66,6 +75,35 @@ export function createServer(
   const robotRepository = deps.robotRepository || new InMemoryRobotRepository();
   const serverFsService = deps.serverFsService || new ServerFilesystemService(config.serverFilesystemRoot, auditRepository, logger);
 
+  // Dipendenze di connessione comune verso i robot (Prompt 5, vincolo 2.4 punto 4)
+  const credentialProvider = deps.credentialProvider || new InMemoryCredentialProvider(config.allowedSshAuthMethods);
+  const hostKeyVerifier = deps.hostKeyVerifier || new DefaultHostKeyVerifier();
+  const connectionLimits = {
+    maxConcurrentPerUser: config.maxConcurrentTransfersPerUser,
+    maxConcurrentPerRobot: config.maxConcurrentTransfersPerRobot,
+    maxConcurrentServer: config.maxConcurrentTransfersServer,
+    connectionTimeoutMs: config.sshConnectionTimeoutMs,
+  };
+  const connectionManager = deps.connectionManager || new RobotConnectionManager(
+    credentialProvider,
+    hostKeyVerifier,
+    connectionLimits,
+    logger
+  );
+
+  // Servizio di gestione flotta (Prompt 6, RF-ROB-001..014)
+  const fleetService = deps.fleetService || new FleetService(
+    config,
+    robotRepository,
+    auditRepository,
+    serverFsService,
+    credentialProvider,
+    hostKeyVerifier,
+    connectionManager,
+    logger,
+    roleMapping
+  );
+
   // Registrazione endpoint di autenticazione e autorizzazione (RF-AUTH-001..006)
   registerAuthRoutes(
     app,
@@ -84,6 +122,13 @@ export function createServer(
     sessionManager,
     authMiddleware,
     roleMapping
+  );
+
+  // Registrazione endpoint gestione flotta (RF-ROB-001..014)
+  registerFleetRoutes(
+    app,
+    fleetService,
+    authMiddleware
   );
 
   // Singolo endpoint tecnico di verifica dello stato del servizio (senza dati sensibili)

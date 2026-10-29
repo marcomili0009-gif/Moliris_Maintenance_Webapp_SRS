@@ -97,7 +97,7 @@ export function toRobotDetailDto(robot: RobotEntity): RobotDetailDto {
     sshPort: robot.sshPort,
     sshAuthMethod: robot.sshAuthMethod,
     hostKeyVerification: { ...robot.hostKeyVerification },
-    stateFilePaths: [...robot.stateFilePaths],
+    stateFilePaths: robot.stateFilePaths ? [...robot.stateFilePaths] : [],
     serverDirectoryPath: robot.serverDirectoryPath,
     anagraphicState: robot.anagraphicState,
     connectionState: robot.connectionState,
