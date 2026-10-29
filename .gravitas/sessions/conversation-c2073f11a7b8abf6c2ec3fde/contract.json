@@ -1,0 +1,35 @@
+{
+  "mode": "implement",
+  "objective": "Fondamenta Moliris Maintenance Webapp (SRS v1.0)",
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "statement": "Backend HTTPS esclusivo con healthcheck e config validata"
+    },
+    {
+      "id": "AC2",
+      "statement": "Nessun segreto nel repo ne nei log con redazione"
+    },
+    {
+      "id": "AC3",
+      "statement": "DECISIONS.md completo di tutte le voci \u00a711"
+    },
+    {
+      "id": "AC4",
+      "statement": "Struttura repository modulare RNF-MNT-002"
+    },
+    {
+      "id": "AC5",
+      "statement": "Modello errori \u00a79"
+    },
+    {
+      "id": "AC6",
+      "statement": "Test di validazione superati"
+    }
+  ],
+  "allowed_write_scope": [
+    "/home/mmilitello/Scrivania/Moliris_Maintenance_Webapp_SRS"
+  ],
+  "budget": "balanced",
+  "session_key": "conversation-c2073f11a7b8abf6c2ec3fde"
+}
