@@ -42,6 +42,15 @@ export interface SystemConfiguration {
   // 12. Politica di conservazione degli eventi di audit (in giorni) (§10.4, RNF-SEC-009, §11.1)
   auditLogRetentionDays: number;
 
+  // 13. Metodi di autenticazione SSH consentiti [opzionali] (§11.2)
+  allowedSshAuthMethods?: ("key" | "password")[];
+
+  // 14. Destinazioni remote consentite per registrazione [opzionali] (RNF-SEC-006, §11.2)
+  allowedDestinations?: string[];
+
+  // 15. Limite verifiche di connessione simultanee in registrazione [opzionali] (RNF-SEC-006)
+  maxConcurrentRegistrationVerifications?: number;
+
   // Default unico ammesso: porta SSH 22 (RF-ROB-005)
   defaultSshPort: number;
 }
@@ -113,6 +122,18 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     ? env["MOLIRIS_DIR_PERMISSIONS"].trim()
     : undefined;
 
+  const allowedSshAuthMethods = env["MOLIRIS_ALLOWED_SSH_AUTH_METHODS"]
+    ? (env["MOLIRIS_ALLOWED_SSH_AUTH_METHODS"].split(",").map(m => m.trim().toLowerCase()).filter(m => m === "key" || m === "password") as ("key" | "password")[])
+    : undefined;
+
+  const allowedDestinations = env["MOLIRIS_ALLOWED_DESTINATIONS"]
+    ? env["MOLIRIS_ALLOWED_DESTINATIONS"].split(",").map(d => d.trim()).filter(Boolean)
+    : undefined;
+
+  const maxConcurrentRegistrationVerifications = env["MOLIRIS_MAX_REG_VERIFICATIONS"] && !isNaN(Number(env["MOLIRIS_MAX_REG_VERIFICATIONS"]))
+    ? Number(env["MOLIRIS_MAX_REG_VERIFICATIONS"])
+    : undefined;
+
   // L'unico default ammesso dalla SRS è la porta SSH 22 (RF-ROB-005)
   const defaultSshPort = env["MOLIRIS_DEFAULT_SSH_PORT"] && !isNaN(Number(env["MOLIRIS_DEFAULT_SSH_PORT"]))
     ? Number(env["MOLIRIS_DEFAULT_SSH_PORT"])
@@ -136,6 +157,9 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     serverDirectoryPermissions,
     registrationMode,
     auditLogRetentionDays,
+    allowedSshAuthMethods,
+    allowedDestinations,
+    maxConcurrentRegistrationVerifications,
     defaultSshPort,
   };
 }

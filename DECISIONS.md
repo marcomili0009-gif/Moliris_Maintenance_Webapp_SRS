@@ -53,11 +53,12 @@ Il presente registro traccia le decisioni progettuali aperte, delegate alla conf
 - **Eventuali quote per robot o per utente**: APERTA. Requisiti: RF-TRF-014, RNF-MNT-001. Decisione: [Valore da definire].
 
 ### 11.2 Autenticazione SSH
-- **Supporto esclusivo delle chiavi SSH o anche password**: APERTA. Requisiti: RF-ROB-005, RNF-SEC-002. Decisione: [Valore da definire].
-- **Eventuale uso di un archivio sicuro di segreti (Vault/KMS)**: APERTA. Requisiti: RNF-SEC-002. Decisione: [Valore da definire].
-- **Modalità di distribuzione e aggiornamento delle chiavi**: APERTA. Requisiti: RNF-SEC-002. Decisione: [Valore da definire].
-- **Politica di verifica e aggiornamento chiavi host**: APERTA. Requisiti: RF-ROB-005, RNF-SEC-003. Decisione: [Valore da definire].
-- **Eventuali restrizioni sugli account remoti**: APERTA. Requisiti: RF-SSH-008, RF-FS-007. Decisione: [Valore da definire].
+- **Supporto esclusivo delle chiavi SSH o anche password**: APERTA. Requisiti: RF-ROB-005, RNF-SEC-002. Decisione: [Valore da definire: implementata l'astrazione `AuthenticationMaterial` e `CredentialProvider` con supporto a entrambi i metodi ("key" e "password"), abilitabili e restringibili tramite configurazione `MOLIRIS_ALLOWED_SSH_AUTH_METHODS` senza forzare un default rigido].
+- **Eventuale uso di un archivio sicuro di segreti (Vault/KMS)**: APERTA. Requisiti: RNF-SEC-002. Decisione: [Valore da definire: il recupero credenziali è isolato dietro l'interfaccia `CredentialProvider`; fornita implementazione minima iniziale `InMemoryCredentialProvider` dichiarata provvisoria per sviluppo e collaudo].
+- **Modalità di distribuzione e aggiornamento delle chiavi**: APERTA. Requisiti: RNF-SEC-002. Decisione: [Valore da definire: demandate all'archivio sicuro di segreti; il database memorizza esclusivamente stringhe di riferimento sicuro URI/ID].
+- **Politica di verifica e aggiornamento chiavi host**: APERTA. Requisiti: RF-ROB-005, RNF-SEC-003. Decisione: [Valore da definire: implementata interfaccia `HostKeyVerifier` con confronto deterministico su fingerprint SHA256 o file known_hosts; vietato qualunque meccanismo di bypass o accettazione automatica di chiavi sconosciute].
+- **Eventuali restrizioni sugli account remoti**: APERTA. Requisiti: RF-SSH-008, RF-FS-007. Decisione: [Valore da definire: tutte le sessioni SSH e SFTP operano rigorosamente con i privilegi dell'account remoto specificato, senza alcuna elevazione automatica (no sudo)].
+- **Misure di sicurezza e destinazioni consentite in registrazione**: APERTA. Requisiti: RNF-SEC-006, RF-ROB-006. Decisione: [Valore da definire: implementata autorizzazione `ROBOT_REGISTER`, validazione sintattica RFC 1123 / IP, rate limiting concorrenza e parametro opzionale `MOLIRIS_ALLOWED_DESTINATIONS` per whitelist].
 
 ### 11.3 Registrazione dei Robot
 - **Obbligatorietà della verifica SSH**: APERTA (Default: Rigorosa, configurabile). Requisiti: §8.1, RF-ROB-007. Decisione: [Valore da definire].

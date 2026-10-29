@@ -5,7 +5,7 @@
   "description": "Web Application per la Gestione e il Monitoraggio di una Flotta di Robot Mobili (SRS v1.0)",
   "main": "backend/server.ts",
   "scripts": {
-    "test": "node --experimental-strip-types config/configuration.test.ts && node --experimental-strip-types logging/logger.test.ts && node --experimental-strip-types errors/app-errors.test.ts && node --experimental-strip-types backend/server.test.ts && node --experimental-strip-types storage/storage.test.ts && node --experimental-strip-types backend/auth/auth.test.ts && node --experimental-strip-types storage/server-fs.test.ts"
+    "test": "node --experimental-strip-types config/configuration.test.ts && node --experimental-strip-types logging/logger.test.ts && node --experimental-strip-types errors/app-errors.test.ts && node --experimental-strip-types backend/server.test.ts && node --experimental-strip-types storage/storage.test.ts && node --experimental-strip-types backend/auth/auth.test.ts && node --experimental-strip-types storage/server-fs.test.ts && node --experimental-strip-types backend/connection/connection.test.ts"
   },
   "dependencies": {
     "fastify": "^4.26.2",
