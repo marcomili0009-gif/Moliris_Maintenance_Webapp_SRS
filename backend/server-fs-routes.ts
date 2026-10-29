@@ -60,7 +60,7 @@ export function registerServerFsRoutes(
           items,
         });
       } catch (err: any) {
-        if (err instanceof MolirisAppError) {
+        if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
           const status = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : 400;
           return reply.status(status).send({
             code: err.code,

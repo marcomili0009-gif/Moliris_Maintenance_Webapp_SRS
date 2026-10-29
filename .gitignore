@@ -8,3 +8,7 @@ dist/
 
 # Certificati e chiavi private locali
 certs/
+dev-certs/
+*.pem
+*.key
+

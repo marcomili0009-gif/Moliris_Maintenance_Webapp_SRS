@@ -1211,7 +1211,10 @@ export class TransferService {
 
   private assertRobotAccessible(robot: RobotEntity): void {
     this.assertRobotNotDisabled(robot);
-    if (robot.registrationStatus !== "completata") {
+    const isCompleted =
+      (robot as any).registrationStatus === "completata" ||
+      robot.registrationState === "registrazione_completata";
+    if (!isCompleted) {
       throw new MolirisAppError(
         ErrorCode.REMOTE_FS_ERROR,
         `Robot '${robot.id}' con registrazione '${robot.registrationStatus}' non accessibile`,

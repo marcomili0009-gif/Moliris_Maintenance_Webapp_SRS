@@ -70,13 +70,13 @@ export function toRobotSummaryDto(robot: RobotEntity, staleThresholdSeconds?: nu
   const hasWarningsOrErrors =
     robot.connectionState === "errore" ||
     robot.connectionState === "avviso" ||
-    (robot.lastAttemptOutcome !== null && !robot.lastAttemptOutcome.success);
+    (robot.lastAttemptOutcome != null && !robot.lastAttemptOutcome.success);
 
   const isStale =
-    (robot.lastAttemptOutcome !== null && !robot.lastAttemptOutcome.success && robot.operationalState !== null) ||
+    (robot.lastAttemptOutcome != null && !robot.lastAttemptOutcome.success && robot.operationalState != null) ||
     (staleThresholdSeconds !== undefined &&
       staleThresholdSeconds > 0 &&
-      robot.lastValidUpdateAt !== null &&
+      robot.lastValidUpdateAt != null &&
       Date.now() - new Date(robot.lastValidUpdateAt).getTime() > staleThresholdSeconds * 1000);
 
   return {
@@ -101,10 +101,10 @@ export function toRobotSummaryDto(robot: RobotEntity, staleThresholdSeconds?: nu
  */
 export function toRobotDetailDto(robot: RobotEntity, staleThresholdSeconds?: number): RobotDetailDto {
   const isStale =
-    (robot.lastAttemptOutcome !== null && !robot.lastAttemptOutcome.success && robot.operationalState !== null) ||
+    (robot.lastAttemptOutcome != null && !robot.lastAttemptOutcome.success && robot.operationalState != null) ||
     (staleThresholdSeconds !== undefined &&
       staleThresholdSeconds > 0 &&
-      robot.lastValidUpdateAt !== null &&
+      robot.lastValidUpdateAt != null &&
       Date.now() - new Date(robot.lastValidUpdateAt).getTime() > staleThresholdSeconds * 1000);
 
   return {

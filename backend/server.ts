@@ -248,6 +248,7 @@ export function createServer(
   app.addHook("onClose", async () => {
     monitoringService.stopPolling();
     await terminalService.closeAll("SERVICE_SHUTDOWN");
+    await connectionManager.closeAll();
   });
 
   // Singolo endpoint tecnico di verifica dello stato del servizio (senza dati sensibili)

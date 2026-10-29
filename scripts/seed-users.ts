@@ -7,13 +7,17 @@ import { MongoClient } from "mongodb";
 import { hashPassword, type UserEntity } from "../backend/auth/user-models.ts";
 import { MongoUserRepository } from "../backend/auth/user-repository.ts";
 
-export async function seedInitialUsers(repo: { create(user: UserEntity): Promise<UserEntity>, findByUsername(username: string): Promise<UserEntity | null> }): Promise<void> {
-  console.log("--> Provisioning utenti iniziali di test...");
+export async function seedInitialUsers(
+  repo: { create(user: UserEntity): Promise<UserEntity>; findByUsername(username: string): Promise<UserEntity | null> },
+  operatorPassword = process.env["MOLIRIS_INITIAL_OPERATOR_PASSWORD"] || "OperatorePass123!",
+  adminPassword = process.env["MOLIRIS_INITIAL_ADMIN_PASSWORD"] || "AdminPass123!"
+): Promise<void> {
+  console.log("--> Provisioning utenti iniziali...");
 
   // 1. Utente Operatore (§2.2: "Utente autorizzato")
   const existingOperator = await repo.findByUsername("operatore");
   if (!existingOperator) {
-    const operatorPasswordHash = await hashPassword("OperatorePass123!");
+    const operatorPasswordHash = await hashPassword(operatorPassword);
     await repo.create({
       id: "user_operator_01",
       username: "operatore",
@@ -31,7 +35,7 @@ export async function seedInitialUsers(repo: { create(user: UserEntity): Promise
   // 2. Utente Amministratore (§2.2: "Amministratore o gestore della flotta")
   const existingAdmin = await repo.findByUsername("admin");
   if (!existingAdmin) {
-    const adminPasswordHash = await hashPassword("AdminPass123!");
+    const adminPasswordHash = await hashPassword(adminPassword);
     await repo.create({
       id: "user_admin_01",
       username: "admin",

@@ -1,0 +1,38 @@
+[Unit]
+Description=Moliris Maintenance Webapp (SRS v1.0)
+Documentation=https://github.com/moliris/maintenance-webapp
+After=network.target mongod.service
+Wants=mongod.service
+
+[Service]
+Type=simple
+User=moliris
+Group=moliris
+WorkingDirectory=/opt/moliris/Moliris_Maintenance_Webapp_SRS
+EnvironmentFile=/etc/moliris/moliris.env
+ExecStart=/usr/bin/node --experimental-strip-types backend/server.ts
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=moliris-webapp
+
+# Hardening di sicurezza Linux/systemd (RNF-SEC-001..009)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/moliris/server-fs /tmp
+ReadOnlyPaths=/etc/moliris /opt/moliris/Moliris_Maintenance_Webapp_SRS
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Limiti risorse (RNF-PERF-003, RNF-REL-005)
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target
