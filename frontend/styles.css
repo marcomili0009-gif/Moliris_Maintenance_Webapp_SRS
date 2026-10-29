@@ -861,4 +861,84 @@ input:focus {
   flex-wrap: wrap;
 }
 
+/* Stili di Gestione Centralizzata Errori (§9) e Stati Distinti (§10.2) */
+.badge-classification {
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.badge-recuperabile {
+  background-color: #e8f0fe;
+  color: #1967d2;
+  border: 1px solid #c2e7ff;
+}
+
+.badge-amministrativo {
+  background-color: #fce8e6;
+  color: #c5221f;
+  border: 1px solid #f8b8b3;
+}
+
+.error-code-badge {
+  font-family: monospace;
+  font-size: 0.75rem;
+  background-color: rgba(0, 0, 0, 0.05);
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  color: #444;
+}
+
+.alert-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.35rem;
+}
+
+.input-invalid {
+  border-color: #d93025 !important;
+  background-color: #fef7f7 !important;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.spinner-inline {
+  display: inline-block;
+}
+
+.states-summary-card {
+  background-color: #f8f9fa;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.state-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid #edf2f7;
+}
+
+.state-row:last-child {
+  border-bottom: none;
+}
+
+.state-label {
+  font-weight: 500;
+  font-size: 0.88rem;
+  color: #4a5568;
+}
+
 

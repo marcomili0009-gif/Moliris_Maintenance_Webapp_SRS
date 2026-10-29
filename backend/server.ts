@@ -288,6 +288,20 @@ export function createServer(
     }
   });
 
+  // Servizio moduli frontend modulari ES6 (§5.1, RNF-MNT-002)
+  app.get("/:filename.js", async (request, reply) => {
+    const { filename } = request.params as { filename: string };
+    if (!/^[a-zA-Z0-9_-]+$/.test(filename)) {
+      return reply.status(404).send("File non trovato");
+    }
+    const jsPath = path.join(frontendDir, `${filename}.js`);
+    if (fs.existsSync(jsPath)) {
+      reply.type("application/javascript").send(fs.readFileSync(jsPath));
+    } else {
+      reply.status(404).send("File non trovato");
+    }
+  });
+
   // Risorse statiche per emulatore terminale xterm.js (§5.1, RNF-UX-004)
   const nodeModulesDir = path.resolve(__dirname, "../node_modules");
 
