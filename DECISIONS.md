@@ -83,11 +83,12 @@ Il presente registro traccia le decisioni progettuali aperte, delegate alla conf
 - **Limiti di timeout e quote di spazio**: APERTA. Requisiti: RF-TRF-013, RF-TRF-014. Decisione: [Valore da definire].
 
 ### 11.6 Utenti e Autorizzazioni
-- **Ruoli definitivi**: APERTA. Requisiti: §2.2, RF-AUTH-005. Decisione: [Valore da definire].
-- **Permessi per terminale, monitoraggio e trasferimenti**: APERTA. Requisiti: RF-AUTH-005, RF-SSH-008. Decisione: [Valore da definire].
-- **Permessi per registrazione, modifica e rimozione robot**: APERTA. Requisiti: §2.2, §8.4. Decisione: [Valore da definire].
-- **Politica di timeout e scadenza delle sessioni**: APERTA. Requisiti: RF-AUTH-006. Decisione: [Valore da definire].
-- **Eventuali requisiti di autenticazione aggiuntiva (MFA)**: APERTA. Requisiti: RNF-SEC-002. Decisione: [Valore da definire].
+- **Ruoli definitivi**: APERTA. Requisiti: §2.2, RF-AUTH-005. Decisione: [Valore da definire: implementate le 2 categorie logiche di §2.2 ("operatore" / Utente autorizzato e "amministratore" / Gestore flotta) con mapping configurabile `RolePermissionMapping` senza ruoli cablati rigidamente nel codice].
+- **Permessi per terminale, monitoraggio e trasferimenti**: APERTA. Requisiti: RF-AUTH-005, RF-SSH-008. Decisione: [Valore da definire: modellato il catalogo tassativo dei permessi operativi previsti dalla SRS, con supporto sia a permessi globali sia a permessi associati a singoli robot (CA-SSH-005)].
+- **Permessi per registrazione, modifica e rimozione robot**: APERTA. Requisiti: §2.2, §8.4. Decisione: [Valore da definire: assegnazione configurabile tramite `RolePermissionMapping` a runtime, con default assegnato al profilo amministratore].
+- **Politica di timeout e scadenza delle sessioni**: APERTA. Requisiti: RF-AUTH-006. Decisione: [Valore da definire: parametro reso configurabile all'avvio fail-closed tramite `MOLIRIS_SESSION_TIMEOUT_MIN` (in minuti) senza alcun default inventato].
+- **Eventuali requisiti di autenticazione aggiuntiva (MFA)**: APERTA. Requisiti: RNF-SEC-002. Decisione: [Valore da definire: MFA non implementata in quanto scelta aperta; architettura pronta ad accogliere fattori aggiuntivi].
+- **Meccanismo di provisioning e gestione del ciclo di vita utenti**: APERTA. Requisiti: RF-AUTH-001, RNF-SEC-002. Decisione: [Valore da definire: la SRS non descrive interfacce né API di creazione/modifica utenti; predisposto esclusivamente lo script CLI di provisioning iniziale per sviluppo e collaudo `scripts/seed-users.ts`].
 
 ### 11.7 Prestazioni e Capacità
 - **Numero iniziale e massimo previsto di robot**: APERTA. Requisiti: RNF-PERF-005. Decisione: [Valore da definire].

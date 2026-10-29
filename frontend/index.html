@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<!-- Requisiti: SRS §2.5 (Google Chrome), §5.1, §6.1 punti 1-5, RNF-UX-002, RNF-UX-003 -->
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Moliris Maintenance Webapp - Accesso e Flotta</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Banner Notifiche e Errori di Sessione -->
+    <div id="notification-banner" class="banner hidden" role="alert"></div>
+
+    <!-- 1. Schermata di Login (§6.1 punto 1, RF-AUTH-001) -->
+    <section id="login-section" class="card">
+      <div class="header">
+        <h1>Moliris Maintenance Webapp</h1>
+        <p class="subtitle">Accesso autorizzato alla flotta robot mobili</p>
+      </div>
+
+      <form id="login-form">
+        <div class="form-group">
+          <label for="username">Username:</label>
+          <input type="text" id="username" name="username" required autocomplete="username" autofocus>
+        </div>
+
+        <div class="form-group">
+          <label for="password">Password:</label>
+          <input type="password" id="password" name="password" required autocomplete="current-password">
+        </div>
+
+        <button type="submit" id="btn-login" class="btn btn-primary">Accedi</button>
+      </form>
+
+      <div id="login-error" class="error-message hidden"></div>
+    </section>
+
+    <!-- 2. Schermata della Flotta Autenticata (§6.1 punto 5, RF-AUTH-003, RF-ROB-001) -->
+    <section id="dashboard-section" class="card hidden">
+      <header class="dashboard-header">
+        <div>
+          <h2>Pannello di Gestione Flotta</h2>
+          <div class="user-info">
+            Utente: <span id="current-username" class="badge"></span>
+            Ruoli: <span id="current-roles" class="badge"></span>
+          </div>
+        </div>
+        <button id="btn-logout" class="btn btn-secondary">Disconnetti (Logout)</button>
+      </header>
+
+      <main class="dashboard-content">
+        <!-- Azioni visibili solo se l'utente ha i relativi permessi (comodità UI, sicurezza sul server) -->
+        <div class="actions-bar">
+          <button id="btn-register-robot" class="btn btn-accent hidden">Registra Nuovo Robot</button>
+          <button id="btn-refresh-fleet" class="btn btn-secondary">Aggiorna Flotta</button>
+        </div>
+
+        <!-- Sezione lista flotta (Placeholder Prompt 6) -->
+        <div id="fleet-container" class="fleet-box">
+          <div class="placeholder-notice">
+            <h3>Flotta Robot (SRS §6.1 punto 5)</h3>
+            <p>Sessione autenticata attiva. L'anagrafica e le connessioni ai robot saranno visualizzate qui (Prompt 6).</p>
+            <div id="fleet-status-text" class="status-indicator">In attesa dei componenti della flotta...</div>
+          </div>
+        </div>
+      </main>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
