@@ -22,5 +22,9 @@
     "@types/ssh2": "^1.15.0",
     "@types/ws": "^8.18.2",
     "typescript": "^5.3.3"
+  },
+  "allowScripts": {
+    "cpu-features@0.0.10": true,
+    "ssh2@1.17.0": true
   }
 }
