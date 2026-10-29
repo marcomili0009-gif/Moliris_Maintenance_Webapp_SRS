@@ -1158,12 +1158,43 @@ document.addEventListener("DOMContentLoaded", () => {
         dateTd.textContent = formatDate(item.modifiedAt);
         tr.appendChild(dateTd);
 
+        // Colonna Azioni Trasferimento (Prompt 10, RF-TRF-001, RF-TRF-002)
+        const actionsTd = document.createElement("td");
+        actionsTd.className = "fs-actions-cell";
+        if (item.type === "file") {
+          const btnGroup = document.createElement("div");
+          btnGroup.className = "fs-action-btn-group";
+
+          const btnDownload = document.createElement("button");
+          btnDownload.className = "btn btn-secondary btn-sm transfer-action-btn";
+          btnDownload.textContent = "⬇️ Scarica";
+          btnDownload.title = "Scarica file sul computer locale (RF-TRF-001)";
+          btnDownload.addEventListener("click", () => {
+            const relPath = currentFsPath ? `${currentFsPath}/${item.name}` : item.name;
+            downloadServerFile(robotId, relPath);
+          });
+          btnGroup.appendChild(btnDownload);
+
+          const btnSendToRobot = document.createElement("button");
+          btnSendToRobot.className = "btn btn-secondary btn-sm transfer-action-btn";
+          btnSendToRobot.textContent = "➡️ Invia al Robot";
+          btnSendToRobot.title = "Trasferisci file dal server al filesystem remoto del robot (RF-TRF-002)";
+          btnSendToRobot.addEventListener("click", () => {
+            const relPath = currentFsPath ? `${currentFsPath}/${item.name}` : item.name;
+            transferServerToRobot(robotId, relPath, item.name);
+          });
+          btnGroup.appendChild(btnSendToRobot);
+
+          actionsTd.appendChild(btnGroup);
+        }
+        tr.appendChild(actionsTd);
+
         fsTableBody.appendChild(tr);
       }
     } catch {
       fsError.textContent = "Errore durante la comunicazione con il server per la lettura directory.";
       fsError.classList.remove("hidden");
-      fsTableBody.innerHTML = '<tr><td colspan="4" class="fs-empty-msg">Errore di connessione.</td></tr>';
+      fsTableBody.innerHTML = '<tr><td colspan="5" class="fs-empty-msg">Errore di connessione.</td></tr>';
     }
   }
 
@@ -1181,26 +1212,63 @@ document.addEventListener("DOMContentLoaded", () => {
     loadServerFilesystem(robotId, parentPath);
   });
 
+  // Upload su Server (RF-TRF-001)
+  const fsServerFileInput = document.getElementById("fs-server-file-input");
+  const btnFsServerUpload = document.getElementById("btn-fs-server-upload");
+
+  btnFsServerUpload?.addEventListener("click", () => {
+    const robotId = fsRobotIdInput.value.trim();
+    if (!robotId) {
+      alert("Selezionare o specificare prima l'ID del robot.");
+      return;
+    }
+    fsServerFileInput.click();
+  });
+
+  fsServerFileInput?.addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const robotId = fsRobotIdInput.value.trim();
+    uploadClientToServer(robotId, currentFsPath, file);
+    fsServerFileInput.value = "";
+  });
+
   // =========================================================================
-  // TAB CONTROLS FILESYSTEM: SERVER VS REMOTO (Step 9)
+  // TAB CONTROLS FILESYSTEM: SERVER VS REMOTO VS TRASFERIMENTI (Step 9 & 13)
   // =========================================================================
   const btnTabFsServer = document.getElementById("btn-tab-fs-server");
   const btnTabFsRemote = document.getElementById("btn-tab-fs-remote");
+  const btnTabTransfers = document.getElementById("btn-tab-transfers");
   const fsPanelServer = document.getElementById("fs-panel-server");
   const fsPanelRemote = document.getElementById("fs-panel-remote");
+  const fsPanelTransfers = document.getElementById("fs-panel-transfers");
 
   btnTabFsServer?.addEventListener("click", () => {
     btnTabFsServer.classList.add("active");
     btnTabFsRemote.classList.remove("active");
+    btnTabTransfers.classList.remove("active");
     fsPanelServer?.classList.remove("hidden");
     fsPanelRemote?.classList.add("hidden");
+    fsPanelTransfers?.classList.add("hidden");
   });
 
   btnTabFsRemote?.addEventListener("click", () => {
     btnTabFsRemote.classList.add("active");
     btnTabFsServer.classList.remove("active");
+    btnTabTransfers.classList.remove("active");
     fsPanelRemote?.classList.remove("hidden");
     fsPanelServer?.classList.add("hidden");
+    fsPanelTransfers?.classList.add("hidden");
+  });
+
+  btnTabTransfers?.addEventListener("click", () => {
+    btnTabTransfers.classList.add("active");
+    btnTabFsServer.classList.remove("active");
+    btnTabFsRemote.classList.remove("active");
+    fsPanelTransfers?.classList.remove("hidden");
+    fsPanelServer?.classList.add("hidden");
+    fsPanelRemote?.classList.add("hidden");
+    loadTransfersList();
   });
 
   // =========================================================================
@@ -1300,20 +1368,76 @@ document.addEventListener("DOMContentLoaded", () => {
         dateTd.textContent = item.modifiedAt ? formatDate(item.modifiedAt) : "non disponibile";
         tr.appendChild(dateTd);
 
+        // Colonna Azioni Trasferimento (Prompt 10, RF-TRF-002, RF-TRF-003)
+        const actionsTd = document.createElement("td");
+        actionsTd.className = "fs-actions-cell";
+        if (item.type === "file") {
+          const btnGroup = document.createElement("div");
+          btnGroup.className = "fs-action-btn-group";
+
+          const btnDownload = document.createElement("button");
+          btnDownload.className = "btn btn-secondary btn-sm transfer-action-btn";
+          btnDownload.textContent = "⬇️ Scarica";
+          btnDownload.title = "Scarica file direttamente dal robot al computer (RF-TRF-003)";
+          btnDownload.addEventListener("click", () => {
+            const remotePath = currentRemoteFsPath.endsWith("/")
+              ? `${currentRemoteFsPath}${item.name}`
+              : `${currentRemoteFsPath}/${item.name}`;
+            downloadRobotFile(robotId, remotePath);
+          });
+          btnGroup.appendChild(btnDownload);
+
+          const btnCopyToSrv = document.createElement("button");
+          btnCopyToSrv.className = "btn btn-secondary btn-sm transfer-action-btn";
+          btnCopyToSrv.textContent = "⬅️ Copia su Server";
+          btnCopyToSrv.title = "Trasferisci file dal robot al filesystem locale del server (RF-TRF-002)";
+          btnCopyToSrv.addEventListener("click", () => {
+            const remotePath = currentRemoteFsPath.endsWith("/")
+              ? `${currentRemoteFsPath}${item.name}`
+              : `${currentRemoteFsPath}/${item.name}`;
+            transferRobotToServer(robotId, remotePath, item.name);
+          });
+          btnGroup.appendChild(btnCopyToSrv);
+
+          actionsTd.appendChild(btnGroup);
+        }
+        tr.appendChild(actionsTd);
+
         fsRemoteTableBody.appendChild(tr);
       }
 
       if (data.truncated) {
         const truncTr = document.createElement("tr");
-        truncTr.innerHTML = '<td colspan="4" style="text-align: center; color: #b06000; font-size: 0.85rem; font-style: italic; background-color: #fff9e6;">⚠️ Elenco parziale: superato il limite massimo di elementi configurato per singola directory (RNF-PERF-002).</td>';
+        truncTr.innerHTML = '<td colspan="5" style="text-align: center; color: #b06000; font-size: 0.85rem; font-style: italic; background-color: #fff9e6;">⚠️ Elenco parziale: superato il limite massimo di elementi configurato per singola directory (RNF-PERF-002).</td>';
         fsRemoteTableBody.appendChild(truncTr);
       }
     } catch (err) {
       fsRemoteError.textContent = `Errore di rete durante la lettura del filesystem remoto: ${err.message}`;
       fsRemoteError.classList.remove("hidden");
-      fsRemoteTableBody.innerHTML = '<tr><td colspan="4" class="fs-empty-msg">Errore di comunicazione.</td></tr>';
+      fsRemoteTableBody.innerHTML = '<tr><td colspan="5" class="fs-empty-msg">Errore di comunicazione.</td></tr>';
     }
   }
+
+  // Upload su Robot (RF-TRF-003)
+  const fsRemoteFileInput = document.getElementById("fs-remote-file-input");
+  const btnFsRemoteUpload = document.getElementById("btn-fs-remote-upload");
+
+  btnFsRemoteUpload?.addEventListener("click", () => {
+    const robotId = fsRemoteRobotIdInput.value.trim();
+    if (!robotId) {
+      alert("Selezionare o specificare prima l'ID del robot.");
+      return;
+    }
+    fsRemoteFileInput.click();
+  });
+
+  fsRemoteFileInput?.addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const robotId = fsRemoteRobotIdInput.value.trim();
+    uploadClientToRobot(robotId, currentRemoteFsPath, file);
+    fsRemoteFileInput.value = "";
+  });
 
   btnFsRemoteLoad?.addEventListener("click", () => {
     const robotId = fsRemoteRobotIdInput.value.trim();
@@ -1325,6 +1449,312 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!robotId || !currentRemoteParentPath) return;
     loadRemoteFilesystem(robotId, currentRemoteParentPath);
   });
+
+  // =========================================================================
+  // SERVIZIO TRASFERIMENTI FRONTEND (RF-TRF-001..014, CA-FS-002..004, CA-TRF-002)
+  // =========================================================================
+  const transfersContainer = document.getElementById("transfers-container");
+  const transfersList = document.getElementById("transfers-list");
+  const transfersEmptyMsg = document.getElementById("transfers-empty-msg");
+  const transfersActiveCount = document.getElementById("transfers-active-count");
+  const btnRefreshTransfers = document.getElementById("btn-refresh-transfers");
+
+  // Modal Conferma Sovrascrittura (RF-TRF-011, RNF-FS-003)
+  const modalConfirmOverwrite = document.getElementById("modal-confirm-overwrite");
+  const overwriteFileTarget = document.getElementById("overwrite-file-target");
+  const btnCloseOverwrite = document.getElementById("btn-close-overwrite");
+  const btnCancelOverwrite = document.getElementById("btn-cancel-overwrite");
+  const btnConfirmOverwrite = document.getElementById("btn-confirm-overwrite");
+
+  let pendingOverwriteCallback = null;
+
+  function promptOverwriteConfirmation(targetDescription, onConfirm) {
+    overwriteFileTarget.textContent = targetDescription;
+    pendingOverwriteCallback = onConfirm;
+    modalConfirmOverwrite.classList.remove("hidden");
+  }
+
+  function closeOverwriteModal() {
+    modalConfirmOverwrite.classList.add("hidden");
+    pendingOverwriteCallback = null;
+  }
+
+  btnCloseOverwrite?.addEventListener("click", closeOverwriteModal);
+  btnCancelOverwrite?.addEventListener("click", closeOverwriteModal);
+  btnConfirmOverwrite?.addEventListener("click", () => {
+    if (pendingOverwriteCallback) {
+      const cb = pendingOverwriteCallback;
+      closeOverwriteModal();
+      cb();
+    }
+  });
+
+  // Download Server -> Client (RF-TRF-001)
+  function downloadServerFile(robotId, relativePath) {
+    const url = `/api/robots/${encodeURIComponent(robotId)}/transfers/client-server/download?path=${encodeURIComponent(relativePath)}`;
+    window.location.href = url;
+    showNotification(`Download avviato per ${relativePath}`, "info");
+    setTimeout(loadTransfersList, 1000);
+  }
+
+  // Download Robot -> Client (RF-TRF-003)
+  function downloadRobotFile(robotId, remotePath) {
+    const url = `/api/robots/${encodeURIComponent(robotId)}/transfers/client-robot/download?path=${encodeURIComponent(remotePath)}`;
+    window.location.href = url;
+    showNotification(`Download dal robot avviato per ${remotePath}`, "info");
+    setTimeout(loadTransfersList, 1000);
+  }
+
+  // Upload Client -> Server (RF-TRF-001)
+  async function uploadClientToServer(robotId, subPath, file, overwrite = false) {
+    showNotification(`Caricamento sul server di '${file.name}' in corso...`, "info");
+    try {
+      const res = await apiRequest(
+        `/api/robots/${encodeURIComponent(robotId)}/transfers/client-server/upload`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "X-Filename": file.name,
+            "X-Subpath": subPath || "",
+            "X-Overwrite": overwrite ? "true" : "false",
+          },
+          body: file, // Stream nativo senza caricamento completo in RAM (RF-TRF-004)
+        }
+      );
+
+      const data = await res.json();
+      if (!res.ok) {
+        if (data.message && data.message.includes("già esistente")) {
+          promptOverwriteConfirmation(`Server: ${subPath ? subPath + '/' : ''}${file.name}`, () => {
+            uploadClientToServer(robotId, subPath, file, true);
+          });
+          return;
+        }
+        showNotification(`Upload fallito: ${data.message}`, "danger");
+        return;
+      }
+
+      showNotification(`Upload completato con successo: ${file.name}`, "success");
+      loadServerFilesystem(robotId, subPath);
+      loadTransfersList();
+    } catch (err) {
+      showNotification(`Errore caricamento: ${err.message}`, "danger");
+    }
+  }
+
+  // Upload Client -> Robot (RF-TRF-003)
+  async function uploadClientToRobot(robotId, remoteDir, file, overwrite = false) {
+    showNotification(`Caricamento verso il robot di '${file.name}' in corso...`, "info");
+    try {
+      const res = await apiRequest(
+        `/api/robots/${encodeURIComponent(robotId)}/transfers/client-robot/upload`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "X-Filename": file.name,
+            "X-Remote-Dir": remoteDir || "",
+            "X-Overwrite": overwrite ? "true" : "false",
+          },
+          body: file, // Stream nativo verso backend e robot (CA-TRF-001)
+        }
+      );
+
+      const data = await res.json();
+      if (!res.ok) {
+        if (data.message && data.message.includes("già esistente")) {
+          promptOverwriteConfirmation(`Robot: ${remoteDir ? remoteDir + '/' : ''}${file.name}`, () => {
+            uploadClientToRobot(robotId, remoteDir, file, true);
+          });
+          return;
+        }
+        showNotification(`Upload verso il robot fallito: ${data.message}`, "danger");
+        return;
+      }
+
+      showNotification(`Upload verso il robot completato: ${file.name}`, "success");
+      loadRemoteFilesystem(robotId, remoteDir);
+      loadTransfersList();
+    } catch (err) {
+      showNotification(`Errore caricamento verso il robot: ${err.message}`, "danger");
+    }
+  }
+
+  // Trasferimento Server -> Robot (RF-TRF-002)
+  async function transferServerToRobot(robotId, serverRelativePath, filename, overwrite = false) {
+    showNotification(`Avvio trasferimento da server a robot per '${filename}'...`, "info");
+    try {
+      const res = await apiRequest(
+        `/api/robots/${encodeURIComponent(robotId)}/transfers/server-robot`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            direction: "SERVER_TO_ROBOT",
+            serverRelativePath,
+            remotePath: filename,
+            overwrite,
+          }),
+        }
+      );
+
+      const data = await res.json();
+      if (!res.ok) {
+        if (data.message && data.message.includes("già esistente")) {
+          promptOverwriteConfirmation(`Robot: ${filename}`, () => {
+            transferServerToRobot(robotId, serverRelativePath, filename, true);
+          });
+          return;
+        }
+        showNotification(`Trasferimento fallito: ${data.message}`, "danger");
+        return;
+      }
+
+      showNotification(`Trasferimento avviato con successo: ${filename}`, "success");
+      loadTransfersList();
+    } catch (err) {
+      showNotification(`Errore avvio trasferimento: ${err.message}`, "danger");
+    }
+  }
+
+  // Trasferimento Robot -> Server (RF-TRF-002)
+  async function transferRobotToServer(robotId, remotePath, filename, overwrite = false) {
+    showNotification(`Avvio trasferimento da robot a server per '${filename}'...`, "info");
+    try {
+      const res = await apiRequest(
+        `/api/robots/${encodeURIComponent(robotId)}/transfers/server-robot`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            direction: "ROBOT_TO_SERVER",
+            serverRelativePath: filename,
+            remotePath,
+            overwrite,
+          }),
+        }
+      );
+
+      const data = await res.json();
+      if (!res.ok) {
+        if (data.message && data.message.includes("già esistente")) {
+          promptOverwriteConfirmation(`Server: ${filename}`, () => {
+            transferRobotToServer(robotId, remotePath, filename, true);
+          });
+          return;
+        }
+        showNotification(`Trasferimento fallito: ${data.message}`, "danger");
+        return;
+      }
+
+      showNotification(`Trasferimento da robot a server completato: ${filename}`, "success");
+      loadTransfersList();
+    } catch (err) {
+      showNotification(`Errore avvio trasferimento: ${err.message}`, "danger");
+    }
+  }
+
+  // Polling avanzamento trasferimenti (RF-TRF-006, CA-TRF-002)
+  let transfersPollingInterval = null;
+
+  async function loadTransfersList() {
+    const robotId = fsRobotIdInput.value.trim() || fsRemoteRobotIdInput.value.trim();
+    if (!robotId) return;
+
+    try {
+      const res = await apiRequest(`/api/robots/${encodeURIComponent(robotId)}/transfers`);
+      if (!res.ok) return;
+      const list = await res.json();
+
+      let activeCount = 0;
+      if (!list || list.length === 0) {
+        transfersEmptyMsg.classList.remove("hidden");
+        transfersList.innerHTML = "";
+      } else {
+        transfersEmptyMsg.classList.add("hidden");
+        transfersList.innerHTML = "";
+
+        for (const trf of list) {
+          if (trf.status === "IN_PROGRESS" || trf.status === "QUEUED" || trf.status === "INTEGRITY_CHECKING") {
+            activeCount++;
+          }
+
+          const card = document.createElement("div");
+          card.className = "transfer-card";
+
+          const dirLabels = {
+            CLIENT_TO_SERVER: "💻 Computer ➔ 🗄️ Server",
+            SERVER_TO_CLIENT: "🗄️ Server ➔ 💻 Computer",
+            SERVER_TO_ROBOT: "🗄️ Server ➔ 🌐 Robot",
+            ROBOT_TO_SERVER: "🌐 Robot ➔ 🗄️ Server",
+            CLIENT_TO_ROBOT: "💻 Computer ➔ 🌐 Robot",
+            ROBOT_TO_CLIENT: "🌐 Robot ➔ 💻 Computer",
+          };
+
+          const statusLabels = {
+            IN_PROGRESS: "In corso",
+            COMPLETED: "Completato",
+            FAILED: "Fallito",
+            CANCELLED: "Annullato",
+            QUEUED: "In attesa",
+            INTEGRITY_CHECKING: "Verifica integrità",
+            INTEGRITY_FAILED: "Verifica fallita",
+          };
+
+          const percent = trf.percent !== null ? `${trf.percent}%` : "-";
+          const speed = trf.speedBytesPerSec ? `${formatBytes(trf.speedBytesPerSec)}/s` : "";
+          const eta = trf.etaSeconds !== null ? `ETA: ${trf.etaSeconds}s` : "";
+
+          card.innerHTML = `
+            <div class="transfer-card-header">
+              <div class="transfer-card-title">
+                <span class="transfer-direction-badge">${dirLabels[trf.direction] || trf.direction}</span>
+                <span>${escapeHtml(trf.filename)}</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <span class="transfer-status-badge transfer-status-${trf.status}">${statusLabels[trf.status] || trf.status}</span>
+                ${(trf.status === "IN_PROGRESS" || trf.status === "QUEUED") ? `<button class="btn btn-danger btn-sm transfer-action-btn btn-cancel-trf" data-id="${trf.transferId}">Annulla</button>` : ''}
+              </div>
+            </div>
+            <div class="transfer-progress-bar-bg">
+              <div class="transfer-progress-bar-fill ${trf.status.toLowerCase()}" style="width: ${trf.percent || (trf.status === 'COMPLETED' ? 100 : 0)}%;"></div>
+            </div>
+            <div class="transfer-card-stats">
+              <span>${formatBytes(trf.transferredBytes)} / ${trf.totalBytes ? formatBytes(trf.totalBytes) : 'dim. sconosciuta'} (${percent})</span>
+              <span>${speed} ${eta ? '| ' + eta : ''}</span>
+              ${trf.checksum ? `<span title="Checksum ${trf.checksumAlgorithm || ''}">Digest: ${trf.checksum.substring(0, 10)}...</span>` : ''}
+              ${trf.error ? `<span style="color: #dc2626; width: 100%; margin-top: 0.25rem;">Errore: ${escapeHtml(trf.error)}</span>` : ''}
+            </div>
+          `;
+
+          const cancelBtn = card.querySelector(".btn-cancel-trf");
+          if (cancelBtn) {
+            cancelBtn.addEventListener("click", async () => {
+              if (confirm("Vuoi davvero annullare questo trasferimento?")) {
+                await apiRequest(`/api/transfers/${encodeURIComponent(trf.transferId)}/cancel`, { method: "POST" });
+                loadTransfersList();
+              }
+            });
+          }
+
+          transfersList.appendChild(card);
+        }
+      }
+
+      transfersActiveCount.textContent = activeCount;
+
+      // Gestione dinamica dell'intervallo di polling
+      if (activeCount > 0 && !transfersPollingInterval) {
+        transfersPollingInterval = setInterval(loadTransfersList, 1500);
+      } else if (activeCount === 0 && transfersPollingInterval) {
+        clearInterval(transfersPollingInterval);
+        transfersPollingInterval = null;
+      }
+    } catch {}
+  }
+
+  btnRefreshTransfers?.addEventListener("click", loadTransfersList);
 
   initSession();
 });

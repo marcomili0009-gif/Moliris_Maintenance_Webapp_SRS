@@ -29,6 +29,8 @@ import { TerminalService } from "./terminal/terminal-service.ts";
 import { registerTerminalRoutes } from "./terminal/terminal-routes.ts";
 import { RemoteFilesystemService } from "./remote-fs/remote-fs-service.ts";
 import { registerRemoteFsRoutes } from "./remote-fs/remote-fs-routes.ts";
+import { TransferService } from "./transfer/transfer-service.ts";
+import { registerTransferRoutes } from "./transfer/transfer-routes.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -48,6 +50,7 @@ export interface ServerDependencies {
   monitoringService?: MonitoringService;
   terminalService?: TerminalService;
   remoteFsService?: RemoteFilesystemService;
+  transferService?: TransferService;
   roleMapping?: RolePermissionMapping;
 }
 
@@ -159,6 +162,18 @@ export function createServer(
     roleMapping
   );
 
+  // Servizio di trasferimento file (Prompt 10, RF-TRF-001..014, §5.5, §6.5..6.7)
+  const transferService = deps.transferService || new TransferService(
+    config,
+    robotRepository,
+    serverFsService,
+    remoteFsService,
+    sessionManager,
+    auditRepository,
+    logger,
+    roleMapping
+  );
+
   // Registrazione endpoint di autenticazione e autorizzazione (RF-AUTH-001..006)
   registerAuthRoutes(
     app,
@@ -215,10 +230,21 @@ export function createServer(
     );
   });
 
+  // Registrazione endpoint servizio di trasferimento file (RF-TRF-001..014, §5.5, §6.5..6.7)
+  registerTransferRoutes(
+    app,
+    transferService,
+    robotRepository,
+    sessionManager,
+    authMiddleware,
+    roleMapping
+  );
+
   // Rilascio risorse, arresto polling periodico e chiusura sessioni alla chiusura del server (RNF-REL-005)
   app.decorate("monitoringService", monitoringService);
   app.decorate("terminalService", terminalService);
   app.decorate("remoteFsService", remoteFsService);
+  app.decorate("transferService", transferService);
   app.addHook("onClose", async () => {
     monitoringService.stopPolling();
     await terminalService.closeAll("SERVICE_SHUTDOWN");

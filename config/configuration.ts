@@ -74,6 +74,14 @@ export interface SystemConfiguration {
   remoteFsOverwritePolicy?: "rifiuta" | "sovrascrivi";
   remoteFsConnectionIdleTimeoutMs?: number;
 
+  // 21. Parametri per il servizio di trasferimento file [opzionali] (§5.5, §6.5..6.7, §11.5, §11.7, RF-TRF-001..014)
+  transferChunkSizeBytes?: number;
+  transferChecksumAlgorithm?: "sha256" | "md5";
+  transferOverwritePolicy?: "rifiuta" | "richiedi_conferma" | "sovrascrivi";
+  transferResumeEnabled?: boolean;
+  transferConcurrencyQueuePolicy?: "rifiuta" | "coda";
+  transferIdleTimeoutMs?: number;
+
   // Default unico ammesso: porta SSH 22 (RF-ROB-005)
   defaultSshPort: number;
 }
@@ -216,6 +224,33 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     ? Number(env["MOLIRIS_REMOTE_FS_IDLE_TIMEOUT_MS"])
     : undefined;
 
+  // Parametri opzionali Trasferimento File (§5.5, §11.5, §11.7, RF-TRF-001..014)
+  const transferChunkSizeBytes = env["MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES"] && !isNaN(Number(env["MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES"]))
+    ? Number(env["MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES"])
+    : undefined;
+
+  const rawChecksumAlgo = env["MOLIRIS_TRANSFER_CHECKSUM_ALGO"]?.trim().toLowerCase();
+  const transferChecksumAlgorithm = (rawChecksumAlgo === "sha256" || rawChecksumAlgo === "md5")
+    ? (rawChecksumAlgo as "sha256" | "md5")
+    : undefined;
+
+  const rawTrfOverwritePolicy = env["MOLIRIS_TRANSFER_OVERWRITE_POLICY"]?.trim().toLowerCase();
+  const transferOverwritePolicy = (rawTrfOverwritePolicy === "rifiuta" || rawTrfOverwritePolicy === "richiedi_conferma" || rawTrfOverwritePolicy === "sovrascrivi")
+    ? (rawTrfOverwritePolicy as "rifiuta" | "richiedi_conferma" | "sovrascrivi")
+    : undefined;
+
+  const rawResume = env["MOLIRIS_TRANSFER_RESUME_ENABLED"]?.trim().toLowerCase();
+  const transferResumeEnabled = rawResume === "true" ? true : rawResume === "false" ? false : undefined;
+
+  const rawConcurrencyPolicy = env["MOLIRIS_TRANSFER_CONCURRENCY_POLICY"]?.trim().toLowerCase();
+  const transferConcurrencyQueuePolicy = (rawConcurrencyPolicy === "rifiuta" || rawConcurrencyPolicy === "coda")
+    ? (rawConcurrencyPolicy as "rifiuta" | "coda")
+    : undefined;
+
+  const transferIdleTimeoutMs = env["MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS"] && !isNaN(Number(env["MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS"]))
+    ? Number(env["MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS"])
+    : undefined;
+
   // L'unico default ammesso dalla SRS è la porta SSH 22 (RF-ROB-005)
   const defaultSshPort = env["MOLIRIS_DEFAULT_SSH_PORT"] && !isNaN(Number(env["MOLIRIS_DEFAULT_SSH_PORT"]))
     ? Number(env["MOLIRIS_DEFAULT_SSH_PORT"])
@@ -255,6 +290,12 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     remoteFsMaxDirectoryEntries,
     remoteFsOverwritePolicy,
     remoteFsConnectionIdleTimeoutMs,
+    transferChunkSizeBytes,
+    transferChecksumAlgorithm,
+    transferOverwritePolicy,
+    transferResumeEnabled,
+    transferConcurrencyQueuePolicy,
+    transferIdleTimeoutMs,
     defaultSshPort,
   };
 }

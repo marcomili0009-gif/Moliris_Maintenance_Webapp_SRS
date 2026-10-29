@@ -88,13 +88,14 @@
 
         <!-- Componente Navigazione Filesystem Server e Remoto (RF-SRVFS-002, RF-FS-001..003, RNF-UX-001/002/003) -->
         <section id="fs-browser-section" class="fs-browser-card">
-          <!-- Barra Selettore Tab: Distinzione netta Server vs Robot Remoto (Step 9) -->
+          <!-- Barra Selettore Tab: Distinzione netta Server vs Robot Remoto vs Trasferimenti (RF-TRF-001..006) -->
           <div class="fs-tab-bar">
             <button id="btn-tab-fs-server" class="fs-tab-btn active" type="button">🗄️ File sul Server (Archivio Locale)</button>
             <button id="btn-tab-fs-remote" class="fs-tab-btn" type="button">🌐 File sul Robot (Filesystem Remoto SFTP)</button>
+            <button id="btn-tab-transfers" class="fs-tab-btn" type="button">🔄 Gestione Trasferimenti (<span id="transfers-active-count">0</span> attivi)</button>
           </div>
 
-          <!-- PANNELLO 1: Filesystem Server (RF-SRVFS-002) -->
+          <!-- PANNELLO 1: Filesystem Server (RF-SRVFS-002, RF-TRF-001, RF-TRF-002) -->
           <div id="fs-panel-server" class="fs-panel">
             <div class="fs-header">
               <div>
@@ -111,6 +112,10 @@
             <div class="fs-navigation-bar">
               <button id="btn-fs-up" class="btn btn-secondary" title="Torna al livello superiore">⬆ Torna su</button>
               <span class="fs-breadcrumb">Percorso Server: <strong id="fs-current-path">/</strong></span>
+              <div class="fs-actions" style="margin-left: auto; display: flex; gap: 0.5rem;">
+                <input type="file" id="fs-server-file-input" style="display: none;">
+                <button id="btn-fs-server-upload" class="btn btn-primary btn-sm" title="Carica file dal computer al server (RF-TRF-001)">⬆️ Carica sul Server</button>
+              </div>
             </div>
 
             <div id="fs-error" class="error-message hidden"></div>
@@ -119,22 +124,23 @@
               <table class="fs-table">
                 <thead>
                   <tr>
-                    <th style="width: 12%;">Tipo</th>
-                    <th style="width: 48%;">Nome</th>
-                    <th style="width: 20%;">Dimensione</th>
+                    <th style="width: 10%;">Tipo</th>
+                    <th style="width: 35%;">Nome</th>
+                    <th style="width: 15%;">Dimensione</th>
                     <th style="width: 20%;">Ultima Modifica</th>
+                    <th style="width: 20%;">Azioni Trasferimento</th>
                   </tr>
                 </thead>
                 <tbody id="fs-table-body">
                   <tr>
-                    <td colspan="4" class="fs-empty-msg">Nessuna directory caricata. Selezionare un robot o inserire un ID e premere 'Carica Directory Server'.</td>
+                    <td colspan="5" class="fs-empty-msg">Nessuna directory caricata. Selezionare un robot o inserire un ID e premere 'Carica Directory Server'.</td>
                   </tr>
                 </tbody>
               </table>
             </div>
           </div>
 
-          <!-- PANNELLO 2: Filesystem Remoto Robot (RF-FS-001, RF-FS-002, RF-FS-003, CA-FS-001) -->
+          <!-- PANNELLO 2: Filesystem Remoto Robot (RF-FS-001, RF-FS-002, RF-FS-003, RF-TRF-002, RF-TRF-003) -->
           <div id="fs-panel-remote" class="fs-panel hidden">
             <div class="fs-header">
               <div>
@@ -151,9 +157,9 @@
             <div class="fs-navigation-bar">
               <button id="btn-fs-remote-up" class="btn btn-secondary" title="Torna al livello precedente (RF-FS-003)">⬆ Torna al livello precedente</button>
               <span class="fs-breadcrumb">Percorso Remoto: <strong id="fs-remote-current-path">/</strong></span>
-              <div class="fs-actions-placeholders" style="margin-left: auto; display: flex; gap: 0.5rem;">
-                <button id="btn-fs-remote-dl-placeholder" class="btn btn-secondary btn-sm" disabled title="Download di file dal robot disponibile nel Prompt 10 (RF-FS-004)">⬇️ Scarica dal Robot (P10)</button>
-                <button id="btn-fs-remote-ul-placeholder" class="btn btn-secondary btn-sm" disabled title="Upload di file verso il robot disponibile nel Prompt 10 (RF-FS-005)">⬆️ Carica verso il Robot (P10)</button>
+              <div class="fs-actions" style="margin-left: auto; display: flex; gap: 0.5rem;">
+                <input type="file" id="fs-remote-file-input" style="display: none;">
+                <button id="btn-fs-remote-upload" class="btn btn-primary btn-sm" title="Carica file dal computer verso il robot (RF-TRF-003)">⬆️ Carica sul Robot</button>
               </div>
             </div>
 
@@ -163,18 +169,37 @@
               <table class="fs-table">
                 <thead>
                   <tr>
-                    <th style="width: 12%;">Tipo (RF-FS-002)</th>
-                    <th style="width: 48%;">Nome</th>
-                    <th style="width: 20%;">Dimensione</th>
+                    <th style="width: 10%;">Tipo</th>
+                    <th style="width: 35%;">Nome</th>
+                    <th style="width: 15%;">Dimensione</th>
                     <th style="width: 20%;">Ultima Modifica</th>
+                    <th style="width: 20%;">Azioni Trasferimento</th>
                   </tr>
                 </thead>
                 <tbody id="fs-remote-table-body">
                   <tr>
-                    <td colspan="4" class="fs-empty-msg">Nessuna directory remota caricata. Selezionare un robot attivo e premere 'Carica Directory Remota'.</td>
+                    <td colspan="5" class="fs-empty-msg">Nessuna directory remota caricata. Selezionare un robot attivo e premere 'Carica Directory Remota'.</td>
                   </tr>
                 </tbody>
               </table>
+            </div>
+          </div>
+
+          <!-- PANNELLO 3: Gestione Trasferimenti e Avanzamento (RF-TRF-006, RF-TRF-013, CA-TRF-002) -->
+          <div id="fs-panel-transfers" class="fs-panel hidden">
+            <div class="fs-header">
+              <div>
+                <h3>Trasferimenti File e Avanzamento Streaming</h3>
+                <small class="fs-subtitle">Monitoraggio in tempo reale di tutte le operazioni di trasferimento (Computer ↔ Server, Server ↔ Robot, Computer ↔ Robot).</small>
+              </div>
+              <div>
+                <button id="btn-refresh-transfers" class="btn btn-secondary btn-sm">🔄 Aggiorna Lista</button>
+              </div>
+            </div>
+
+            <div id="transfers-container" class="transfers-list-container">
+              <div id="transfers-empty-msg" class="fs-empty-msg">Nessun trasferimento attivo o recente registrato.</div>
+              <div id="transfers-list" class="transfers-card-list"></div>
             </div>
           </div>
         </section>
@@ -445,6 +470,30 @@
         <div class="terminal-footer">
           <span id="terminal-footer-info">Connessione PTY interattiva bidirezionale (RF-SSH-002, RF-SSH-004)</span>
           <span id="terminal-footer-dims" class="badge">80 x 24</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL 7: Conferma Sovrascrittura File (RF-TRF-011, RNF-FS-003, §11.5) -->
+    <div id="modal-confirm-overwrite" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 style="color: #b91c1c;">⚠️ Conferma Sovrascrittura File</h3>
+          <button class="btn-close" id="btn-close-overwrite">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p>Un file con lo stesso nome esiste già nella cartella di destinazione:</p>
+          <div style="background: #fef2f2; border: 1px solid #f87171; border-radius: 6px; padding: 0.75rem; margin: 1rem 0; font-family: monospace;" id="overwrite-file-target">
+            nome_file
+          </div>
+          <div class="alert-box alert-warning">
+            <strong>Politica di sovrascrittura (RNF-FS-003):</strong>
+            La sovrascrittura cancellerà definitivamente la versione preesistente sostituendola con i dati trasferiti. Questa azione richiede una tua conferma esplicita.
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-overwrite">Annulla Operazione</button>
+          <button type="button" class="btn btn-danger" id="btn-confirm-overwrite">Sovrascrivi File Esistente</button>
         </div>
       </div>
     </div>
