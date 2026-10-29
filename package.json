@@ -1,0 +1,21 @@
+{
+  "name": "moliris-maintenance-webapp",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Web Application per la Gestione e il Monitoraggio di una Flotta di Robot Mobili (SRS v1.0)",
+  "main": "backend/server.ts",
+  "scripts": {
+    "test": "node --experimental-strip-types config/configuration.test.ts && node --experimental-strip-types logging/logger.test.ts && node --experimental-strip-types errors/app-errors.test.ts && node --experimental-strip-types backend/server.test.ts"
+  },
+  "dependencies": {
+    "fastify": "^4.26.2",
+    "@fastify/websocket": "^10.0.1",
+    "ssh2": "^1.15.0",
+    "mongodb": "^6.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "@types/ssh2": "^1.15.0",
+    "typescript": "^5.3.3"
+  }
+}
