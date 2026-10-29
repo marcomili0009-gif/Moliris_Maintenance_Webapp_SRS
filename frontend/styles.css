@@ -191,3 +191,88 @@ input:focus {
   font-size: 0.85rem;
   font-weight: 600;
 }
+
+/* Stili componente Esplora Filesystem Server (RF-SRVFS-002, RNF-UX-002/003) */
+.fs-browser-card {
+  margin-top: 2rem;
+  background-color: #ffffff;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 1.5rem;
+}
+
+.fs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.fs-robot-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fs-robot-selector input {
+  width: 180px;
+  padding: 0.4rem 0.6rem;
+}
+
+.fs-navigation-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  background-color: #f1f3f4;
+  padding: 0.6rem 1rem;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+}
+
+.fs-breadcrumb {
+  font-family: monospace;
+  color: var(--text-color);
+}
+
+.fs-table-container {
+  overflow-x: auto;
+}
+
+.fs-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.fs-table th, .fs-table td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.fs-table th {
+  background-color: #f8f9fa;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.fs-table tbody tr:hover {
+  background-color: #f8fafd;
+}
+
+.fs-item-dir {
+  cursor: pointer;
+  color: var(--primary-color);
+  font-weight: 500;
+}
+
+.fs-item-dir:hover {
+  text-decoration: underline;
+}
+
+.fs-empty-msg {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 2rem !important;
+}

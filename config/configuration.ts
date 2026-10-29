@@ -33,10 +33,13 @@ export interface SystemConfiguration {
   // 9. Sottodirectory standard da creare per robot [opzionali] (RF-ROB-009, RF-SRVFS-007)
   standardSubdirectories?: string[];
 
-  // 10. Modalità di registrazione: rigorosa o differita (§8.1, §11.3)
+  // 10. Permessi di accesso per le directory dei robot [opzionali] (RNF-FS-001, §11.1)
+  serverDirectoryPermissions?: string;
+
+  // 11. Modalità di registrazione: rigorosa o differita (§8.1, §11.3)
   registrationMode: "rigorosa" | "differita";
 
-  // 11. Politica di conservazione degli eventi di audit (in giorni) (§10.4, RNF-SEC-009, §11.1)
+  // 12. Politica di conservazione degli eventi di audit (in giorni) (§10.4, RNF-SEC-009, §11.1)
   auditLogRetentionDays: number;
 
   // Default unico ammesso: porta SSH 22 (RF-ROB-005)
@@ -106,6 +109,10 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     ? env["MOLIRIS_STANDARD_SUBDIRS"].split(",").map(s => s.trim()).filter(Boolean)
     : undefined;
 
+  const serverDirectoryPermissions = env["MOLIRIS_DIR_PERMISSIONS"]
+    ? env["MOLIRIS_DIR_PERMISSIONS"].trim()
+    : undefined;
+
   // L'unico default ammesso dalla SRS è la porta SSH 22 (RF-ROB-005)
   const defaultSshPort = env["MOLIRIS_DEFAULT_SSH_PORT"] && !isNaN(Number(env["MOLIRIS_DEFAULT_SSH_PORT"]))
     ? Number(env["MOLIRIS_DEFAULT_SSH_PORT"])
@@ -126,6 +133,7 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     tlsCertPath,
     tlsKeyPath,
     standardSubdirectories,
+    serverDirectoryPermissions,
     registrationMode,
     auditLogRetentionDays,
     defaultSshPort,

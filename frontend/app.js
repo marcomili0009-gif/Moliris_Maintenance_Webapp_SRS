@@ -166,5 +166,112 @@ document.addEventListener("DOMContentLoaded", () => {
     loadFleetData();
   });
 
+  // --- Modulo Navigazione Filesystem Server (RF-SRVFS-002, RNF-UX-002/003) ---
+  const fsRobotIdInput = document.getElementById("fs-robot-id");
+  const btnFsLoad = document.getElementById("btn-fs-load");
+  const btnFsUp = document.getElementById("btn-fs-up");
+  const fsCurrentPathEl = document.getElementById("fs-current-path");
+  const fsTableBody = document.getElementById("fs-table-body");
+  const fsError = document.getElementById("fs-error");
+
+  let currentFsPath = "";
+
+  function formatBytes(bytes) {
+    if (bytes === null || bytes === undefined) return "-";
+    if (bytes < 1024) return `${bytes} B`;
+    const kb = bytes / 1024;
+    if (kb < 1024) return `${kb.toFixed(1)} KB`;
+    const mb = kb / 1024;
+    return `${mb.toFixed(1)} MB`;
+  }
+
+  function formatDate(isoDate) {
+    if (!isoDate) return "-";
+    const d = new Date(isoDate);
+    return d.toLocaleString("it-IT");
+  }
+
+  async function loadServerFilesystem(robotId, relativePath = "") {
+    fsError.classList.add("hidden");
+    fsTableBody.innerHTML = '<tr><td colspan="4" class="fs-empty-msg">Caricamento in corso...</td></tr>';
+
+    try {
+      const url = `/api/robots/${encodeURIComponent(robotId)}/fs/server/list?path=${encodeURIComponent(relativePath)}`;
+      const res = await apiRequest(url);
+      const data = await res.json();
+
+      if (!res.ok) {
+        fsError.textContent = data.message || "Impossibile accedere alla directory del robot.";
+        fsError.classList.remove("hidden");
+        fsTableBody.innerHTML = '<tr><td colspan="4" class="fs-empty-msg">Errore durante la lettura della directory.</td></tr>';
+        return;
+      }
+
+      currentFsPath = data.currentPath || "";
+      fsCurrentPathEl.textContent = `/${currentFsPath}`;
+
+      if (!data.items || data.items.length === 0) {
+        fsTableBody.innerHTML = '<tr><td colspan="4" class="fs-empty-msg">Directory vuota.</td></tr>';
+        return;
+      }
+
+      fsTableBody.innerHTML = "";
+      for (const item of data.items) {
+        const tr = document.createElement("tr");
+
+        const typeTd = document.createElement("td");
+        typeTd.textContent = item.type === "directory" ? "📁 [DIR]" : "📄 [FILE]";
+        tr.appendChild(typeTd);
+
+        const nameTd = document.createElement("td");
+        if (item.type === "directory") {
+          const a = document.createElement("span");
+          a.className = "fs-item-dir";
+          a.textContent = item.name;
+          a.addEventListener("click", () => {
+            const nextPath = currentFsPath ? `${currentFsPath}/${item.name}` : item.name;
+            loadServerFilesystem(robotId, nextPath);
+          });
+          nameTd.appendChild(a);
+        } else {
+          nameTd.textContent = item.name;
+        }
+        tr.appendChild(nameTd);
+
+        const sizeTd = document.createElement("td");
+        sizeTd.textContent = formatBytes(item.size);
+        tr.appendChild(sizeTd);
+
+        const dateTd = document.createElement("td");
+        dateTd.textContent = formatDate(item.modifiedAt);
+        tr.appendChild(dateTd);
+
+        fsTableBody.appendChild(tr);
+      }
+    } catch (err) {
+      fsError.textContent = "Errore durante la comunicazione con il server per la lettura directory.";
+      fsError.classList.remove("hidden");
+      fsTableBody.innerHTML = '<tr><td colspan="4" class="fs-empty-msg">Errore di connessione.</td></tr>';
+    }
+  }
+
+  btnFsLoad.addEventListener("click", () => {
+    const robotId = fsRobotIdInput.value.trim();
+    if (robotId) {
+      loadServerFilesystem(robotId, "");
+    }
+  });
+
+  btnFsUp.addEventListener("click", () => {
+    const robotId = fsRobotIdInput.value.trim();
+    if (!robotId || !currentFsPath) return;
+
+    // Calcola il percorso superiore senza mai uscire dalla root (RF-SRVFS-002)
+    const segments = currentFsPath.split("/").filter(Boolean);
+    segments.pop();
+    const parentPath = segments.join("/");
+    loadServerFilesystem(robotId, parentPath);
+  });
+
   initSession();
 });

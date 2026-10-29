@@ -9,8 +9,11 @@ import { MolirisLogger } from "../logging/logger.ts";
 import { SessionManager } from "./auth/session-manager.ts";
 import { type UserRepository, InMemoryUserRepository } from "./auth/user-repository.ts";
 import { type AuditRepository, InMemoryAuditRepository } from "../storage/audit-repository.ts";
+import { type RobotRepository, InMemoryRobotRepository } from "../storage/robot-repository.ts";
+import { ServerFilesystemService } from "../storage/server-fs.ts";
 import { AuthMiddleware } from "./auth/auth-middleware.ts";
 import { registerAuthRoutes } from "./auth/auth-routes.ts";
+import { registerServerFsRoutes } from "./server-fs-routes.ts";
 import { type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "./auth/permissions.ts";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -20,6 +23,8 @@ export interface ServerDependencies {
   sessionManager?: SessionManager;
   userRepository?: UserRepository;
   auditRepository?: AuditRepository;
+  robotRepository?: RobotRepository;
+  serverFsService?: ServerFilesystemService;
   roleMapping?: RolePermissionMapping;
 }
 
@@ -57,6 +62,10 @@ export function createServer(
     roleMapping
   );
 
+  // Dipendenze di persistenza e filesystem
+  const robotRepository = deps.robotRepository || new InMemoryRobotRepository();
+  const serverFsService = deps.serverFsService || new ServerFilesystemService(config.serverFilesystemRoot, auditRepository, logger);
+
   // Registrazione endpoint di autenticazione e autorizzazione (RF-AUTH-001..006)
   registerAuthRoutes(
     app,
@@ -65,6 +74,16 @@ export function createServer(
     auditRepository,
     authMiddleware,
     logger
+  );
+
+  // Registrazione endpoint filesystem server (RF-SRVFS-002, RF-SRVFS-005)
+  registerServerFsRoutes(
+    app,
+    serverFsService,
+    robotRepository,
+    sessionManager,
+    authMiddleware,
+    roleMapping
   );
 
   // Singolo endpoint tecnico di verifica dello stato del servizio (senza dati sensibili)

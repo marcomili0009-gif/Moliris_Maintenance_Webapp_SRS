@@ -46,9 +46,9 @@ Il presente registro traccia le decisioni progettuali aperte, delegate alla conf
 ## 6. Sezione 11 – Requisiti da Definire in Fase di Progettazione
 
 ### 11.1 Organizzazione del Filesystem Server
-- **Percorso assoluto della root**: APERTA. Requisiti: RF-SRVFS-001, RNF-MNT-001. Decisione: [Valore da definire].
-- **Nomi e finalità delle sottodirectory standard**: APERTA. Requisiti: RF-ROB-009, RF-SRVFS-007. Decisione: [Valore da definire].
-- **Permessi di accesso alle directory**: APERTA. Requisiti: RNF-FS-001, RNF-SEC-005. Decisione: [Valore da definire].
+- **Percorso assoluto della root**: APERTA. Requisiti: RF-SRVFS-001, RNF-MNT-001. Decisione: [Valore da definire: caricato obbligatoriamente all'avvio fail-closed tramite la variabile di configurazione `MOLIRIS_FS_ROOT` senza alcun default inventato].
+- **Nomi e finalità delle sottodirectory standard**: APERTA. Requisiti: RF-ROB-009, RF-SRVFS-007. Decisione: [Valore da definire: rese configurabili tramite `MOLIRIS_STANDARD_SUBDIRS` con default vuoto per non creare sottodirectory non volute].
+- **Permessi di accesso alle directory**: APERTA. Requisiti: RNF-FS-001, RNF-SEC-005. Decisione: [Valore da definire: parametro reso configurabile tramite `MOLIRIS_DIR_PERMISSIONS` (es. `0750` o `0700`); in assenza si applicano i permessi predefiniti del sistema operativo Ubuntu senza forzature arbitrarie].
 - **Politica di conservazione dei file**: APERTA. Requisiti: §10.3, RNF-MNT-001. Decisione: [Valore da definire].
 - **Eventuali quote per robot o per utente**: APERTA. Requisiti: RF-TRF-014, RNF-MNT-001. Decisione: [Valore da definire].
 
@@ -62,7 +62,8 @@ Il presente registro traccia le decisioni progettuali aperte, delegate alla conf
 ### 11.3 Registrazione dei Robot
 - **Obbligatorietà della verifica SSH**: APERTA (Default: Rigorosa, configurabile). Requisiti: §8.1, RF-ROB-007. Decisione: [Valore da definire].
 - **Regole definitive per l'unicità dei robot**: APERTA. Requisiti: RF-ROB-006, §8.2. Decisione: [Valore da definire].
-- **Politica in caso di directory già esistente**: APERTA. Requisiti: RF-ROB-009, RF-SRVFS-006, RNF-FS-004. Decisione: [Valore da definire].
+- **Politica in caso di directory già esistente**: APERTA. Requisiti: RF-ROB-009, RF-SRVFS-006, RNF-FS-004. Decisione: [Valore da definire: `ServerFilesystemService` rileva e restituisce l'esito distinto `created: false, alreadyExisted: true` senza toccare o svuotare i file preesistenti; la decisione di ammettere o rifiutare la registrazione sarà configurabile nel Prompt 6].
+- **Caratteri ammessi per lo username**: APERTA. Requisiti: RF-ROB-005, RNF-SEC-005. Decisione: [Valore da definire: la SRS non prescrive un set di caratteri ristretto per lo username; la protezione del filesystem contro path traversal e injection è garantita dal validatore canonical `resolveRobotPath`].
 - **Gestione del cambio di username**: APERTA. Requisiti: §8.3. Decisione: [Valore da definire].
 - **Politica di disabilitazione e rimozione**: APERTA. Requisiti: RF-ROB-013, §8.4. Decisione: [Valore da definire].
 
@@ -76,7 +77,7 @@ Il presente registro traccia le decisioni progettuali aperte, delegate alla conf
 ### 11.5 Trasferimenti
 - **Dimensione massima dei file, se prevista**: APERTA. Requisiti: RF-TRF-004, RNF-MNT-001. Decisione: [Valore da definire].
 - **Numero massimo di trasferimenti simultanei**: APERTA. Requisiti: RF-TRF-012, RNF-PERF-003. Decisione: [Valore da definire].
-- **Politica di sovrascrittura**: APERTA. Requisiti: RF-TRF-011. Decisione: [Valore da definire].
+- **Politica di sovrascrittura**: APERTA. Requisiti: RF-TRF-011, RNF-FS-003. Decisione: [Valore da definire: il livello filesystem server blocca di default qualsiasi sovrascrittura accidentale se non specificato `overwrite: true`].
 - **Politica di ripresa dei trasferimenti**: APERTA. Requisiti: RF-TRF-010. Decisione: [Valore da definire].
 - **Algoritmo di checksum (SHA256, MD5)**: APERTA. Requisiti: RF-TRF-008. Decisione: [Valore da definire].
 - **Durata di conservazione dei file temporanei**: APERTA. Requisiti: RF-TRF-009, RNF-REL-005. Decisione: [Valore da definire].

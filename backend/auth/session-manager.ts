@@ -3,7 +3,7 @@
 
 import crypto from "crypto";
 import { type UserEntity } from "./user-models.ts";
-import { type AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS, hasPermission } from "./permissions.ts";
+import { AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS, hasPermission } from "./permissions.ts";
 
 export interface SessionData {
   sessionId: string;

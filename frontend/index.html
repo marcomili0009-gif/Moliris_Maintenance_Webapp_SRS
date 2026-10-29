@@ -64,6 +64,43 @@
             <div id="fleet-status-text" class="status-indicator">In attesa dei componenti della flotta...</div>
           </div>
         </div>
+
+        <!-- Componente Navigazione Filesystem Server (RF-SRVFS-002, RNF-UX-002/003) -->
+        <section id="fs-browser-section" class="fs-browser-card">
+          <div class="fs-header">
+            <h3>Esplora Filesystem Server del Robot</h3>
+            <div class="fs-robot-selector">
+              <label for="fs-robot-id">ID Robot:</label>
+              <input type="text" id="fs-robot-id" placeholder="es. robot_test_01" value="robot_test_01">
+              <button id="btn-fs-load" class="btn btn-secondary">Carica Directory</button>
+            </div>
+          </div>
+
+          <div class="fs-navigation-bar">
+            <button id="btn-fs-up" class="btn btn-secondary" title="Torna al livello superiore">⬆ Torna su</button>
+            <span class="fs-breadcrumb">Percorso: <strong id="fs-current-path">/</strong></span>
+          </div>
+
+          <div id="fs-error" class="error-message hidden"></div>
+
+          <div class="fs-table-container">
+            <table class="fs-table">
+              <thead>
+                <tr>
+                  <th style="width: 10%;">Tipo</th>
+                  <th style="width: 50%;">Nome</th>
+                  <th style="width: 20%;">Dimensione</th>
+                  <th style="width: 20%;">Ultima Modifica</th>
+                </tr>
+              </thead>
+              <tbody id="fs-table-body">
+                <tr>
+                  <td colspan="4" class="fs-empty-msg">Nessuna directory caricata. Inserire un ID robot e premere 'Carica Directory'.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
       </main>
     </section>
   </div>
