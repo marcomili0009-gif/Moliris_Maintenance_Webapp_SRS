@@ -7,7 +7,7 @@ import { fileURLToPath } from "url";
 import { type SystemConfiguration, loadAndValidateConfig } from "../config/configuration.ts";
 import { MolirisLogger } from "../logging/logger.ts";
 import { SessionManager } from "./auth/session-manager.ts";
-import { type UserRepository, InMemoryUserRepository } from "./auth/user-repository.ts";
+import { type UserRepository, InMemoryUserRepository, MongoUserRepository } from "./auth/user-repository.ts";
 import { type AuditRepository, InMemoryAuditRepository } from "../storage/audit-repository.ts";
 import { type RobotRepository, InMemoryRobotRepository, MongoRobotRepository } from "../storage/robot-repository.ts";
 import { MongoClient } from "mongodb";
@@ -389,7 +389,15 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
       credentialProvider = new InMemoryCredentialProvider(config.allowedSshAuthMethods);
     }
 
-    const server = createServer(config, logger, { robotRepository, credentialProvider, db });
+    const userRepository = new MongoUserRepository(db);
+    await userRepository.initIndexes();
+
+    const server = createServer(config, logger, {
+      robotRepository,
+      credentialProvider,
+      userRepository,
+      db
+    });
 
     server.addHook("onClose", async () => {
       await mongoClient?.close();

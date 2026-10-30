@@ -261,6 +261,7 @@ execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${keyP}" -out "${certP}" -
 });
 
 const testConfig: SystemConfiguration = {
+  credentialProviderType: "in-memory",
   serverFilesystemRoot: testFsRoot,
   pollingIntervalSeconds: 10,
   sshConnectionTimeoutMs: 5000,

@@ -156,9 +156,8 @@ export class RobotConnectionManager {
 
             hostKeyError = new MolirisAppError(
               ErrorCode.SSH_HOST_KEY_INVALID,
-              "Verifica chiave host fallita: impronta digitale o chiave host non riconosciuta.",
-              undefined,
-              `Discrepanza host key per robot '${robot.id}': attesa '${exp}', ricevuta '${rec}'. Richiede intervento amministrativo.`
+              `Discrepanza host key per robot '${robot.id}': attesa '${exp}', ricevuta '${rec}'. Richiede intervento amministrativo.`,
+              "Verifica chiave host fallita: impronta digitale o chiave host non riconosciuta."
             );
           }
           return matched;

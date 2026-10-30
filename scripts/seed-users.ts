@@ -193,14 +193,17 @@ if (process.argv[1] && process.argv[1].endsWith("seed-users.ts")) {
     }
   }
 
-  const mongoUri = process.env["MOLIRIS_MONGO_URI"] || process.env["MOLIRIS_MONGODB_URI"] || "mongodb://127.0.0.1:27017";
-  const dbName = process.env["MOLIRIS_DB_NAME"] || "moliris_db";
+  const mongoUri = process.env["MOLIRIS_MONGODB_URI"];
+
+  if (!mongoUri) {
+    throw new Error("Variabile MOLIRIS_MONGODB_URI non configurata");
+  }
 
   const client = new MongoClient(mongoUri);
   try {
     const passwords = loadSeedPasswords({ passwordFile: passwordFileArg });
     await client.connect();
-    const db = client.db(dbName);
+    const db = client.db();
     const repo = new MongoUserRepository(db);
     await repo.initIndexes();
     await seedInitialUsers(repo, passwords.operatorPassword, passwords.adminPassword);

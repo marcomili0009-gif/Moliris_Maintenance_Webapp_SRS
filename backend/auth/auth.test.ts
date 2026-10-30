@@ -29,6 +29,7 @@ execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${keyPath}" -out "${certPa
 });
 
 const config: SystemConfiguration = {
+  credentialProviderType: "in-memory",
   serverFilesystemRoot: "/home/robots",
   pollingIntervalSeconds: 10,
   sshConnectionTimeoutMs: 5000,

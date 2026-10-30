@@ -277,13 +277,13 @@ try {
 
   // Case-sensitive OpenSSH check: modifica case della parte base64 deve fallire
   const lowerBase64 = "SHA256:" + computedFp.sha256Base64.toLowerCase().replace(/=+$/, "");
-  const caseCheck = hostVerifier.verify("10.0.0.1", 22, dummyServerKey, { fingerprint: lowerBase64 });
+  const caseCheck = hostVerifier.verify("10.0.0.1", 22, dummyServerKey, { fingerprint: lowerBase64, strictHostKeyChecking: true });
   if (computedFp.openSshFormat !== lowerBase64) {
     assert.strictEqual(caseCheck.matched, false, "Il confronto OpenSSH base64 deve essere case-sensitive");
   }
 
   // Verifica esito strutturato con expectedFingerprint e receivedFingerprint
-  const mismatchResult = hostVerifier.verify("10.0.0.1", 22, dummyServerKey, { fingerprint: "SHA256:0000000000000000000000000000000000000000000" });
+  const mismatchResult = hostVerifier.verify("10.0.0.1", 22, dummyServerKey, { fingerprint: "SHA256:0000000000000000000000000000000000000000000", strictHostKeyChecking: true });
   assert.strictEqual(mismatchResult.matched, false);
   assert.strictEqual(mismatchResult.expectedFingerprint, "SHA256:0000000000000000000000000000000000000000000");
   assert.strictEqual(mismatchResult.receivedFingerprint, computedFp.openSshFormat);
@@ -303,7 +303,7 @@ try {
   // =========================================================================
   console.log("  [7/9] Test Attività Qualificata Sessione e Tetto Assoluto...");
   const sManager = new SessionManager(10, 20); // 10 min inattività, 20 min assoluto
-  const userEntity = { id: "u_session_test", username: "session_user", roles: ["operatore"], enabled: true, createdAt: new Date(), updatedAt: new Date() };
+  const userEntity = { id: "u_session_test", username: "session_user", passwordHash: "test-hash", roles: ["operatore"], enabled: true, createdAt: new Date(), updatedAt: new Date() };
   const sData = sManager.createSession(userEntity);
 
   // validate() non rinnova lastActivityAt
@@ -379,7 +379,7 @@ try {
     remoteUsername: "operator",
     sshAuthMethod: "password",
     credentialReference: "vault://test",
-    hostKeyVerification: { fingerprint: "SHA256:abc" },
+    hostKeyVerification: { fingerprint: "SHA256:abc", strictHostKeyChecking: true },
     stateFilePaths: ["/tmp/s.txt"],
     serverDirectoryPath: "/srv/operator",
     anagraphicState: "attivo",

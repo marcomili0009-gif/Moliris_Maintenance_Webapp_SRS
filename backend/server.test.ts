@@ -23,6 +23,7 @@ execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${keyPath}" -out "${certPa
 
 // Test 1: Fallimento se certificati TLS sono mancanti
 const invalidConfig: SystemConfiguration = {
+  credentialProviderType: "in-memory",
   serverFilesystemRoot: "/home/robots",
   pollingIntervalSeconds: 10,
   sshConnectionTimeoutMs: 5000,

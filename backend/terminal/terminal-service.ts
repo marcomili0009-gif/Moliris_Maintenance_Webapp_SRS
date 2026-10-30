@@ -416,7 +416,7 @@ export class TerminalService {
         if (!isAlive) {
           clearInterval(pingTimer);
           session.pingTimer = undefined;
-          this.logger.warn(`Heartbeat WebSocket non ricevuto per sessione terminale '${sessionId}'`);
+          this.logger.error(`Heartbeat WebSocket non ricevuto per sessione terminale '${sessionId}'`);
           try {
             socket.terminate();
           } catch {}
