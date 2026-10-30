@@ -173,7 +173,7 @@ Le scelte lasciate aperte dalla SRS (§11) sono state formalizzate nelle seguent
 - **Politica timeout e chiusura sessione terminale**: CONFERMATO. Requisiti: RF-SSH-005, §6.4 passo 7. Parametro `MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN`. Rilascio a zero risorse residue per tutte le 7 cause di chiusura.
 - **Condivisione sessioni terminale**: APERTA. Requisiti: RF-SSH-006, RNF-SEC-007. Politica fail-closed `DefaultDenyTerminalSessionSharingPolicy` che nega qualsiasi accesso a sessioni altrui e registra l'evento nell'audit.
 - **Tecnologia canale tempo reale**: CONFERMATA. Requisiti: RF-SSH-004, §5.4. WebSocket su HTTPS (WSS) con autenticazione preliminare del cookie di sessione.
-- **Libreria terminale frontend**: CONFERMATA. Requisiti: RF-SSH-003, RNF-UX-004. `xterm` v5.3.0 e addon fit in locale offline per Google Chrome.
+- **Libreria terminale frontend**: CONFERMATA. Requisiti: RF-SSH-003, RNF-UX-004. `@xterm/xterm` v5.3.0 e addon fit in locale offline per Google Chrome.
 - **Provisioning utenti**: APERTA (PROPOSTA DA CONFERMARE). Requisiti: RF-AUTH-001, RNF-SEC-002. Script `scripts/seed-users.ts` con file password 0600 o integrazione systemd `LoadCredential=`. Zero password di default nel codice.
 
 ### 11.7 Prestazioni e Capacità
