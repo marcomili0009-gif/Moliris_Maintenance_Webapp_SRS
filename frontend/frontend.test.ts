@@ -667,13 +667,16 @@ const isOverwriteModalClosed = await evaluateInBrowser<boolean>(
 assert.strictEqual(isOverwriteModalClosed, true, "Il modal di sovrascrittura deve chiudersi all'annullamento");
 
 // Chiusura risorse di test
+console.log("  -> Chiusura CDP WebSocket...");
 cdpWs.close();
 
+console.log("  -> Chiusura Chrome process...");
 if (chromeProcess.pid !== undefined) {
   const chromeClosed = new Promise<void>((resolve) => {
     if (chromeProcess.exitCode !== null || chromeProcess.signalCode !== null) {
       resolve();
     } else {
+      chromeProcess.once("exit", () => resolve());
       chromeProcess.once("close", () => resolve());
     }
   });
@@ -686,10 +689,16 @@ if (chromeProcess.pid !== undefined) {
     }
   }
 
-  await chromeClosed;
+  await Promise.race([
+    chromeClosed,
+    new Promise<void>((r) => setTimeout(r, 2000)),
+  ]);
 }
 
+console.log("  -> Chiusura server Fastify...");
+(server.server as any).closeAllConnections?.();
 await server.close();
+console.log("  -> Pulizia directory temporanee...");
 fs.rmSync(tmpDir, { recursive: true, force: true });
 fs.rmSync(chromeUserDataDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 

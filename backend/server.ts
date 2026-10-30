@@ -8,7 +8,7 @@ import { type SystemConfiguration, loadAndValidateConfig } from "../config/confi
 import { MolirisLogger } from "../logging/logger.ts";
 import { SessionManager } from "./auth/session-manager.ts";
 import { type UserRepository, InMemoryUserRepository } from "./auth/user-repository.ts";
-import { type AuditRepository, InMemoryAuditRepository } from "../storage/audit-repository.ts";
+import { type AuditRepository, InMemoryAuditRepository, MongoAuditRepository } from "../storage/audit-repository.ts";
 import { type RobotRepository, InMemoryRobotRepository, MongoRobotRepository } from "../storage/robot-repository.ts";
 import { MongoClient } from "mongodb";
 import { ServerFilesystemService } from "../storage/server-fs.ts";
@@ -145,7 +145,7 @@ export function createServer(
   );
 
   // Servizio di monitoraggio remoto (Prompt 7, RF-MON-001..006, §5.3, §11.4)
-  const stateFileParser = deps.stateFileParser || new ProvisionalDevelopmentStateFileParser();
+  const stateFileParser = deps.stateFileParser || new ProvisionalDevelopmentStateFileParser(config.stateFileFormat, config.stateFileSchemaPath);
   const remoteRobotReader = deps.remoteRobotReader || new RemoteRobotReader(
     connectionManager,
     config.sshConnectionTimeoutMs,
@@ -267,6 +267,7 @@ export function createServer(
   app.decorate("transferService", transferService);
   app.addHook("onClose", async () => {
     monitoringService.stopPolling();
+    transferService.stopCleanupTask();
     await terminalService.closeAll("SERVICE_SHUTDOWN");
     await connectionManager.closeAll();
   });
@@ -376,6 +377,9 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
     const robotRepository = new MongoRobotRepository(db);
     await robotRepository.initIndexes();
 
+    const auditRepository = new MongoAuditRepository(db);
+    await auditRepository.initIndexes(config.auditLogRetentionDays);
+
     let credentialProvider: CredentialProvider;
     if (config.credentialProviderType === "mongo") {
       const masterKey = loadMasterKeyFromFile(config.masterKeyFilePath!);
@@ -389,7 +393,7 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
       credentialProvider = new InMemoryCredentialProvider(config.allowedSshAuthMethods);
     }
 
-    const server = createServer(config, logger, { robotRepository, credentialProvider, db });
+    const server = createServer(config, logger, { robotRepository, auditRepository, credentialProvider, db });
 
     server.addHook("onClose", async () => {
       await mongoClient?.close();

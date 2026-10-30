@@ -95,16 +95,44 @@ export class ServerFilesystemService {
       throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso non consentito: attraversamento directory non autorizzato.");
     }
 
-    // 4. Risoluzione normalizzata rispetto alla directory del robot
+    // 4. Rifiuto di nomi riservati (.tmp, .moliris_tmp o percorsi codificati verso .tmp)
+    let decodedSubPath = subPath;
+    try {
+      decodedSubPath = decodeURIComponent(subPath);
+    } catch {}
+
+    const reservedNames = [".tmp", ".moliris_tmp"];
+    const segments = decodedSubPath.split(/[\\/]+/).filter(Boolean);
+    for (const seg of segments) {
+      const lower = seg.toLowerCase();
+      if (reservedNames.includes(lower) || lower === ".tmp" || lower.startsWith(".tmp")) {
+        await this.recordPathTraversalViolation(robot.id, subPath, "RESERVED_DIRECTORY_ACCESS_DENIED");
+        throw new MolirisAppError(
+          ErrorCode.SERVER_DIR_INACCESSIBLE,
+          "Percorso non consentito: accesso a nomi o directory riservate negato."
+        );
+      }
+    }
+
+    // 5. Risoluzione normalizzata rispetto alla directory del robot
     const resolvedPath = path.resolve(robotDir, subPath);
 
-    // 5. Verifica che il percorso normalizzato inizi tassativamente con la directory del robot
+    // 6. Verifica che il percorso normalizzato inizi tassativamente con la directory del robot
     if (!resolvedPath.startsWith(robotDir + path.sep) && resolvedPath !== robotDir) {
       await this.recordPathTraversalViolation(robot.id, subPath, "PATH_ESCAPED_ROBOT_DIR");
       throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso non consentito: accesso all'esterno della directory del robot negato.");
     }
 
-    // 6. Verifica link simbolici: se il file/directory esiste, il percorso reale (canonical) deve essere interno
+    // 7. Rifiuto se il percorso normalizzato punta all'interno di .tmp o directory riservata
+    const tempDir = path.join(robotDir, ".tmp");
+    const oldTempDir = path.join(robotDir, ".moliris_tmp");
+    if (resolvedPath === tempDir || resolvedPath.startsWith(tempDir + path.sep) ||
+        resolvedPath === oldTempDir || resolvedPath.startsWith(oldTempDir + path.sep)) {
+      await this.recordPathTraversalViolation(robot.id, subPath, "RESERVED_DIRECTORY_ACCESS_DENIED");
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso non consentito: accesso alla directory temporanea riservata negato.");
+    }
+
+    // 8. Verifica link simbolici: se il file/directory esiste, il percorso reale (canonical) deve essere interno e non puntare a .tmp
     try {
       if (fs.existsSync(resolvedPath)) {
         const realTarget = await fs.promises.realpath(resolvedPath);
@@ -116,10 +144,15 @@ export class ServerFilesystemService {
           await this.recordPathTraversalViolation(robot.id, subPath, "SYMLINK_ESCAPED_ROOT");
           throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso non consentito: collegamento simbolico esterno non autorizzato.");
         }
+        if (realTarget === tempDir || realTarget.startsWith(tempDir + path.sep) ||
+            realTarget === oldTempDir || realTarget.startsWith(oldTempDir + path.sep)) {
+          await this.recordPathTraversalViolation(robot.id, subPath, "RESERVED_DIRECTORY_ACCESS_DENIED");
+          throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso non consentito: collegamento simbolico verso directory riservata negato.");
+        }
       }
     } catch (err: any) {
       if (err instanceof MolirisAppError) throw err;
-      // Se il file non esiste ancora (es. creazione nuovo file), la verifica sintattica del punto 5 è già valida
+      // Se il file non esiste ancora (es. creazione nuovo file), la verifica sintattica del punto 6 è già valida
     }
 
     return resolvedPath;
@@ -150,8 +183,8 @@ export class ServerFilesystemService {
     const standardSubdirectoriesCreated: string[] = [];
     let alreadyExisted = false;
 
-    // Convalida permessi cartella se configurati (§11.1, RNF-FS-001)
-    const mode = options?.directoryPermissions ? parseInt(options.directoryPermissions, 8) : undefined;
+    // Convalida permessi cartella se configurati (§11.1, RNF-FS-001, default produzione 0750)
+    const mode = options?.directoryPermissions ? parseInt(options.directoryPermissions, 8) : 0o750;
 
     try {
       if (fs.existsSync(robotDir)) {
@@ -162,10 +195,12 @@ export class ServerFilesystemService {
         createdDirectories.push(robotDir);
       }
 
-      // Creazione idempotente delle sottodirectory standard opzionali (RF-ROB-009, RF-SRVFS-007)
-      if (options?.standardSubdirectories && options.standardSubdirectories.length > 0) {
-        for (const subName of options.standardSubdirectories) {
-          const subPath = await this.resolveRobotPath(robot, subName);
+      // Creazione idempotente delle sottodirectory standard (RF-ROB-009, RF-SRVFS-007)
+      // Baseline decision: logs, configs, backups (finalità DA DEFINIRE DAL COMMITTENTE in DECISIONS.md)
+      const subdirs = options?.standardSubdirectories ?? ["logs", "configs", "backups"];
+      if (subdirs && subdirs.length > 0) {
+        for (const subName of subdirs) {
+          const subPath = path.join(robotDir, subName);
           if (!fs.existsSync(subPath)) {
             await fs.promises.mkdir(subPath, { recursive: true, mode });
             createdDirectories.push(subPath);
@@ -257,6 +292,11 @@ export class ServerFilesystemService {
       const items: ServerFileItem[] = [];
 
       for (const entry of entries) {
+        // La directory nascosta .tmp e nomi riservati non compaiono negli elenchi (RNF-SEC-008, §11.1)
+        if (entry.name === ".tmp" || entry.name === ".moliris_tmp" || entry.name.startsWith(".")) {
+          continue;
+        }
+
         const fullItemPath = path.join(targetDir, entry.name);
         try {
           const itemStat = await fs.promises.stat(fullItemPath);
@@ -344,9 +384,10 @@ export class ServerFilesystemService {
 
   /**
    * Crea l'area temporanea isolata per il robot con permessi ristretti (RNF-SEC-008, RF-TRF-009).
+   * Utilizza la directory nascosta riservata .tmp con permessi stretti 0700.
    */
   public async ensureTempDirectory(robot: RobotEntity): Promise<string> {
-    const tempDir = path.join(robot.serverDirectoryPath, ".moliris_tmp");
+    const tempDir = path.join(robot.serverDirectoryPath, ".tmp");
     if (!fs.existsSync(tempDir)) {
       await fs.promises.mkdir(tempDir, { recursive: true, mode: 0o700 });
     }

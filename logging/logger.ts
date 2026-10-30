@@ -38,6 +38,16 @@ export class MolirisLogger {
     }));
   }
 
+  public warn(message: string, meta?: Record<string, unknown>): void {
+    const sanitizedMeta = meta ? JSON.parse(redactSensitiveData(JSON.stringify(meta))) : undefined;
+    console.warn(JSON.stringify({
+      level: "WARN",
+      timestamp: new Date().toISOString(),
+      message: redactSensitiveData(message),
+      meta: sanitizedMeta,
+    }));
+  }
+
   public error(message: string, diagnosticDetail?: string, meta?: Record<string, unknown>): void {
     const sanitizedMeta = meta ? JSON.parse(redactSensitiveData(JSON.stringify(meta))) : undefined;
     console.error(JSON.stringify({

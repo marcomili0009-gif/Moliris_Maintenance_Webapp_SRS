@@ -1405,9 +1405,10 @@ document.addEventListener("DOMContentLoaded", () => {
         fsRemoteTableBody.appendChild(tr);
       }
 
-      if (data.truncated) {
+      if (data.truncated || data.isTruncated) {
+        const count = data.items ? data.items.length : 0;
         const truncTr = document.createElement("tr");
-        truncTr.innerHTML = '<td colspan="5" style="text-align: center; color: #b06000; font-size: 0.85rem; font-style: italic; background-color: #fff9e6;">⚠️ Elenco parziale: superato il limite massimo di elementi configurato per singola directory (RNF-PERF-002).</td>';
+        truncTr.innerHTML = `<td colspan="5" style="text-align: center; color: #b06000; font-size: 0.85rem; font-weight: bold; background-color: #fff9e6;">⚠️ elenco incompleto: ${count} elementi mostrati</td>`;
         fsRemoteTableBody.appendChild(truncTr);
       }
     } catch (err) {
@@ -1693,6 +1694,7 @@ document.addEventListener("DOMContentLoaded", () => {
             <div class="transfer-card-stats">
               <span>${StateFormatter.formatBytes(trf.transferredBytes)} / ${trf.totalBytes ? StateFormatter.formatBytes(trf.totalBytes) : 'dim. sconosciuta'} (${percent})</span>
               <span>${speed} ${eta ? '| ' + eta : ''}</span>
+              ${trf.integrityLabel ? `<span class="transfer-integrity-badge" style="font-weight: 500; color: #1e40af;">🛡️ ${StateFormatter.escapeHtml(trf.integrityLabel)}</span>` : ''}
               ${trf.checksum ? `<span title="Checksum ${trf.checksumAlgorithm || ''}">Digest: ${trf.checksum.substring(0, 10)}...</span>` : ''}
               ${trf.error ? `<span style="color: #dc2626; width: 100%; margin-top: 0.25rem;">Errore: ${StateFormatter.escapeHtml(trf.error)}</span>` : ''}
             </div>
@@ -1716,9 +1718,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
       transfersActiveCount.textContent = activeCount;
 
-      // Gestione dinamica dell'intervallo di polling
+      // Gestione dinamica dell'intervallo di polling configurabile (PROPOSTA DA CONFERMARE, default 1000ms)
+      const pollMs = window.MOLIRIS_TRANSFER_POLL_INTERVAL_MS || 1000;
       if (activeCount > 0 && !transfersPollingInterval) {
-        transfersPollingInterval = setInterval(loadTransfersList, 1500);
+        transfersPollingInterval = setInterval(loadTransfersList, pollMs);
       } else if (activeCount === 0 && transfersPollingInterval) {
         clearInterval(transfersPollingInterval);
         transfersPollingInterval = null;

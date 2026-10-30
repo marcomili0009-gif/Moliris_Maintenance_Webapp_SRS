@@ -78,6 +78,7 @@ const openHandles = new Map<string, {
   bytesTransferred: number;
   syntheticLarge: boolean;
 }>();
+const writtenFileSizes = new Map<string, number>();
 let handleCounter = 0;
 
 const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) => {
@@ -116,7 +117,18 @@ const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) =>
         });
 
         sftp.on("STAT", (reqid, p) => {
-          if (p.includes("synthetic_large_1gb")) {
+          const normP = path.posix.normalize(p || "");
+          if (writtenFileSizes.has(normP)) {
+            return sftp.attrs(reqid, {
+              mode: 0o100644,
+              size: writtenFileSizes.get(normP)!,
+              uid: 1000,
+              gid: 1000,
+              atime: Math.floor(Date.now() / 1000),
+              mtime: Math.floor(Date.now() / 1000),
+            } as any);
+          }
+          if (normP.includes("synthetic_large_1gb")) {
             sftp.attrs(reqid, {
               mode: 0o100644,
               size: ONE_GIB_PLUS,
@@ -125,7 +137,7 @@ const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) =>
               atime: Math.floor(Date.now() / 1000),
               mtime: Math.floor(Date.now() / 1000),
             } as any);
-          } else {
+          } else if (normP.includes("synthetic_file.bin") || normP.includes("status.txt")) {
             sftp.attrs(reqid, {
               mode: 0o100644,
               size: 1024 * 1024,
@@ -134,6 +146,8 @@ const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) =>
               atime: Math.floor(Date.now() / 1000),
               mtime: Math.floor(Date.now() / 1000),
             } as any);
+          } else {
+            sftp.status(reqid, 2 /* SSH_FX_NO_SUCH_FILE */);
           }
         });
 
@@ -182,17 +196,28 @@ const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) =>
         });
 
         sftp.on("CLOSE", (reqid, handle) => {
-          openHandles.delete(handle.toString());
+          const h = openHandles.get(handle.toString());
+          if (h) {
+            writtenFileSizes.set(path.posix.normalize(h.filePath), h.bytesTransferred);
+            openHandles.delete(handle.toString());
+          }
           sftp.status(reqid, 0 /* OK */);
         });
 
         sftp.on("FSETSTAT", (reqid) => sftp.status(reqid, 0 /* OK */));
         sftp.on("SETSTAT", (reqid) => sftp.status(reqid, 0 /* OK */));
-        sftp.on("RENAME", (reqid) => {
+        sftp.on("RENAME", (reqid, oldp, newp) => {
+          const normOld = path.posix.normalize(oldp);
+          const normNew = path.posix.normalize(newp);
+          if (writtenFileSizes.has(normOld)) {
+            writtenFileSizes.set(normNew, writtenFileSizes.get(normOld)!);
+            writtenFileSizes.delete(normOld);
+          }
           sftp.status(reqid, 0 /* OK */);
         });
 
-        sftp.on("REMOVE", (reqid) => {
+        sftp.on("REMOVE", (reqid, p) => {
+          writtenFileSizes.delete(path.posix.normalize(p));
           sftp.status(reqid, 0 /* OK */);
         });
       });
@@ -226,6 +251,7 @@ const perfConfig: SystemConfiguration = {
   transferChunkSizeBytes: 64 * 1024,
   transferChecksumAlgorithm: "sha256",
   transferOverwritePolicy: "sovrascrivi",
+  robotNonAtomicReplace: true,
 };
 
 const logger = new MolirisLogger();
@@ -508,7 +534,7 @@ console.log("  -> Test RNF-PERF-005 / §12 punto 18: Registrazione multi-device 
 
 const diverseDevices = [
   {
-    id: "device_agv_indoor",
+    id: "device-agv-indoor",
     displayName: "AGV Navigatore Magazzino v2",
     host: "127.0.0.1",
     sshPort: sftpPort,
@@ -521,7 +547,7 @@ const diverseDevices = [
     customParameters: { chassisModel: "AGV-M400", batteryType: "LiFePO4-48V", sensorsCount: 16 },
   },
   {
-    id: "device_drone_inspector",
+    id: "device-drone-inspector",
     displayName: "Drone Ispettore Aereo ARM64",
     host: "127.0.0.1",
     sshPort: sftpPort,
@@ -534,7 +560,7 @@ const diverseDevices = [
     customParameters: { arch: "aarch64", rotorCount: 6, maxPayloadKg: 2.5 },
   },
   {
-    id: "device_arm_6dof",
+    id: "device-arm-6dof",
     displayName: "Braccio Robotico Industriale 6-DOF RTOS",
     host: "127.0.0.1",
     sshPort: sftpPort,

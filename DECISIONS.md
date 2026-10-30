@@ -1,151 +1,270 @@
-# Registro delle Decisioni Architetturali e Scelte Aperte (SRS v1.0)
+# Registro delle Decisioni Architetturali, Parametri di Configurazione e Scelte Aperte (SRS v1.0)
 
-Il presente registro traccia le decisioni progettuali aperte, delegate alla configurazione o in attesa di definizione conforme alle regole del progetto (§11, §§8.1, 8.2).
-
----
-
-## 1. Stack Tecnologico di Progetto (Step 1)
-- **Stato**: CONFERMATO
-- **Decisione**:
-  - Backend: Node.js (TypeScript) con Fastify, `ssh2`, WebSocket (`@fastify/websocket`) e stream nativi con backpressure.
-  - Database: MongoDB (documentale, come indicato esemplificativamente in SRS §2.3, isolato dietro interfaccia repository).
-  - Frontend: React con TypeScript, Vite e `@xterm/xterm` per emulazione terminale in Google Chrome (§2.5).
-  - Canale di comunicazione: HTTPS e WSS verso il browser; SSH v2 e SFTP v3 verso i robot.
-- **Requisiti correlati**: §2.3, §2.4 (vincoli 3-5), §2.5, RF-SSH-004, RF-TRF-004/005, RNF-PERF-001..003.
+Il presente registro documenta in modo esaustivo tutte le variabili di configurazione dell'applicazione, le decisioni baseline confermate dal committente, la classificazione dei requisiti aperti della Sezione 11 (isolati e configurabili, §§11.1..11.7) e l'elenco formale delle proposte introdotte durante le attività correttive per colmare lacune di sicurezza e robustezza, contrassegnate come **PROPOSTA DA CONFERMARE**.
 
 ---
 
-## 2. Modalità di Registrazione Predefinita (§8.1)
-- **Stato**: CONFERMATO
-- **Decisione**: Modalità Rigorosa (il robot deve essere raggiungibile e verificato via SSH prima di completare la registrazione). La modalità Differita rimane selezionabile da configurazione.
-- **Requisiti correlati**: §8.1, RF-ROB-006, RF-ROB-007, RF-ROB-012, CA-ROB-003.
+## 1. Tabella Unica di Configurazione del Sistema (`MOLIRIS_*`)
+
+Tutti i parametri di runtime del sistema sono centralizzati nelle variabili d'ambiente `MOLIRIS_*`. I parametri obbligatori operano in modalità fail-closed all'avvio dell'applicazione (`loadAndValidateConfig`); i parametri facoltativi adottano valori di default improntati alla massima sicurezza e prudenza.
+
+| Variabile | Tipo | Valore di Riferimento / Default | Sorgente | Vincoli e Comportamento Fail-Closed | Riferimento SRS |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `MOLIRIS_FS_ROOT` | string | `/var/lib/moliris/server-fs` | Variabile d'ambiente | Obbligatoria. Percorso assoluto su filesystem locale. All'avvio in produzione (`NODE_ENV=production`), se i permessi sono più aperti di 0750 l'avvio fallisce in modalità fail-closed. | RF-SRVFS-001, RNF-MNT-001, §11.1 |
+| `MOLIRIS_POLLING_INTERVAL_SEC` | number | `60` (disabilitato se `<= 0`) | Variabile d'ambiente | Obbligatoria. Intervallo in secondi per il ciclo di interrogazione telemetria flotta. Se non configurata o `<= 0`, il polling periodico non viene avviato (fail-closed, CA-MON-002). | RF-MON-003, RNF-PERF-004, §11.4 |
+| `MOLIRIS_SSH_TIMEOUT_MS` | number | `10000` | Variabile d'ambiente | Obbligatoria. Timeout in millisecondi per handshake e connessioni SSH/SFTP verso i robot. Se assente o non numerico, avvio bloccato. | RF-TRF-013, RNF-MNT-001, §11.2 |
+| `MOLIRIS_SSH_CONNECTION_TIMEOUT_MS` | number | `10000` | Variabile d'ambiente | Opzionale. Alias compatibile di `MOLIRIS_SSH_TIMEOUT_MS` per timeout di connessione SSH/SFTP. | RF-TRF-013, RNF-MNT-001, §11.2 |
+| `MOLIRIS_MAX_TRF_PER_USER` | number | `2` | Variabile d'ambiente | Obbligatoria. Intero positivo `>= 1`. Limite di trasferimenti contemporanei per singolo utente. Al superamento scatta rifiuto immediato o coda. | RF-TRF-012, RNF-PERF-003, §11.5 |
+| `MOLIRIS_MAX_TRF_PER_ROBOT` | number | `2` | Variabile d'ambiente | Obbligatoria. Intero positivo `>= 1`. Limite di trasferimenti contemporanei verso lo stesso robot. Previene sovraccarichi hardware. | RF-TRF-012, RNF-PERF-003, §11.5 |
+| `MOLIRIS_MAX_TRF_SERVER` | number | `5` | Variabile d'ambiente | Obbligatoria. Intero positivo `>= 1`. Limite globale di trasferimenti contemporanei gestiti dal server. Previene esaurimento banda e I/O. | RF-TRF-012, RNF-PERF-003, §11.5 |
+| `MOLIRIS_TEMP_RETENTION_MIN` | number | `60` | Variabile d'ambiente | Obbligatoria. Intero positivo `>= 1`. Periodo di ritenzione prima della bonifica dei file orfani temporanei (.tmp) sul server. | RF-TRF-009, RNF-REL-004, RNF-REL-005, §11.5 |
+| `MOLIRIS_STATE_FILE_PATHS` | string | `/PERCORSO/DA/DEFINIRE/status.txt` | Variabile d'ambiente | Obbligatoria. Percorsi separati da virgola interrogati in sequenza sul robot; i percorsi del singolo robot hanno priorità di sostituzione. | RF-MON-001, §11.4 |
+| `MOLIRIS_STATE_FILE_FORMAT` | enum | `"auto"` (`"json"` \| `"keyvalue"`) | Variabile d'ambiente | Opzionale. Formato del file di stato: "auto" analizza il payload; "json" o "keyvalue" forzano il parser corrispondente. | RF-MON-002, §11.4 |
+| `MOLIRIS_STATE_FILE_SCHEMA` | string | `undefined` | Variabile d'ambiente | Opzionale. Percorso a schema JSON formale per validazione aggiuntiva del file di stato. | RF-MON-002, §11.4 |
+| `MOLIRIS_SESSION_TIMEOUT_MIN` | number | `30` | Variabile d'ambiente | Obbligatoria. Intero positivo `>= 1`. Minuti di inattività prima della scadenza della sessione utente. | RF-AUTH-006, RNF-SEC-004, §11.6 |
+| `MOLIRIS_SESSION_ABSOLUTE_MAX_MIN` | number | `undefined` | Variabile d'ambiente | Opzionale. Tetto massimo di durata assoluta della sessione indipendente dall'attività. Se configurato deve essere intero positivo. | RF-AUTH-006, §11.6 |
+| `MOLIRIS_TLS_CERT_PATH` | string | `/etc/moliris/certs/server.crt` | Variabile d'ambiente | Obbligatoria. Percorso al certificato X.509 valido per terminazione TLS/HTTPS e WSS. Avvio bloccato se il file non esiste. | RNF-SEC-001, §2.4 vincolo 3, §5.1 |
+| `MOLIRIS_TLS_KEY_PATH` | string | `/etc/moliris/certs/server.key` | Variabile d'ambiente | Obbligatoria. Percorso alla chiave privata TLS. Avvio bloccato se il file non esiste. Nessun segreto memorizzato in configurazione. | RNF-SEC-001, §2.4 vincolo 3, §5.1 |
+| `MOLIRIS_AUDIT_RETENTION_DAYS` | number | `365` | Variabile d'ambiente | Obbligatoria. Intero positivo `>= 1`. Durata conservazione log di audit in MongoDB tramite indice TTL dinamico su `timestamp`. | §10.4, RNF-SEC-009, §11.1 |
+| `MOLIRIS_REGISTRATION_MODE` | enum | `"rigorosa"` (`"differita"`) | Variabile d'ambiente | Obbligatoria. In modalità rigorosa il robot deve superare i 5 passi SSH; in differita viene registrato con stato `ssh_non_verificata`. | §8.1, §11.3, RF-ROB-006, RF-ROB-007 |
+| `MOLIRIS_ROBOT_USERNAME_UNIQUENESS` | enum | `"per_host"` (`"globale"`) | Variabile d'ambiente | Opzionale. Regola di unicità account robot. "per_host" ammette stesso username su host differenti; "globale" impone unicità assoluta. | §8.2, §11.3, RF-ROB-006 |
+| `MOLIRIS_CREDENTIAL_PROVIDER` | enum | `"mongo"` (`"in-memory"`) | Variabile d'ambiente | Opzionale. In ambiente di produzione (`NODE_ENV=production`) l'uso di "in-memory" è categoricamente vietato e blocca l'avvio. | RNF-SEC-002, §11.2 |
+| `MOLIRIS_MASTER_KEY_FILE` | string | `/etc/moliris/master.key` | Variabile d'ambiente | Obbligatoria se provider="mongo". File contenente chiave AES-256 a 32 byte con permessi POSIX 0600 di proprietà del processo. | RNF-SEC-002, §11.2 |
+| `MOLIRIS_MAX_FILE_SIZE_BYTES` | number | `undefined` | Variabile d'ambiente | Opzionale. Dimensione massima per singolo file trasferito. Se non configurato, nessun limite arbitrario imposto (supporto file >1 GB). | RF-TRF-004, §11.1, §11.5 |
+| `MOLIRIS_QUOTA_PER_ROBOT_BYTES` | number | `undefined` | Variabile d'ambiente | Opzionale. Quota disco massima per la cartella di ciascun robot. Se non configurata, nessuna quota arbitraria imposta. | RF-TRF-014, §11.1, §11.5 |
+| `MOLIRIS_STANDARD_SUBDIRS` | string | `"logs,configs,backups"` | Variabile d'ambiente | Opzionale. Nomi di sottodirectory standard create in modo idempotente all'atto della registrazione. Finalità da definire dal committente. | RF-ROB-009, RF-SRVFS-007, §11.1 |
+| `MOLIRIS_DIR_PERMISSIONS` | string | `"0750"` | Variabile d'ambiente | Opzionale. Permessi POSIX applicati alla directory del robot e alle sottodirectory (permessi stretti, proprietario servizio). | RNF-FS-001, §11.1 |
+| `MOLIRIS_ALLOWED_SSH_AUTH_METHODS` | string | `"key,password"` | Variabile d'ambiente | Opzionale. Metodi di autenticazione SSH ammessi (sottoinsieme di "key", "password"). | RF-ROB-005, §11.2 |
+| `MOLIRIS_ALLOWED_DESTINATIONS` | string | `undefined` (tutte) | Variabile d'ambiente | Opzionale. Whitelist separata da virgola di subnet IP / FQDN ammessi per la registrazione dei robot (misura anti-abuso). | RNF-SEC-006, §11.2 |
+| `MOLIRIS_MAX_REG_VERIFICATIONS` | number | `5` | Variabile d'ambiente | Opzionale. Limite massimo di verifiche di connessione simultanee durante le registrazioni. | RNF-SEC-006, §11.2 |
+| `MOLIRIS_EXISTING_DIR_POLICY` | enum | `"accetta"` (`"rifiuta"`) | Variabile d'ambiente | Opzionale. "accetta" adotta la cartella preesistente senza cancellare file; "rifiuta" blocca la registrazione se la cartella esiste già. | RF-ROB-009, RF-SRVFS-006, §11.3 |
+| `MOLIRIS_ON_DISABLE_SESSION_POLICY` | enum | `"chiudi_immediatamente"` (`"lascia_terminare"`) | Variabile d'ambiente | Opzionale. "chiudi_immediatamente" termina subito terminali e trasferimenti attivi alla disabilitazione del robot. | §8.4, §11.3 |
+| `MOLIRIS_STALE_DATA_THRESHOLD_SEC` | number | `30` | Variabile d'ambiente | Opzionale. Soglia in secondi per contrassegnare i dati di stato come `isStale: true` con badge grafico `[Non più verificato]`. | RF-MON-005, RF-MON-006, §11.4 |
+| `MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN` | number | `15` | Variabile d'ambiente | Opzionale. Minuti di inattività della sessione terminale remota prima della chiusura automatica. | RF-SSH-005, §6.4, §11.6 |
+| `MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER` | number | `20` | Variabile d'ambiente | Opzionale. Limite globale massimo di sessioni terminale contemporanee sul server (max 20 per specifica §10.3). | RNF-PERF-003, §10.3, §11.7 |
+| `MOLIRIS_MAX_TERMINAL_SESSIONS_PER_USER` | number | `5` | Variabile d'ambiente | Opzionale. Limite massimo di sessioni terminale contemporanee per singolo operatore. | RNF-PERF-003, §11.7 |
+| `MOLIRIS_MAX_TERMINAL_SESSIONS_PER_ROBOT` | number | `3` | Variabile d'ambiente | Opzionale. Limite massimo di sessioni terminale contemporanee verso lo stesso robot. | RNF-PERF-003, §11.7 |
+| `MOLIRIS_TERMINAL_DISCONNECT_POLICY` | enum | `"chiudi_immediatamente"` | Variabile d'ambiente | Opzionale. Unico valore ammesso. L'opzione insicura "mantieni_in_background" è rimossa e blocca l'avvio in modalità fail-closed. | §6.4 passo 7, §11.6, RF-SSH-005 |
+| `MOLIRIS_WS_PING_INTERVAL_MS` | number | `30000` (0 disabilita) | Variabile d'ambiente | Opzionale. Intervallo heartbeat ping/pong WebSocket per rilevamento tempestivo cadute silenziose. | RF-SSH-004, RF-SSH-005, RNF-REL-005 |
+| `MOLIRIS_WS_PING_TIMEOUT_MS` | number | `10000` | Variabile d'ambiente | Opzionale. Timeout attesa pong WebSocket prima di forzare la chiusura ordinata del processo PTY e connessione SSH. | RF-SSH-004, RF-SSH-005, RNF-REL-005 |
+| `MOLIRIS_REMOTE_FS_INITIAL_PATH` | string | `undefined` (realpath ".") | Variabile d'ambiente | Opzionale. Percorso iniziale di navigazione SFTP. In assenza, viene utilizzato l'home directory naturale dell'account remoto. | RF-FS-001, §11.5 |
+| `MOLIRIS_REMOTE_FS_ALLOWED_PATHS` | string | `undefined` (nessun blocco) | Variabile d'ambiente | Opzionale. Percorsi consentiti separati da virgola per navigazione/download SFTP. Previene accessi a directory sensibili. | RF-FS-001, RF-FS-007, §11.5 |
+| `MOLIRIS_REMOTE_FS_MAX_ENTRIES` | number | `200` | Variabile d'ambiente | Opzionale. Limite massimo di elementi restituiti per singola cartella remota. Oltre il limite, espone `isTruncated: true`. | RNF-PERF-002, §11.7 |
+| `MOLIRIS_REMOTE_FS_OVERWRITE_POLICY` | enum | `"rifiuta"` (`"sovrascrivi"`) | Variabile d'ambiente | Opzionale. Politica sovrascrittura file remoto durante navigazione filesystem. | §11.5 |
+| `MOLIRIS_REMOTE_FS_IDLE_TIMEOUT_MS` | number | `30000` | Variabile d'ambiente | Opzionale. Timeout in millisecondi per rilascio automatico della sessione SFTP di navigazione inattiva. | RNF-PERF-003, RNF-REL-005, §11.7 |
+| `MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES` | number | `65536` (64 KB) | Variabile d'ambiente | Opzionale. Dimensione blocchi di lettura/scrittura streaming con contropressione (Heap delta costante < 3 MB su file >1 GB). | RF-TRF-004, RNF-PERF-001, §11.5 |
+| `MOLIRIS_TRANSFER_CHECKSUM_ALGO` | enum | `"sha256"` (`"md5"`) | Variabile d'ambiente | Opzionale. Algoritmo di checksum per verifica di integrità. Se impostato a "md5" viene emesso avviso di sicurezza nei log all'avvio. | RF-TRF-008, §11.5 |
+| `MOLIRIS_TRANSFER_OVERWRITE_POLICY` | enum | `"richiedi_conferma"` (`"rifiuta"` \| `"sovrascrivi"`) | Variabile d'ambiente | Opzionale. Se "rifiuta", impedisce tassativamente ogni overwrite; se "richiedi_conferma", richiede `overwrite: true` esplicito. | RF-TRF-011, RNF-FS-003, §11.5 |
+| `MOLIRIS_TRANSFER_RESUME_ENABLED` | boolean | `false` | Variabile d'ambiente | Opzionale. Ripresa dei trasferimenti interrotti previa verifica compatibilità dimensione/offset prima della ripresa. | RF-TRF-010, §11.5 |
+| `MOLIRIS_TRANSFER_CONCURRENCY_POLICY` | enum | `"rifiuta"` (`"coda"`) | Variabile d'ambiente | Opzionale. "rifiuta" restituisce immediatamente HTTP 429 con messaggio chiaro; "coda" sospende la richiesta in attesa di slot. | RF-TRF-012, §11.5 |
+| `MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS` | number | `60000` | Variabile d'ambiente | Opzionale. Timeout di assenza dati durante lo streaming del trasferimento prima dell'interruzione con codice di errore formale §9. | RF-TRF-013, §11.5 |
+| `MOLIRIS_TRANSFER_VERIFY_MODE` | enum | `"stream"` (`"readback"`) | Variabile d'ambiente | Opzionale. "stream" calcola digest in streaming e verifica dimensione finale con stat; "readback" rilegge il file temporaneo prima del rename. | §9, RF-TRF-008, §11.5 |
+| `MOLIRIS_ROBOT_NONATOMIC_REPLACE` | boolean | `false` | Variabile d'ambiente | Opzionale. In assenza di `posix-rename@openssh.com` sul robot, se `false` rifiuta per preservare il file valido preesistente; se `true` cancella e rinomina. | RNF-REL-004, RF-TRF-011 |
+| `MOLIRIS_TRANSFER_SPACE_MARGIN_MB` | number | `0` | Variabile d'ambiente | Opzionale. Margine di sicurezza in MB richiesto in aggiunta alla dimensione del file per il controllo preventivo spazio (`statfs`/`statvfs`). | RF-TRF-014, §11.5 |
+| `MOLIRIS_DEFAULT_SSH_PORT` | number | `22` | Variabile d'ambiente | Opzionale. Porta SSH predefinita (unica porta ammessa di default dalla SRS RF-ROB-005). | RF-ROB-005 |
+| `MOLIRIS_MONGODB_URI` | string | `mongodb://127.0.0.1:27017/moliris` | Variabile d'ambiente | Opzionale. Stringa di connessione all'istanza MongoDB (collezioni robot, audit, credenziali cifrate). | §2.3 |
+| `MOLIRIS_MONGO_URI` | string | `mongodb://127.0.0.1:27017/moliris` | Variabile d'ambiente | Opzionale. Alias compatibile per la stringa di connessione all'istanza MongoDB. | §2.3 |
+| `MOLIRIS_DB_NAME` | string | `"moliris"` | Variabile d'ambiente | Opzionale. Nome del database MongoDB. | §2.3 |
+| `MOLIRIS_SERVER_HOST` | string | `"0.0.0.0"` | Variabile d'ambiente | Opzionale. Indirizzo IP o hostname di ascolto del server HTTPS Fastify. | §5.1 |
+| `MOLIRIS_SERVER_PORT` | number | `8443` | Variabile d'ambiente | Opzionale. Porta TCP di ascolto del server HTTPS Fastify. | §5.1 |
+| `MOLIRIS_INITIAL_ADMIN_PASSWORD` | string | `undefined` | Variabile d'ambiente | Opzionale. Password iniziale per l'utente amministratore (utilizzata unicamente da `scripts/seed-users.ts` se non fornito file protetto). | RF-AUTH-001 |
+| `MOLIRIS_INITIAL_OPERATOR_PASSWORD` | string | `undefined` | Variabile d'ambiente | Opzionale. Password iniziale per l'utente operatore (utilizzata unicamente da `scripts/seed-users.ts` se non fornito file protetto). | RF-AUTH-001 |
+| `MOLIRIS_TRANSFER_POLL_INTERVAL_MS` | number | `1000` | Variabile globale browser | Opzionale. Configurazione frontend (`window.MOLIRIS_TRANSFER_POLL_INTERVAL_MS`) per la frequenza di polling dello stato dei trasferimenti attivi. | RF-TRF-006, §5.1 |
 
 ---
 
-## 3. Gestione Stesso Username con Host Differenti (§8.2, §11.3)
-- **Stato**: APERTA
-- **Decisione**: [Valore da definire: convenzione definitiva per evitare collisioni sul filesystem quando due robot hanno lo stesso username remoto su host diversi. Implementata nel codice l'interfaccia `RobotDirectoryNamingPolicy` e l'implementazione predefinita `StandardRobotDirectoryNamingPolicy` che usa lo username con validazione di unicità sul DB per bloccare assegnazioni duplicate della stessa directory].
-- **Requisiti correlati**: §8.2, §11.3, RF-ROB-006, RF-ROB-008, RF-SRVFS-001, CA-ROB-006.
+## 2. Coerenza dei Limiti di Concorrenza (§11.2, §10.3, RNF-PERF-003)
+
+La specifica SRS v1.0 presenta due requisiti quantitativi distinti relativi alla concorrenza di carico:
+1. **SRS §11.2 / Capacità Utenti**: fino a **25 utenti simultaneamente connessi** alla piattaforma web.
+2. **SRS §10.3 / RNF-PERF-003**: fino a **20 sessioni terminale interattive simultanee** gestite complessivamente dal server (`MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER`).
+
+Questi due requisiti sono **pienamente coerenti e complementari**:
+- La Web Application Moliris accoglie fino a 25 manutentori contemporaneamente autenticati che navigano la lista flotta, controllano lo stato di telemetria, consultano file sul filesystem server o avviano trasferimenti dati.
+- L'apertura di un terminale interattivo Linux PTY comporta l'allocazione di un processo pseudoterminale, canali WebSocket bidirezionali e connessione SSH dedicata persistente: per profilo architetturale e consumo di risorse hardware, non tutti gli operatori attivi aprono una shell remota simultaneamente. Il limite server massimo di 20 sessioni PTY assicura la stabilità e la responsività del sistema entro i margini di sicurezza hardware definiti.
 
 ---
 
-## 4. Valori Ammessi per lo Stato di Connessione (§10.2, RF-ROB-014)
-- **Stato**: APERTA (in attesa di conferma dall'utente)
-- **Decisione**: [Valori modellati secondo i requisiti SRS: `non_verificato` (CA-ROB-003), `raggiungibile` (RF-ROB-001), `non_raggiungibile` (RF-ROB-001), `errore` (CA-ROB-012, RF-ROB-014), `avviso` (RF-ROB-014). Da confermare se la lista deve includere ulteriori sotto-stati].
-- **Requisiti correlati**: §10.2, RF-ROB-001, RF-ROB-014, CA-ROB-003, CA-ROB-012.
+## 3. Decisioni Baseline Confermate (Immutabili)
+
+Le scelte lasciate aperte dalla SRS (§11) sono state formalizzate nelle seguenti decisioni baseline immutabili:
+
+1. **Modalità di Registrazione Predefinita (§8.1)**:
+   - **Stato**: CONFERMATO (DECISIONE BASELINE)
+   - **Decisione**: Modalità Rigorosa (`MOLIRIS_REGISTRATION_MODE="rigorosa"`): il robot deve essere raggiungibile, la porta aperta, la chiave host verificata, l'autenticazione riuscita e le risorse accessibili via SSH prima di completare la registrazione. La modalità Differita (`"differita"`) è selezionabile da configurazione e registra il robot con stato `ssh_non_verificata`.
+
+2. **Naming Cartella Server e Unicità Username Robot (§8.2, §11.3)**:
+   - **Stato**: CONFERMATO (DECISIONE BASELINE)
+   - **Decisione**:
+     - Naming della directory sul server: `<username>_<id>`, dove username è lo username remoto del robot e id è il suo identificativo univoco (es. `operator_amr01`, `operator_amr02`). La cartella è collocata dentro `MOLIRIS_FS_ROOT` (`/var/lib/moliris/server-fs`). L'algoritmo è incapsulato esclusivamente nella classe `StandardRobotDirectoryNamingPolicy`.
+     - Ambito di unicità username: parametro `MOLIRIS_ROBOT_USERNAME_UNIQUENESS` con valore di default `"per_host"` (lo stesso account remoto può esistere su host o porte differenti). L'alternativa `"globale"` impone l'unicità in tutta la flotta.
+     - Vincoli a livello storage:
+       - `id`: univoco su TUTTI i record, compresi quelli in stato `rimosso`.
+       - `serverDirectoryPath`: univoco su TUTTI i record, compresi quelli in stato `rimosso`.
+       - Combinazione `(host, sshPort, remoteUsername)`: univoca SOLO per i robot non rimossi (`anagraphicState` in `attivo`, `disabilitato`).
+     - Non-retroattività: la regola di naming si applica esclusivamente alle nuove registrazioni; a runtime ogni operazione utilizza tassativamente il percorso persistito nel record (`robot.serverDirectoryPath`), senza mai ricalcolarlo al volo.
+
+3. **Immutabilità di Username e ID del Robot (§8.3)**:
+   - **Stato**: CONFERMATO (DECISIONE BASELINE)
+   - **Decisione**: Username e identificativo applicativo (`id`) sono rigorosamente immutabili dopo la registrazione. Per cambiarli occorre disabilitare/rimuovere il robot e procedere a nuova registrazione.
+
+4. **Politica Cartella Già Esistente (§11.3, RF-ROB-009, RF-SRVFS-006)**:
+   - **Stato**: CONFERMATO (DECISIONE BASELINE)
+   - **Decisione**: Politica `"accetta"` (`MOLIRIS_EXISTING_DIR_POLICY="accetta"`): sempre idempotente e MAI distruttiva. I file preesistenti vengono interamente preservati.
+
+5. **Politica Disconnessione Terminale (§6.4 passo 7, §11.6)**:
+   - **Stato**: CONFERMATO (DECISIONE BASELINE)
+   - **Decisione**: Unico valore ammesso: `"chiudi_immediatamente"`. L'opzione insicura `mantieni_in_background` è rimossa dal codice e blocca l'avvio in modalità fail-closed.
 
 ---
 
-## 5. Politica di Conservazione dei Log di Audit (§10.4, §11.1)
-- **Stato**: APERTA (in attesa di conferma dall'utente)
-- **Decisione**: [Valore da definire: parametro reso configurabile all'avvio fail-closed tramite `MOLIRIS_AUDIT_RETENTION_DAYS` (in giorni) senza valore predefinito inventato].
-- **Requisiti correlati**: §10.4, RNF-SEC-009, RNF-MNT-001, §11.1.
-
----
-
-## 6. Sezione 11 – Requisiti da Definire in Fase di Progettazione
+## 4. Sezione 11 – Requisiti da Definire in Fase di Progettazione (§§11.1..11.7)
 
 ### 11.1 Organizzazione del Filesystem Server
-- **Percorso assoluto della root**: APERTA. Requisiti: RF-SRVFS-001, RNF-MNT-001. Decisione: [Valore da definire: caricato obbligatoriamente all'avvio fail-closed tramite la variabile di configurazione `MOLIRIS_FS_ROOT` senza alcun default inventato].
-- **Nomi e finalità delle sottodirectory standard**: APERTA. Requisiti: RF-ROB-009, RF-SRVFS-007. Decisione: [Valore da definire: rese configurabili tramite `MOLIRIS_STANDARD_SUBDIRS` con default vuoto per non creare sottodirectory non volute].
-- **Permessi di accesso alle directory**: APERTA. Requisiti: RNF-FS-001, RNF-SEC-005. Decisione: [Valore da definire: parametro reso configurabile tramite `MOLIRIS_DIR_PERMISSIONS` (es. `0750` o `0700`); in assenza si applicano i permessi predefiniti del sistema operativo Ubuntu senza forzature arbitrarie].
-- **Politica di conservazione dei file**: APERTA. Requisiti: §10.3, RNF-MNT-001. Decisione: [Valore da definire].
-- **Eventuali quote per robot o per utente**: APERTA. Requisiti: RF-TRF-014, RNF-MNT-001. Decisione: [Valore da definire].
+- **Percorso assoluto della root**: CONFERMATO. Requisiti: RF-SRVFS-001, RNF-MNT-001. Caricato all'avvio fail-closed tramite `MOLIRIS_FS_ROOT` (default `/var/lib/moliris/server-fs`).
+- **Nomi e finalità delle sottodirectory standard**: CONFERMATO / APERTA. Requisiti: RF-ROB-009, RF-SRVFS-007, §11.1. Create in modo idempotente `logs`, `configs`, `backups` (`MOLIRIS_STANDARD_SUBDIRS`). La specifica finalità applicativa è: **DA DEFINIRE DAL COMMITTENTE** (nessuna presunzione di utilizzo nel codice).
+- **Permessi di accesso alle directory**: CONFERMATO. Requisiti: RNF-FS-001, RNF-SEC-005. Permessi `0750` (`MOLIRIS_DIR_PERMISSIONS`) per root e cartelle robot. In produzione l'avvio fallisce se i permessi sono più aperti di 0750.
+- **Directory temporanea riservata (.tmp)**: CONFERMATO. Requisiti: RNF-SEC-008, RF-TRF-009. Directory `.tmp` interna a ciascun robot con permessi `0700`. Esclusa dagli elenchi utente e inaccessibile da percorsi o symlink.
+- **Politica di conservazione dei file**: APERTA. Requisiti: §10.3, RNF-MNT-001. Nessuna cancellazione o retention automatica dei file utente è implementata nel codice.
+- **Quote per robot o per utente**: APERTA. Requisiti: RF-TRF-014, RNF-MNT-001. Supportata configurazione opzionale tramite `MOLIRIS_MAX_FILE_SIZE_BYTES` e `MOLIRIS_QUOTA_PER_ROBOT_BYTES`; nessuna quota arbitraria imposta nel codice.
 
 ### 11.2 Autenticazione SSH
-- **Supporto esclusivo delle chiavi SSH o anche password**: APERTA. Requisiti: RF-ROB-005, RNF-SEC-002. Decisione: [Valore da definire: implementata l'astrazione `AuthenticationMaterial` e `CredentialProvider` con supporto a entrambi i metodi ("key" e "password"), abilitabili e restringibili tramite configurazione `MOLIRIS_ALLOWED_SSH_AUTH_METHODS` senza forzare un default rigido].
-- **Eventuale uso di un archivio sicuro di segreti (Vault/KMS)**: CONFERMATO / CONFIGURABILE (PROPOSTA DA CONFERMARE provider mongo predefinito). Requisiti: RNF-SEC-002. Decisione: Implementato `MongoCredentialProvider` con cifratura simmetrica AES-256-GCM, IV crittografico casuale a 96 bit generato per ciascuna cifratura, AAD (Additional Authenticated Data) vincolato a `${robotId}|${keyVersion}`, e master key a 256 bit caricata da file protetto con permessi stretti POSIX 0600 (`MOLIRIS_MASTER_KEY_FILE`). Il provider predefinito è configurato a `mongo` (`MOLIRIS_CREDENTIAL_PROVIDER="mongo"`). In ambiente di produzione (`NODE_ENV=production`) l'avvio con provider `in-memory` o con master key con permessi deboli/non posseduta dal processo fallisce categoricamente (fail-closed). Fornito lo script `scripts/reencrypt-credentials.ts` per la rotazione e re-cifratura idempotente e atomica dei segreti archiviati.
-- **Modalità di distribuzione e aggiornamento delle chiavi**: APERTA. Requisiti: RNF-SEC-002. Decisione: [Valore da definire: demandate all'archivio sicuro di segreti; il database memorizza esclusivamente stringhe di riferimento sicuro URI/ID].
-- **Politica di verifica e aggiornamento chiavi host**: CONFERMATO. Requisiti: RF-ROB-005, RNF-SEC-003, RF-ROB-014, §9. Decisione: Il fingerprint SHA-256 dell'host key è obbligatorio per ciascun robot (rimosso parametro superfluo `knownHostsPath`). Il confronto della stringa base64 OpenSSH (`SHA256:...`) è rigorosamente case-sensitive conforme a RFC 4648. `DefaultHostKeyVerifier` restituisce l'esito strutturato `{ matched, expectedFingerprint, receivedFingerprint }`. In caso di mismatch, viene scatenato l'errore formale `SSH_HOST_KEY_INVALID` ("richiede intervento amministrativo", §9) e viene emesso un evento di audit strutturato `SSH_HOST_KEY_MISMATCH` con impronta attesa ed effettiva. Nessun percorso di codice ammette il bypass o l'accettazione automatica di impronte disallineate. Quando un amministratore aggiorna l'impronta della chiave host (§8.3), il sistema invalida le connessioni in cache, imposta lo stato della connessione a `non_verificato` e registra l'audit con impronta precedente e nuova.
-- **Eventuali restrizioni sugli account remoti**: APERTA. Requisiti: RF-SSH-008, RF-FS-007. Decisione: [Valore da definire: tutte le sessioni SSH e SFTP operano rigorosamente con i privilegi dell'account remoto specificato, senza alcuna elevazione automatica (no sudo)].
-- **Misure di sicurezza e destinazioni consentite in registrazione**: APERTA. Requisiti: RNF-SEC-006, RF-ROB-006. Decisione: [Valore da definire: implementata autorizzazione `ROBOT_REGISTER`, validazione sintattica RFC 1123 / IP, rate limiting concorrenza e parametro opzionale `MOLIRIS_ALLOWED_DESTINATIONS` per whitelist].
+- **Supporto chiavi SSH o password**: APERTA. Requisiti: RF-ROB-005, RNF-SEC-002. Astrazione `AuthenticationMaterial` e provider `CredentialProvider` configurabile via `MOLIRIS_ALLOWED_SSH_AUTH_METHODS` ("key", "password").
+- **Archivio sicuro di segreti (Vault/KMS)**: CONFERMATO / CONFIGURABILE (`MOLIRIS_CREDENTIAL_PROVIDER="mongo"`). Crittografia AES-256-GCM con IV a 96 bit casuale per record, AAD vincolato a `${robotId}|${keyVersion}`, e master key protetta 0600 (`MOLIRIS_MASTER_KEY_FILE`).
+- **Modalità di distribuzione e aggiornamento chiavi**: APERTA. Requisiti: RNF-SEC-002. Demandate all'archivio sicuro; il DB memorizza riferimenti sicuri opachi.
+- **Politica di verifica e aggiornamento chiavi host**: CONFERMATO. Requisiti: RF-ROB-005, RNF-SEC-003, RF-ROB-014, §9. Fingerprint SHA-256 obbligatorio (`SHA256:...`). Confronto RFC 4648 case-sensitive. Errore formale `SSH_HOST_KEY_INVALID` su mismatch e audit trail.
+- **Restrizioni sugli account remoti**: APERTA. Requisiti: RF-SSH-008, RF-FS-007. Sessioni SSH/SFTP confinate ai privilegi Linux dell'account configurato (nessuna elevazione automatica).
+- **Misure di sicurezza e destinazioni consentite in registrazione**: APERTA. Requisiti: RNF-SEC-006, RF-ROB-006. Validazione RFC 1123 / IP, rate limiting verifiche simultanee (`MOLIRIS_MAX_REG_VERIFICATIONS`) e whitelist opzionale `MOLIRIS_ALLOWED_DESTINATIONS`.
 
 ### 11.3 Registrazione dei Robot
-- **Obbligatorietà della verifica SSH**: APERTA. Requisiti: §8.1, RF-ROB-007. Decisione: [Valore da definire: modalità di registrazione resa obbligatoriamente configurabile all'avvio fail-closed tramite `MOLIRIS_REGISTRATION_MODE` ("rigorosa" vs "differita") senza default arbitrari; in modalità differita il robot viene registrato con stato esplicito `ssh_non_verificata` e le funzionalità che richiedono connessione sono disabilitate fino a una verifica successiva tramite operazione protetta `POST /api/robots/:robotId/verify-connection`].
-- **Regole definitive per l'unicità dei robot**: APERTA. Requisiti: RF-ROB-006, §8.2. Decisione: [Valore da definire: garantita unicità categorica di identificativo univoco `id` e `remoteUsername`; la casistica "stesso username su host diverso" è isolata dietro `RobotDirectoryNamingPolicy` per impedire categoricamente che due robot condividano la medesima cartella server].
-- **Politica in caso di directory già esistente**: APERTA. Requisiti: RF-ROB-009, RF-SRVFS-006, RNF-FS-004. Decisione: [Valore da definire: comportamento reso configurabile tramite `MOLIRIS_EXISTING_DIR_POLICY` ("accetta" | "rifiuta"); in entrambi i casi non viene mai sovrascritto, cancellato o svuotato alcun file preesistente].
-- **Caratteri ammessi per lo username**: APERTA. Requisiti: RF-ROB-005, RNF-SEC-005. Decisione: [Valore da definire: la SRS non prescrive un set ristretto di caratteri; la sicurezza del filesystem e l'assenza di injection/traversal è garantita da `resolveRobotPath`].
-- **Gestione del cambio di username**: APERTA. Requisiti: §8.3. Decisione: [Valore da definire: la SRS non definisce la semantica di ridenominazione della directory server associata; il campo username remoto è immutabile in aggiornamento configurazione].
-- **Politica di disabilitazione e rimozione**: APERTA (PROPOSTA DA CONFERMARE: conservazione segreti dopo rimozione robot). Requisiti: RF-ROB-013, §8.4. Decisione: [La disabilitazione blocca categoricamente nuove connessioni operative; il comportamento verso connessioni già aperte è configurabile tramite `MOLIRIS_ON_DISABLE_SESSION_POLICY` ("chiudi_immediatamente" | "lascia_terminare"); la rimozione dall'anagrafica attiva richiede conferma esplicita e preserva intatti directory e file sul server. Per quanto riguarda le credenziali di autenticazione archiviate nel provider credenziali, esse non vengono eliminate automaticamente al momento della rimozione dell'anagrafica, rimanendo archiviate in forma cifrata salvo bonifica esplicita amministrativa: proposta registrata come PROPOSTA DA CONFERMARE].
-- **Eliminazione dei dati sul server**: APERTA. Requisiti: RF-ROB-013, §8.4 punto 2. Decisione: [Valore da definire: la SRS recita "se implementata"; non implementata in questo prompt come da vincoli; definito il permesso dedicato `FS_SERVER_DELETE` nel catalogo RBAC].
+- **Obbligatorietà verifica SSH**: CONFERMATO. Requisiti: §8.1, RF-ROB-007. Configurazione fail-closed `MOLIRIS_REGISTRATION_MODE` ("rigorosa" default).
+- **Regole unicità robot**: CONFERMATO (DECISIONE BASELINE). Directory server `<username>_<id>` univoca assoluta; ID univoco assoluto; combinazione (host, porta, username) univoca sui robot attivi/disabilitati.
+- **Caratteri ammessi per lo username**: CONFERMATO (DECISIONE BASELINE). Whitelist `^[a-z_][a-z0-9_-]{1,31}$` (2-32 caratteri, minuscole, cifre, trattino e underscore).
+- **Politica directory già esistente**: CONFERMATO (DECISIONE BASELINE). Politica `"accetta"`, idempotente e non distruttiva.
+- **Protocollo registrazione a 2 fasi e rollback**: CONFERMATO. Requisiti: RF-ROB-007..012, RNF-FS-004. Persistenza stato preliminare con flag `directoryPreexisting`, creazione cartella e finalizzazione DB. Rollback rimuove la cartella solo se creata dall'operazione corrente e vuota.
+- **Politica disabilitazione e rimozione**: CONFERMATO. Requisiti: RF-ROB-013, §8.4. Disabilitazione blocca nuove connessioni. Rimozione richiede autorizzazione `ROBOT_REMOVE` e conferma esplicita; file e cartelle su server NON vengono cancellati (RNF-FS-003).
+- **Eliminazione dati sul server alla rimozione**: APERTA (NON IMPLEMENTATA). Requisiti: RF-ROB-013, §8.4 punto 2 ("se implementata"). Lasciata non implementata per prevenire cancellazioni irreversibili.
 
 ### 11.4 File di Stato
-- **Percorsi dei file di testo**: APERTA. Requisiti: RF-MON-001, RNF-MNT-001. Decisione: [Valore da definire: resi configurabili sia a livello di intero sistema tramite `MOLIRIS_STATE_FILE_PATHS` (es. `/var/log/moliris/status.txt`), sia a livello di singolo robot tramite il campo `stateFilePaths` dell'anagrafica; la lettura dà priorità ai percorsi specifici del robot e ricade sui percorsi comuni in loro assenza].
-- **Formato e struttura dei contenuti**: APERTA. Requisiti: RF-MON-002. Decisione: [Valore da definire: la logica di interpretazione è completamente isolata dietro l'interfaccia sostituibile `StateFileParser`. È fornita l'implementazione `ProvisionalDevelopmentStateFileParser` che supporta formati Key-Value (`chiave=valore` / `chiave: valore`) e JSON standard, dichiarata provvisoria e documentata in dettaglio in `STATUS_FILE_FORMAT.md` in attesa delle specifiche definitive del firmware robot].
-- **Frequenza di polling**: APERTA. Requisiti: RF-MON-003, RNF-PERF-004. Decisione: [Valore da definire: resa configurabile tramite `MOLIRIS_POLLING_INTERVAL_SEC`. Se non configurata o con valore <= 0, il servizio di polling periodico non viene avviato (fail-closed, CA-MON-002) e il monitoraggio è disponibile esclusivamente su richiesta manuale].
-- **Regole di interpretazione degli stati**: APERTA. Requisiti: RF-MON-002, RF-MON-006. Decisione: [Valore da definire: i dati estratti dal file di stato vengono registrati come record strutturato opaco (`Record<string, unknown>`). Nessun enum rigido o macchina a stati non documentata è imposta nel codice; l'assenza di dati non viene mai interpretata come stato operativo specifico (RF-MON-005)].
-- **Gestione dei dati non validi o obsoleti**: APERTA. Requisiti: RF-MON-005, RNF-REL-002. Decisione: [Valore da definire: separazione categorica tra l'ultimo dato valido acquisito (`operationalState`, `lastValidUpdateAt`) e l'esito dell'ultimo tentativo (`lastAttemptOutcome`). Un fallimento di lettura o parsing non sovrascrive né cancella l'ultimo stato valido, ma aggiorna l'esito dell'ultimo tentativo con classificazione formale dell'anomalia (`missing`, `empty`, `incomplete`, `malformed`, `timeout`, `connection_error`, `read_error`). È supportata la soglia configurabile `MOLIRIS_STALE_DATA_THRESHOLD_SEC` che, se superata o in presenza di ultimo tentativo fallito, contrassegna il dato come `isStale: true` con badge grafico `[Non più verificato]` (RF-MON-006)].
-- **Meccanismo di aggiornamento del frontend**: APERTA. Requisiti: RF-MON-006, §5.1, §5.3. Decisione: [Valore da definire: aggiornamento on-demand tramite pulsante dedicato "Aggiorna Stato" e rinfresco ad ogni apertura del modal di dettaglio; intervallo di polling lato client configurabile in `app.js` in attesa di eventuale WebSocket per telemetria push].
+- **Percorsi dei file di testo**: APERTA. Requisiti: RF-MON-001, RNF-MNT-001. Configurabili a livello di sistema via `MOLIRIS_STATE_FILE_PATHS` e a livello di singolo robot tramite `stateFilePaths`. I percorsi specifici del robot SOSTITUISCONO la lista comune.
+- **Formato e struttura dei contenuti**: APERTA. Requisiti: RF-MON-002. Parser isolato dietro interfaccia `StateFileParser`. Implementazione `ProvisionalDevelopmentStateFileParser` che supporta formati Key-Value e JSON con parametro `MOLIRIS_STATE_FILE_FORMAT` e schema opzionale `MOLIRIS_STATE_FILE_SCHEMA`.
+- **Frequenza di polling**: APERTA. Requisiti: RF-MON-003, RNF-PERF-004. Configurabile tramite `MOLIRIS_POLLING_INTERVAL_SEC`. Se `<= 0`, polling periodico disattivato fail-closed (CA-MON-002) e refresh disponibile solo su richiesta manuale.
+- **Regole di interpretazione degli stati**: APERTA. Requisiti: RF-MON-002, RF-MON-006. Dati estratti salvati come record opaco (`Record<string, unknown>`). Nessun enum o macchina a stati rigida cablata nel codice.
+- **Gestione dati non validi o obsoleti**: APERTA. Requisiti: RF-MON-005, RNF-REL-002. Separazione netta tra ultimo dato valido (`operationalState`, `lastValidUpdateAt`) ed esito dell'ultimo ciclo (`lastAttemptOutcome` con array dettagliato `attempts`). Un fallimento non cancella l'ultimo dato valido. Se l'ultimo tentativo fallisce o l'età supera `MOLIRIS_STALE_DATA_THRESHOLD_SEC`, il dato viene marcato `isStale: true` con badge visivo `[Non più verificato]`.
+- **Meccanismo di aggiornamento frontend**: APERTA. Requisiti: RF-MON-006, §5.1, §5.3. Pulsante manuale "Aggiorna Stato" e refresh all'apertura del dettaglio. Polling periodico con frequenza configurabile (`MOLIRIS_TRANSFER_POLL_INTERVAL_MS`).
 
 ### 11.5 Trasferimenti e Filesystem Remoto
-- **Dimensione massima dei file, se prevista**: APERTA. Requisiti: RF-TRF-004, RNF-MNT-001, §11.1. Decisione: [Valore da definire: supportata la configurazione opzionale tramite `MOLIRIS_MAX_FILE_SIZE_BYTES` e `MOLIRIS_QUOTA_PER_ROBOT_BYTES` se previste; nessun limite cablato nel codice in conformità al vincolo "se previsti"].
-- **Numero massimo di trasferimenti simultanei**: APERTA. Requisiti: RF-TRF-012, RNF-PERF-003. Decisione: [Valore da definire: reso configurabile all'avvio su 3 livelli fail-closed tramite `MOLIRIS_MAX_TRF_PER_USER`, `MOLIRIS_MAX_TRF_PER_ROBOT` e `MOLIRIS_MAX_TRF_SERVER`].
-- **Comportamento al raggiungimento del limite di trasferimenti simultanei**: APERTA. Requisiti: RF-TRF-012, §11.5. Decisione: [Valore da definire: reso configurabile tramite `MOLIRIS_TRANSFER_CONCURRENCY_POLICY` ("rifiuta" | "coda"); il comportamento predefinito prudente è il rifiuto tempestivo con messaggio chiaro senza bloccare il thread].
-- **Politica di sovrascrittura (server e remoto)**: APERTA. Requisiti: RF-TRF-011, RNF-FS-003, §11.5. Decisione: [Valore da definire: resa configurabile tramite `MOLIRIS_TRANSFER_OVERWRITE_POLICY` ("rifiuta" | "richiedi_conferma" | "sovrascrivi"); il comportamento predefinito prudente rifiuta la sovrascrittura se non esplicitamente confermata dall'utente con `overwrite: true`].
-- **Percorso iniziale e restrizioni di navigazione sul robot**: APERTA. Requisiti: RF-FS-001, RF-FS-003, §10.3, §11.5. Decisione: [Valore da definire: resi configurabili all'avvio tramite `MOLIRIS_REMOTE_FS_INITIAL_PATH` (percorso iniziale) e `MOLIRIS_REMOTE_FS_ALLOWED_PATHS` (lista percorsi ammessi); in assenza di configurazione viene impiegato il punto di partenza naturale restituito da SFTP per l'account remoto (`sftp.realpath(".")`) senza inventare una finta root: l'ambito effettivo dell'accesso è delimitato dai permessi Linux dell'account configurato (RF-FS-007)].
-- **Gestione dei collegamenti simbolici e file speciali**: APERTA. Requisiti: RF-FS-002. Decisione: [Valore da definire: la SRS non menziona collegamenti simbolici né file speciali; la tipologia restituita è quella nativa del protocollo SFTP ("link", "special") senza logiche o espansioni non documentate].
-- **Politica di ripresa dei trasferimenti**: APERTA. Requisiti: RF-TRF-010. Decisione: [Valore da definire: resa configurabile tramite `MOLIRIS_TRANSFER_RESUME_ENABLED` (default `false`); quando attiva richiede la preventiva verifica di compatibilità di dimensione/offset tra sorgente e file parziale prima di procedere].
-- **Algoritmo di checksum (SHA256, MD5)**: APERTA. Requisiti: RF-TRF-008. Decisione: [Valore da definire: isolato dietro l'interfaccia `IChecksumAlgorithm` e reso configurabile tramite `MOLIRIS_TRANSFER_CHECKSUM_ALGO` ("sha256" | "md5"); il calcolo avviene progressivamente in transito durante lo stream a blocchi senza caricamento in RAM].
-- **Durata di conservazione dei file temporanei**: APERTA. Requisiti: RF-TRF-009, RNF-REL-005. Decisione: [Valore da definire: reso configurabile tramite `MOLIRIS_TEMP_RETENTION_MIN`; rilascio ed eliminazione immediata garantita dei file temporanei in caso di errore, annullamento, timeout o chiusura sessione, con preservazione totale dei file di destinazione validi preesistenti].
-- **Limiti di timeout e quote di spazio**: APERTA. Requisiti: RF-TRF-013, RF-TRF-014. Decisione: [Valore da definire: timeout di inattività configurabile tramite `MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS`; controllo preventivo spazio disponibile con `fs.statfs` ove supportato e gestione runtime degli errori di disco pieno mappati in `INSUFFICIENT_STORAGE`].
-- **Dimensione dei blocchi (chunk size) e buffering**: APERTA. Requisiti: RF-TRF-004, RNF-PERF-001, §11.5. Decisione: [Valore da definire: reso configurabile all'avvio tramite `MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES` (default 64 KB); streaming gestito con contropressione nativa dei flussi Node.js a memoria costante indipendente dalla dimensione del file (supporto file >1 GB)].
+- **Dimensione massima file e quote**: APERTA. Requisiti: RF-TRF-004, RF-TRF-014, §11.1, §11.5. Nessun limite rigido imposto (supporto file > 1 GB). Parametri opzionali `MOLIRIS_MAX_FILE_SIZE_BYTES` e `MOLIRIS_QUOTA_PER_ROBOT_BYTES`.
+- **Numero massimo trasferimenti simultanei**: APERTA. Requisiti: RF-TRF-012, RNF-PERF-003. Parametri a 3 livelli: `MOLIRIS_MAX_TRF_PER_USER`, `MOLIRIS_MAX_TRF_PER_ROBOT`, `MOLIRIS_MAX_TRF_SERVER`.
+- **Comportamento al raggiungimento del limite**: APERTA. Requisiti: RF-TRF-012, §11.5. Parametro `MOLIRIS_TRANSFER_CONCURRENCY_POLICY` ("rifiuta" default, "coda"). Rifiuto tempestivo senza blocco del thread.
+- **Politica di sovrascrittura**: APERTA. Requisiti: RF-TRF-011, RNF-FS-003, §11.5. Parametro `MOLIRIS_TRANSFER_OVERWRITE_POLICY` ("rifiuta" \| "richiedi_conferma" default \| "sovrascrivi"). Rifiuto categorico anti-corsa TOCTOU verificato sia prima che al momento della promozione.
+- **Percorso iniziale e restrizioni navigazione robot**: APERTA. Requisiti: RF-FS-001, RF-FS-003, §10.3, §11.5. Parametri `MOLIRIS_REMOTE_FS_INITIAL_PATH` e `MOLIRIS_REMOTE_FS_ALLOWED_PATHS`. In assenza, home directory naturale SFTP e permessi Linux dell'account configurato.
+- **Gestione collegamenti simbolici e file speciali**: APERTA. Requisiti: RF-FS-002. Tipi restituiti nativi SFTP ("file", "directory", "link", "special"). Download di symlink consentito SOLO se il target è un file regolare e ricade dentro `MOLIRIS_REMOTE_FS_ALLOWED_PATHS`. Device, socket e FIFO non sono mai scaricabili. Navigazione rigorosamente in sola lettura.
+- **Politica ripresa trasferimenti**: APERTA. Requisiti: RF-TRF-010. Parametro `MOLIRIS_TRANSFER_RESUME_ENABLED` (default `false`).
+- **Algoritmo di checksum e integrità a due livelli**: APERTA. Requisiti: RF-TRF-008, §9. Parametro `MOLIRIS_TRANSFER_CHECKSUM_ALGO` ("sha256" default, "md5"). Integrità verificata sia durante lo streaming sorgente che con `stat` su dimensione finale prima della promozione. Modalità estesa `MOLIRIS_TRANSFER_VERIFY_MODE` ("stream" default, "readback" proposta da confermare).
+- **Durata conservazione file temporanei e pulizia orfani**: APERTA. Requisiti: RF-TRF-009, RNF-REL-004, RNF-REL-005, CA-TRF-005. Parametro `MOLIRIS_TEMP_RETENTION_MIN` (default 60 min). Pulizia oraria automatica server e tentativi di bonifica remota su disconnessione (`pendingCleanups`) ritentati per 60 min.
+- **Controllo preventivo spazio disco**: APERTA. Requisiti: RF-TRF-014. Controllo `fs.statfs` su server e `statvfs@openssh.com` su robot, con margine configurabile `MOLIRIS_TRANSFER_SPACE_MARGIN_MB`. Se statvfs non è supportata, skip con avviso e cattura runtime di `INSUFFICIENT_STORAGE`.
+- **Dimensione blocchi e buffering**: APERTA. Requisiti: RF-TRF-004, RNF-PERF-001. Parametro `MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES` (default 64 KB). Streaming nativo con contropressione Node.js a memoria costante per file > 1 GB.
 
 ### 11.6 Utenti e Autorizzazioni
-- **Ruoli definitivi**: APERTA. Requisiti: §2.2, RF-AUTH-005. Decisione: [Valore da definire: implementate le 2 categorie logiche di §2.2 ("operatore" / Utente autorizzato e "amministratore" / Gestore flotta) con mapping configurabile `RolePermissionMapping` senza ruoli cablati rigidamente nel codice].
-- **Permessi per terminale, monitoraggio e trasferimenti**: APERTA. Requisiti: RF-AUTH-005, RF-SSH-008. Decisione: [Valore da definire: modellato il catalogo tassativo dei permessi operativi previsti dalla SRS, con supporto sia a permessi globali sia a permessi associati a singoli robot (CA-SSH-005); implementato permesso specifico `TERMINAL_OPEN` verificato lato server prima dell'apertura del PTY].
-- **Permessi per registrazione, modifica e rimozione robot**: APERTA. Requisiti: §2.2, §8.4. Decisione: [Valore da definire: assegnazione configurabile tramite `RolePermissionMapping` a runtime, con default assegnato al profilo amministratore].
-- **Politica di timeout e scadenza delle sessioni utente**: CONFERMATO / CONFIGURABILE. Requisiti: RF-AUTH-006, RNF-SEC-004. Decisione: Parametro di inattività reso configurabile all'avvio fail-closed tramite `MOLIRIS_SESSION_TIMEOUT_MIN` (in minuti) senza alcun default arbitrario. La scadenza delle sessioni viene verificata attivamente da un timer periodico di purge (`purgeExpiredSessions()`) garantendo tempestività nel rilascio delle risorse. Separata la verifica della sessione (`validate()`) dal rinnovo di attività (`touchSession()`): solo le interazioni qualificate (richieste API autenticate operative escluso polling passivo, input tastiera/resize su terminale WebSocket, e avanzamento attivo di trasferimenti file) rinnovano la sessione. I trasferimenti lunghi attivi mantengono in vita la sessione dell'utente per design. È inoltre supportato il tetto assoluto opzionale `MOLIRIS_SESSION_ABSOLUTE_MAX_MIN`, oltre il quale la sessione scade anche in caso di attività ininterrotta. Il logout o la scadenza della sessione termina unicamente i terminali associati a quel `sessionId` e interrompe immediatamente i trasferimenti attivi ad esso correlati.
-- **Politica di timeout e chiusura della sessione terminale**: CONFERMATO. Requisiti: RF-SSH-005, §6.4 passo 7. Decisione: Timeout di inattività terminale reso configurabile all'avvio tramite `MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN`. Rilascio completo e garantito a zero risorse residue per tutte le 7 cause di chiusura: esplicita utente (`USER_EXPLICIT`), disconnessione client/WebSocket (`DISCONNECT`), idle timeout (`IDLE_TIMEOUT`), logout/scadenza sessione utente (`SESSION_EXPIRED`), disconnessione robot (`ROBOT_DISCONNECT`), chiusura shell remota exit/Ctrl+D (`SHELL_EXIT` / `REMOTE_EXIT`), arresto del servizio (`SERVER_SHUTDOWN`). Distinzione formale mantenuta tra uscita spontanea della shell (`SHELL_EXIT`) e perdita di connettività di rete col robot (`ROBOT_DISCONNECT`).
-- **Comportamento alla disconnessione del browser**: CONFERMATO (PROPOSTA DA CONFERMARE heartbeat WebSocket). Requisiti: §6.4 passo 7, §11.6, RF-SSH-005. Decisione: Rimossa categoricamente l'opzione insicura `mantieni_in_background`: l'applicazione accetta esclusivamente `chiudi_immediatamente` (l'avvio fallisce in modalità fail-closed se è configurato `mantieni_in_background`). Alla disconnessione del WebSocket, il processo PTY e la connessione SSH associata vengono immediatamente e interamente terminati. È vietato e respinto con codice HTTP 4409 qualunque secondo aggancio WebSocket a una sessione terminale che abbia già avuto un socket. Sono introdotti parametri opzionali di heartbeat ping/pong WebSocket (`MOLIRIS_WS_PING_INTERVAL_MS`, `MOLIRIS_WS_PING_TIMEOUT_MS`) per rilevare disconnessioni silenziose della rete.
-- **Condivisione e supervisione delle sessioni terminale**: APERTA. Requisiti: RF-SSH-006, RNF-SEC-007. Decisione: [Valore da definire: la SRS prescrive "Un utente non può accedere alla sessione di un altro utente senza un'autorizzazione esplicita", senza definire alcun meccanismo di autorizzazione o supervisione. È implementato il punto di estensione `TerminalSessionSharingPolicy` con implementazione predefinita `DefaultDenyTerminalSessionSharingPolicy` che nega tassativamente ogni accesso a sessioni altrui e registra l'evento come violazione di sicurezza nell'audit].
-- **Eventuali meccanismi amministrativi separati ed esplicitamente autorizzati**: APERTA. Requisiti: RF-SSH-008. Decisione: [Valore da definire: la SRS cita tali meccanismi senza descriverli; pertanto nessuna logica di sudo, cambio utente o scorciatoia di amministrazione automatica è implementata. Le sessioni operano tassativamente ed esclusivamente con i permessi dell'account SSH remoto configurato].
-- **Tecnologia del canale bidirezionale in tempo reale**: CONFERMATA. Requisiti: RF-SSH-004, §5.4. Decisione: WebSocket su HTTPS (WSS) con autenticazione server-side preventiva tramite cookie di sessione HTTPS e verifica RBAC; implementato tramite libreria `@fastify/websocket` integrata nell'HTTPS server Fastify esistente.
-- **Libreria di emulazione terminale frontend**: CONFERMATA. Requisiti: RF-SSH-003, RNF-UX-004. Decisione: `xterm.js` v5.3.0 e `xterm-addon-fit` v0.8.0, standard de facto open-source conforme a sequenze ANSI/escape, UTF-8, PTY resize e caratteri di controllo, caricata in modalità locale/offline senza dipendenze CDN esterne per compatibilità esclusiva Google Chrome.
-- **Eventuali requisiti di autenticazione aggiuntiva (MFA)**: APERTA. Requisiti: RNF-SEC-002. Decisione: [Valore da definire: MFA non implementata in quanto scelta aperta; architettura pronta ad accogliere fattori aggiuntivi].
-- **Meccanismo di provisioning e gestione del ciclo di vita utenti**: APERTA (PROPOSTA DA CONFERMARE file 0600 e LoadCredential=). Requisiti: RF-AUTH-001, RNF-SEC-002. Decisione: [La SRS non descrive interfacce né API web di gestione utenti; predisposto esclusivamente lo script CLI `scripts/seed-users.ts`. Lo script richiede obbligatoriamente un file di password (`--password-file` o `SEED_USERS_PASSWORD_FILE`) con permessi POSIX 0600 di proprietà dell'utente che esegue il processo, oppure integrazione standard systemd `LoadCredential=` (`${CREDENTIALS_DIRECTORY}`). Rimosse categoricamente tutte le password hardcoded di fallback (lo script fallisce in modo esplicito se mancano credenziali sicure); le password non compaiono mai nei log né negli argomenti di processo].
+- **Ruoli definitivi**: APERTA. Requisiti: §2.2, RF-AUTH-005. Due categorie SRS ("operatore" e "amministratore") con mapping disaccoppiato `RolePermissionMapping`.
+- **Permessi per terminale, monitoraggio e trasferimenti**: APERTA. Requisiti: RF-AUTH-005, RF-SSH-008. Supporto a permessi globali e puntuali per singolo robot.
+- **Politica timeout e scadenza sessioni utente**: CONFERMATO / CONFIGURABILE. Requisiti: RF-AUTH-006, RNF-SEC-004. Parametro `MOLIRIS_SESSION_TIMEOUT_MIN` fail-closed e tetto assoluto `MOLIRIS_SESSION_ABSOLUTE_MAX_MIN`. Solo richieste operative qualificano l'aggiornamento dell'attività (il polling passivo non estende la sessione).
+- **Politica timeout e chiusura sessione terminale**: CONFERMATO. Requisiti: RF-SSH-005, §6.4 passo 7. Parametro `MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN`. Rilascio a zero risorse residue per tutte le 7 cause di chiusura.
+- **Condivisione sessioni terminale**: APERTA. Requisiti: RF-SSH-006, RNF-SEC-007. Politica fail-closed `DefaultDenyTerminalSessionSharingPolicy` che nega qualsiasi accesso a sessioni altrui e registra l'evento nell'audit.
+- **Tecnologia canale tempo reale**: CONFERMATA. Requisiti: RF-SSH-004, §5.4. WebSocket su HTTPS (WSS) con autenticazione preliminare del cookie di sessione.
+- **Libreria terminale frontend**: CONFERMATA. Requisiti: RF-SSH-003, RNF-UX-004. `@xterm/xterm` v5.3.0 e addon fit in locale offline per Google Chrome.
+- **Provisioning utenti**: APERTA (PROPOSTA DA CONFERMARE). Requisiti: RF-AUTH-001, RNF-SEC-002. Script `scripts/seed-users.ts` con file password 0600 o integrazione systemd `LoadCredential=`. Zero password di default nel codice.
 
 ### 11.7 Prestazioni e Capacità
-- **Numero iniziale e massimo previsto di robot**: APERTA. Requisiti: RNF-PERF-005. Decisione: [Valore da definire].
-- **Numero massimo di utenti simultanei**: APERTA. Requisiti: RNF-PERF-003. Decisione: [Valore da definire].
-- **Numero di sessioni terminale contemporanee**: APERTA. Requisiti: RNF-PERF-003, §11.7. Decisione: [Valore da definire: reso configurabile su 3 livelli tramite `MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER` (limite globale server), `MOLIRIS_MAX_TERMINAL_SESSIONS_PER_USER` (limite per utente) e `MOLIRIS_MAX_TERMINAL_SESSIONS_PER_ROBOT` (limite per robot); al superamento di qualunque limite viene restituito un messaggio chiaro di rifiuto temporaneo].
-- **Limite elementi directory e paginazione filesystem remoto**: APERTA. Requisiti: RNF-PERF-002, §11.7. Decisione: [Valore da definire: la SRS non fissa limiti numerici alle directory con molti elementi; reso configurabile tramite `MOLIRIS_REMOTE_FS_MAX_ENTRIES` senza valori fissi inventati, con indicatore di elenco parziale/troncato se superato per evitare sovraccarichi].
-- **Strategia delle connessioni SFTP per la navigazione remota**: CONFERMATA/CONFIGURABILE. Requisiti: RNF-PERF-003, RNF-REL-005. Decisione: [Acquisizione connessione gestita tramite `RobotConnectionManager` per ciascuna operazione di navigazione con rilascio immediato garantito all'uscita; supportato inoltre timeout di inattività configurabile tramite `MOLIRIS_REMOTE_FS_IDLE_TIMEOUT_MS` e rispetto rigoroso dei limiti di connessione simultanea per utente, per robot e globali].
-- **Volume e frequenza dei trasferimenti**: APERTA. Requisiti: RNF-PERF-001/002. Decisione: [Valore da definire].
-- **Requisiti di disponibilità e ripristino**: APERTA. Requisiti: RNF-REL-001/003. Decisione: [Valore da definire].
-
-### 11.8 Interfaccia Utente, Compatibilità Browser e Ambiente Operativo (§2.5, §5.1, RNF-UX-001..004)
-- **Browser supportati oltre a Google Chrome**: APERTA (Confermato solo Google Chrome). Requisiti: §2.5, RNF-UX-003, RNF-UX-004. Decisione: [La specifica §2.5 elenca esclusivamente "Google Chrome (ultima versione stabile)". Sebbene RNF-UX-003 menzioni genericamente "browser moderni definiti come supportati dal progetto", nessun altro browser è documentato. L'applicazione opera ed è verificata esclusivamente su Google Chrome senza richiedere componenti o plugin aggiuntivi sul client dell'utente (RNF-UX-004). L'estensione del supporto ad altri browser rimane aperta in attesa di decisione del committente].
-- **Ambiente multimediale e funzioni sonore**: APERTA (Nessuna funzione audio implementata). Requisiti: §2.5. Decisione: [Il §2.5 cita "altoparlante" nella dotazione minima hardware dell'utente, ma la specifica SRS v1.0 non descrive né richiede alcuna emissione sonora, allarme acustico o feedback audio. In conformità alla regola di non inventare comportamenti, non è stata implementata alcuna funzione sonora].
-- **Meccanismo di aggiornamento in tempo reale del frontend**: CONFERMATO / CONFIGURABILE. Requisiti: §5.1, RF-MON-006, RF-TRF-006, RF-SSH-004. Decisione: [Adottato canale WebSocket (WSS) per il terminale remoto PTY (RF-SSH-004); polling adattivo client a intervallo breve (1.5s) per il monitoraggio dei trasferimenti streaming attivo unicamente in presenza di trasferimenti in corso (RF-TRF-006); aggiornamento su richiesta manuale e refresh contestuale all'apertura del dettaglio per lo stato di monitoraggio della flotta (CA-MON-003), con polling di background server-side controllato da `MOLIRIS_POLLING_INTERVAL_SEC`].
-- **Architettura modulare frontend e presentazione errori**: CONFERMATA. Requisiti: §5.1, §9, RNF-MNT-002, RNF-UX-002. Decisione: [Disaccoppiamento in moduli ES6 (`api-client.js`, `error-presenter.js`, `state-formatter.js`, `double-submit.js`, `app.js`). Unico livello centralizzato di traduzione errori conforme al catalogo §9 con distinzione visiva tra errori recuperabili ed errori che richiedono intervento amministrativo, ed esclusione categorica di dettagli tecnici interni o credenziali].
+- **Numero iniziale e massimo robot**: APERTA. Requisiti: RNF-PERF-005. Architettura scalabile senza modifiche al codice.
+- **Numero massimo utenti simultanei**: APERTA. Requisiti: RNF-PERF-003, §11.2. Fino a 25 utenti contemporanei.
+- **Numero sessioni terminale contemporanee**: APERTA. Requisiti: RNF-PERF-003, §10.3, §11.7. Parametro `MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER` (max 20), `MOLIRIS_MAX_TERMINAL_SESSIONS_PER_USER`, `MOLIRIS_MAX_TERMINAL_SESSIONS_PER_ROBOT`.
+- **Limite elementi directory remota**: APERTA. Requisiti: RNF-PERF-002, §11.7. Parametro `MOLIRIS_REMOTE_FS_MAX_ENTRIES` con flag `isTruncated: true` e avviso nel frontend.
+- **Strategia connessioni SFTP**: CONFERMATA. Connessioni acquisite tramite `RobotConnectionManager` con rilascio garantito nel `finally` e timeout di inattività `MOLIRIS_REMOTE_FS_IDLE_TIMEOUT_MS`.
 
 ---
 
-## 7. Proposte da Confermare (Intervento di Hardening e Manutenzione Correttiva)
+## 5. Elenco Formale delle Proposte da Confermare (Manutenzione Correttiva e Hardening)
 
-Il seguente elenco riassume in modo puntuale le scelte introdotte durante l'intervento correttivo per colmare lacune di sicurezza e robustezza, contrassegnate come **PROPOSTA DA CONFERMARE**:
+Le seguenti scelte sono state introdotte per completare in sicurezza i requisiti e colmare le lacune della specifica:
 
 1. **`SEED_USERS_PASSWORD_FILE` e `LoadCredential=` per il Provisioning**:
    - **Stato**: PROPOSTA DA CONFERMARE
-   - **Descrizione**: Lo script `scripts/seed-users.ts` richiede l'acquisizione delle password per gli utenti iniziali `operatore` e `admin` da file protetto con permessi POSIX 0600 (`stat.mode & 0o177 === 0` e appartenenza allo stesso `process.getuid()`), specificabile tramite `--password-file` o `SEED_USERS_PASSWORD_FILE`, o da integrazione systemd `LoadCredential=` (cartella `${CREDENTIALS_DIRECTORY}`). Sono state eliminate le password hardcoded nel sorgente.
+   - **Descrizione**: Lo script `scripts/seed-users.ts` richiede l'acquisizione delle password per gli utenti iniziali da un file con permessi POSIX 0600 (`stat.mode & 0o177 === 0` e appartenenza allo stesso `process.getuid()`), specificabile tramite `--password-file` o `SEED_USERS_PASSWORD_FILE`, o da integrazione systemd `LoadCredential=` (`${CREDENTIALS_DIRECTORY}`). Eliminate tutte le password hardcoded di fallback.
    - **Requisiti correlati**: RF-AUTH-001, RNF-SEC-002.
 
 2. **Parametri di Heartbeat WebSocket Terminale**:
    - **Stato**: PROPOSTA DA CONFERMARE
-   - **Descrizione**: Adozione delle variabili `MOLIRIS_WS_PING_INTERVAL_MS` (intervallo di ping, default disabilitato se 0 o omesso) e `MOLIRIS_WS_PING_TIMEOUT_MS` (timeout mancato pong, default 10000ms) per rilevare cadute silenziose del socket e chiudere tempestivamente PTY e connessione SSH a zero risorse residue.
+   - **Descrizione**: Variabili `MOLIRIS_WS_PING_INTERVAL_MS` (default 30000ms, 0 per disabilitare) e `MOLIRIS_WS_PING_TIMEOUT_MS` (default 10000ms) per rilevare cadute silenziose del socket e chiudere tempestivamente PTY e connessione SSH a zero risorse residue.
    - **Requisiti correlati**: RF-SSH-004, RF-SSH-005, RNF-REL-005.
 
 3. **Provider Credenziali MongoDB come Default di Sistema**:
    - **Stato**: PROPOSTA DA CONFERMARE
-   - **Descrizione**: Impostazione di default `MOLIRIS_CREDENTIAL_PROVIDER="mongo"`. Il provider utilizza crittografia AES-256-GCM con IV casuale a 96 bit e AAD legato a `${robotId}|${keyVersion}`, caricando la chiave master a 256 bit da file con permessi 0600 (`MOLIRIS_MASTER_KEY_FILE`). In ambiente di produzione (`NODE_ENV=production`) l'uso di provider volatili in-memory o chiavi non protette fallisce all'avvio in modalità fail-closed.
+   - **Descrizione**: Default `MOLIRIS_CREDENTIAL_PROVIDER="mongo"`. Cifratura AES-256-GCM con IV casuale a 96 bit e AAD legato a `${robotId}|${keyVersion}`, caricando la chiave master a 256 bit da file con permessi 0600 (`MOLIRIS_MASTER_KEY_FILE`). In produzione l'uso di provider volatili in-memory blocca l'avvio fail-closed.
    - **Requisiti correlati**: RF-ROB-005, RNF-SEC-002.
 
 4. **Rimozione Categorica Password Hardcoded nel Seed**:
    - **Stato**: PROPOSTA DA CONFERMARE
-   - **Descrizione**: Se `scripts/seed-users.ts` viene eseguito senza un file password valido o variabili d'ambiente esplicite, fallisce con errore fatale immediato invece di ricadere su password di default predefinite (`operator123` / `admin123`).
+   - **Descrizione**: `scripts/seed-users.ts` fallisce con errore fatale immediato se non sono fornite credenziali sicure invece di ricadere su password di default predefinite (`operator123` / `admin123`).
    - **Requisiti correlati**: RF-AUTH-001, RNF-SEC-002.
 
 5. **Conservazione dei Segreti Cifrati dopo Rimozione Robot**:
    - **Stato**: PROPOSTA DA CONFERMARE
-   - **Descrizione**: In conformità a §8.4 ("se implementata"), la cancellazione del robot dall'anagrafica non elimina automaticamente le credenziali archiviate nella collezione del provider credenziali, preservando la cronologia di cifratura/audit a meno di un comando esplicito di bonifica amministrativa.
+   - **Descrizione**: In conformità a §8.4 ("se implementata"), la cancellazione logica del robot dall'anagrafica attiva non elimina automaticamente le credenziali archiviate nella collezione del provider credenziali, preservando la cronologia di cifratura/audit a meno di un comando esplicito di bonifica amministrativa.
    - **Requisiti correlati**: RF-ROB-013, §8.4, RNF-SEC-002.
+
+6. **Caratteri Ammessi e Lunghezza Massima dell'Identificativo Robot (`id`)**:
+   - **Stato**: PROPOSTA DA CONFERMARE
+   - **Descrizione**: L'identificativo univoco del robot è validato rigorosamente con regex `^[a-z0-9-]+$` e lunghezza massima di 32 caratteri. La totale esclusione del carattere underscore `_` dall'ID garantisce l'assenza di collisioni sintattiche o combinazioni ambigue nel nome della directory server `<username>_<id>` (dove l'ultimo `_` funge in modo univoco e deterministico da separatore tra username e id).
+   - **Requisiti correlati**: RF-ROB-006, RF-ROB-008, §8.2.
+
+7. **Verifica Permessi Root Filesystem Server all'Avvio e Bit di Esecuzione**:
+   - **Stato**: PROPOSTA DA CONFERMARE
+   - **Descrizione**: All'avvio del server viene verificata la conformità dei permessi di `MOLIRIS_FS_ROOT` rispetto a `MOLIRIS_DIR_PERMISSIONS` (predefinito `0750`). In produzione (`NODE_ENV=production`) l'avvio fallisce in modalità fail-closed se la directory ha permessi più aperti di 0750. I bit di esecuzione sui file archiviati NON sono richiesti dalla SRS e non vengono applicati arbitrariamente.
+   - **Requisiti correlati**: RNF-FS-001, RNF-SEC-005.
+
+8. **Finalità delle Sottodirectory Standard (`logs`, `configs`, `backups`)**:
+   - **Stato**: PROPOSTA DA CONFERMARE / IN ATTESA DI DEFINIZIONE
+   - **Descrizione**: Le sottodirectory standard create in ciascuna cartella robot (`logs`, `configs`, `backups`) sono predisposte in modo idempotente. In conformità al §11.1 che prescrive di definire "nomi e finalità", le relative finalità rimangono esplicitamente registrate come "DA DEFINIRE DAL COMMITTENTE", evitando di assegnare ruoli applicativi arbitrari non documentati nella specifica SRS v1.0.
+   - **Requisiti correlati**: RF-ROB-009, RF-SRVFS-007, §11.1.
+
+9. **Modalità Verifica Integrità Trasferimenti (`MOLIRIS_TRANSFER_VERIFY_MODE`)**:
+   - **Stato**: PROPOSTA DA CONFERMARE
+   - **Descrizione**: Aggiunta della variabile `MOLIRIS_TRANSFER_VERIFY_MODE` ("stream" default baseline, "readback" proposta da confermare). In modalità "stream", viene verificato il digest in transito e la dimensione finale tramite stat prima della promozione atomica; in modalità estesa "readback", prima della promozione il server rilegge integralmente il file temporaneo tramite SFTP calcolandone il digest per confrontarlo con la sorgente.
+   - **Requisiti correlati**: RF-TRF-008, §9, §11.5.
+
+10. **File Temporaneo sul Robot nella Stessa Directory di Destinazione**:
+    - **Stato**: PROPOSTA DA CONFERMARE
+    - **Descrizione**: Durante i trasferimenti verso il robot, il file temporaneo viene allocato nella stessa directory del file di destinazione con nome univoco `.tmp_moliris_${transferId}.tmp`. Questa scelta garantisce che il rename/promozione finale avvenga all'interno dello stesso filesystem (stesso punto di mount), scongiurando fallimenti cross-device link (EXDEV) tipici dell'uso di `/tmp`.
+    - **Requisiti correlati**: RF-TRF-009, RNF-REL-004, §11.5.
+
+11. **Opzione Sostituzione Non Atomica sul Robot (`MOLIRIS_ROBOT_NONATOMIC_REPLACE`)**:
+    - **Stato**: PROPOSTA DA CONFERMARE
+    - **Descrizione**: Se un server SFTP remoto sul robot non supporta l'estensione OpenSSH `posix-rename@openssh.com` e il file di destinazione esiste già, per impostazione predefinita prudente (`MOLIRIS_ROBOT_NONATOMIC_REPLACE=false`) il trasferimento fallisce esplicitamente per non rischiare di cancellare il file valido senza garanzia di promozione. Se l'amministratore imposta esplicitamente `MOLIRIS_ROBOT_NONATOMIC_REPLACE=true`, il sistema esegue unlink preventivo e rename standard emettendo un avviso di sicurezza nei log.
+    - **Requisiti correlati**: RNF-REL-004, RF-TRF-011.
+
+12. **Margine di Sicurezza Spazio Disco (`MOLIRIS_TRANSFER_SPACE_MARGIN_MB`)**:
+    - **Stato**: PROPOSTA DA CONFERMARE
+    - **Descrizione**: Parametro configurabile `MOLIRIS_TRANSFER_SPACE_MARGIN_MB` (default 0 MB) che impone una riserva di spazio aggiuntiva oltre alla dimensione del file durante i controlli preventivi (`statfs` sul server e `statvfs@openssh.com` sul robot). Se il robot non supporta `statvfs`, il controllo preventivo viene saltato con avviso diagnostico e l'errore di disco pieno viene intercettato a runtime mappandolo in `INSUFFICIENT_STORAGE`.
+    - **Requisiti correlati**: RF-TRF-014, §11.5.
+
+13. **Nome File Registrato nell'Audit Log dei Trasferimenti**:
+    - **Stato**: PROPOSTA DA CONFERMARE
+    - **Descrizione**: L'audit log dei trasferimenti registra: identificativo utente, identificativo robot, direzione del trasferimento, timestamp, esito formale e nome del file trasferito (basename/percorso relativo). In conformità a RNF-SEC-002, nessun contenuto di file, byte trasferito o credenziale viene mai inserito nei log di audit.
+    - **Requisiti correlati**: RF-TRF-001..003, RNF-SEC-009, §10.4.
+
+14. **Intervallo Polling Trasferimenti e Flotta nel Frontend (`MOLIRIS_TRANSFER_POLL_INTERVAL_MS`)**:
+    - **Stato**: PROPOSTA DA CONFERMARE
+    - **Descrizione**: Il frontend interroga periodicamente lo stato dei trasferimenti attivi e della flotta. La frequenza è resa configurabile tramite `window.MOLIRIS_TRANSFER_POLL_INTERVAL_MS` (default 1000ms), disattivandosi automaticamente quando non vi sono trasferimenti in corso.
+    - **Requisiti correlati**: RF-TRF-006, RF-MON-006, §5.1.
+
+15. **Politica di Conservazione Credenziali e Chiavi Host dopo Rimozione Robot**:
+    - **Stato**: PROPOSTA DA CONFERMARE
+    - **Descrizione**: Alla rimozione logica del robot dall'anagrafica, i record di autenticazione cifrati rimangono archiviati nel provider con stato non agganciabile a sessioni attive, per preservare la tracciabilità delle operazioni storiche e permettere eventuali verifiche post-mortem senza perdere chiavi crittografiche.
+    - **Requisiti correlati**: RF-ROB-013, §8.4, RNF-SEC-002.
+
+16. **Spiegazione `RestartSec=5` in `moliris.service`**:
+    - **Stato**: PROPOSTA DA CONFERMARE
+    - **Descrizione**: La direttiva `RestartSec=5` nel file del servizio systemd rappresenta il tempo di pausa/attesa che il demone attende prima di lanciare il processo dopo un crash imprevisto, per prevenire loop di crash ad alta frequenza. Non costituisce una garanzia temporale rigida che il servizio sia pienamente operativo entro 5 secondi (il tempo effettivo dipende dall'inizializzazione del database e dal caricamento dei certificati).
+    - **Requisiti correlati**: RNF-REL-005, §10.3.

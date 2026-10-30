@@ -284,7 +284,7 @@ const testConfig: SystemConfiguration = {
   defaultSshPort: 22,
   transferChunkSizeBytes: 32 * 1024,
   transferChecksumAlgorithm: "sha256",
-  transferOverwritePolicy: "rifiuta",
+  transferOverwritePolicy: "richiedi_conferma",
 };
 
 const logger = new MolirisLogger();

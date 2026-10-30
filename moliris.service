@@ -12,6 +12,9 @@ WorkingDirectory=/opt/moliris/Moliris_Maintenance_Webapp_SRS
 EnvironmentFile=/etc/moliris/moliris.env
 ExecStart=/usr/bin/node --experimental-strip-types backend/server.ts
 Restart=always
+# RestartSec=5 definisce l'intervallo di attesa prima del riavvio del processo da parte di systemd;
+# NON costituisce una garanzia di ripristino del servizio entro 5 secondi (il tempo effettivo dipende
+# dai tempi di bootstrap di Node.js, dall'inizializzazione delle connessioni MongoDB e dal riaggancio rete).
 RestartSec=5
 TimeoutStopSec=15
 StandardOutput=journal

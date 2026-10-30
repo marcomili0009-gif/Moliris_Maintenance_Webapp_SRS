@@ -82,6 +82,13 @@ export interface TransferDto {
   error: string | null;
   checksum: string | null;
   checksumAlgorithm: string | null;
+  integrityLabel?: string;
+  integrityVerification?: {
+    verified: boolean;
+    label: string;
+    mode: "stream" | "readback" | "none";
+    details?: string;
+  };
   startedAt: string; // ISO 8601
   completedAt: string | null; // ISO 8601
 }
@@ -109,6 +116,13 @@ export interface TransferRecord {
   expectedChecksum?: string;
   computedChecksum?: string;
   checksumAlgorithm?: string;
+  integrityLabel?: string;
+  integrityVerification?: {
+    verified: boolean;
+    label: string;
+    mode: "stream" | "readback" | "none";
+    details?: string;
+  };
   startedAt: Date;
   completedAt?: Date;
   lastProgressUpdateAt: number;

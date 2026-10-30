@@ -73,7 +73,7 @@ async function runRobotRepositoryTestSuite(name: string, repo: RobotRepository) 
   assert(found !== null);
   assert.strictEqual(found.displayName, "Robot Navigatore 01");
   assert.strictEqual(found.remoteUsername, "operator_01");
-  assert.strictEqual(found.serverDirectoryPath, "/srv/moliris/data/operator_01");
+  assert.strictEqual(found.serverDirectoryPath, "/srv/moliris/data/operator_01_robot_01");
 
   // Test 2: Unicità dell'identificativo robot (RF-ROB-006)
   const duplicateIdRobot = createSampleRobot({ id: "robot_01", remoteUsername: "unique_user_02" });
@@ -103,7 +103,7 @@ async function runRobotRepositoryTestSuite(name: string, repo: RobotRepository) 
   const duplicateDirRobot = createSampleRobot({
     id: "robot_03",
     remoteUsername: "different_user",
-    serverDirectoryPath: "/srv/moliris/data/operator_01", // Stessa directory di robot_01
+    serverDirectoryPath: "/srv/moliris/data/operator_01_robot_01", // Stessa directory di robot_01
   });
   await assert.rejects(
     async () => await repo.create(duplicateDirRobot),
@@ -149,7 +149,7 @@ async function runRobotRepositoryTestSuite(name: string, repo: RobotRepository) 
   updated = (await repo.findById("robot_01"))!;
   assert.strictEqual(updated.anagraphicState, "rimosso");
   // Verifica che serverDirectoryPath e configurazione rimangano conservati (CA-ROB-011)
-  assert.strictEqual(updated.serverDirectoryPath, "/srv/moliris/data/operator_01");
+  assert.strictEqual(updated.serverDirectoryPath, "/srv/moliris/data/operator_01_robot_01");
 
   // Test 8: Aggiornamento esiti di registrazione RF-ROB-012
   await repo.updateRegistrationState("robot_01", "registrazione_completata", {

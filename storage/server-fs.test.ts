@@ -61,7 +61,7 @@ const resCreateA = await serverFsService.ensureRobotDirectory(robotA, {
 assert.strictEqual(resCreateA.created, true);
 assert.strictEqual(resCreateA.alreadyExisted, false);
 assert(fs.existsSync(robotA.serverDirectoryPath), "La directory del robot deve esistere");
-assert.strictEqual(path.basename(robotA.serverDirectoryPath), "operator_a", "Il nome deve corrispondere allo username");
+assert.strictEqual(path.basename(robotA.serverDirectoryPath), "operator_a_robot_A", "Il nome deve corrispondere alla regola baseline <username>_<id>");
 assert(fs.existsSync(path.join(robotA.serverDirectoryPath, "logs")), "Sottodirectory logs deve esistere");
 assert(fs.existsSync(path.join(robotA.serverDirectoryPath, "telemetry")), "Sottodirectory telemetry deve esistere");
 console.log("  PASS: Creazione directory con nome = username e sottodirectory standard (CA-ROB-004).");

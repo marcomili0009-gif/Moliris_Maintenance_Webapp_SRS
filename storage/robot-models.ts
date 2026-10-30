@@ -34,6 +34,12 @@ export interface LastAttemptOutcome {
   errorCode?: string;
   subType?: "missing" | "empty" | "incomplete" | "malformed" | "timeout" | "connection_error" | "read_error";
   diagnosticMessage?: string;
+  attempts?: Array<{
+    path: string;
+    success: boolean;
+    subType?: string;
+    errorMessage?: string;
+  }>;
 }
 
 /**
@@ -134,6 +140,9 @@ export interface RobotEntity {
   createdAt: Date;
   updatedAt: Date;
 
+  // Flag di directory preesistente persistito prima della creazione sul filesystem (RF-ROB-010, CA-ROB-008)
+  directoryPreexisting?: boolean;
+
   // Campi opzionali richiesti da RF-ROB-005
   remoteMonitoringPath?: string;
   sftpParameters?: SftpParameters;
@@ -141,21 +150,29 @@ export interface RobotEntity {
 }
 
 /**
- * Politica di risoluzione percorso directory server del robot (§8.2, §11.3, RF-ROB-008)
- * Isola la regola per cui due robot non possano finire sulla stessa directory.
+ * Politica di risoluzione percorso directory server del robot (§8.2, §11.3, §2.4 punto 6, RF-ROB-008)
+ * Incapsula la regola di naming <username>_<id> in modo che nessun'altra parte del codice conosca il formato.
  */
 export interface RobotDirectoryNamingPolicy {
-  resolveDirectoryPath(fsRoot: string, robot: { id: string; remoteUsername: string; host: string }): string;
+  resolveDirectoryName(robot: { id: string; remoteUsername: string }): string;
+  resolveDirectoryPath(fsRoot: string, robot: { id: string; remoteUsername: string; host?: string }): string;
 }
 
 /**
- * Implementazione predefinita della SRS (§10.1, RF-ROB-008): nome directory = username del robot.
- * Se emergono duplicati di username su host diversi, la regola di collision avoidance è isolata qui.
+ * Implementazione baseline (§8.2, §2.4 punto 6, RF-ROB-008):
+ * Naming directory sul server = <username>_<id>.
+ * Evita collisioni quando robot diversi condividono lo stesso username remoto.
  */
 export class StandardRobotDirectoryNamingPolicy implements RobotDirectoryNamingPolicy {
-  resolveDirectoryPath(fsRoot: string, robot: { id: string; remoteUsername: string; host: string }): string {
+  resolveDirectoryName(robot: { id: string; remoteUsername: string }): string {
     const cleanUsername = robot.remoteUsername.trim().replace(/[/\\?%*:|"<>]/g, "");
+    const cleanId = robot.id.trim().replace(/[/\\?%*:|"<>]/g, "");
+    return `${cleanUsername}_${cleanId}`;
+  }
+
+  resolveDirectoryPath(fsRoot: string, robot: { id: string; remoteUsername: string; host?: string }): string {
+    const dirName = this.resolveDirectoryName(robot);
     const cleanRoot = fsRoot.replace(/\/+$/, "");
-    return `${cleanRoot}/${cleanUsername}`;
+    return `${cleanRoot}/${dirName}`;
   }
 }

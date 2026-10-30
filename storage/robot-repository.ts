@@ -41,6 +41,7 @@ export interface RobotRepository {
   findById(id: string): Promise<RobotEntity | null>;
   findByUsername(remoteUsername: string): Promise<RobotEntity | null>;
   findByServerDirectory(serverDirectoryPath: string): Promise<RobotEntity | null>;
+  findByHostPortUsername(host: string, sshPort: number, remoteUsername: string): Promise<RobotEntity | null>;
   list(): Promise<RobotEntity[]>;
   updateConfiguration(id: string, update: RobotConfigurationUpdate): Promise<RobotEntity>;
   updateConnectionState(id: string, connectionState: ConnectionState, outcome?: LastAttemptOutcome): Promise<RobotEntity>;
@@ -56,9 +57,15 @@ export interface RobotRepository {
  */
 export class InMemoryRobotRepository implements RobotRepository {
   private robots: Map<string, RobotEntity> = new Map();
+  private usernameUniqueness: "per_host" | "globale";
+
+  constructor(usernameUniqueness: "per_host" | "globale" = "per_host") {
+    this.usernameUniqueness = usernameUniqueness;
+  }
 
   async create(robot: RobotEntity): Promise<RobotEntity> {
     try {
+      // 1. Unicità identificativo robot su TUTTI i record, compresi i rimossi (RF-ROB-006, Problema 1d)
       if (this.robots.has(robot.id)) {
         throw new MolirisAppError(
           ErrorCode.MISSING_ROBOT_PARAMS,
@@ -67,17 +74,36 @@ export class InMemoryRobotRepository implements RobotRepository {
       }
 
       for (const existing of this.robots.values()) {
-        if (existing.remoteUsername === robot.remoteUsername) {
-          throw new MolirisAppError(
-            ErrorCode.MISSING_ROBOT_PARAMS,
-            `Violazione unicità (RF-ROB-006): username remoto '${robot.remoteUsername}' già in uso.`
-          );
-        }
+        // 2. Unicità directory server derivata su TUTTI i record, compresi i rimossi (RF-ROB-008, Problema 1d)
         if (existing.serverDirectoryPath === robot.serverDirectoryPath) {
           throw new MolirisAppError(
             ErrorCode.MISSING_ROBOT_PARAMS,
             `Violazione unicità directory server (§8.2): '${robot.serverDirectoryPath}' già assegnata a un altro robot.`
           );
+        }
+
+        // 3. Unicità combinazione (host, porta SSH, username remoto) tra robot NON rimossi (Problema 1b, 1d)
+        if (existing.anagraphicState !== "rimosso") {
+          if (
+            existing.host === robot.host &&
+            existing.sshPort === robot.sshPort &&
+            existing.remoteUsername === robot.remoteUsername
+          ) {
+            throw new MolirisAppError(
+              ErrorCode.MISSING_ROBOT_PARAMS,
+              `Violazione unicità: account remoto '${robot.remoteUsername}' già registrato sullo stesso host '${robot.host}:${robot.sshPort}'.`
+            );
+          }
+        }
+
+        // 4. Se modalità globale: lo username non può essere duplicato in tutta la flotta
+        if (this.usernameUniqueness === "globale") {
+          if (existing.remoteUsername === robot.remoteUsername) {
+            throw new MolirisAppError(
+              ErrorCode.MISSING_ROBOT_PARAMS,
+              `Violazione unicità (RF-ROB-006 globale): username remoto '${robot.remoteUsername}' già in uso.`
+            );
+          }
         }
       }
 
@@ -107,6 +133,20 @@ export class InMemoryRobotRepository implements RobotRepository {
   async findByServerDirectory(serverDirectoryPath: string): Promise<RobotEntity | null> {
     for (const robot of this.robots.values()) {
       if (robot.serverDirectoryPath === serverDirectoryPath) {
+        return structuredClone(robot);
+      }
+    }
+    return null;
+  }
+
+  async findByHostPortUsername(host: string, sshPort: number, remoteUsername: string): Promise<RobotEntity | null> {
+    for (const robot of this.robots.values()) {
+      if (
+        robot.anagraphicState !== "rimosso" &&
+        robot.host === host &&
+        robot.sshPort === sshPort &&
+        robot.remoteUsername === remoteUsername
+      ) {
         return structuredClone(robot);
       }
     }
@@ -223,19 +263,40 @@ export class InMemoryRobotRepository implements RobotRepository {
  */
 export class MongoRobotRepository implements RobotRepository {
   private collection: Collection<RobotEntity>;
+  private usernameUniqueness: "per_host" | "globale";
 
-  constructor(db: Db) {
+  constructor(db: Db, usernameUniqueness: "per_host" | "globale" = "per_host") {
     this.collection = db.collection<RobotEntity>("robots");
+    this.usernameUniqueness = usernameUniqueness;
   }
 
   /**
-   * Crea gli indici di unicità su identificativo, username e directory del server (RF-ROB-006, §8.2).
+   * Crea gli indici di unicità su identificativo, directory del server e combinazione host/porta/username (RF-ROB-006, §8.2, Problema 1b, 1d).
    */
   async initIndexes(): Promise<void> {
     try {
+      // 1. Unicità identificativo robot su TUTTI i record, compresi rimossi (Problema 1d)
       await this.collection.createIndex({ id: 1 }, { unique: true });
-      await this.collection.createIndex({ remoteUsername: 1 }, { unique: true });
+
+      // 2. Unicità directory server derivata su TUTTI i record, compresi rimossi (Problema 1d)
       await this.collection.createIndex({ serverDirectoryPath: 1 }, { unique: true });
+
+      // 3. Unicità (host, porta, username) solo per robot NON rimossi (Problema 1b, 1d)
+      // Nota architetturale: MongoDB rifiuta l'operatore $ne in partialFilterExpression ($not non consentito);
+      // viene impiegato l'operatore $in: ["attivo", "disabilitato"] per escludere con precisione i robot in stato "rimosso".
+      await this.collection.createIndex(
+        { host: 1, sshPort: 1, remoteUsername: 1 },
+        {
+          unique: true,
+          partialFilterExpression: { anagraphicState: { $in: ["attivo", "disabilitato"] } },
+          name: "host_1_sshPort_1_remoteUsername_1_active",
+        }
+      );
+
+      // 4. Se configurata unicità globale (§11.3, RF-ROB-006)
+      if (this.usernameUniqueness === "globale") {
+        await this.collection.createIndex({ remoteUsername: 1 }, { unique: true });
+      }
     } catch (err: any) {
       throw new MolirisAppError(
         ErrorCode.DB_PERSISTENCE_ERROR,
@@ -283,6 +344,18 @@ export class MongoRobotRepository implements RobotRepository {
       return doc ? (doc as RobotEntity) : null;
     } catch (err: any) {
       throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore MongoDB durante findByServerDirectory: ${err.message}`);
+    }
+  }
+
+  async findByHostPortUsername(host: string, sshPort: number, remoteUsername: string): Promise<RobotEntity | null> {
+    try {
+      const doc = await this.collection.findOne(
+        { host, sshPort, remoteUsername, anagraphicState: { $in: ["attivo", "disabilitato"] } },
+        { projection: { _id: 0 } }
+      );
+      return doc ? (doc as RobotEntity) : null;
+    } catch (err: any) {
+      throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore MongoDB durante findByHostPortUsername: ${err.message}`);
     }
   }
 

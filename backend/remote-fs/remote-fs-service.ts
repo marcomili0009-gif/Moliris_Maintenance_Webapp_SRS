@@ -262,6 +262,7 @@ export class RemoteFilesystemService {
         items,
         totalCount,
         truncated,
+        isTruncated: truncated,
       };
     } finally {
       // Rilascio garantito della connessione (RNF-REL-005)
@@ -314,11 +315,11 @@ export class RemoteFilesystemService {
       const sftp = await managedConn.getSftpClient();
       const targetPath = await this.resolveAndValidatePath(remotePath, context, robot, sftp);
 
-      // Verifica che il percorso esista e sia un file
+      // Verifica che il percorso esista e gestione symlink / file speciali (Problema C1, RF-FS-002, RF-FS-007)
       await new Promise<void>((resolve, reject) => {
-        sftp.stat(targetPath, (err, stats) => {
-          if (err) return reject(this.mapSftpError(err, targetPath, robot.id));
-          if (stats.isDirectory()) {
+        const processStats = async (stats: any, isLstat: boolean) => {
+          // 1. Rifiuto directory
+          if (typeof stats.isDirectory === "function" && stats.isDirectory()) {
             return reject(
               new MolirisAppError(
                 ErrorCode.REMOTE_FS_ERROR,
@@ -327,7 +328,119 @@ export class RemoteFilesystemService {
               )
             );
           }
+
+          // 2. Rifiuto categorico di file speciali: device, socket, FIFO (Problema C1 punto c)
+          const isSpecial =
+            (typeof stats.isCharacterDevice === "function" && stats.isCharacterDevice()) ||
+            (typeof stats.isBlockDevice === "function" && stats.isBlockDevice()) ||
+            (typeof stats.isFIFO === "function" && stats.isFIFO()) ||
+            (typeof stats.isSocket === "function" && stats.isSocket());
+          if (isSpecial) {
+            return reject(
+              new MolirisAppError(
+                ErrorCode.REMOTE_FS_ERROR,
+                `Tentativo di download su file speciale (device, socket, FIFO): ${targetPath}`,
+                "Download non consentito: i file speciali di sistema non sono scaricabili."
+              )
+            );
+          }
+
+          // 3. Gestione Symlink (Problema C1 punto b): consentito solo se target è file regolare e ricade nei percorsi ammessi
+          if (isLstat && typeof stats.isSymbolicLink === "function" && stats.isSymbolicLink()) {
+            sftp.stat(targetPath, async (stErr, targetStats) => {
+              if (stErr) return reject(this.mapSftpError(stErr, targetPath, robot.id));
+
+              if (typeof targetStats.isDirectory === "function" && targetStats.isDirectory()) {
+                return reject(
+                  new MolirisAppError(
+                    ErrorCode.REMOTE_FS_ERROR,
+                    `Symlink punta a una directory: ${targetPath}`,
+                    "Impossibile scaricare: il link simbolico punta a una directory."
+                  )
+                );
+              }
+
+              if (typeof targetStats.isFile === "function" && !targetStats.isFile()) {
+                return reject(
+                  new MolirisAppError(
+                    ErrorCode.REMOTE_FS_ERROR,
+                    `Symlink non punta a un file regolare: ${targetPath}`,
+                    "Download non consentito: il link simbolico non punta a un file regolare."
+                  )
+                );
+              }
+
+              // Se sono configurati i percorsi consentiti, verifica che il target ricada nei percorsi autorizzati
+              if (this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0) {
+                try {
+                  const resolvedTarget = await new Promise<string>((res, rej) => {
+                    sftp.realpath(targetPath, (rpErr, rpath) => {
+                      if (rpErr) return rej(rpErr);
+                      res(rpath || "/");
+                    });
+                  });
+
+                  const normResolved = path.posix.normalize(resolvedTarget);
+                  const isAllowed = this.config.remoteFsAllowedPaths.some((allowed) => {
+                    const normAllowed = path.posix.normalize(allowed.trim());
+                    return (
+                      normResolved === normAllowed ||
+                      normResolved.startsWith(normAllowed.endsWith("/") ? normAllowed : `${normAllowed}/`)
+                    );
+                  });
+
+                  if (!isAllowed) {
+                    await this.recordSecurityViolation(
+                      context.username,
+                      robot.id,
+                      "SYMLINK_TARGET_OUTSIDE_ALLOWED_RESTRICTIONS",
+                      { targetPath: normResolved, allowedPaths: this.config.remoteFsAllowedPaths }
+                    );
+                    return reject(
+                      new MolirisAppError(
+                        ErrorCode.INSUFFICIENT_PERMISSIONS,
+                        `Accesso negato: il link simbolico punta a un percorso esterno a quelli autorizzati ('${normResolved}')`,
+                        "Accesso al file non consentito dalle restrizioni di sistema configurate."
+                      )
+                    );
+                  }
+                } catch (rpErr: any) {
+                  return reject(this.mapSftpError(rpErr, targetPath, robot.id));
+                }
+              }
+
+              resolve();
+            });
+            return;
+          }
+
+          // 4. File normale
+          if (typeof stats.isFile === "function" && !stats.isFile()) {
+            return reject(
+              new MolirisAppError(
+                ErrorCode.REMOTE_FS_ERROR,
+                `Il percorso non è un file regolare: ${targetPath}`,
+                "Impossibile scaricare: il percorso indicato non è un file regolare."
+              )
+            );
+          }
+
           resolve();
+        };
+
+        sftp.lstat(targetPath, async (lerr, lstats) => {
+          if (lerr) {
+            // Se lstat non è supportato dall'SFTP server (code 8 / OP_UNSUPPORTED), fallback trasparente su stat
+            if ((lerr as any).code === 8 || (lerr as any).message?.toLowerCase().includes("unsupported")) {
+              sftp.stat(targetPath, async (serr, sstats) => {
+                if (serr) return reject(this.mapSftpError(serr, targetPath, robot.id));
+                await processStats(sstats, false);
+              });
+              return;
+            }
+            return reject(this.mapSftpError(lerr, targetPath, robot.id));
+          }
+          await processStats(lstats, true);
         });
       });
 

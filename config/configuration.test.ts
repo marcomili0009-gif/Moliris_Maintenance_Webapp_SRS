@@ -141,4 +141,24 @@ const configAbsMax = loadAndValidateConfig({
 });
 assert.strictEqual(configAbsMax.sessionAbsoluteMaxMinutes, 480);
 
+// Test 9: Validazione MOLIRIS_ROBOT_USERNAME_UNIQUENESS
+const configDefaultUniq = loadAndValidateConfig(validEnv);
+assert.strictEqual(configDefaultUniq.robotUsernameUniqueness, "per_host", "Default di produzione deve essere 'per_host'");
+
+const configGlobUniq = loadAndValidateConfig({
+  ...validEnv,
+  MOLIRIS_ROBOT_USERNAME_UNIQUENESS: "globale",
+});
+assert.strictEqual(configGlobUniq.robotUsernameUniqueness, "globale");
+
+try {
+  loadAndValidateConfig({
+    ...validEnv,
+    MOLIRIS_ROBOT_USERNAME_UNIQUENESS: "invalido",
+  });
+  assert.fail("Avrebbe dovuto fallire per valore unicità invalido");
+} catch (err: any) {
+  assert(err.message.includes("Valore non valido per MOLIRIS_ROBOT_USERNAME_UNIQUENESS"));
+}
+
 console.log("PASS: Test configurazione completato con successo.");
