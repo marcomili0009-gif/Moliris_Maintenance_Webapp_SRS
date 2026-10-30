@@ -121,6 +121,14 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnConfirmOverwrite = document.getElementById("btn-confirm-overwrite");
   let pendingOverwriteCallback = null;
 
+  // Modal Conferma Eliminazione File (RNF-FS-003, RF-ROB-013)
+  const modalConfirmDelete = document.getElementById("modal-confirm-delete");
+  const deleteFileTarget = document.getElementById("delete-file-target");
+  const btnCloseDelete = document.getElementById("btn-close-delete");
+  const btnCancelDelete = document.getElementById("btn-cancel-delete");
+  const btnConfirmDelete = document.getElementById("btn-confirm-delete");
+  let pendingDeleteCallback = null;
+
   let currentUser = null;
 
   // =========================================================================
@@ -152,6 +160,7 @@ document.addEventListener("DOMContentLoaded", () => {
     modalEdit?.classList.add("hidden");
     modalRemoveConfirm?.classList.add("hidden");
     modalConfirmOverwrite?.classList.add("hidden");
+    modalConfirmDelete?.classList.add("hidden");
     closeTerminal();
   }
 
@@ -773,7 +782,10 @@ document.addEventListener("DOMContentLoaded", () => {
         showNotification("Stato operativo aggiornato con successo!", "success");
       } else {
         const formatted = ErrorPresenter.formatError(data);
-        showNotification(`Aggiornamento stato non riuscito: ${formatted.userMessage}`, "danger");
+        const msg = formatted.userMessage && formatted.userMessage.toLowerCase().startsWith("aggiornamento")
+          ? formatted.userMessage
+          : `Aggiornamento stato non riuscito: ${formatted.userMessage}`;
+        showNotification(msg, "danger");
       }
       openRobotDetail(robotId);
       loadFleetData();
@@ -825,7 +837,9 @@ document.addEventListener("DOMContentLoaded", () => {
         cursorBlink: true,
         cursorStyle: "block",
         fontSize: 14,
-        fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+        fontFamily: '"DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", Menlo, Monaco, Consolas, "Courier New", monospace',
+        letterSpacing: 0,
+        lineHeight: 1.1,
         theme: {
           background: "#1e1e1e",
           foreground: "#f1f1f1",
@@ -841,6 +855,11 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       activeXterm.open(terminalContainer);
+      const helperTa = terminalContainer.querySelector(".xterm-helper-textarea");
+      if (helperTa) {
+        helperTa.id = "terminal-input-textarea";
+        helperTa.name = "terminal-input-textarea";
+      }
 
       if (activeFitAddon) {
         try {
@@ -850,6 +869,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // Canale WebSocket WSS/WS (RF-SSH-004)
       terminalWebSocket = apiClient.createTerminalWebSocket(data.sessionId);
+      terminalWebSocket.binaryType = "arraybuffer";
 
       terminalWebSocket.onopen = () => {
         terminalSessionStatus.className = "badge-status badge-attivo";
@@ -865,26 +885,39 @@ document.addEventListener("DOMContentLoaded", () => {
         activeXterm.focus();
       };
 
-      terminalWebSocket.onmessage = (event) => {
-        const msg = event.data;
-        if (typeof msg === "string" && msg.startsWith("{") && msg.endsWith("}")) {
-          try {
-            const parsed = JSON.parse(msg);
-            if (parsed.type === "session_closed") {
-              terminalSessionStatus.className = "badge-status badge-disabilitato";
-              terminalSessionStatus.textContent = `Chiuso (${parsed.reason || "terminato"})`;
-              activeXterm.writeln(`\r\n\x1b[33m[Connessione terminale chiusa dal server: ${StateFormatter.escapeHtml(parsed.message || parsed.reason)}]\x1b[0m\r\n`);
-              return;
-            }
-            if (parsed.type === "error") {
-              terminalSessionStatus.className = "badge-status badge-errore";
-              terminalSessionStatus.textContent = "Errore";
-              activeXterm.writeln(`\r\n\x1b[31m[Errore: ${StateFormatter.escapeHtml(parsed.message)}]\x1b[0m\r\n`);
-              return;
-            }
-          } catch {}
+      terminalContainer.onclick = () => {
+        if (activeXterm) activeXterm.focus();
+      };
+
+      terminalWebSocket.onmessage = async (event) => {
+        let msg = event.data;
+        if (msg instanceof Blob) {
+          msg = await msg.arrayBuffer();
         }
-        activeXterm.write(msg);
+        if (msg instanceof ArrayBuffer) {
+          activeXterm.write(new Uint8Array(msg));
+          return;
+        }
+        if (typeof msg === "string") {
+          if (msg.startsWith("{") && msg.endsWith("}")) {
+            try {
+              const parsed = JSON.parse(msg);
+              if (parsed.type === "session_closed") {
+                terminalSessionStatus.className = "badge-status badge-disabilitato";
+                terminalSessionStatus.textContent = `Chiuso (${parsed.reason || "terminato"})`;
+                activeXterm.writeln(`\r\n\x1b[33m[Connessione terminale chiusa dal server: ${StateFormatter.escapeHtml(parsed.message || parsed.reason)}]\x1b[0m\r\n`);
+                return;
+              }
+              if (parsed.type === "error") {
+                terminalSessionStatus.className = "badge-status badge-errore";
+                terminalSessionStatus.textContent = "Errore";
+                activeXterm.writeln(`\r\n\x1b[31m[Errore: ${StateFormatter.escapeHtml(parsed.message)}]\x1b[0m\r\n`);
+                return;
+              }
+            } catch {}
+          }
+          activeXterm.write(msg);
+        }
       };
 
       terminalWebSocket.onclose = () => {
@@ -1215,6 +1248,16 @@ document.addEventListener("DOMContentLoaded", () => {
           });
           btnGroup.appendChild(btnSendToRobot);
 
+          const btnDelete = document.createElement("button");
+          btnDelete.className = "btn btn-danger btn-sm transfer-action-btn";
+          btnDelete.textContent = "🗑️ Elimina";
+          btnDelete.title = "Elimina file definitivamente dal server (RNF-FS-003, RF-ROB-013)";
+          btnDelete.addEventListener("click", () => {
+            const relPath = currentFsPath ? `${currentFsPath}/${item.name}` : item.name;
+            requestDeleteServerFile(robotId, relPath, item.name);
+          });
+          btnGroup.appendChild(btnDelete);
+
           actionsTd.appendChild(btnGroup);
         }
         tr.appendChild(actionsTd);
@@ -1472,20 +1515,112 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // Eliminazione File dal Server (RNF-FS-003, RF-ROB-013)
+  function requestDeleteServerFile(robotId, relPath, filename) {
+    deleteFileTarget.textContent = `${filename} (${relPath})`;
+    pendingDeleteCallback = async () => {
+      showNotification(`Eliminazione di '${filename}' in corso...`, "info");
+      try {
+        const res = await apiClient.delete(
+          `/api/robots/${encodeURIComponent(robotId)}/fs/server/file?path=${encodeURIComponent(relPath)}`
+        );
+        const data = await res.json();
+        if (!res.ok) {
+          showNotification(data, "danger");
+        } else {
+          showNotification(data.message || `File '${filename}' eliminato con successo.`, "success");
+          loadServerFilesystem(robotId, currentFsPath);
+        }
+      } catch (err) {
+        showNotification(err, "danger");
+      }
+    };
+    modalConfirmDelete.classList.remove("hidden");
+  }
+
+  function closeDeleteModal() {
+    modalConfirmDelete.classList.add("hidden");
+    pendingDeleteCallback = null;
+  }
+
+  btnCloseDelete?.addEventListener("click", closeDeleteModal);
+  btnCancelDelete?.addEventListener("click", closeDeleteModal);
+  btnConfirmDelete?.addEventListener("click", () => {
+    if (pendingDeleteCallback) {
+      const cb = pendingDeleteCallback;
+      closeDeleteModal();
+      cb();
+    }
+  });
+
   // Download Server -> Client (RF-TRF-001)
-  function downloadServerFile(robotId, relativePath) {
-    const url = `/api/robots/${encodeURIComponent(robotId)}/transfers/client-server/download?path=${encodeURIComponent(relativePath)}`;
-    window.location.href = url;
-    showNotification(`Download avviato per '${relativePath}'`, "info");
-    setTimeout(loadTransfersList, 1000);
+  async function downloadServerFile(robotId, relativePath) {
+    showNotification(`Avvio download di '${relativePath}'...`, "info");
+    try {
+      const res = await fetch(
+        `/api/robots/${encodeURIComponent(robotId)}/transfers/client-server/download?path=${encodeURIComponent(relativePath)}`,
+        { credentials: "same-origin" }
+      );
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        showNotification(errorData, "danger");
+        return;
+      }
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      const contentDisp = res.headers.get("content-disposition");
+      let filename = relativePath.split("/").pop() || "download";
+      if (contentDisp && contentDisp.includes("filename=")) {
+        const match = contentDisp.match(/filename="?([^"]+)"?/);
+        if (match && match[1]) filename = decodeURIComponent(match[1]);
+      }
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+      showNotification(`Download completato: ${filename}`, "success");
+      setTimeout(loadTransfersList, 1000);
+    } catch (err) {
+      showNotification(err, "danger");
+    }
   }
 
   // Download Robot -> Client (RF-TRF-003)
-  function downloadRobotFile(robotId, remotePath) {
-    const url = `/api/robots/${encodeURIComponent(robotId)}/transfers/client-robot/download?path=${encodeURIComponent(remotePath)}`;
-    window.location.href = url;
-    showNotification(`Download dal robot avviato per '${remotePath}'`, "info");
-    setTimeout(loadTransfersList, 1000);
+  async function downloadRobotFile(robotId, remotePath) {
+    showNotification(`Avvio download dal robot per '${remotePath}'...`, "info");
+    try {
+      const res = await fetch(
+        `/api/robots/${encodeURIComponent(robotId)}/transfers/client-robot/download?path=${encodeURIComponent(remotePath)}`,
+        { credentials: "same-origin" }
+      );
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        showNotification(errorData, "danger");
+        return;
+      }
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      const contentDisp = res.headers.get("content-disposition");
+      let filename = remotePath.split("/").pop() || "download";
+      if (contentDisp && contentDisp.includes("filename=")) {
+        const match = contentDisp.match(/filename="?([^"]+)"?/);
+        if (match && match[1]) filename = decodeURIComponent(match[1]);
+      }
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+      showNotification(`Download dal robot completato: ${filename}`, "success");
+      setTimeout(loadTransfersList, 1000);
+    } catch (err) {
+      showNotification(err, "danger");
+    }
   }
 
   // Upload Client -> Server (RF-TRF-001)

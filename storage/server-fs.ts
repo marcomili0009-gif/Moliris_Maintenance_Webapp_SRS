@@ -394,6 +394,31 @@ export class ServerFilesystemService {
     return tempDir;
   }
 
+  /**
+   * Eliminazione controllata di un file sul filesystem server (RNF-FS-003, RF-ROB-013).
+   * Verifica permessi, isolamento, prevenzione path traversal ed esclusione directory.
+   */
+  public async deleteFile(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    relativeFilePath: string
+  ): Promise<void> {
+    this.assertAuthorizedContext(context, robot, AppPermission.FS_SERVER_DELETE);
+
+    const targetPath = await this.resolveRobotPath(robot, relativeFilePath);
+    if (!fs.existsSync(targetPath)) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "File specificato non trovato sul server.");
+    }
+
+    const stat = await fs.promises.stat(targetPath);
+    if (stat.isDirectory()) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Impossibile eliminare: il percorso selezionato è una directory.");
+    }
+
+    await fs.promises.unlink(targetPath);
+    this.logger.info("File eliminato dal filesystem server", { robotId: robot.id, file: path.basename(targetPath) });
+  }
+
   private assertAuthorizedContext(
     context: AuthorizedContext,
     robot: RobotEntity,

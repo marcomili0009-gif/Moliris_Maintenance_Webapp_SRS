@@ -87,6 +87,7 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionMapping = {
     AppPermission.FS_SERVER_NAVIGATE,
     AppPermission.FS_SERVER_UPLOAD,
     AppPermission.FS_SERVER_DOWNLOAD,
+    AppPermission.FS_SERVER_DELETE,
     AppPermission.TRANSFER_SERVER_ROBOT,
     AppPermission.TRANSFER_CLIENT_ROBOT,
   ],
@@ -101,13 +102,13 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionMapping = {
     AppPermission.FS_SERVER_NAVIGATE,
     AppPermission.FS_SERVER_UPLOAD,
     AppPermission.FS_SERVER_DOWNLOAD,
+    AppPermission.FS_SERVER_DELETE,
     AppPermission.TRANSFER_SERVER_ROBOT,
     AppPermission.TRANSFER_CLIENT_ROBOT,
     AppPermission.ROBOT_REGISTER,
     AppPermission.ROBOT_CONFIG_UPDATE,
     AppPermission.ROBOT_DISABLE,
     AppPermission.ROBOT_REMOVE,
-    // FS_SERVER_DELETE non viene assegnato di default, è facoltativo e isolato
   ],
 };
 

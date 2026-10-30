@@ -18,6 +18,9 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+body, button, input, select, textarea {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
@@ -705,6 +708,17 @@ input:focus {
   background-color: #1e1e1e;
   overflow: hidden;
   position: relative;
+}
+
+.terminal-body,
+.terminal-body *,
+.xterm,
+.xterm *,
+.xterm-rows,
+.xterm-rows * {
+  font-family: "DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", Menlo, Monaco, Consolas, "Courier New", monospace !important;
+  letter-spacing: normal !important;
+  line-height: normal !important;
 }
 
 .terminal-body .xterm {

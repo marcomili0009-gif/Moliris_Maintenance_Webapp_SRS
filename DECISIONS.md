@@ -268,3 +268,8 @@ Le seguenti scelte sono state introdotte per completare in sicurezza i requisiti
     - **Stato**: PROPOSTA DA CONFERMARE
     - **Descrizione**: La direttiva `RestartSec=5` nel file del servizio systemd rappresenta il tempo di pausa/attesa che il demone attende prima di lanciare il processo dopo un crash imprevisto, per prevenire loop di crash ad alta frequenza. Non costituisce una garanzia temporale rigida che il servizio sia pienamente operativo entro 5 secondi (il tempo effettivo dipende dall'inizializzazione del database e dal caricamento dei certificati).
     - **Requisiti correlati**: RNF-REL-005, §10.3.
+
+17. **Eliminazione Controllata di File sul Filesystem Server (`FS_SERVER_DELETE`)**:
+    - **Stato**: PROPOSTA DA CONFERMARE
+    - **Descrizione**: Implementata l'operazione esplicita e controllata di eliminazione file sul Filesystem Server del robot (`DELETE /api/robots/:robotId/fs/server/file?path=...`) protetta dal permesso dedicato `AppPermission.FS_SERVER_DELETE`. In conformità a RNF-FS-003, RF-ROB-013 e §8.4, l'eliminazione è applicabile esclusivamente a singoli file regolari (escludendo directory per evitare cancellazioni massive accidentali), verifica l'isolamento della root del robot e il blocco anti-traversal, e richiede dal frontend una conferma modale esplicita da parte dell'utente prima dell'esecuzione.
+    - **Requisiti correlati**: RNF-FS-003, RF-ROB-013, RF-SRVFS-005, §8.4.

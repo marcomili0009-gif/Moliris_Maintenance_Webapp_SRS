@@ -104,7 +104,7 @@
               </div>
               <div class="fs-robot-selector">
                 <label for="fs-robot-id">ID Robot:</label>
-                <input type="text" id="fs-robot-id" placeholder="es. robot_01" value="">
+                <input type="text" id="fs-robot-id" name="fsRobotId" placeholder="es. robot_01" value="">
                 <button id="btn-fs-load" class="btn btn-secondary">Carica Directory Server</button>
               </div>
             </div>
@@ -113,7 +113,7 @@
               <button id="btn-fs-up" class="btn btn-secondary" title="Torna al livello superiore">⬆ Torna su</button>
               <span class="fs-breadcrumb">Percorso Server: <strong id="fs-current-path">/</strong></span>
               <div class="fs-actions" style="margin-left: auto; display: flex; gap: 0.5rem;">
-                <input type="file" id="fs-server-file-input" style="display: none;" aria-label="Seleziona file da caricare sul server">
+                <input type="file" id="fs-server-file-input" name="fsServerFileInput" style="display: none;" aria-label="Seleziona file da caricare sul server">
                 <button id="btn-fs-server-upload" class="btn btn-primary btn-sm" title="Carica file dal computer al server (RF-TRF-001)">⬆️ Carica sul Server</button>
               </div>
             </div>
@@ -149,7 +149,7 @@
               </div>
               <div class="fs-robot-selector">
                 <label for="fs-remote-robot-id">ID Robot:</label>
-                <input type="text" id="fs-remote-robot-id" placeholder="es. robot_01" value="">
+                <input type="text" id="fs-remote-robot-id" name="fsRemoteRobotId" placeholder="es. robot_01" value="">
                 <button id="btn-fs-remote-load" class="btn btn-primary">Carica Directory Remota</button>
               </div>
             </div>
@@ -158,7 +158,7 @@
               <button id="btn-fs-remote-up" class="btn btn-secondary" title="Torna al livello precedente (RF-FS-003)">⬆ Torna al livello precedente</button>
               <span class="fs-breadcrumb">Percorso Remoto: <strong id="fs-remote-current-path">/</strong></span>
               <div class="fs-actions" style="margin-left: auto; display: flex; gap: 0.5rem;">
-                <input type="file" id="fs-remote-file-input" style="display: none;" aria-label="Seleziona file da caricare sul robot">
+                <input type="file" id="fs-remote-file-input" name="fsRemoteFileInput" style="display: none;" aria-label="Seleziona file da caricare sul robot">
                 <button id="btn-fs-remote-upload" class="btn btn-primary btn-sm" title="Carica file dal computer verso il robot (RF-TRF-003)">⬆️ Carica sul Robot</button>
               </div>
             </div>
@@ -370,7 +370,7 @@
         </div>
         <div class="modal-body">
           <form id="form-edit-robot">
-            <input type="hidden" id="edit-robotId">
+            <input type="hidden" id="edit-robotId" name="editRobotId">
             <div class="form-grid">
               <div class="form-group">
                 <label for="edit-displayName">Nome visualizzato <span class="required">*</span>:</label>
@@ -494,6 +494,30 @@
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" id="btn-cancel-overwrite">Annulla Operazione</button>
           <button type="button" class="btn btn-danger" id="btn-confirm-overwrite">Sovrascrivi File Esistente</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL 8: Conferma Eliminazione File (RNF-FS-003, RF-ROB-013) -->
+    <div id="modal-confirm-delete" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 style="color: #b91c1c;">🗑️ Conferma Eliminazione File</h3>
+          <button class="btn-close" id="btn-close-delete">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p>Sei sicuro di voler eliminare definitivamente il seguente file dal server?</p>
+          <div style="background: #fef2f2; border: 1px solid #f87171; border-radius: 6px; padding: 0.75rem; margin: 1rem 0; font-family: monospace;" id="delete-file-target">
+            nome_file
+          </div>
+          <div class="alert-box alert-warning">
+            <strong>Operazione distruttiva (RNF-FS-003):</strong>
+            L'eliminazione rimuoverà il file dal filesystem del server in modo irreversibile. Questa azione richiede una tua conferma esplicita.
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-delete">Annulla</button>
+          <button type="button" class="btn btn-danger" id="btn-confirm-delete">Elimina Definitivamente</button>
         </div>
       </div>
     </div>
