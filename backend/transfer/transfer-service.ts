@@ -183,7 +183,7 @@ export class TransferService {
       await this.handleTransferFailure(record, err);
       if (err instanceof MolirisAppError) throw err;
       throw new MolirisAppError(
-        record.errorCode || ErrorCode.TRANSFER_INTERRUPTED,
+        (record.errorCode as any) || ErrorCode.TRANSFER_INTERRUPTED,
         err.message || "Trasferimento interrotto prima del completamento.",
         record.error || "Trasferimento file interrotto prima del completamento."
       );
@@ -482,7 +482,7 @@ export class TransferService {
       await this.handleTransferFailure(record, err);
       if (err instanceof MolirisAppError) throw err;
       throw new MolirisAppError(
-        record.errorCode || ErrorCode.TRANSFER_INTERRUPTED,
+        (record.errorCode as any) || ErrorCode.TRANSFER_INTERRUPTED,
         err.message || "Trasferimento interrotto prima del completamento.",
         record.error || "Trasferimento file interrotto prima del completamento."
       );
@@ -613,7 +613,7 @@ export class TransferService {
       await this.handleTransferFailure(record, err);
       if (err instanceof MolirisAppError) throw err;
       throw new MolirisAppError(
-        record.errorCode || ErrorCode.TRANSFER_INTERRUPTED,
+        (record.errorCode as any) || ErrorCode.TRANSFER_INTERRUPTED,
         err.message || "Trasferimento interrotto prima del completamento.",
         record.error || "Trasferimento file interrotto prima del completamento."
       );
@@ -770,7 +770,7 @@ export class TransferService {
       await this.handleTransferFailure(record, err);
       if (err instanceof MolirisAppError) throw err;
       throw new MolirisAppError(
-        record.errorCode || ErrorCode.TRANSFER_INTERRUPTED,
+        (record.errorCode as any) || ErrorCode.TRANSFER_INTERRUPTED,
         err.message || "Trasferimento interrotto prima del completamento.",
         record.error || "Trasferimento file interrotto prima del completamento."
       );
@@ -1087,10 +1087,10 @@ export class TransferService {
 
     if (err instanceof MolirisAppError) {
       safeUserMsg = err.userMessage;
-      errorCode = err.code;
+      errorCode = err.code as any;
     } else if (err.code === "ENOSPC" || (err.message && err.message.toLowerCase().includes("space"))) {
       safeUserMsg = "Spazio di archiviazione insufficiente.";
-      errorCode = ErrorCode.INSUFFICIENT_STORAGE;
+      errorCode = ErrorCode.INSUFFICIENT_STORAGE as any;
     }
 
     record.error = safeUserMsg;
@@ -1213,11 +1213,13 @@ export class TransferService {
     this.assertRobotNotDisabled(robot);
     const isCompleted =
       (robot as any).registrationStatus === "completata" ||
-      robot.registrationState === "registrazione_completata";
+      robot.registrationState === "registrazione_completata" ||
+      (robot.registrationState as any) === "completata";
+
     if (!isCompleted) {
       throw new MolirisAppError(
         ErrorCode.REMOTE_FS_ERROR,
-        `Robot '${robot.id}' con registrazione '${robot.registrationStatus}' non accessibile`,
+        `Robot '${robot.id}' con registrazione '${robot.registrationState}' non accessibile`,
         "Accesso al robot non consentito: registrazione differita non ancora verificata o fallita."
       );
     }

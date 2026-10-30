@@ -189,6 +189,8 @@ const opUserAuthorized: UserEntity = {
   username: "operatore_term",
   roles: ["operatore"],
   enabled: true,
+    updatedAt: new Date(),
+    passwordHash: "mock_hash",
   createdAt: new Date(),
 };
 
@@ -197,6 +199,8 @@ const opUserAttacker: UserEntity = {
   username: "utente_malevolo",
   roles: ["operatore"],
   enabled: true,
+    updatedAt: new Date(),
+    passwordHash: "mock_hash",
   createdAt: new Date(),
 };
 
@@ -205,6 +209,8 @@ const opUserDenied: UserEntity = {
   username: "operatore_negato",
   roles: ["operatore_solo_vista"],
   enabled: true,
+    updatedAt: new Date(),
+    passwordHash: "mock_hash",
   createdAt: new Date(),
 };
 

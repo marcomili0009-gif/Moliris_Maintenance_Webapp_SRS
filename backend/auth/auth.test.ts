@@ -60,7 +60,7 @@ sessionManager.onSessionTerminated((sessionId, userId, reason) => {
 const operatorHash = await hashPassword("Operatore123!");
 const adminHash = await hashPassword("Admin123!");
 
-const operatorUser: UserEntity = {
+const operatorUser: any = {
   id: "user_op_01",
   username: "operatore_test",
   passwordHash: operatorHash,
@@ -70,7 +70,7 @@ const operatorUser: UserEntity = {
   updatedAt: new Date(),
 };
 
-const restrictedUser: UserEntity = {
+const restrictedUser: any = {
   id: "user_op_restricted",
   username: "operatore_ristretto",
   passwordHash: operatorHash,
@@ -85,7 +85,7 @@ const restrictedUser: UserEntity = {
   updatedAt: new Date(),
 };
 
-const adminUser: UserEntity = {
+const adminUser: any = {
   id: "user_adm_01",
   username: "admin_test",
   passwordHash: adminHash,

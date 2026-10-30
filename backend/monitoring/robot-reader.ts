@@ -209,10 +209,7 @@ export class RemoteRobotReader {
       try {
         await connection.close();
       } catch (closeErr) {
-        this.logger.warn("Errore durante la chiusura della connessione di monitoraggio", {
-          robotId: robot.id,
-          err: String(closeErr),
-        });
+        this.logger.error(`Errore durante la chiusura della connessione di monitoraggio per '${robot.id}': ${String(closeErr)}`);
       }
     }
   }

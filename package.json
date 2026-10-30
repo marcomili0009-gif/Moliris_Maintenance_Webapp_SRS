@@ -5,8 +5,8 @@
   "description": "Web Application per la Gestione e il Monitoraggio di una Flotta di Robot Mobili (SRS v1.0)",
   "main": "backend/server.ts",
   "scripts": {
-    "dev": "MOLIRIS_SERVER_HOST=127.0.0.1 node --watch --experimental-strip-types --import dotenv/config backend/server.ts",
-    "test": "node --experimental-strip-types config/configuration.test.ts && node --experimental-strip-types logging/logger.test.ts && node --experimental-strip-types errors/app-errors.test.ts && node --experimental-strip-types backend/server.test.ts && node --experimental-strip-types storage/storage.test.ts && node --experimental-strip-types backend/auth/auth.test.ts && node --experimental-strip-types storage/server-fs.test.ts && node --experimental-strip-types backend/connection/connection.test.ts && node --experimental-strip-types backend/fleet/fleet.test.ts && node --experimental-strip-types backend/monitoring/monitoring.test.ts && node --experimental-strip-types backend/terminal/terminal.test.ts && node --experimental-strip-types backend/remote-fs/remote-fs.test.ts && node --experimental-strip-types backend/transfer/transfer.test.ts && node --experimental-strip-types frontend/frontend.test.ts && node --experimental-strip-types tests/security/security-hardening.test.ts && node --experimental-strip-types tests/reliability-performance/reliability-perf.test.ts && node --experimental-strip-types tests/acceptance/acceptance.test.ts"
+    "dev": "MOLIRIS_SERVER_HOST=127.0.0.1 tsx watch --import dotenv/config backend/server.ts",
+    "test": "tsx config/configuration.test.ts && tsx logging/logger.test.ts && tsx errors/app-errors.test.ts && tsx backend/server.test.ts && tsx storage/storage.test.ts && tsx backend/auth/auth.test.ts && tsx storage/server-fs.test.ts && tsx backend/connection/connection.test.ts && tsx backend/fleet/fleet.test.ts && tsx backend/monitoring/monitoring.test.ts && tsx backend/terminal/terminal.test.ts && tsx backend/remote-fs/remote-fs.test.ts && tsx backend/transfer/transfer.test.ts && tsx frontend/frontend.test.ts && tsx tests/security/security-hardening.test.ts && tsx tests/reliability-performance/reliability-perf.test.ts && tsx tests/acceptance/acceptance.test.ts"
   },
   "dependencies": {
     "@fastify/websocket": "^11.3.4",
@@ -28,6 +28,7 @@
     "@types/ssh2": "^1.15.0",
     "@types/ws": "^8.18.2",
     "nodemon": "^3.1.14",
+    "tsx": "^4.23.15",
     "typescript": "^5.3.3"
   },
   "allowScripts": {

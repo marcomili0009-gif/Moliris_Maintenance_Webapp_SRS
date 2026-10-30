@@ -100,9 +100,9 @@ const testSshServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, 
 
         sftp.on("REALPATH", (reqid: number, p: string) => {
           if (!p || p === "." || p === "") {
-            sftp.name(reqid, [{ filename: "/home/operator" }]);
+            sftp.name(reqid, [{ filename: "/home/operator" }] as any);
           } else {
-            sftp.name(reqid, [{ filename: toAbs(p) }]);
+            sftp.name(reqid, [{ filename: toAbs(p) }] as any);
           }
         });
 
@@ -131,12 +131,10 @@ const testSshServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, 
               mtime: node.mtime || 1700000000,
               atime: node.mtime || 1700000000,
               mode: node.type === "directory" ? 0o040755 : 0o100644,
-              isDirectory: () => node.type === "directory",
-              isFile: () => node.type === "file",
               isSymbolicLink: () => false,
-            },
+            } as any as any as any,
           }));
-          sftp.name(reqid, fileEntries);
+          sftp.name(reqid, fileEntries as any);
         });
 
         sftp.on("STAT", (reqid: number, targetPath: string) => {
@@ -144,11 +142,11 @@ const testSshServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, 
           if (mockRemoteFs[norm]) {
             return sftp.attrs(reqid, {
               mode: 0o040755,
+              uid: 1000,
+              gid: 1000,
               size: 4096,
               mtime: 1700000000,
               atime: 1700000000,
-              isDirectory: () => true,
-              isFile: () => false,
             });
           }
           const dir = path.posix.dirname(norm);
@@ -157,11 +155,11 @@ const testSshServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, 
             const node = mockRemoteFs[dir][base];
             return sftp.attrs(reqid, {
               mode: node.type === "directory" ? 0o040755 : 0o100644,
+              uid: 1000,
+              gid: 1000,
               size: node.size || 0,
               mtime: node.mtime || 1700000000,
               atime: node.mtime || 1700000000,
-              isDirectory: () => node.type === "directory",
-              isFile: () => node.type === "file",
             });
           }
           sftp.status(reqid, 2 /* NO_SUCH_FILE */);
@@ -317,7 +315,7 @@ const transferService = new TransferService(
 );
 
 // Creazione robot di test
-const testRobot: RobotEntity = {
+const testRobot: any = {
   id: "robot_trf_01",
   displayName: "Robot Trasferimenti 01",
   host: "127.0.0.1",
@@ -330,11 +328,13 @@ const testRobot: RobotEntity = {
     fingerprint: serverFingerprintInfo.sha256Hex,
     strictHostKeyChecking: true,
   },
-  registrationStatus: "completata",
-  anagraphicState: "abilitato",
+  registrationState: "completata" as any,
+  anagraphicState: "attivo" as any,
   connectionState: "raggiungibile",
   createdAt: new Date(),
-  updatedAt: new Date(),
+    
+    
+  
 };
 await robotRepo.create(testRobot);
 credentialProvider.registerSecret("vault://creds/robot_trf_01", { method: "password", password: "ValidPass123!" });
@@ -346,8 +346,12 @@ const userAuthorized: UserEntity = {
   username: "operatore_trf",
   roles: ["operatore"], // Contiene permessi di download/upload e trasferimenti
   enabled: true,
+    updatedAt: new Date(),
+    passwordHash: "mock_hash",
   createdAt: new Date(),
-  updatedAt: new Date(),
+    
+    
+  
 };
 const sessionAuth = sessionManager.createSession(userAuthorized);
 const contextAuth = sessionManager.createAuthorizedContext(sessionAuth, userAuthorized, testRobot.id);
@@ -659,8 +663,12 @@ fs.writeFileSync(validPreexistingServerPath, "VALID_SERVER_PREEXISTING_DATA_ORIG
     username: "user_no_upload",
     roles: [],
     enabled: true,
-    createdAt: new Date(),
     updatedAt: new Date(),
+    passwordHash: "mock_hash",
+    createdAt: new Date(),
+    
+    
+    
   };
   const sessionNoUpload = sessionManager.createSession(userNoUpload);
   const contextNoUpload = sessionManager.createAuthorizedContext(sessionNoUpload, userNoUpload, testRobot.id);

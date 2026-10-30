@@ -236,6 +236,8 @@ const adminUser: UserEntity = {
   username: "admin_user",
   roles: ["amministratore"],
   enabled: true,
+    updatedAt: new Date(),
+    passwordHash: "mock_hash",
   createdAt: new Date(),
 };
 
@@ -244,6 +246,8 @@ const opUserWithRefresh: UserEntity = {
   username: "op_user_refresh",
   roles: ["operatore"],
   enabled: true,
+    updatedAt: new Date(),
+    passwordHash: "mock_hash",
   createdAt: new Date(),
 };
 
@@ -252,6 +256,8 @@ const opUserReadOnly: UserEntity = {
   username: "op_user_ro",
   roles: ["operatore_solo_vista"],
   enabled: true,
+    updatedAt: new Date(),
+    passwordHash: "mock_hash",
   createdAt: new Date(),
 };
 

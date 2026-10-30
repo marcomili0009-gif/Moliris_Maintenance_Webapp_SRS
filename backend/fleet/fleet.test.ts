@@ -97,8 +97,12 @@ const adminUser: UserEntity = {
   username: "amministratore",
   roles: ["amministratore"],
   enabled: true,
+    updatedAt: new Date(),
+    passwordHash: "mock_hash",
   createdAt: new Date(),
-  updatedAt: new Date(),
+    
+    
+  
 };
 
 const opUser: UserEntity = {
@@ -106,8 +110,12 @@ const opUser: UserEntity = {
   username: "operatore",
   roles: ["operatore"],
   enabled: true,
+    updatedAt: new Date(),
+    passwordHash: "mock_hash",
   createdAt: new Date(),
-  updatedAt: new Date(),
+    
+    
+  
 };
 
 const opRestrictedUser: UserEntity = {
@@ -119,8 +127,12 @@ const opRestrictedUser: UserEntity = {
     "robot_ammesso": [AppPermission.FLEET_VIEW, AppPermission.STATUS_VIEW],
   },
   enabled: true,
+    updatedAt: new Date(),
+    passwordHash: "mock_hash",
   createdAt: new Date(),
-  updatedAt: new Date(),
+    
+    
+  
 };
 
 function createService(overrides: Partial<SystemConfiguration> = {}, repoOverride?: InMemoryRobotRepository) {

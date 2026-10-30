@@ -106,9 +106,9 @@ const testSshServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, 
 
         sftp.on("REALPATH", (reqid: number, p: string) => {
           if (!p || p === "." || p === "") {
-            sftp.name(reqid, [{ filename: "/home/operator" }]);
+            sftp.name(reqid, [{ filename:   "/home/operator" }] as any);
           } else {
-            sftp.name(reqid, [{ filename: path.posix.normalize(p) }]);
+            sftp.name(reqid, [{ filename:   path.posix.normalize(p) }] as any);
           }
         });
 
@@ -151,21 +151,14 @@ const testSshServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, 
               longname: `${node.type === "directory" ? "d" : "-"}rwxr-xr-x 1 op op ${node.size || 0} Nov 14 ${filename}`,
               attrs: {
                 size: node.size,
-                mtime: node.mtime,
-                atime: node.mtime,
+                mtime: node.mtime ?? 0,
+                atime: node.mtime ?? 0,
                 mode,
-                isDirectory: () => node.type === "directory",
-                isFile: () => node.type === "file",
-                isSymbolicLink: () => node.type === "link",
-                isCharacterDevice: () => node.type === "special",
-                isBlockDevice: () => false,
-                isFIFO: () => false,
-                isSocket: () => false,
-              },
+              } as any as any as any,
             };
           });
 
-          sftp.name(reqid, fileEntries);
+          sftp.name(reqid, fileEntries as any);
         });
 
         sftp.on("STAT", (reqid: number, targetPath: string) => {
@@ -176,12 +169,11 @@ const testSshServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, 
           if (mockFilesystem[norm]) {
             return sftp.attrs(reqid, {
               mode: 0o040755,
+              uid: 1000,
+              gid: 1000,
               size: 4096,
               mtime: 1700000000,
               atime: 1700000000,
-              isDirectory: () => true,
-              isFile: () => false,
-              isSymbolicLink: () => false,
             });
           }
 
@@ -192,12 +184,11 @@ const testSshServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, 
             const node = dir[baseName];
             return sftp.attrs(reqid, {
               mode: node.type === "directory" ? 0o040755 : 0o100644,
+              uid: 1000,
+              gid: 1000,
               size: node.size || 0,
-              mtime: node.mtime,
-              atime: node.mtime,
-              isDirectory: () => node.type === "directory",
-              isFile: () => node.type === "file",
-              isSymbolicLink: () => node.type === "link",
+              mtime: node.mtime ?? 0,
+              atime: node.mtime ?? 0,
             });
           }
 
@@ -213,12 +204,11 @@ const testSshServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, 
             const node = dir[baseName];
             return sftp.attrs(reqid, {
               mode: node.type === "link" ? 0o120777 : (node.type === "directory" ? 0o040755 : 0o100644),
+              uid: 1000,
+              gid: 1000,
               size: node.size || 0,
-              mtime: node.mtime,
-              atime: node.mtime,
-              isDirectory: () => node.type === "directory",
-              isFile: () => node.type === "file",
-              isSymbolicLink: () => node.type === "link",
+              mtime: node.mtime ?? 0,
+              atime: node.mtime ?? 0,
             });
           }
           sftp.status(reqid, 2 /* NO_SUCH_FILE */);
@@ -379,6 +369,8 @@ const userAuthorized: UserEntity = {
   username: "operatore_fs",
   roles: ["operatore"],
   enabled: true,
+    updatedAt: new Date(),
+    passwordHash: "mock_hash",
   createdAt: new Date(),
 };
 
@@ -388,6 +380,8 @@ const userNoNavigate: UserEntity = {
   roles: [],
   permissions: [AppPermission.FLEET_VIEW, AppPermission.STATUS_VIEW],
   enabled: true,
+    updatedAt: new Date(),
+    passwordHash: "mock_hash",
   createdAt: new Date(),
 };
 
@@ -617,6 +611,8 @@ const userNoNavigate: UserEntity = {
       robot_A: [AppPermission.FS_REMOTE_NAVIGATE],
     },
     enabled: true,
+    updatedAt: new Date(),
+    passwordHash: "mock_hash",
     createdAt: new Date(),
   };
 

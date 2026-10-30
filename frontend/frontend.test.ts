@@ -308,7 +308,7 @@ const chromeProcess: ChildProcess = spawn(
     `--user-data-dir=${chromeUserDataDir}`,
     "about:blank",
   ],
-  { stdio: "ignore" }
+  { stdio: "ignore", detached: true }
 );
 
 // Attendiamo che Chrome apra la porta CDP
@@ -664,9 +664,29 @@ assert.strictEqual(isOverwriteModalClosed, true, "Il modal di sovrascrittura dev
 
 // Chiusura risorse di test
 cdpWs.close();
-chromeProcess.kill("SIGKILL");
+
+if (chromeProcess.pid !== undefined) {
+  const chromeClosed = new Promise<void>((resolve) => {
+    if (chromeProcess.exitCode !== null || chromeProcess.signalCode !== null) {
+      resolve();
+    } else {
+      chromeProcess.once("close", () => resolve());
+    }
+  });
+
+  try {
+    process.kill(-chromeProcess.pid, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+      throw error;
+    }
+  }
+
+  await chromeClosed;
+}
+
 await server.close();
 fs.rmSync(tmpDir, { recursive: true, force: true });
-fs.rmSync(chromeUserDataDir, { recursive: true, force: true });
+fs.rmSync(chromeUserDataDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 
 console.log("PASS: Tutti i test della suite Frontend Web Google Chrome E2E sono stati superati con successo.");

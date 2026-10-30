@@ -105,7 +105,7 @@ export class MonitoringService {
     const eligible = robots.filter(
       (r) =>
         r.anagraphicState === "attivo" &&
-        r.registrationState !== "rimosso" &&
+       (r.registrationState as any) !== "rimosso" &&
         r.registrationState !== "ssh_non_verificata"
     );
 
@@ -117,10 +117,7 @@ export class MonitoringService {
       try {
         await this.pollSingleRobot(robot.id, "system_monitor");
       } catch (err: any) {
-        this.logger.warn(`Errore durante il polling del robot '${robot.id}'`, {
-          robotId: robot.id,
-          err: err?.message || String(err),
-        });
+  this.logger.error(`Errore durante il polling del robot '${robot.id}': ${err?.message || String(err)}`);
       }
     });
 
@@ -148,7 +145,7 @@ export class MonitoringService {
       }
 
       // Non eseguire su robot non attivi o non verificati
-      if (robot.anagraphicState !== "attivo" || robot.registrationState === "rimosso") {
+      if (robot.anagraphicState !== "attivo" || (robot.registrationState as any) === "rimosso") {
         return robot;
       }
 
