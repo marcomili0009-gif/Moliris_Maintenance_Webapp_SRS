@@ -12,13 +12,14 @@ export type TerminalSessionState = "connecting" | "active" | "closing" | "closed
  * Cause formali di chiusura e rilascio delle risorse (RF-SSH-005, §6.4 passo 7, CA-SSH-004)
  */
 export type TerminalCloseReason =
-  | "USER_EXPLICIT"            // Chiusura esplicita dell'utente dal frontend (CA-SSH-004)
-  | "CLIENT_DISCONNECT"         // Disconnessione del browser o interruzione WebSocket
-  | "IDLE_TIMEOUT"              // Timeout di inattività della sessione terminale
-  | "USER_SESSION_TERMINATED"   // Logout o scadenza della sessione utente Moliris
-  | "ROBOT_DISCONNECT"          // Disconnessione, errore di rete o timeout del robot
-  | "REMOTE_EXIT"               // Chiusura normale della shell remota (exit, Ctrl+D)
-  | "SERVICE_SHUTDOWN"          // Arresto controllato del servizio backend
+  | "USER_EXPLICIT"            // 1. Chiusura esplicita dell'utente dal frontend (CA-SSH-004)
+  | "CLIENT_DISCONNECT"         // 2. Disconnessione del browser, canale WebSocket o perdita heartbeat
+  | "IDLE_TIMEOUT"              // 3. Timeout di inattività della sessione terminale
+  | "USER_SESSION_TERMINATED"   // 4. Logout o scadenza della sessione utente Moliris
+  | "ROBOT_DISCONNECT"          // 5. Disconnessione, errore di rete o timeout del robot
+  | "SHELL_EXIT"                // 6. Uscita normale della shell remota (exit, Ctrl+D)
+  | "REMOTE_EXIT"               // Alias per retrocompatibilità di SHELL_EXIT
+  | "SERVICE_SHUTDOWN"          // 7. Arresto controllato del servizio backend
   | "ERROR"                     // Errore irreversibile del canale PTY o della connessione SSH
   | "ADMIN_DISABLED";           // Robot disabilitato con politica "chiudi_immediatamente"
 
@@ -45,6 +46,8 @@ export interface TerminalSession {
   managedConnection: ManagedRobotConnection;
   ptyChannel: ClientChannel;
   webSocket?: any; // Instanza WebSocket (@fastify/websocket o ws)
+  hasHadSocket?: boolean;
+  pingTimer?: NodeJS.Timeout;
   closeReason?: TerminalCloseReason;
   diagnosticError?: string;
 }

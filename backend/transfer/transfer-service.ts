@@ -1253,6 +1253,11 @@ export class TransferService {
     record.speedBytesPerSec = snap.speedBytesPerSec;
     record.etaSeconds = snap.etaSeconds;
     record.lastProgressUpdateAt = Date.now();
+
+    // Attività qualificata: avanzamento di un trasferimento avviato dalla stessa sessione -> rinnovo sessione
+    if (record.userSessionId) {
+      this.sessionManager.touchSession(record.userSessionId);
+    }
   }
 
   // =========================================================================

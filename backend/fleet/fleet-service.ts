@@ -17,7 +17,7 @@ import { ServerFilesystemService } from "../../storage/server-fs.ts";
 import { type UserEntity } from "../auth/user-models.ts";
 import { AppPermission, hasPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "../auth/permissions.ts";
 import { type CredentialProvider, type InMemoryCredentialProvider } from "../connection/credential-provider.ts";
-import { type HostKeyVerifier } from "../connection/host-key-verifier.ts";
+import { type HostKeyVerifier, isValidSha256Fingerprint } from "../connection/host-key-verifier.ts";
 import { validateHostAndPort, DestinationValidator } from "../connection/connection-validator.ts";
 import { RobotConnectionManager } from "../connection/robot-connection-manager.ts";
 import { verifyRobotConnection } from "../connection/connection-verifier.ts";
@@ -414,15 +414,26 @@ export class FleetService {
     // Risoluzione credenziali: memorizzazione sicura nel CredentialProvider
     const credentialRef = input.credentialReference || `vault://robots/${input.id.trim()}`;
     if (input.sshAuthMethod === "password" && input.password) {
-      if ("registerSecret" in this.credentialProvider) {
-        (this.credentialProvider as InMemoryCredentialProvider).registerSecret(credentialRef, {
+      if (typeof this.credentialProvider.store === "function") {
+        await this.credentialProvider.store(input.id.trim(), {
+          method: "password",
+          password: input.password,
+        });
+      } else if ("registerSecret" in this.credentialProvider) {
+        (this.credentialProvider as any).registerSecret(credentialRef, {
           method: "password",
           password: input.password,
         });
       }
     } else if (input.sshAuthMethod === "key" && input.privateKey) {
-      if ("registerSecret" in this.credentialProvider) {
-        (this.credentialProvider as InMemoryCredentialProvider).registerSecret(credentialRef, {
+      if (typeof this.credentialProvider.store === "function") {
+        await this.credentialProvider.store(input.id.trim(), {
+          method: "key",
+          privateKey: input.privateKey,
+          passphrase: input.passphrase,
+        });
+      } else if ("registerSecret" in this.credentialProvider) {
+        (this.credentialProvider as any).registerSecret(credentialRef, {
           method: "key",
           privateKey: input.privateKey,
           passphrase: input.passphrase,
@@ -902,8 +913,13 @@ export class FleetService {
     if (update.password) {
       connectionInvalidated = true;
       credentialRef = update.credentialReference || `vault://robots/${robot.id}`;
-      if ("registerSecret" in this.credentialProvider) {
-        (this.credentialProvider as InMemoryCredentialProvider).registerSecret(credentialRef, {
+      if (typeof this.credentialProvider.replace === "function") {
+        await this.credentialProvider.replace(robot.id, {
+          method: "password",
+          password: update.password,
+        });
+      } else if ("registerSecret" in this.credentialProvider) {
+        (this.credentialProvider as any).registerSecret(credentialRef, {
           method: "password",
           password: update.password,
         });
@@ -911,8 +927,14 @@ export class FleetService {
     } else if (update.privateKey) {
       connectionInvalidated = true;
       credentialRef = update.credentialReference || `vault://robots/${robot.id}`;
-      if ("registerSecret" in this.credentialProvider) {
-        (this.credentialProvider as InMemoryCredentialProvider).registerSecret(credentialRef, {
+      if (typeof this.credentialProvider.replace === "function") {
+        await this.credentialProvider.replace(robot.id, {
+          method: "key",
+          privateKey: update.privateKey,
+          passphrase: update.passphrase,
+        });
+      } else if ("registerSecret" in this.credentialProvider) {
+        (this.credentialProvider as any).registerSecret(credentialRef, {
           method: "key",
           privateKey: update.privateKey,
           passphrase: update.passphrase,
@@ -920,7 +942,30 @@ export class FleetService {
       }
     }
 
-    // Se sono cambiate le coordinate di connessione o le credenziali (§8.3):
+    // Aggiornamento impronta chiave host SSH (RNF-SEC-003, §8.3)
+    let hostKeyChanged = false;
+    let oldFingerprint: string | undefined = undefined;
+    let newFingerprint: string | undefined = undefined;
+
+    if (update.hostKeyVerification !== undefined) {
+      const newFp = update.hostKeyVerification.fingerprint?.trim();
+      if (!newFp || !isValidSha256Fingerprint(newFp)) {
+        throw new MolirisAppError(
+          ErrorCode.MISSING_ROBOT_PARAMS,
+          "Formato dell'impronta digitale chiave host (SHA-256) non valido. Richiesto formato OpenSSH 'SHA256:...' o esadecimale a 64 caratteri."
+        );
+      }
+
+      oldFingerprint = robot.hostKeyVerification?.fingerprint;
+      newFingerprint = newFp;
+
+      if (oldFingerprint !== newFingerprint) {
+        hostKeyChanged = true;
+        connectionInvalidated = true;
+      }
+    }
+
+    // Se sono cambiate le coordinate di connessione, le credenziali o la chiave host (§8.3):
     // 1. Chiude le connessioni attive o in cache nel connection manager
     // 2. Riporta lo stato di connessione a 'non_verificato' finché non viene ripetuta la verifica
     if (connectionInvalidated) {
@@ -945,6 +990,7 @@ export class FleetService {
     await this.recordAudit(user.username, AuditOperation.ROBOT_UPDATE, robotId, "SUCCESS", {
       connectionInvalidated,
       updatedFields: Object.keys(update).filter(k => k !== "password" && k !== "privateKey"),
+      ...(hostKeyChanged ? { oldFingerprint, newFingerprint } : {}),
     });
 
     return toRobotDetailDto(updatedEntity, this.config.staleDataThresholdSeconds);

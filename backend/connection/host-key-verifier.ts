@@ -1,9 +1,16 @@
 // Requisiti soddisfatti: RNF-SEC-003, RF-ROB-005, SRS §9, §11.2
 
 import crypto from "crypto";
-import fs from "fs";
 import { type HostKeyVerificationParams } from "../../storage/robot-models.ts";
-import { MolirisAppError, ErrorCode } from "../../errors/app-errors.ts";
+
+/**
+ * Esito strutturato della verifica crittografica della chiave host SSH (RNF-SEC-003, §9).
+ */
+export interface HostKeyVerificationResult {
+  matched: boolean;
+  expectedFingerprint: string;
+  receivedFingerprint: string;
+}
 
 /**
  * Interfaccia per la verifica dell'identità crittografica del server SSH remoto (RNF-SEC-003).
@@ -14,7 +21,7 @@ export interface HostKeyVerifier {
     port: number,
     serverHostKey: Buffer,
     params: HostKeyVerificationParams
-  ): boolean;
+  ): HostKeyVerificationResult;
 }
 
 /**
@@ -34,9 +41,29 @@ export function computeHostKeyFingerprint(key: Buffer): {
 }
 
 /**
+ * Valida la sintassi dell'impronta digitale SHA-256 (OpenSSH base64 o esadecimale a 64 caratteri).
+ */
+export function isValidSha256Fingerprint(fingerprint: string): boolean {
+  if (!fingerprint || typeof fingerprint !== "string") return false;
+  const trimmed = fingerprint.trim();
+  // Formato OpenSSH standard: "SHA256:[base64 di 43 o 44 caratteri]"
+  if (/^SHA256:[A-Za-z0-9+/]{43}={0,2}$/.test(trimmed)) {
+    return true;
+  }
+  // Formato esadecimale a 64 caratteri (case-insensitive)
+  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Implementazione predefinita della verifica chiave host (RNF-SEC-003, RF-ROB-005).
- * REQUISITO FONDAMENTALE: Non disabilita MAI automaticamente la verifica e NON accetta
- * chiavi sconosciute per convenienza o fallback. Niente opzioni "accetta tutto".
+ * REQUISITI FONDAMENTALI:
+ * 1. Solo fingerprint SHA-256 in anagrafica: il fingerprint è OBBLIGATORIO.
+ * 2. Il percorso di fiducia knownHostsPath è stato rimosso per garantire univocità crittografica.
+ * 3. Il confronto OpenSSH (SHA256:base64) è rigorosamente CASE-SENSITIVE per la componente base64.
+ * 4. Non disabilita MAI la verifica e blocca categoricamente qualsiasi mismatch (fail-closed).
  */
 export class DefaultHostKeyVerifier implements HostKeyVerifier {
   public verify(
@@ -44,57 +71,55 @@ export class DefaultHostKeyVerifier implements HostKeyVerifier {
     port: number,
     serverHostKey: Buffer,
     params: HostKeyVerificationParams
-  ): boolean {
+  ): HostKeyVerificationResult {
+    const { sha256Hex, sha256Base64, openSshFormat } = computeHostKeyFingerprint(serverHostKey || Buffer.alloc(0));
+
+    const expected = (params?.fingerprint || "").trim();
+
+    // In anagrafica il fingerprint SHA-256 è obbligatorio
+    if (!expected) {
+      return {
+        matched: false,
+        expectedFingerprint: "",
+        receivedFingerprint: openSshFormat,
+      };
+    }
+
     if (!serverHostKey || serverHostKey.length === 0) {
-      return false;
+      return {
+        matched: false,
+        expectedFingerprint: expected,
+        receivedFingerprint: "",
+      };
     }
 
-    const { sha256Hex, sha256Base64, openSshFormat } = computeHostKeyFingerprint(serverHostKey);
+    let matched = false;
 
-    // 1. Verifica tramite Fingerprint configurato per il robot
-    if (params.fingerprint && params.fingerprint.trim() !== "") {
-      const expected = params.fingerprint.trim();
+    // Confronto rigoroso:
+    // Formato OpenSSH: "SHA256:" seguito da base64 CASE-SENSITIVE
+    if (expected.startsWith("SHA256:") || expected.startsWith("sha256:")) {
       const cleanExpected = expected.replace(/^SHA256:/i, "").replace(/=+$/, "");
-
-      if (
-        cleanExpected.toLowerCase() === sha256Hex.toLowerCase() ||
-        cleanExpected === sha256Base64.replace(/=+$/, "") ||
-        expected.toLowerCase() === openSshFormat.toLowerCase()
-      ) {
-        return true;
+      const cleanReceived = sha256Base64.replace(/=+$/, "");
+      // CASE-SENSITIVE: nessun toLowerCase() sul base64!
+      if (cleanExpected === cleanReceived) {
+        matched = true;
       }
-      return false;
+    } else if (/^[0-9a-fA-F]{64}$/.test(expected)) {
+      // Formato esadecimale: confronto case-insensitive
+      if (expected.toLowerCase() === sha256Hex.toLowerCase()) {
+        matched = true;
+      }
+    } else {
+      // Base64 nudo senza prefisso: case-sensitive
+      if (expected.replace(/=+$/, "") === sha256Base64.replace(/=+$/, "")) {
+        matched = true;
+      }
     }
 
-    // 2. Verifica tramite file known_hosts se configurato
-    if (params.knownHostsPath && fs.existsSync(params.knownHostsPath)) {
-      try {
-        const content = fs.readFileSync(params.knownHostsPath, "utf8");
-        const lines = content.split("\n");
-        const hostToken = port === 22 ? host : `[${host}]:${port}`;
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith("#")) continue;
-          const parts = trimmed.split(/\s+/);
-          if (parts.length >= 3) {
-            const hostPart = parts[0];
-            const keyPart = parts[2];
-            if (hostPart.split(",").includes(hostToken)) {
-              if (keyPart === serverHostKey.toString("base64")) {
-                return true;
-              }
-            }
-          }
-        }
-      } catch {
-        return false;
-      }
-      return false;
-    }
-
-    // Se non è configurato né fingerprint né known_hosts valido:
-    // RNF-SEC-003 vieta esplicitamente l'accettazione fiduciaria di chiavi host sconosciute
-    return false;
+    return {
+      matched,
+      expectedFingerprint: expected,
+      receivedFingerprint: openSshFormat,
+    };
   }
 }

@@ -54,6 +54,7 @@ const validEnv: Record<string, string> = {
   MOLIRIS_TLS_KEY_PATH: "/certs/key.pem",
   MOLIRIS_REGISTRATION_MODE: "rigorosa",
   MOLIRIS_AUDIT_RETENTION_DAYS: "180",
+  MOLIRIS_MASTER_KEY_FILE: "/certs/master.key",
 };
 
 const config = loadAndValidateConfig(validEnv);
@@ -89,5 +90,55 @@ assert.strictEqual(configDifferita.registrationMode, "differita");
 assert.strictEqual(configDifferita.defaultSshPort, 2222);
 assert.strictEqual(configDifferita.maxFileSizeBytes, 10737418240);
 assert.deepStrictEqual(configDifferita.standardSubdirectories, ["upload", "download", "shared"]);
+
+// Test 5: Rifiuto provider in-memory in ambiente di produzione (NODE_ENV=production)
+try {
+  loadAndValidateConfig({
+    ...validEnv,
+    NODE_ENV: "production",
+    MOLIRIS_CREDENTIAL_PROVIDER: "in-memory",
+  });
+  assert.fail("Avrebbe dovuto fallire per in-memory in produzione");
+} catch (err: any) {
+  assert(err.message.includes("il provider di credenziali 'in-memory' non è consentito in ambiente di produzione"));
+}
+
+// Test 6: Fallimento se manca MOLIRIS_MASTER_KEY_FILE con provider mongo
+try {
+  const envNoKey = { ...validEnv };
+  delete (envNoKey as any).MOLIRIS_MASTER_KEY_FILE;
+  loadAndValidateConfig(envNoKey);
+  assert.fail("Avrebbe dovuto fallire per master key mancante con provider mongo");
+} catch (err: any) {
+  assert(err.message.includes("MOLIRIS_MASTER_KEY_FILE"));
+}
+
+// Test 7: Rifiuto categorico di mantieni_in_background per politica disconnessione terminale
+try {
+  loadAndValidateConfig({
+    ...validEnv,
+    MOLIRIS_TERMINAL_DISCONNECT_POLICY: "mantieni_in_background",
+  });
+  assert.fail("Avrebbe dovuto fallire per mantieni_in_background");
+} catch (err: any) {
+  assert(err.message.includes("il valore 'mantieni_in_background' per MOLIRIS_TERMINAL_DISCONNECT_POLICY è stato rimosso"));
+}
+
+// Test 8: Validazione tetto massimo assoluto sessione MOLIRIS_SESSION_ABSOLUTE_MAX_MIN
+try {
+  loadAndValidateConfig({
+    ...validEnv,
+    MOLIRIS_SESSION_ABSOLUTE_MAX_MIN: "-5",
+  });
+  assert.fail("Avrebbe dovuto fallire per timeout assoluto negativo");
+} catch (err: any) {
+  assert(err.message.includes("Valore non valido per MOLIRIS_SESSION_ABSOLUTE_MAX_MIN"));
+}
+
+const configAbsMax = loadAndValidateConfig({
+  ...validEnv,
+  MOLIRIS_SESSION_ABSOLUTE_MAX_MIN: "480",
+});
+assert.strictEqual(configAbsMax.sessionAbsoluteMaxMinutes, 480);
 
 console.log("PASS: Test configurazione completato con successo.");

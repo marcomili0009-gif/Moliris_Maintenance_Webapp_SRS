@@ -42,7 +42,6 @@ export function registerTerminalRoutes(
         code: err.code,
         message: err.userMessage,
         classification: err.classification,
-        diagnosticDetail: err.diagnosticDetail,
       });
     }
 

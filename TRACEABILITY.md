@@ -9,12 +9,12 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 ### 1.1 Autenticazione e Accesso (§3.1)
 | ID Requisito | Descrizione Sintetica | Modulo Implementazione | Suite di Test Automatizzati | Stato |
 | :--- | :--- | :--- | :--- | :--- |
-| **RF-AUTH-001** | Login con username e password | `backend/auth/auth-routes.ts`<br>`backend/auth/user-repository.ts` | `backend/auth/auth.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+| **RF-AUTH-001** | Login con username e password | `backend/auth/auth-routes.ts`<br>`backend/auth/user-repository.ts`<br>`scripts/seed-users.ts` | `backend/auth/auth.test.ts`<br>`tests/acceptance/acceptance.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
 | **RF-AUTH-002** | Verifica credenziali (hashing scrypt timing-safe) | `backend/auth/user-models.ts`<br>`backend/auth/auth-routes.ts` | `backend/auth/auth.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-AUTH-003** | Gestione della sessione e rifiuto anonimi | `backend/auth/session-manager.ts`<br>`backend/auth/auth-middleware.ts` | `backend/auth/auth.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
 | **RF-AUTH-004** | Logout e invalidazione immediata sessione | `backend/auth/auth-routes.ts`<br>`backend/auth/session-manager.ts` | `backend/auth/auth.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-AUTH-005** | Autorizzazioni RBAC per operazione e per robot | `backend/auth/permissions.ts`<br>`backend/auth/session-manager.ts` | `backend/auth/auth.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
-| **RF-AUTH-006** | Scadenza configurabile della sessione per inattività | `backend/auth/session-manager.ts`<br>`config/configuration.ts` | `backend/auth/auth.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+| **RF-AUTH-006** | Scadenza configurabile della sessione per inattività | `backend/auth/session-manager.ts`<br>`config/configuration.ts` | `backend/auth/auth.test.ts`<br>`tests/acceptance/acceptance.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
 
 ### 1.2 Gestione della Flotta dei Robot (§3.2, §§8.1-8.4, §10.1-10.2)
 | ID Requisito | Descrizione Sintetica | Modulo Implementazione | Suite di Test Automatizzati | Stato |
@@ -23,7 +23,7 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 | **RF-ROB-002** | Dettaglio singolo robot con azioni permesse | `backend/fleet/fleet-service.ts`<br>`storage/dto/robot-dto.ts` | `backend/fleet/fleet.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-ROB-003** | Registrazione nuovo robot da utenti autorizzati | `backend/fleet/fleet-service.ts`<br>`backend/fleet/fleet-routes.ts` | `backend/fleet/fleet.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-ROB-004** | Parametri descrittivi obbligatori (ID, display name) | `backend/fleet/fleet-service.ts`<br>`storage/robot-models.ts` | `backend/fleet/fleet.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RF-ROB-005** | Parametri di connessione e verifica host key | `backend/fleet/fleet-service.ts`<br>`backend/connection/connection-validator.ts` | `backend/connection/connection.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
+| **RF-ROB-005** | Parametri di connessione e verifica host key | `backend/fleet/fleet-service.ts`<br>`backend/connection/connection-validator.ts`<br>`backend/connection/mongo-credential-provider.ts` | `backend/connection/connection.test.ts`<br>`tests/security/security-hardening.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
 | **RF-ROB-006** | Validazione cumulativa dati e vincoli unicità | `backend/fleet/fleet-service.ts`<br>`storage/robot-repository.ts` | `backend/fleet/fleet.test.ts`<br>`storage/storage.test.ts` | **Soddisfatto** |
 | **RF-ROB-007** | Verifica SSH durante la registrazione (5 passi) | `backend/fleet/fleet-service.ts`<br>`backend/connection/robot-connection-manager.ts` | `backend/connection/connection.test.ts`<br>`backend/fleet/fleet.test.ts` | **Soddisfatto** |
 | **RF-ROB-008** | Creazione directory associata allo username | `backend/fleet/fleet-service.ts`<br>`storage/server-fs.ts` | `storage/server-fs.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
@@ -50,8 +50,8 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 | **RF-SSH-001** | Apertura sessione terminale Linux interattivo | `backend/terminal/terminal-service.ts`<br>`backend/terminal/terminal-routes.ts` | `backend/terminal/terminal.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-SSH-002** | Esecuzione comandi interattivi remoti | `backend/terminal/terminal-service.ts` | `backend/terminal/terminal.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-SSH-003** | Streaming progressivo dell'output della shell | `backend/terminal/terminal-service.ts`<br>`frontend/app.js` | `backend/terminal/terminal.test.ts`<br>`frontend/frontend.test.ts` | **Soddisfatto** |
-| **RF-SSH-004** | Emulazione terminale xterm nel browser e canale WSS | `frontend/app.js`<br>`backend/terminal/terminal-routes.ts` | `backend/terminal/terminal.test.ts`<br>`frontend/frontend.test.ts` | **Soddisfatto** |
-| **RF-SSH-005** | Chiusura ordinata e rilascio a zero risorse (7 cause) | `backend/terminal/terminal-service.ts` | `backend/terminal/terminal.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+| **RF-SSH-004** | Emulazione terminale xterm nel browser e canale WSS | `frontend/app.js`<br>`backend/terminal/terminal-routes.ts` | `backend/terminal/terminal.test.ts`<br>`frontend/frontend.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
+| **RF-SSH-005** | Chiusura ordinata e rilascio a zero risorse (7 cause) | `backend/terminal/terminal-service.ts` | `backend/terminal/terminal.test.ts`<br>`tests/acceptance/acceptance.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
 | **RF-SSH-006** | Isolamento sessioni e divieto accessi non autorizzati | `backend/terminal/terminal-service.ts`<br>`backend/terminal/terminal-models.ts` | `backend/terminal/terminal.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
 | **RF-SSH-007** | Blocco apertura terminale su robot disabilitato/non verificato | `backend/terminal/terminal-service.ts` | `backend/terminal/terminal.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-SSH-008** | Privilegi dell'account SSH specificato (nessun sudo) | `backend/connection/robot-connection-manager.ts` | `backend/connection/connection.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
@@ -103,9 +103,9 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 | ID Requisito | Descrizione Sintetica | Modulo Implementazione | Suite di Test Automatizzati | Stato |
 | :--- | :--- | :--- | :--- | :--- |
 | **RNF-SEC-001** | Comunicazioni protette: HTTPS/TLS obbligatorio, blocco HTTP | `backend/server.ts`<br>`config/configuration.ts` | `backend/server.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
-| **RNF-SEC-002** | Protezione credenziali e zero chiavi/segreti esposti | `backend/connection/credential-provider.ts`<br>`logging/logger.ts`<br>`storage/dto/robot-dto.ts` | `backend/connection/connection.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
-| **RNF-SEC-003** | Verifica chiavi host SSH e blocco man-in-the-middle | `backend/connection/host-key-verifier.ts` | `backend/connection/connection.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
-| **RNF-SEC-004** | Autorizzazione centrale lato server (guardia su 18 endpoint) | `backend/auth/auth-middleware.ts`<br>`backend/auth/permissions.ts` | `backend/auth/auth.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
+| **RNF-SEC-002** | Protezione credenziali e zero chiavi/segreti esposti | `backend/connection/credential-provider.ts`<br>`backend/connection/mongo-credential-provider.ts`<br>`backend/connection/master-key.ts`<br>`scripts/reencrypt-credentials.ts`<br>`scripts/seed-users.ts`<br>`logging/logger.ts`<br>`storage/dto/robot-dto.ts` | `backend/connection/connection.test.ts`<br>`tests/security/security-hardening.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
+| **RNF-SEC-003** | Verifica chiavi host SSH e blocco man-in-the-middle | `backend/connection/host-key-verifier.ts` | `backend/connection/connection.test.ts`<br>`tests/security/security-hardening.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
+| **RNF-SEC-004** | Autorizzazione centrale lato server (guardia su 18 endpoint) | `backend/auth/auth-middleware.ts`<br>`backend/auth/permissions.ts`<br>`backend/auth/session-manager.ts` | `backend/auth/auth.test.ts`<br>`tests/security/security-hardening.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
 | **RNF-SEC-005** | Protezione categorica da Path Traversal e null-byte | `storage/server-fs.ts`<br>`backend/monitoring/robot-reader.ts` | `storage/server-fs.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
 | **RNF-SEC-006** | Validazione sintattica host/porte e whitelist anti-abuso | `backend/connection/connection-validator.ts` | `backend/connection/connection.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
 | **RNF-SEC-007** | Isolamento sessioni e divieto accessi cross-robot | `backend/terminal/terminal-service.ts`<br>`backend/auth/permissions.ts` | `backend/terminal/terminal.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
@@ -136,7 +136,7 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 | **RNF-REL-002** | Stato aggiornato e marcatura stale (badge [Non più verificato]) | `backend/monitoring/monitoring-service.ts`<br>`storage/dto/robot-dto.ts` | `backend/monitoring/monitoring.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RNF-REL-003** | Recupero da errori parziali e rollback sicuro | `backend/fleet/fleet-service.ts`<br>`storage/server-fs.ts` | `backend/fleet/fleet.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RNF-REL-004** | Integrità dei file esistenti su trasferimenti falliti | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RNF-REL-005** | Pulizia delle risorse e riavvio pulito senza lock | `backend/server.ts`<br>`backend/terminal/terminal-service.ts` | `backend/terminal/terminal.test.ts`<br>`tests/reliability-performance/reliability-perf.test.ts` | **Soddisfatto** |
+| **RNF-REL-005** | Pulizia delle risorse e riavvio pulito senza lock | `backend/server.ts`<br>`backend/terminal/terminal-service.ts` | `backend/terminal/terminal.test.ts`<br>`tests/reliability-performance/reliability-perf.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
 
 ### 2.5 Usabilità e Frontend (RNF-UX-001..004)
 | ID Requisito | Descrizione Sintetica | Modulo Implementazione | Suite di Test Automatizzati | Stato |
@@ -159,8 +159,8 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 
 | Vincolo §2.4 | Descrizione del Vincolo | Modulo Implementazione | Suite di Test Automatizzati | Stato |
 | :--- | :--- | :--- | :--- | :--- |
-| **§2.4 punto 1** | Credenziali e chiavi private gestite esclusivamente lato server | `backend/connection/credential-provider.ts` | `tests/security/security-hardening.test.ts` | **Soddisfatto** |
-| **§2.4 punto 2** | Il browser non riceve chiavi private SSH o credenziali persistenti | `storage/dto/robot-dto.ts` | `tests/security/security-hardening.test.ts` | **Soddisfatto** |
+| **§2.4 punto 1** | Credenziali e chiavi private gestite esclusivamente lato server | `backend/connection/credential-provider.ts`<br>`backend/connection/mongo-credential-provider.ts` | `tests/security/security-hardening.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
+| **§2.4 punto 2** | Il browser non riceve chiavi private SSH o credenziali persistenti | `storage/dto/robot-dto.ts` | `tests/security/security-hardening.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
 | **§2.4 punto 3** | Traffico tra browser e applicazione utilizza HTTPS (e WSS) | `backend/server.ts` | `tests/security/security-hardening.test.ts` | **Soddisfatto** |
 | **§2.4 punto 4** | Comunicazioni backend-robot utilizzano SSH v2 e SFTP v3 | `backend/connection/robot-connection-manager.ts` | `backend/connection/connection.test.ts` | **Soddisfatto** |
 | **§2.4 punto 5** | Trasferimento file > 1 GB senza caricamento simultaneo in RAM | `backend/transfer/transfer-service.ts` | `tests/reliability-performance/reliability-perf.test.ts` | **Soddisfatto** |

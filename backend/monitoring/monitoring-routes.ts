@@ -33,7 +33,6 @@ export function registerMonitoringRoutes(
         code: err.code,
         message: err.userMessage,
         classification: err.classification,
-        diagnosticDetail: err.diagnosticDetail,
       });
     }
 

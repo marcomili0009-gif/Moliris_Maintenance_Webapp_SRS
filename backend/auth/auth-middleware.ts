@@ -76,7 +76,7 @@ export class AuthMiddleware {
       return;
     }
 
-    const session = this.sessionManager.getSession(sessionId);
+    const session = this.sessionManager.validate(sessionId);
     if (!session) {
       await this.recordSecurityError("anonymous", undefined, "SESSION_EXPIRED_OR_INVALID");
       const errDef = ERROR_CATALOG[ErrorCode.INVALID_CREDENTIALS];
@@ -99,6 +99,12 @@ export class AuthMiddleware {
         classification: errDef.classification,
       });
       return;
+    }
+
+    // Rinnovo attività qualificata: richieste API autenticate (escluso polling automatico di monitoraggio)
+    const isMonitoringPolling = req.method === "GET" && req.url.includes("/status");
+    if (!isMonitoringPolling) {
+      this.sessionManager.touchSession(sessionId);
     }
 
     req.molirisSession = session;

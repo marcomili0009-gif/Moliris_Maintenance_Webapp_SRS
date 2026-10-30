@@ -317,10 +317,13 @@ async function executeSshHandshakeAndAuth(
       readyTimeout: timeoutMs,
       hostVerifier: (serverHostKey: Buffer) => {
         try {
-          const verified = hostKeyVerifier.verify(host, port, serverHostKey, hostKeyParams);
+          const res = hostKeyVerifier.verify(host, port, serverHostKey, hostKeyParams);
+          const verified = typeof res === "boolean" ? res : res.matched;
           hostKeyVerified = verified;
           if (!verified) {
-            hostKeyError = "Chiave host non corrispondente ai parametri attesi";
+            const exp = typeof res === "object" ? res.expectedFingerprint : (hostKeyParams?.fingerprint || "");
+            const rec = typeof res === "object" ? res.receivedFingerprint : "";
+            hostKeyError = `Chiave host non corrispondente ai parametri attesi (attesa: '${exp}', ricevuta: '${rec}')`;
           }
           return verified;
         } catch (err: any) {

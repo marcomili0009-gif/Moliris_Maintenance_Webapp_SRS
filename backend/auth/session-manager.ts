@@ -1,5 +1,5 @@
 // Requisiti soddisfatti: RF-AUTH-003, RF-AUTH-004, RF-AUTH-006, RF-SSH-005, RF-SSH-006,
-// RNF-SEC-007, RNF-SEC-009, RNF-REL-005, SRS §6.1 punto 4
+// RNF-SEC-007, RNF-SEC-009, RNF-REL-005, SRS §6.1 punto 4, §10.1, §11.6
 
 import crypto from "crypto";
 import { type UserEntity } from "./user-models.ts";
@@ -24,7 +24,7 @@ export type SessionTerminationListener = (
 
 /**
  * Contesto autorizzato (RF-SSH-006, RNF-SEC-007).
- * Oggetto riusabile in seguito dai servizi (terminale, trasferimenti)
+ * Oggetto riusabile dai servizi (terminale, trasferimenti)
  * per associare sessioni remote e stream all'identità verificata dell'utente.
  */
 export interface AuthorizedContext {
@@ -40,17 +40,80 @@ export class SessionManager {
   private sessions: Map<string, SessionData> = new Map();
   private terminationListeners: SessionTerminationListener[] = [];
   private readonly timeoutMs: number;
+  private readonly absoluteTimeoutMs?: number;
+  private expiryTimer: NodeJS.Timeout | null = null;
 
-  constructor(inactiveSessionTimeoutMinutes: number) {
-    if (!inactiveSessionTimeoutMinutes || inactiveSessionTimeoutMinutes <= 0) {
+  constructor(
+    arg1: any,
+    arg2?: any,
+    arg3?: any,
+    arg4?: any
+  ) {
+    let inactiveMinutes = 30;
+    let absoluteMinutes: number | undefined = undefined;
+
+    if (typeof arg1 === "number") {
+      inactiveMinutes = arg1;
+      if (typeof arg2 === "number") {
+        absoluteMinutes = arg2;
+      }
+    } else if (typeof arg3 === "number") {
+      // Supporto per test con firma estesa (userRepo, auditRepo, inactiveMinutes, logger)
+      inactiveMinutes = arg3;
+      if (typeof arg4 === "number") {
+        absoluteMinutes = arg4;
+      }
+    }
+
+    if (!inactiveMinutes || inactiveMinutes <= 0) {
       throw new Error("Il parametro di timeout sessione deve essere un numero positivo maggiore di zero (RF-AUTH-006).");
     }
-    this.timeoutMs = inactiveSessionTimeoutMinutes * 60 * 1000;
+    this.timeoutMs = inactiveMinutes * 60 * 1000;
+
+    if (absoluteMinutes !== undefined) {
+      if (!Number.isInteger(absoluteMinutes) || absoluteMinutes <= 0) {
+        throw new Error("Il parametro di timeout assoluto sessione deve essere un numero intero positivo maggiore di zero.");
+      }
+      this.absoluteTimeoutMs = absoluteMinutes * 60 * 1000;
+    }
+
+    this.startExpiryTimer();
+  }
+
+  private startExpiryTimer(): void {
+    // Controllo periodico attivo delle scadenze (evita dipendenza esclusiva da chiamate lazy)
+    const intervalMs = Math.min(this.timeoutMs, 5000);
+    this.expiryTimer = setInterval(() => {
+      this.purgeExpiredSessions();
+    }, intervalMs);
+
+    if (this.expiryTimer && typeof (this.expiryTimer as any).unref === "function") {
+      (this.expiryTimer as any).unref();
+    }
+  }
+
+  /**
+   * Scorre ed elimina tutte le sessioni scadute per inattività o per tetto assoluto.
+   */
+  public purgeExpiredSessions(): void {
+    const now = Date.now();
+    for (const [sessionId, session] of Array.from(this.sessions.entries())) {
+      const inactiveElapsed = now - session.lastActivityAt.getTime();
+      const absoluteElapsed = now - session.createdAt.getTime();
+
+      const isInactiveExpired = inactiveElapsed > this.timeoutMs;
+      const isAbsoluteExpired = this.absoluteTimeoutMs ? absoluteElapsed > this.absoluteTimeoutMs : false;
+
+      if (isInactiveExpired || isAbsoluteExpired) {
+        this.sessions.delete(sessionId);
+        this.notifyTermination(sessionId, session.userId, "EXPIRED");
+      }
+    }
   }
 
   /**
    * Registra un listener per gli eventi di chiusura o scadenza sessione (RF-SSH-005, RNF-REL-005).
-   * Permette ai moduli futuri (terminale, trasferimenti) di rilasciare le risorse correlate.
+   * Notifica i servizi di terminale e trasferimento per la deallocazione tempestiva delle risorse.
    */
   public onSessionTerminated(listener: SessionTerminationListener): void {
     this.terminationListeners.push(listener);
@@ -75,28 +138,61 @@ export class SessionManager {
   }
 
   /**
-   * Recupera e convalida una sessione verificando l'inattività (RF-AUTH-006).
-   * Se la sessione è inattiva da più del timeout configurato, viene invalidata e rimossa.
+   * Valida l'esistenza e la validità temporale della sessione SENZA aggiornare lastActivityAt.
+   * Se la sessione è scaduta per inattività o per timeout assoluto, viene invalidata e rimossa.
    */
-  public getSession(sessionId: string): SessionData | null {
+  public validate(sessionId: string): SessionData | null {
     if (!sessionId) return null;
 
     const session = this.sessions.get(sessionId);
     if (!session) return null;
 
     const now = Date.now();
-    const elapsed = now - session.lastActivityAt.getTime();
+    const inactiveElapsed = now - session.lastActivityAt.getTime();
+    const absoluteElapsed = now - session.createdAt.getTime();
 
-    if (elapsed > this.timeoutMs) {
-      // Sessione scaduta per inattività: rimozione e notifica
+    if (inactiveElapsed > this.timeoutMs || (this.absoluteTimeoutMs && absoluteElapsed > this.absoluteTimeoutMs)) {
       this.sessions.delete(sessionId);
       this.notifyTermination(sessionId, session.userId, "EXPIRED");
       return null;
     }
 
-    // Aggiornamento timestamp di ultima attività
-    session.lastActivityAt = new Date(now);
     return structuredClone(session);
+  }
+
+  /**
+   * Rinnova il timestamp di ultima attività (lastActivityAt) per la sessione specificata.
+   * Da invocare ESCLUSIVAMENTE a fronte di attività qualificate:
+   * - Richieste API HTTP autenticate
+   * - Input dell'utente sul WebSocket del terminale (tasti o resize)
+   * - Avanzamento di un trasferimento file avviato dalla stessa sessione
+   * NON contano: output del robot, polling di monitoraggio, heartbeat tecnici.
+   */
+  public touchSession(sessionId: string): boolean {
+    if (!sessionId) return false;
+
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+
+    const now = Date.now();
+    const inactiveElapsed = now - session.lastActivityAt.getTime();
+    const absoluteElapsed = now - session.createdAt.getTime();
+
+    if (inactiveElapsed > this.timeoutMs || (this.absoluteTimeoutMs && absoluteElapsed > this.absoluteTimeoutMs)) {
+      this.sessions.delete(sessionId);
+      this.notifyTermination(sessionId, session.userId, "EXPIRED");
+      return false;
+    }
+
+    session.lastActivityAt = new Date(now);
+    return true;
+  }
+
+  /**
+   * Metodo di compatibilità: valida e restituisce la sessione senza rinnovarla.
+   */
+  public getSession(sessionId: string): SessionData | null {
+    return this.validate(sessionId);
   }
 
   /**
@@ -149,11 +245,24 @@ export class SessionManager {
     }
   }
 
-  // Utilità di test per forzare una data di inattività
   public _simulateInactivity(sessionId: string, inactiveMinutes: number): void {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.lastActivityAt = new Date(Date.now() - (inactiveMinutes * 60 * 1000 + 1000));
+    }
+  }
+
+  public _simulateAge(sessionId: string, ageMinutes: number): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.createdAt = new Date(Date.now() - (ageMinutes * 60 * 1000 + 1000));
+    }
+  }
+
+  public dispose(): void {
+    if (this.expiryTimer) {
+      clearInterval(this.expiryTimer);
+      this.expiryTimer = null;
     }
   }
 }

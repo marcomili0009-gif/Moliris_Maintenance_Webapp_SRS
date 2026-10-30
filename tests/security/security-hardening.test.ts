@@ -289,7 +289,7 @@ const hostKeyDecision = strictVerifier.verify(
     fingerprint: "SHA256:0000000000000000000000000000000000000000000",
   }
 );
-assert.strictEqual(hostKeyDecision, false, "Discrepanza di chiave host deve essere categoricamente rifiutata");
+assert.strictEqual(hostKeyDecision.matched, false, "Discrepanza di chiave host deve essere categoricamente rifiutata");
 
 // Verifica che con parametri vuoti venga rifiutata
 const emptyParamsDecision = strictVerifier.verify(
@@ -298,7 +298,7 @@ const emptyParamsDecision = strictVerifier.verify(
   dummyKey,
   {}
 );
-assert.strictEqual(emptyParamsDecision, false, "Verifica fallita con parametri di verifica assenti");
+assert.strictEqual(emptyParamsDecision.matched, false, "Verifica fallita con parametri di verifica assenti");
 console.log("  PASS: StrictHostKeyChecking è sempre attivo e non può essere bypassato.");
 
 // =========================================================================

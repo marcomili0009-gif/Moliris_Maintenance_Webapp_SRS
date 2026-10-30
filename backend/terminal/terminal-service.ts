@@ -71,10 +71,11 @@ export class TerminalService {
     };
 
     // STEP 5 – Hook di notifica chiusura/scadenza sessione utente (RF-SSH-005, Prompt 3)
+    // Il logout/scadenza chiude SOLO i terminali della specifica sessione terminata (non tutti i terminali dell'utente)
     this.sessionManager.onSessionTerminated((userSessionId, userId, reason) => {
       const termReason: TerminalCloseReason = "USER_SESSION_TERMINATED";
       for (const session of Array.from(this.activeSessions.values())) {
-        if (session.authorizedContext.sessionId === userSessionId || session.userId === userId) {
+        if (session.authorizedContext.sessionId === userSessionId) {
           this.closeSession(session.sessionId, termReason, `Sessione utente terminata (${reason})`);
         }
       }
@@ -248,21 +249,21 @@ export class TerminalService {
     this.userSessionCounts.set(user.id, userCount + 1);
     this.robotSessionCounts.set(robot.id, robotCount + 1);
 
-    // Gestione chiusura PTY lato remoto (es. exit, disconnessione robot)
+    // Distinzione tra disconnessione robot ed exit shell (§6.4 passo 7, RF-SSH-005)
+    ptyChannel.on("exit", () => {
+      this.closeSession(sessionId, "SHELL_EXIT", "Processo shell terminato dall'utente (exit).");
+    });
+
     ptyChannel.on("close", () => {
-      this.closeSession(sessionId, "REMOTE_EXIT");
+      this.closeSession(sessionId, "SHELL_EXIT", "Canale PTY remoto chiuso.");
     });
 
     ptyChannel.on("end", () => {
-      this.closeSession(sessionId, "REMOTE_EXIT");
-    });
-
-    ptyChannel.on("exit", () => {
-      this.closeSession(sessionId, "REMOTE_EXIT");
+      this.closeSession(sessionId, "SHELL_EXIT", "Stream PTY terminato.");
     });
 
     ptyChannel.on("error", (err: any) => {
-      this.closeSession(sessionId, "ERROR", err?.message);
+      this.closeSession(sessionId, "ROBOT_DISCONNECT", `Errore PTY robot: ${err?.message}`);
     });
 
     // STEP 8 – Registrazione Audit di apertura sessione (RNF-SEC-009, §10.4)
@@ -294,6 +295,16 @@ export class TerminalService {
       } catch {}
       return;
     }
+
+    // 1b. Rifiuto di un secondo aggancio a una sessione che ha già avuto un socket (RF-SSH-006)
+    if (session.hasHadSocket) {
+      try {
+        socket.send(JSON.stringify({ type: "error", message: "Riconnessione non consentita: la sessione terminale ha già avuto un collegamento WebSocket." }));
+        socket.close(4409, "Second Attach Forbidden");
+      } catch {}
+      return;
+    }
+    session.hasHadSocket = true;
 
     // 2. Verifica di isolamento: divieto di accesso a sessioni altrui (RF-SSH-006, CA-SSH-005)
     if (!this.sharingPolicy.canAccessSession(requestingUser, session)) {
@@ -349,6 +360,10 @@ export class TerminalService {
     // STEP 2 – Input dal WebSocket verso il PTY (comandi, caratteri di controllo, resize)
     socket.on("message", (rawMsg: any) => {
       session.lastActivityAt = new Date();
+      // Attività qualificata: input utente o resize dal WebSocket rinnova la sessione applicativa
+      if (session.authorizedContext?.sessionId) {
+        this.sessionManager.touchSession(session.authorizedContext.sessionId);
+      }
       const text = typeof rawMsg === "string" ? rawMsg : rawMsg.toString("utf-8");
 
       // Riconoscimento messaggi di controllo formattati JSON
@@ -384,17 +399,65 @@ export class TerminalService {
       } catch {}
     });
 
-    // STEP 5 – Gestione interruzione browser o canale (RF-SSH-005, CA-SSH-004)
-    socket.on("close", () => {
-      session.ptyChannel.removeListener("data", onPtyData);
-      if (this.config.terminalDisconnectPolicy === "mantieni_in_background") {
-        session.webSocket = undefined;
-      } else {
-        this.closeSession(sessionId, "CLIENT_DISCONNECT");
+    // Gestione Heartbeat WebSocket opzionale (RNF-REL-005, CA-SSH-004)
+    if (this.config.wsPingIntervalMs && this.config.wsPingIntervalMs > 0) {
+      const pingIntervalMs = this.config.wsPingIntervalMs;
+      let isAlive = true;
+      socket.on("pong", () => {
+        isAlive = true;
+      });
+
+      const pingTimer = setInterval(() => {
+        if (session.state !== "active") {
+          clearInterval(pingTimer);
+          return;
+        }
+
+        if (!isAlive) {
+          clearInterval(pingTimer);
+          session.pingTimer = undefined;
+          this.logger.warn(`Heartbeat WebSocket non ricevuto per sessione terminale '${sessionId}'`);
+          try {
+            socket.terminate();
+          } catch {}
+          this.closeSession(sessionId, "CLIENT_DISCONNECT", "Perdita heartbeat WebSocket");
+          return;
+        }
+
+        isAlive = false;
+        try {
+          if (socket.readyState === 1 /* OPEN */) {
+            socket.ping();
+          }
+        } catch {
+          clearInterval(pingTimer);
+          session.pingTimer = undefined;
+          this.closeSession(sessionId, "CLIENT_DISCONNECT", "Errore invio ping heartbeat");
+        }
+      }, pingIntervalMs);
+
+      if (typeof (pingTimer as any).unref === "function") {
+        (pingTimer as any).unref();
       }
+      session.pingTimer = pingTimer;
+    }
+
+    // STEP 5 – Gestione interruzione browser o canale (RF-SSH-005, CA-SSH-004)
+    // Alla disconnessione il PTY viene terminato (la sessione non sopravvive)
+    socket.on("close", () => {
+      if (session.pingTimer) {
+        clearInterval(session.pingTimer);
+        session.pingTimer = undefined;
+      }
+      session.ptyChannel.removeListener("data", onPtyData);
+      this.closeSession(sessionId, "CLIENT_DISCONNECT");
     });
 
     socket.on("error", (err: any) => {
+      if (session.pingTimer) {
+        clearInterval(session.pingTimer);
+        session.pingTimer = undefined;
+      }
       session.ptyChannel.removeListener("data", onPtyData);
       this.closeSession(sessionId, "CLIENT_DISCONNECT", err?.message);
     });
@@ -412,6 +475,11 @@ export class TerminalService {
     const session = this.activeSessions.get(sessionId);
     if (!session || session.state === "closed") {
       return;
+    }
+
+    if (session.pingTimer) {
+      clearInterval(session.pingTimer);
+      session.pingTimer = undefined;
     }
 
     session.state = "closing";

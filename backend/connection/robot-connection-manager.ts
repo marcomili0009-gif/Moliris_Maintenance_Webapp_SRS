@@ -5,7 +5,9 @@ import ssh2, { type Client, type ClientChannel, type SFTPWrapper } from "ssh2";
 import crypto from "crypto";
 import { type RobotEntity } from "../../storage/robot-models.ts";
 import { type CredentialProvider, type AuthenticationMaterial } from "./credential-provider.ts";
-import { type HostKeyVerifier } from "./host-key-verifier.ts";
+import { type HostKeyVerifier, computeHostKeyFingerprint } from "./host-key-verifier.ts";
+import { type AuditRepository } from "../../storage/audit-repository.ts";
+import { AuditOperation } from "../../storage/audit-models.ts";
 import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
 import { MolirisLogger, redactSensitiveData } from "../../logging/logger.ts";
 
@@ -36,17 +38,20 @@ export class RobotConnectionManager {
   private hostKeyVerifier: HostKeyVerifier;
   private limits: ConnectionLimits;
   private logger: MolirisLogger;
+  private auditRepository?: AuditRepository;
 
   constructor(
     credentialProvider: CredentialProvider,
     hostKeyVerifier: HostKeyVerifier,
     limits: ConnectionLimits,
-    logger: MolirisLogger
+    logger: MolirisLogger,
+    auditRepository?: AuditRepository
   ) {
     this.credentialProvider = credentialProvider;
     this.hostKeyVerifier = hostKeyVerifier;
     this.limits = limits;
     this.logger = logger;
+    this.auditRepository = auditRepository;
   }
 
   public getActiveConnectionCount(): number {
@@ -122,20 +127,41 @@ export class RobotConnectionManager {
       // Verifica della chiave host rigorosa (RNF-SEC-003): MAI disabilitata o bypassata
       hostVerifier: (serverHostKey: Buffer) => {
         try {
-          const verified = this.hostKeyVerifier.verify(
+          const res = this.hostKeyVerifier.verify(
             robot.host,
             robot.sshPort,
             serverHostKey,
             robot.hostKeyVerification
           );
-          hostKeyVerified = verified;
-          if (!verified) {
+          const matched = typeof res === "boolean" ? res : res.matched;
+          hostKeyVerified = matched;
+          if (!matched) {
+            const exp = typeof res === "object" ? res.expectedFingerprint : (robot.hostKeyVerification?.fingerprint || "");
+            const rec = typeof res === "object" ? res.receivedFingerprint : computeHostKeyFingerprint(serverHostKey).openSshFormat;
+
+            if (this.auditRepository) {
+              this.auditRepository.record({
+                userId,
+                operation: AuditOperation.SECURITY_AUTHORIZATION_ERROR,
+                robotId: robot.id,
+                outcome: "FAILURE",
+                timestamp: new Date(),
+                details: {
+                  reason: "SSH_HOST_KEY_MISMATCH",
+                  expectedFingerprint: exp,
+                  receivedFingerprint: rec,
+                },
+              }).catch(() => {});
+            }
+
             hostKeyError = new MolirisAppError(
-              ErrorCode.HOST_KEY_INVALID,
-              "Verifica chiave host fallita: impronta digitale o chiave host non riconosciuta."
+              ErrorCode.SSH_HOST_KEY_INVALID,
+              "Verifica chiave host fallita: impronta digitale o chiave host non riconosciuta.",
+              undefined,
+              `Discrepanza host key per robot '${robot.id}': attesa '${exp}', ricevuta '${rec}'. Richiede intervento amministrativo.`
             );
           }
-          return verified;
+          return matched;
         } catch (err: any) {
           hostKeyError = err;
           return false;

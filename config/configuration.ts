@@ -1,4 +1,4 @@
-// Requisiti soddisfatti: RNF-MNT-001, RF-ROB-005, RF-TRF-012, RF-AUTH-006, RF-MON-001, RF-ROB-009, RF-SRVFS-007, RNF-SEC-002, §8.1
+// Requisiti soddisfatti: RNF-MNT-001, RF-ROB-005, RF-TRF-012, RF-AUTH-006, RF-MON-001, RF-ROB-009, RF-SRVFS-007, RNF-SEC-002, RNF-SEC-004, §8.1, §11.1..11.6
 
 export interface SystemConfiguration {
   // 1. Root del filesystem server (RNF-MNT-001, RF-SRVFS-001)
@@ -27,8 +27,13 @@ export interface SystemConfiguration {
 
   // 8. Parametri di sicurezza e sessione (RNF-MNT-001, RF-AUTH-006, §11.6, RNF-SEC-001)
   inactiveSessionTimeoutMinutes: number;
+  sessionAbsoluteMaxMinutes?: number; // MOLIRIS_SESSION_ABSOLUTE_MAX_MIN (opzionale, nessun default)
   tlsCertPath: string; // Riferimento sicuro senza contenere segreti (RNF-SEC-002)
   tlsKeyPath: string;  // Riferimento sicuro senza contenere segreti (RNF-SEC-002)
+
+  // Parametri del provider di credenziali (§11.2, RNF-SEC-002, RNF-SEC-004)
+  credentialProviderType: "mongo" | "in-memory";
+  masterKeyFilePath?: string;
 
   // 9. Sottodirectory standard da creare per robot [opzionali] (RF-ROB-009, RF-SRVFS-007)
   standardSubdirectories?: string[];
@@ -65,7 +70,9 @@ export interface SystemConfiguration {
   maxConcurrentTerminalSessionsServer?: number;
   maxConcurrentTerminalSessionsPerUser?: number;
   maxConcurrentTerminalSessionsPerRobot?: number;
-  terminalDisconnectPolicy?: "chiudi_immediatamente" | "mantieni_in_background";
+  terminalDisconnectPolicy?: "chiudi_immediatamente";
+  wsPingIntervalMs?: number;
+  wsPingTimeoutMs?: number;
 
   // 20. Parametri per navigazione e accesso al filesystem remoto del robot [opzionali] (§5.5, §10.3, §11.5, §11.6, §11.7)
   remoteFsInitialPath?: string;
@@ -132,11 +139,43 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     registrationMode = rawRegMode as "rigorosa" | "differita";
   }
 
+  // Timeout assoluto massimo sessione utente (§11.6, RF-AUTH-006)
+  let sessionAbsoluteMaxMinutes: number | undefined = undefined;
+  if (env["MOLIRIS_SESSION_ABSOLUTE_MAX_MIN"] !== undefined && env["MOLIRIS_SESSION_ABSOLUTE_MAX_MIN"].trim() !== "") {
+    const val = Number(env["MOLIRIS_SESSION_ABSOLUTE_MAX_MIN"]);
+    if (isNaN(val) || !Number.isInteger(val) || val <= 0) {
+      throw new Error("Valore non valido per MOLIRIS_SESSION_ABSOLUTE_MAX_MIN: deve essere un numero intero positivo maggiore di zero.");
+    }
+    sessionAbsoluteMaxMinutes = val;
+  }
+
+  // Provider di credenziali (§11.2, RNF-SEC-002, RNF-SEC-004)
+  const rawCredProvider = env["MOLIRIS_CREDENTIAL_PROVIDER"]?.trim().toLowerCase() || "mongo";
+  if (rawCredProvider !== "mongo" && rawCredProvider !== "in-memory") {
+    throw new Error(`Valore non valido per MOLIRIS_CREDENTIAL_PROVIDER: '${rawCredProvider}'. Valori ammessi: 'mongo', 'in-memory'.`);
+  }
+  if (rawCredProvider === "in-memory" && env["NODE_ENV"] === "production") {
+    throw new Error("Configurazione non sicura: il provider di credenziali 'in-memory' non è consentito in ambiente di produzione (NODE_ENV=production).");
+  }
+  const credentialProviderType: "mongo" | "in-memory" = rawCredProvider;
+
+  let masterKeyFilePath: string | undefined = undefined;
+  if (credentialProviderType === "mongo") {
+    const keyFile = env["MOLIRIS_MASTER_KEY_FILE"];
+    if (!keyFile || keyFile.trim() === "") {
+      missing.push("MOLIRIS_MASTER_KEY_FILE");
+    } else {
+      masterKeyFilePath = keyFile.trim();
+    }
+  } else if (env["MOLIRIS_MASTER_KEY_FILE"]) {
+    masterKeyFilePath = env["MOLIRIS_MASTER_KEY_FILE"].trim();
+  }
+
   if (missing.length > 0) {
     throw new Error(`Inizializzazione fallita. Parametri di configurazione obbligatori mancanti: ${missing.join(", ")}`);
   }
 
-  // Parametri opzionali (se non specificati rimangono undefined senza inventare valori numerici)
+  // Parametri opzionali
   const maxFileSizeBytes = env["MOLIRIS_MAX_FILE_SIZE_BYTES"] && !isNaN(Number(env["MOLIRIS_MAX_FILE_SIZE_BYTES"]))
     ? Number(env["MOLIRIS_MAX_FILE_SIZE_BYTES"])
     : undefined;
@@ -195,9 +234,29 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     ? Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_PER_ROBOT"])
     : undefined;
 
+  // Politica di disconnessione terminale:
+  // "Né opzione A né opzione B. Rimuovi il valore mantieni_in_background.
+  // Accetta solo chiudi_immediatamente. Se la configurazione contiene mantieni_in_background, l’avvio fallisce con messaggio chiaro."
   const rawDisconnectPolicy = env["MOLIRIS_TERMINAL_DISCONNECT_POLICY"]?.trim().toLowerCase();
-  const terminalDisconnectPolicy = (rawDisconnectPolicy === "chiudi_immediatamente" || rawDisconnectPolicy === "mantieni_in_background")
-    ? (rawDisconnectPolicy as "chiudi_immediatamente" | "mantieni_in_background")
+  if (rawDisconnectPolicy === "mantieni_in_background") {
+    throw new Error(
+      "Configurazione non consentita: il valore 'mantieni_in_background' per MOLIRIS_TERMINAL_DISCONNECT_POLICY è stato rimosso per prevenire processi orfani e garantire l'isolamento (RF-SSH-006). L'unico valore ammesso è 'chiudi_immediatamente'."
+    );
+  }
+  let terminalDisconnectPolicy: "chiudi_immediatamente" | undefined = undefined;
+  if (rawDisconnectPolicy) {
+    if (rawDisconnectPolicy !== "chiudi_immediatamente") {
+      throw new Error(`Valore non valido per MOLIRIS_TERMINAL_DISCONNECT_POLICY: '${rawDisconnectPolicy}'. Valore ammesso: 'chiudi_immediatamente'.`);
+    }
+    terminalDisconnectPolicy = "chiudi_immediatamente";
+  }
+
+  // Parametri opzionali Heartbeat WebSocket
+  const wsPingIntervalMs = env["MOLIRIS_WS_PING_INTERVAL_MS"] && !isNaN(Number(env["MOLIRIS_WS_PING_INTERVAL_MS"]))
+    ? Number(env["MOLIRIS_WS_PING_INTERVAL_MS"])
+    : undefined;
+  const wsPingTimeoutMs = env["MOLIRIS_WS_PING_TIMEOUT_MS"] && !isNaN(Number(env["MOLIRIS_WS_PING_TIMEOUT_MS"]))
+    ? Number(env["MOLIRIS_WS_PING_TIMEOUT_MS"])
     : undefined;
 
   // Parametri opzionali Filesystem Remoto Robot (§5.5, §10.3, §11.5, §11.6, §11.7)
@@ -242,16 +301,15 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
   const rawResume = env["MOLIRIS_TRANSFER_RESUME_ENABLED"]?.trim().toLowerCase();
   const transferResumeEnabled = rawResume === "true" ? true : rawResume === "false" ? false : undefined;
 
-  const rawConcurrencyPolicy = env["MOLIRIS_TRANSFER_CONCURRENCY_POLICY"]?.trim().toLowerCase();
-  const transferConcurrencyQueuePolicy = (rawConcurrencyPolicy === "rifiuta" || rawConcurrencyPolicy === "coda")
-    ? (rawConcurrencyPolicy as "rifiuta" | "coda")
+  const rawQueuePolicy = env["MOLIRIS_TRANSFER_CONCURRENCY_POLICY"]?.trim().toLowerCase();
+  const transferConcurrencyQueuePolicy = (rawQueuePolicy === "rifiuta" || rawQueuePolicy === "coda")
+    ? (rawQueuePolicy as "rifiuta" | "coda")
     : undefined;
 
   const transferIdleTimeoutMs = env["MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS"] && !isNaN(Number(env["MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS"]))
     ? Number(env["MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS"])
     : undefined;
 
-  // L'unico default ammesso dalla SRS è la porta SSH 22 (RF-ROB-005)
   const defaultSshPort = env["MOLIRIS_DEFAULT_SSH_PORT"] && !isNaN(Number(env["MOLIRIS_DEFAULT_SSH_PORT"]))
     ? Number(env["MOLIRIS_DEFAULT_SSH_PORT"])
     : 22;
@@ -268,8 +326,11 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     tempFileRetentionMinutes,
     stateFilePaths,
     inactiveSessionTimeoutMinutes,
+    sessionAbsoluteMaxMinutes,
     tlsCertPath,
     tlsKeyPath,
+    credentialProviderType,
+    masterKeyFilePath,
     standardSubdirectories,
     serverDirectoryPermissions,
     registrationMode,
@@ -285,6 +346,8 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     maxConcurrentTerminalSessionsPerUser,
     maxConcurrentTerminalSessionsPerRobot,
     terminalDisconnectPolicy,
+    wsPingIntervalMs,
+    wsPingTimeoutMs,
     remoteFsInitialPath,
     remoteFsAllowedPaths,
     remoteFsMaxDirectoryEntries,

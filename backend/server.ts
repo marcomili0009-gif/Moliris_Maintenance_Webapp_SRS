@@ -17,6 +17,8 @@ import { registerAuthRoutes } from "./auth/auth-routes.ts";
 import { registerServerFsRoutes } from "./server-fs-routes.ts";
 import { type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "./auth/permissions.ts";
 import { type CredentialProvider, InMemoryCredentialProvider } from "./connection/credential-provider.ts";
+import { MongoCredentialProvider } from "./connection/mongo-credential-provider.ts";
+import { loadMasterKeyFromFile } from "./connection/master-key.ts";
 import { type HostKeyVerifier, DefaultHostKeyVerifier } from "./connection/host-key-verifier.ts";
 import { RobotConnectionManager } from "./connection/robot-connection-manager.ts";
 import { FleetService } from "./fleet/fleet-service.ts";
@@ -53,6 +55,7 @@ export interface ServerDependencies {
   remoteFsService?: RemoteFilesystemService;
   transferService?: TransferService;
   roleMapping?: RolePermissionMapping;
+  db?: any;
 }
 
 export function createServer(
@@ -79,7 +82,7 @@ export function createServer(
   app.register(websocket);
 
   // Dipendenze di autenticazione e sicurezza
-  const sessionManager = deps.sessionManager || new SessionManager(config.inactiveSessionTimeoutMinutes);
+  const sessionManager = deps.sessionManager || new SessionManager(config.inactiveSessionTimeoutMinutes, config.sessionAbsoluteMaxMinutes);
   const userRepository = deps.userRepository || new InMemoryUserRepository();
   const auditRepository = deps.auditRepository || new InMemoryAuditRepository();
   const roleMapping = deps.roleMapping || DEFAULT_ROLE_PERMISSIONS;
@@ -97,7 +100,22 @@ export function createServer(
   const serverFsService = deps.serverFsService || new ServerFilesystemService(config.serverFilesystemRoot, auditRepository, logger);
 
   // Dipendenze di connessione comune verso i robot (Prompt 5, vincolo 2.4 punto 4)
-  const credentialProvider = deps.credentialProvider || new InMemoryCredentialProvider(config.allowedSshAuthMethods);
+  let credentialProvider = deps.credentialProvider;
+  if (!credentialProvider) {
+    if (config.credentialProviderType === "mongo") {
+      if (deps.db) {
+        const masterKey = loadMasterKeyFromFile(config.masterKeyFilePath!);
+        credentialProvider = new MongoCredentialProvider(deps.db, masterKey, config.allowedSshAuthMethods);
+      } else {
+        credentialProvider = new InMemoryCredentialProvider(config.allowedSshAuthMethods);
+      }
+    } else {
+      if (process.env.NODE_ENV === "production") {
+        throw new Error("Configurazione non sicura: il provider 'in-memory' non è consentito in ambiente di produzione (NODE_ENV=production).");
+      }
+      credentialProvider = new InMemoryCredentialProvider(config.allowedSshAuthMethods);
+    }
+  }
   const hostKeyVerifier = deps.hostKeyVerifier || new DefaultHostKeyVerifier();
   const connectionLimits = {
     maxConcurrentPerUser: config.maxConcurrentTransfersPerUser,
@@ -109,7 +127,8 @@ export function createServer(
     credentialProvider,
     hostKeyVerifier,
     connectionLimits,
-    logger
+    logger,
+    auditRepository
   );
 
   // Servizio di gestione flotta (Prompt 6, RF-ROB-001..014)
@@ -353,10 +372,24 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
     mongoClient = new MongoClient(mongoUri);
     await mongoClient.connect();
 
-    const robotRepository = new MongoRobotRepository(mongoClient.db());
+    const db = mongoClient.db();
+    const robotRepository = new MongoRobotRepository(db);
     await robotRepository.initIndexes();
 
-    const server = createServer(config, logger, { robotRepository });
+    let credentialProvider: CredentialProvider;
+    if (config.credentialProviderType === "mongo") {
+      const masterKey = loadMasterKeyFromFile(config.masterKeyFilePath!);
+      const mongoCreds = new MongoCredentialProvider(db, masterKey, config.allowedSshAuthMethods);
+      await mongoCreds.initIndexes();
+      credentialProvider = mongoCreds;
+    } else {
+      if (process.env.NODE_ENV === "production") {
+        throw new Error("Configurazione non sicura: il provider in-memory non è consentito in ambiente di produzione (NODE_ENV=production).");
+      }
+      credentialProvider = new InMemoryCredentialProvider(config.allowedSshAuthMethods);
+    }
+
+    const server = createServer(config, logger, { robotRepository, credentialProvider, db });
 
     server.addHook("onClose", async () => {
       await mongoClient?.close();
