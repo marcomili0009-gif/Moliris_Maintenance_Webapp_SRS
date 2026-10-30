@@ -80,6 +80,7 @@ function buildFleetTestEnvironment(overrides: Partial<SystemConfiguration> = {})
     auditLogRetentionDays: 90,
     defaultSshPort: 22,
     existingDirectoryPolicy: "accetta",
+    credentialProviderType: "in-memory",
     robotUsernameUniqueness: overrides.robotUsernameUniqueness ?? "per_host",
     serverDirectoryPermissions: "0750",
     ...overrides,
@@ -570,7 +571,7 @@ try {
   // =========================================================================
   {
     console.log("  -> [Test 8] Isolamento directory .tmp, nomi riservati e audit di sicurezza...");
-    const { fleetService, serverFs, fsRoot, audit } = buildFleetTestEnvironment();
+    const { fleetService, serverFs, fsRoot, audit, repo } = buildFleetTestEnvironment();
 
     const reg = await fleetService.registerRobot(adminUser, {
       id: "robot-tmp-test",
@@ -580,10 +581,11 @@ try {
       sshPort: 22,
       sshAuthMethod: "password",
       password: "pass",
+      credentialReference: `vault://robots/robot-tmp-test`,
       hostKeyVerification: { fingerprint: "8".repeat(64) },
     });
     assert.strictEqual(reg.outcome, "ssh_non_verificata");
-    const robot = reg.robot!;
+    const robot = await repo.findById("robot-tmp-test") as RobotEntity;
 
     const userContext = {
       user: adminUser,

@@ -15,7 +15,7 @@ import { InMemoryAuditRepository } from "../../storage/audit-repository.ts";
 import { SessionManager } from "../../backend/auth/session-manager.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
 import { type SystemConfiguration } from "../../config/configuration.ts";
-import { type RobotRecord } from "../../storage/robot-models.ts";
+import { type RobotEntity, type HostKeyVerificationParams } from "../../storage/robot-models.ts";
 
 console.log("--> Esecuzione test suite di Hardening Trasferimenti e Filesystem (Problemi A1..A5, C1)...");
 
@@ -52,17 +52,23 @@ const baseConfig: SystemConfiguration = {
   stateFileFormat: "auto",
 };
 
-const robotRecord: RobotRecord = {
+const robotRecord: RobotEntity = {
   id: "robot-test-h1",
   displayName: "Robot Hardening Test",
   host: "127.0.0.1",
   sshPort: 2222,
   remoteUsername: "operator",
   credentialReference: "cred-test",
-  hostKeyFingerprint: "SHA256:abc123mockfingerprint",
+  sshAuthMethod: "password",
+  hostKeyVerification: { fingerprint: "SHA256:abc123mockfingerprint", strictHostKeyChecking: true },
+  stateFilePaths: [path.join(serverFsRoot, "operator_robot-test-h1", "stato.json")],
   anagraphicState: "attivo",
-  connectionStatus: "raggiungibile",
-  registrationStatus: "completata",
+  connectionState: "raggiungibile",
+  operationalState: null,
+  lastValidUpdateAt: null,
+  lastAttemptOutcome: null,
+  registrationState: "registrazione_completata",
+  lastConnectionVerification: null,
   serverDirectoryPath: path.join(serverFsRoot, "operator_robot-test-h1"),
   createdAt: new Date(),
   updatedAt: new Date(),

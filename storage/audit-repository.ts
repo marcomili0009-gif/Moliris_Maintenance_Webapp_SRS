@@ -112,7 +112,9 @@ export class MongoAuditRepository implements AuditRepository {
             });
           } catch {
             // Se collMod non è supportato per differente keyPattern, ricrea l'indice
-            await this.collection.dropIndex(ttlIndex.name);
+            if (ttlIndex.name) {
+              await this.collection.dropIndex(ttlIndex.name);
+            }
             await this.collection.createIndex({ timestamp: 1 }, { expireAfterSeconds: retentionSeconds, name: "timestamp_ttl" });
           }
         }

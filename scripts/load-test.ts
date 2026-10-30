@@ -61,26 +61,31 @@ async function runLoadTest(): Promise<void> {
     serverFilesystemRoot: fsRootDir,
     pollingIntervalSeconds: 0,
     sshConnectionTimeoutMs: 3000,
-    maxConcurrentSessionsGlobal: params.terminals, // 20 terminali globali (§10.3)
-    maxConcurrentSessionsPerRobot: 2,
-    maxConcurrentTransfersServer: params.transfers,
     maxConcurrentTransfersPerUser: 2,
     maxConcurrentTransfersPerRobot: 2,
-    maxConcurrentUsers: params.users, // 25 utenti concorrenti (§11.2)
+    maxConcurrentTransfersServer: params.transfers,
     tempFileRetentionMinutes: 60,
     stateFilePaths: ["/PERCORSO/DA/DEFINIRE/stato_robot.json"],
     inactiveSessionTimeoutMinutes: 30,
+    sessionAbsoluteMaxMinutes: 480,
     tlsCertPath: path.join(tmpDir, "dummy_cert.pem"),
     tlsKeyPath: path.join(tmpDir, "dummy_key.pem"),
+    credentialProviderType: "in-memory",
+    masterKeyFilePath: undefined,
     registrationMode: "rigorosa",
     auditLogRetentionDays: 365,
+    robotUsernameUniqueness: "per_host",
     defaultSshPort: 22,
     transferChunkSizeBytes: 32 * 1024,
     transferChecksumAlgorithm: "sha256",
     transferOverwritePolicy: "richiedi_conferma",
+    transferVerifyMode: "stream",
+    robotNonAtomicReplace: false,
+    transferSpaceMarginMb: 0,
+    stateFileFormat: "auto",
   };
 
-  const sessionManager = new SessionManager(config.sessionInactiveTimeoutMinutes, config.sessionAbsoluteTimeoutMinutes);
+  const sessionManager = new SessionManager(config.inactiveSessionTimeoutMinutes, config.sessionAbsoluteMaxMinutes);
   const robotRepo = new InMemoryRobotRepository();
   const auditRepo = new InMemoryAuditRepository();
   const serverFsService = new ServerFilesystemService(fsRootDir, auditRepo, logger);
@@ -141,10 +146,16 @@ async function runLoadTest(): Promise<void> {
       remoteUsername: `op_remote_${i}`,
       sshAuthMethod: "password",
       credentialReference: "cred_pwd",
-      anagraphicState: "abilitato",
+      serverDirectoryPath: robotDir,
+      anagraphicState: "attivo",
       registrationState: "registrazione_completata",
       connectionState: "raggiungibile",
-      serverDirectoryPath: robotDir,
+      operationalState: null,
+      lastValidUpdateAt: null,
+      hostKeyVerification: { fingerprint: "SHA256:dummy", strictHostKeyChecking: true },
+      stateFilePaths: [path.join(robotDir, ".tmp", "stato.json")],
+      lastAttemptOutcome: { timestamp: new Date(), success: true, stage: "connection" },
+      lastConnectionVerification: { timestamp: new Date(), success: true },
       createdAt: new Date(),
       updatedAt: new Date(),
     };

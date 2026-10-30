@@ -34,7 +34,7 @@ export interface SystemConfiguration {
   tlsKeyPath: string;  // Riferimento sicuro senza contenere segreti (RNF-SEC-002)
 
   // Parametri del provider di credenziali (§11.2, RNF-SEC-002, RNF-SEC-004)
-  credentialProviderType: "mongo" | "in-memory";
+  credentialProviderType?: "mongo" | "in-memory";
   masterKeyFilePath?: string;
 
   // 9. Sottodirectory standard da creare per robot [opzionali] (RF-ROB-009, RF-SRVFS-007)
@@ -48,7 +48,7 @@ export interface SystemConfiguration {
 
   // Politica di unicità dello username del robot (§8.2, §11.3, RF-ROB-006)
   // "per_host": username unico per singolo host/porta; "globale": username unico in tutta la flotta
-  robotUsernameUniqueness: "per_host" | "globale";
+  robotUsernameUniqueness?: "per_host" | "globale";
 
   // 12. Politica di conservazione degli eventi di audit (in giorni) (§10.4, RNF-SEC-009, §11.1)
   auditLogRetentionDays: number;
@@ -87,7 +87,7 @@ export interface SystemConfiguration {
   remoteFsOverwritePolicy?: "rifiuta" | "sovrascrivi";
   remoteFsConnectionIdleTimeoutMs?: number;
 
-  // 21. Parametri per il servizio di trasferimento file [opzionali] (§5.5, §6.5..6.7, §11.5, §11.7, RF-TRF-001..014)
+  // 21. Parametri per il servizio di trasferimento file [opzionali] (§5.5, §6.5..6.7, §11.5, §11.6, §11.7)
   transferChunkSizeBytes?: number;
   transferChecksumAlgorithm?: "sha256" | "md5";
   transferOverwritePolicy?: "rifiuta" | "richiedi_conferma" | "sovrascrivi";
@@ -95,21 +95,18 @@ export interface SystemConfiguration {
   transferConcurrencyQueuePolicy?: "rifiuta" | "coda";
   transferIdleTimeoutMs?: number;
 
-  // Modalità verifica integrità trasferimenti (Problema A1, scelta §11.5)
-  // "stream": digest in streaming sorgente + verifica dimensione finale;
-  // "readback": rilettura del file temporaneo via SFTP prima della promozione (PROPOSTA DA CONFERMARE)
-  transferVerifyMode: "stream" | "readback";
+  // Modalità verifica integrità trasferimenti (Problema A1, default baseline: stream)
+  transferVerifyMode?: "stream" | "readback";
 
-  // Sostituzione non atomica sul robot in assenza di posix-rename (Problema A2, RNF-REL-004)
-  // Se false (default), in assenza di posix-rename e destinazione esistente rifiuta per preservare il file valido.
-  // Se true, esegue unlink e rename con avviso esplicito (PROPOSTA DA CONFERMARE).
-  robotNonAtomicReplace: boolean;
+  // Sostituzione non atomica sul robot in assenza di posix-rename (Problema A2, default false)
+  robotNonAtomicReplace?: boolean;
 
-  // Margine di sicurezza spazio su disco in MB (Problema A4, PROPOSTA DA CONFERMARE)
-  transferSpaceMarginMb: number;
+  // Margine di sicurezza spazio su disco in MB (Problema A4, default 0)
+  transferSpaceMarginMb?: number;
 
-  // Formato file di stato: "auto" (default baseline), "json", "keyvalue" (Problema B1, §11.4)
-  stateFileFormat: "auto" | "json" | "keyvalue";
+  // Formato file di stato (Problema B1, default "auto")
+  stateFileFormat?: "auto" | "json" | "keyvalue";
+
 
   // Schema JSON opzionale per file di stato (Problema B1, §11.4)
   stateFileSchemaPath?: string;

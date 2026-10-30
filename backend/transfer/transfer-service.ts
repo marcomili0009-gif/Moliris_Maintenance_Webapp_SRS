@@ -1585,7 +1585,12 @@ export class TransferService {
       readStream.on("error", reject);
       checksumStream.on("error", reject);
       checksumStream.on("finish", () => {
-        resolve(checksumStream.getDigest());
+        const digest = checksumStream.getDigest();
+        if (digest === null) {
+          reject(new Error("Impossibile calcolare il digest del file"));
+          return;
+        }
+        resolve(digest);
       });
       readStream.pipe(checksumStream);
     });
@@ -1598,7 +1603,12 @@ export class TransferService {
       readStream.on("error", reject);
       checksumStream.on("error", reject);
       checksumStream.on("finish", () => {
-        resolve(checksumStream.getDigest());
+        const digest = checksumStream.getDigest();
+        if (digest === null) {
+          reject(new Error("Impossibile calcolare il digest del file"));
+          return;
+        }
+        resolve(digest);
       });
       readStream.pipe(checksumStream);
     });
