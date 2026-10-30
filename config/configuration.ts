@@ -138,7 +138,9 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
 
   const serverFilesystemRoot = requireString("MOLIRIS_FS_ROOT");
   const pollingIntervalSeconds = requireNumber("MOLIRIS_POLLING_INTERVAL_SEC");
-  const sshConnectionTimeoutMs = requireNumber("MOLIRIS_SSH_TIMEOUT_MS");
+  const sshConnectionTimeoutMs = env["MOLIRIS_SSH_CONNECTION_TIMEOUT_MS"]
+    ? requireNumber("MOLIRIS_SSH_CONNECTION_TIMEOUT_MS")
+    : requireNumber("MOLIRIS_SSH_TIMEOUT_MS");
   const maxConcurrentTransfersPerUser = requireNumber("MOLIRIS_MAX_TRF_PER_USER");
   const maxConcurrentTransfersPerRobot = requireNumber("MOLIRIS_MAX_TRF_PER_ROBOT");
   const maxConcurrentTransfersServer = requireNumber("MOLIRIS_MAX_TRF_SERVER");
