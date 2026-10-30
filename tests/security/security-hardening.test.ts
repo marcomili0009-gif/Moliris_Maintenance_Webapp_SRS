@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Requisiti verificati: RNF-SEC-001, RNF-SEC-002, RNF-SEC-003, RNF-SEC-004, RNF-SEC-005,
 // RNF-SEC-006, RNF-SEC-007, RNF-SEC-008, RNF-SEC-009, RNF-FS-001, RNF-FS-002, RNF-FS-003, RNF-FS-004,
 // RF-SSH-008, SRS §2.4 (vincoli 1-7), §9, §10.4

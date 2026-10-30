@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Requisiti verificati: TUTTI i 35 criteri di accettazione di Moliris Maintenance Webapp (SRS §7):
 // CA-AUTH-001..003, CA-ROB-001..012, CA-MON-001..004, CA-SSH-001..005, CA-FS-001..004, CA-TRF-001..007
 // E i 18 obiettivi essenziali della SRS §12
@@ -286,8 +287,8 @@ async function api(method: string, p: string, headers: any = {}, body: any = nul
   });
 }
 
-const adminHeader = { Authorization: `Bearer ${adminSession.sessionToken}` };
-const opHeader = { Authorization: `Bearer ${opSession.sessionToken}` };
+const adminHeader = { Authorization: `Bearer ${(adminSession as any).sessionToken}` };
+const opHeader = { Authorization: `Bearer ${(opSession as any).sessionToken}` };
 
 // =========================================================================
 // SEZIONE 1: AUTENTICAZIONE E ACCESSO (CA-AUTH-001..003)
