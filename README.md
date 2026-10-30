@@ -27,7 +27,7 @@ Web Application centralizzata per la gestione operativa, il monitoraggio dello s
   - Preservazione assoluta dell'ultimo stato valido acquisito in caso di offline e marcatura `[Non più verificato]`.
 
 - **Terminale Remoto Linux PTY (§3.4, §5.4, §6.4)**:
-  - Shell Linux interattiva completa nel browser tramite `@xterm/xterm` su WebSocket (`/ws/terminal`).
+  - Shell Linux interattiva completa nel browser tramite `xterm` su WebSocket (`/ws/terminal`).
   - Il browser non apre alcuna connessione SSH diretta verso i dispositivi della flotta.
   - Chiusura ordinata e rilascio a zero risorse residue per tutte le cause (inattività, disconnessione, logout, stop servizio).
 
