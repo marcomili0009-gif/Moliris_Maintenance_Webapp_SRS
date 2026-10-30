@@ -74,6 +74,7 @@ await new Promise<void>((resolve) => {
 
 // Configurazione di test
 const testConfig: SystemConfiguration = {
+  credentialProviderType: "in-memory",
   serverFilesystemRoot: testFsRoot,
   pollingIntervalSeconds: 10,
   sshConnectionTimeoutMs: 3000,

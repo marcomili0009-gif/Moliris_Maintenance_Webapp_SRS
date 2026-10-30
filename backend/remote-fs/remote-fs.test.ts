@@ -293,6 +293,7 @@ await new Promise<void>((resolve) => {
 
 // 3. Configurazione di test
 const testConfig: SystemConfiguration = {
+  credentialProviderType: "in-memory",
   serverFilesystemRoot: "/tmp/moliris-remotefs-test",
   pollingIntervalSeconds: 10,
   sshConnectionTimeoutMs: 2500,

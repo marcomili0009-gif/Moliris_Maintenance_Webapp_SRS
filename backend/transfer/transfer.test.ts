@@ -268,6 +268,7 @@ const sftpPort = await new Promise<number>((resolve) => {
 
 // Configurazione di sistema di test
 const testConfig: SystemConfiguration = {
+  credentialProviderType: "in-memory",
   serverFilesystemRoot: tmpServerRoot,
   pollingIntervalSeconds: 0,
   sshConnectionTimeoutMs: 3000,

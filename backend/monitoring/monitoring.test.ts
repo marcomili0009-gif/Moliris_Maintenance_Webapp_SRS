@@ -190,6 +190,7 @@ execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${keyPath}" -out "${certPa
 
 // Configurazione di test
 const testConfig: SystemConfiguration = {
+  credentialProviderType: "in-memory",
   serverFilesystemRoot: "/tmp/moliris-monitoring-test-fs",
   pollingIntervalSeconds: 5,
   sshConnectionTimeoutMs: 2000,

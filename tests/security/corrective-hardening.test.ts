@@ -303,7 +303,7 @@ try {
   // =========================================================================
   console.log("  [7/9] Test Attività Qualificata Sessione e Tetto Assoluto...");
   const sManager = new SessionManager(10, 20); // 10 min inattività, 20 min assoluto
-  const userEntity = { id: "u_session_test", username: "session_user", roles: ["operatore"], enabled: true, passwordHash: "dummy_hash", createdAt: new Date(), updatedAt: new Date() };
+  const userEntity = { id: "u_session_test", username: "session_user", passwordHash: "dummy_hash", roles: ["operatore"], enabled: true, createdAt: new Date(), updatedAt: new Date() };
   const sData = sManager.createSession(userEntity);
 
   // validate() non rinnova lastActivityAt
