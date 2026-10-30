@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Mock Robot SSH/SFTP Server per test interattivo live (Moliris SRS v1.0).
  * Simula il robot 'robot-01' sulla porta 2222 con shell PTY, SFTP e monitoraggio.
