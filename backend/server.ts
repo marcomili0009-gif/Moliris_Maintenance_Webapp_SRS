@@ -384,6 +384,9 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
     const auditRepository = new MongoAuditRepository(db);
     await auditRepository.initIndexes(config.auditLogRetentionDays);
 
+    const userRepository = new MongoUserRepository(db);
+    await userRepository.initIndexes();
+
     let credentialProvider: CredentialProvider;
     if (config.credentialProviderType === "mongo") {
       const masterKey = loadMasterKeyFromFile(config.masterKeyFilePath!);
@@ -397,6 +400,7 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
       credentialProvider = new InMemoryCredentialProvider(config.allowedSshAuthMethods);
     }
 
+<<<<<<< Updated upstream
     const userRepository = new MongoUserRepository(db);
     await userRepository.initIndexes();
 
@@ -407,6 +411,9 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
       userRepository,
       db,
     });
+=======
+    const server = createServer(config, logger, { robotRepository, auditRepository, userRepository, credentialProvider, db });
+>>>>>>> Stashed changes
 
     server.addHook("onClose", async () => {
       await mongoClient?.close();

@@ -275,6 +275,10 @@ export class MongoRobotRepository implements RobotRepository {
    */
   async initIndexes(): Promise<void> {
     try {
+      // Pulizia fail-safe di eventuali indici legacy con naming snake_case
+      try { await this.collection.dropIndex("robot_id_1"); } catch {}
+      try { await this.collection.dropIndex("remote_username_1_host_1_ssh_port_1"); } catch {}
+
       // 1. Unicità identificativo robot su TUTTI i record, compresi rimossi (Problema 1d)
       await this.collection.createIndex({ id: 1 }, { unique: true });
 

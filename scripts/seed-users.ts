@@ -203,7 +203,11 @@ if (process.argv[1] && process.argv[1].endsWith("seed-users.ts")) {
   try {
     const passwords = loadSeedPasswords({ passwordFile: passwordFileArg });
     await client.connect();
+<<<<<<< Updated upstream
     const db = client.db();
+=======
+    const db = process.env["MOLIRIS_DB_NAME"] ? client.db(process.env["MOLIRIS_DB_NAME"]) : client.db();
+>>>>>>> Stashed changes
     const repo = new MongoUserRepository(db);
     await repo.initIndexes();
     await seedInitialUsers(repo, passwords.operatorPassword, passwords.adminPassword);
