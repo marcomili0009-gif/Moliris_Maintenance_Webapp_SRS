@@ -9,7 +9,8 @@ import { MolirisLogger } from "../logging/logger.ts";
 import { SessionManager } from "./auth/session-manager.ts";
 import { type UserRepository, InMemoryUserRepository } from "./auth/user-repository.ts";
 import { type AuditRepository, InMemoryAuditRepository } from "../storage/audit-repository.ts";
-import { type RobotRepository, InMemoryRobotRepository } from "../storage/robot-repository.ts";
+import { type RobotRepository, InMemoryRobotRepository, MongoRobotRepository } from "../storage/robot-repository.ts";
+import { MongoClient } from "mongodb";
 import { ServerFilesystemService } from "../storage/server-fs.ts";
 import { AuthMiddleware } from "./auth/auth-middleware.ts";
 import { registerAuthRoutes } from "./auth/auth-routes.ts";
@@ -339,22 +340,42 @@ export function createServer(
 // Avvio del server se eseguito direttamente
 if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
   const logger = new MolirisLogger();
+  let mongoClient: MongoClient | undefined;
+
   try {
     const config = loadAndValidateConfig(process.env);
-    const server = createServer(config, logger);
+    const mongoUri = process.env["MOLIRIS_MONGODB_URI"];
+
+    if (!mongoUri) {
+      throw new Error("Variabile MOLIRIS_MONGODB_URI non configurata");
+    }
+
+    mongoClient = new MongoClient(mongoUri);
+    await mongoClient.connect();
+
+    const robotRepository = new MongoRobotRepository(mongoClient.db());
+    await robotRepository.initIndexes();
+
+    const server = createServer(config, logger, { robotRepository });
+
+    server.addHook("onClose", async () => {
+      await mongoClient?.close();
+    });
+
     const port = Number(process.env["MOLIRIS_SERVER_PORT"]) || 8443;
     const host = process.env["MOLIRIS_SERVER_HOST"] || "0.0.0.0";
 
-    server.listen({ port, host }, (err, address) => {
-      if (err) {
-        logger.error("Errore fatale avvio server HTTPS", err.message);
-        process.exit(1);
-      }
-      logger.info(`Backend HTTPS avviato con successo su ${address}`);
-      (server as any).monitoringService?.startPolling();
-    });
+    await server.listen({ port, host });
+
+    logger.info(`Backend HTTPS avviato con successo su ${host}:${port}`);
+    (server as any).monitoringService?.startPolling();
   } catch (error: any) {
     logger.error("Errore inizializzazione backend", error.message);
+
+    if (mongoClient) {
+      await mongoClient.close().catch(() => {});
+    }
+
     process.exit(1);
   }
 }
