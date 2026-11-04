@@ -296,7 +296,12 @@ export function registerTransferRoutes(
   app.get(
     "/api/robots/:robotId/transfers",
     {
-      preHandler: [(req, reply) => authMiddleware.authenticate(req, reply)],
+      preHandler: [
+  authMiddleware.requirePermission(
+    AppPermission.FLEET_VIEW,
+    (req) => (req.params as any).robotId
+  ),
+],
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { robotId } = req.params as { robotId: string };
