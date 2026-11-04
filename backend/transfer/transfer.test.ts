@@ -883,5 +883,19 @@ await new Promise<void>((resolve) => testSshServer.close(() => resolve()));
 try { fs.rmSync(tmpTlsDir, { recursive: true, force: true }); } catch {}
 try { fs.rmSync(tmpServerRoot, { recursive: true, force: true }); } catch {}
 
+// =========================================================================
+// TEST: Eviction dei record conclusi dalla mappa in memoria
+// =========================================================================
+{
+  const map = (transferService as any).transfers as Map<string, any>;
+  assert.ok(map.size > 0);
+  const evicted = transferService.evictFinishedTransfers(Date.now() + 2 * 60 * 60 * 1000);
+  assert.ok(evicted > 0);
+  for (const r of map.values()) {
+    assert.ok(!["COMPLETED", "FAILED", "CANCELLED", "INTEGRITY_FAILED"].includes(r.status));
+  }
+  console.log("  PASS: record conclusi rimossi dopo la retention.");
+}
+
 console.log("PASS: Tutti i test del Servizio di Trasferimento File completati con successo.");
 process.exit(0);

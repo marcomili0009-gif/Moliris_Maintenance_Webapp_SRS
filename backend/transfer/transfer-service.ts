@@ -57,6 +57,14 @@ export class TransferService {
   // Registro pulizie in sospeso per robot temporaneamente irraggiungibili (Problema A2 punto d)
   private pendingCleanups: Array<{ robotId: string; remoteTempPath: string; createdAt: Date }> = [];
   private hourlyCleanupTimer: NodeJS.Timeout | null = null;
+  private recordEvictionTimer: NodeJS.Timeout | null = null;
+
+  private static readonly TERMINAL_STATUSES: ReadonlySet<TransferStatus> = new Set<TransferStatus>([
+    TransferStatus.COMPLETED,
+    TransferStatus.FAILED,
+    TransferStatus.CANCELLED,
+    TransferStatus.INTEGRITY_FAILED,
+  ]);
 
   constructor(
     config: SystemConfiguration,
@@ -91,9 +99,20 @@ export class TransferService {
       });
     }, 60 * 60 * 1000);
     this.hourlyCleanupTimer.unref?.();
+
+    // Eviction dei record di trasferimento conclusi dalla mappa in memoria
+    this.recordEvictionTimer = setInterval(() => {
+      const n = this.evictFinishedTransfers();
+      if (n > 0) (this.logger as any).info?.(`Rimossi ${n} record di trasferimento conclusi`);
+    }, 5 * 60 * 1000);
+    this.recordEvictionTimer.unref?.();
   }
 
   public stopCleanupTask(): void {
+    if (this.recordEvictionTimer) {
+      clearInterval(this.recordEvictionTimer);
+      this.recordEvictionTimer = null;
+    }
     if (this.hourlyCleanupTimer) {
       clearInterval(this.hourlyCleanupTimer);
       this.hourlyCleanupTimer = null;
@@ -1229,7 +1248,7 @@ export class TransferService {
       );
     }
 
-    if (record.status === TransferStatus.COMPLETED || record.status === TransferStatus.CANCELLED) {
+    if (TransferService.TERMINAL_STATUSES.has(record.status)) {
       return this.toDto(record);
     }
 
@@ -1267,7 +1286,7 @@ export class TransferService {
    */
   public cancelTransfersForUser(userId: string, reason: string): void {
     for (const record of Array.from(this.transfers.values())) {
-      if (record.userId === userId && record.status === TransferStatus.IN_PROGRESS) {
+      if (record.userId === userId && (record.status === TransferStatus.IN_PROGRESS || record.status === TransferStatus.INTEGRITY_CHECKING)) {
         this.cancelTransfer(record.transferId, userId, reason).catch(() => {});
       }
     }
@@ -1276,6 +1295,21 @@ export class TransferService {
   // =========================================================================
   // GESTIONE CONCORRENZA E LIMITI SIMULTANEI (RF-TRF-012, RNF-PERF-003, CA-TRF-007)
   // =========================================================================
+
+  /** Rimuove dalla mappa i record terminali più vecchi del periodo di retention (default 1h). */
+  public evictFinishedTransfers(now = Date.now()): number {
+    const ttlMs = (this.config as any).transferRecordRetentionMs ?? 60 * 60 * 1000;
+    let evicted = 0;
+    for (const [id, rec] of this.transfers) {
+      if (!TransferService.TERMINAL_STATUSES.has(rec.status) || !rec.completedAt) continue;
+      if (now - rec.completedAt.getTime() >= ttlMs) {
+        rec.cleanupHandlers.length = 0;
+        this.transfers.delete(id);
+        evicted++;
+      }
+    }
+    return evicted;
+  }
 
   private reconcileActiveCounts(): void {
     const userCounts = new Map<string, number>();
