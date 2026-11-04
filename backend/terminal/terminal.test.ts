@@ -15,6 +15,7 @@ import { type SystemConfiguration } from "../../config/configuration.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
 import { InMemoryRobotRepository } from "../../storage/robot-repository.ts";
 import { InMemoryAuditRepository } from "../../storage/audit-repository.ts";
+import { AuditOperation } from "../../storage/audit-models.ts";
 import { InMemoryUserRepository } from "../auth/user-repository.ts";
 import { SessionManager } from "../auth/session-manager.ts";
 import { type RobotEntity } from "../../storage/robot-models.ts";
@@ -620,14 +621,16 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
 
   assert.strictEqual(attackerClosedCode, 4403, "L'accesso a sessione altrui deve essere chiuso con codice 4403");
 
-  // Verifica audit di violazione sicurezza per tentativo di accesso non autorizzato
-  const securityAudits = await auditRepo.query({ robotId: "robot_ssh_05" });
+  const securityAudits = await auditRepo.query({
+    robotId: "robot_ssh_05",
+    operation: AuditOperation.SECURITY_AUTHORIZATION_ERROR,
+  });
   assert.ok(
-    securityAudits.some((e) => e.operation === "SECURITY_AUTHORIZATION_ERROR"),
-    "Deve essere registrato un evento SECURITY_AUTHORIZATION_ERROR"
+    securityAudits.some((event) => event.details?.reason === "UNAUTHORIZED_SESSION_ACCESS_ATTEMPT"),
+    "Il tentativo di accesso alla sessione altrui deve essere registrato nell'audit"
   );
 
-  // 4. Connessione senza cookie di sessione -> 4401
+  // 4. Tentativo di collegamento anonimo senza cookie di sessione (RNF-SEC-004)
   const anonWs = new WebSocket(`wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`, {
     rejectUnauthorized: false,
   });
@@ -640,7 +643,41 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
     });
     anonWs.on("error", () => {});
   });
-  assert.strictEqual(anonClosedCode, 4401, "Chiamata WS senza sessione deve essere chiusa con codice 4401");
+
+  assert.strictEqual(anonClosedCode, 4401, "Un collegamento senza cookie deve essere chiuso con codice 4401");
+
+  const anonymousAudits = await auditRepo.query({
+    userId: "anonymous",
+    operation: AuditOperation.SECURITY_AUTHORIZATION_ERROR,
+  });
+  assert.ok(
+    anonymousAudits.some((event) => event.details?.reason === "WS_SESSION_COOKIE_MISSING"),
+    "Il tentativo anonimo deve essere registrato nell'audit"
+  );
+
+  // 5. Il tentativo non autorizzato non deve bloccare il collegamento del proprietario
+  const ownerWs = new WebSocket(`wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`, {
+    rejectUnauthorized: false,
+    headers: { cookie: `moliris_session=${validSession.sessionId}` },
+  });
+
+  let ownerOpened = false;
+
+  await new Promise<void>((resolve, reject) => {
+    ownerWs.on("open", () => {
+      ownerOpened = true;
+      setTimeout(() => ownerWs.close(), 100);
+    });
+
+    ownerWs.on("close", () => resolve());
+    ownerWs.on("error", reject);
+  });
+
+  assert.strictEqual(
+    ownerOpened,
+    true,
+    "Il proprietario deve poter aprire il WebSocket dopo i tentativi non autorizzati"
+  );
 
   await terminalService.closeSession(sessionId, "USER_EXPLICIT");
   await server.close();

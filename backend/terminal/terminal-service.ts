@@ -296,17 +296,7 @@ export class TerminalService {
       return;
     }
 
-    // 1b. Rifiuto di un secondo aggancio a una sessione che ha già avuto un socket (RF-SSH-006)
-    if (session.hasHadSocket) {
-      try {
-        socket.send(JSON.stringify({ type: "error", message: "Riconnessione non consentita: la sessione terminale ha già avuto un collegamento WebSocket." }));
-        socket.close(4409, "Second Attach Forbidden");
-      } catch {}
-      return;
-    }
-    session.hasHadSocket = true;
-
-    // 2. Verifica di isolamento: divieto di accesso a sessioni altrui (RF-SSH-006, CA-SSH-005)
+    // 2. Verifica di isolamento: divieto di accesso a sessioni altrui
     if (!this.sharingPolicy.canAccessSession(requestingUser, session)) {
       this.auditRepository.record({
         userId: requestingUser.username,
@@ -329,6 +319,16 @@ export class TerminalService {
       return;
     }
 
+    // 3. Rifiuto di un secondo aggancio (RF-SSH-006)
+    if (session.hasHadSocket) {
+      try {
+        socket.send(JSON.stringify({ type: "error", message: "Riconnessione non consentita: la sessione terminale ha già avuto un collegamento WebSocket." }));
+        socket.close(4409, "Second Attach Forbidden");
+      } catch {}
+      return;
+    }
+
+    session.hasHadSocket = true;
     session.webSocket = socket;
 
     // STEP 2 – Streaming PROGRESSIVO dell'output dal PTY verso il WebSocket (CA-SSH-003, RNF-PERF-002)
