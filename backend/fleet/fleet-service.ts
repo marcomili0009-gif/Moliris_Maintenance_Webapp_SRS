@@ -330,6 +330,11 @@ export class FleetService {
       const hasKnownHosts = !!(input.hostKeyVerification.knownHostsPath && input.hostKeyVerification.knownHostsPath.trim() !== "");
       if (!hasFingerprint && !hasKnownHosts) {
         errors["hostKeyVerification"] = "Specificare l'impronta (fingerprint) attesa o il percorso di un file known_hosts.";
+      } else if (!hasFingerprint && hasKnownHosts) {
+        const trimmedPath = input.hostKeyVerification.knownHostsPath!.trim();
+        if (!fs.existsSync(trimmedPath)) {
+          errors["hostKeyVerification"] = `Il file known_hosts specificato ('${trimmedPath}') non esiste sul filesystem del server.`;
+        }
       }
     }
 
@@ -527,7 +532,6 @@ export class FleetService {
     };
 
     // 3. Verifica connessione SSH secondo la politica di registrazione (§8.1, §6.2 passo 6)
-    performedActions.push("verifica_connessione_ssh");
     let sshVerificationSucceeded = false;
     let connCheckResult: any = null;
 
@@ -549,14 +553,29 @@ export class FleetService {
           success: false,
           message: verifErr.message || "Errore imprevisto durante la verifica SSH.",
         },
-        steps: [],
+        steps: [
+          {
+            step: "ssh_connection",
+            status: "FAILED",
+            message: "Errore imprevisto durante la verifica SSH.",
+            diagnosticDetail: verifErr.message,
+          },
+        ],
       };
     }
 
+    // Seleziona il dettaglio diagnostico più specifico dal passaggio fallito (senza mascherarlo con il messaggio generico)
+    const failedStep = connCheckResult?.steps?.find((s: any) => s.status === "FAILED");
     const failureReason =
+      failedStep?.diagnosticDetail ||
+      failedStep?.message ||
       connCheckResult?.lastConnectionVerificationInfo?.message ||
-      connCheckResult?.steps?.find((s: any) => s.status === "FAILED")?.diagnosticDetail ||
-      connCheckResult?.steps?.find((s: any) => s.status === "FAILED")?.message;
+      "Tentativo di connessione iniziale fallito.";
+
+    // Solo se la verifica ha successo l'azione viene marcata tra quelle eseguite con successo
+    if (sshVerificationSucceeded) {
+      performedActions.push("verifica_connessione_ssh");
+    }
 
     // Aggiornamento informazioni di verifica
     candidateRobot.lastConnectionVerification = {
@@ -574,13 +593,12 @@ export class FleetService {
       };
     } else {
       candidateRobot.connectionState = "non_raggiungibile";
-      const failedStep = connCheckResult?.steps?.find((s: any) => s.status === "FAILED");
       candidateRobot.lastAttemptOutcome = {
         timestamp: new Date(),
         success: false,
         stage: "connection",
         errorCode: failedStep?.errorCode || ErrorCode.HOST_UNREACHABLE,
-        diagnosticMessage: failureReason || "Tentativo di connessione iniziale fallito.",
+        diagnosticMessage: failureReason,
       };
     }
 
@@ -598,6 +616,8 @@ export class FleetService {
         outcome: "ssh_non_verificata",
         performedActions,
         skippedActions,
+        failedAction: "verifica_connessione_ssh",
+        verificationSteps: connCheckResult?.steps,
         message: "Registrazione rifiutata: connessione SSH verso il robot non verificata con successo in modalità rigorosa (CA-ROB-003).",
         diagnosticDetail: failureReason,
         recoveryPath: "Verificare che il robot sia online, che la porta SSH sia raggiungibile e che credenziali e chiave host siano corrette.",
@@ -695,6 +715,7 @@ export class FleetService {
       availableFeatures,
       performedActions,
       skippedActions,
+      verificationSteps: connCheckResult?.steps,
       message: userMsg,
       recoveryPath: savedRobot.registrationState === "ssh_non_verificata"
         ? "Eseguire 'Ripeti verifica connessione' quando il robot sarà online."

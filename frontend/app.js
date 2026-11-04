@@ -737,14 +737,47 @@ document.addEventListener("DOMContentLoaded", () => {
       <div class="alert-box ${outcomeClass}">
         <strong>Esito ottenuto:</strong> <code>${StateFormatter.escapeHtml(data.outcome)}</code><br>
         <p style="margin-top: 0.5rem;">${StateFormatter.escapeHtml(data.message)}</p>
+        ${data.diagnosticDetail ? `
+          <div style="margin-top: 0.6rem; padding: 0.5rem 0.75rem; background: rgba(0, 0, 0, 0.05); border-left: 3px solid var(--error-text, #c5221f); border-radius: 4px; font-size: 0.9rem;">
+            <strong>Dettaglio Diagnostico:</strong> ${StateFormatter.escapeHtml(data.diagnosticDetail)}
+          </div>
+        ` : ''}
       </div>
 
       <div style="margin-top: 1rem;">
         <h5>Azioni eseguite con successo:</h5>
         <ul>
-          ${(data.performedActions || []).map((a) => `<li>✔️ ${StateFormatter.escapeHtml(a)}</li>`).join("")}
+          ${(data.performedActions || []).length > 0
+            ? (data.performedActions || []).map((a) => `<li>✔️ ${StateFormatter.escapeHtml(a)}</li>`).join("")
+            : '<li style="color: var(--text-muted); font-style: italic;">Nessuna azione completata</li>'}
         </ul>
       </div>
+
+      ${data.failedAction ? `
+        <div style="margin-top: 0.75rem;">
+          <h5>Azione fallita:</h5>
+          <ul>
+            <li style="color: var(--error-text, #c5221f); font-weight: 500;">❌ ${StateFormatter.escapeHtml(data.failedAction)}</li>
+          </ul>
+        </div>
+      ` : ''}
+
+      ${data.verificationSteps && data.verificationSteps.length > 0 ? `
+        <div style="margin-top: 0.75rem;">
+          <h5>Dettaglio Controlli di Verifica SSH:</h5>
+          <ul style="font-size: 0.88rem; list-style: none; padding-left: 0;">
+            ${data.verificationSteps.map((s) => {
+              const icon = s.status === "SUCCESS" ? "✔️" : s.status === "FAILED" ? "❌" : "⏭️";
+              const color = s.status === "SUCCESS" ? "var(--success-text, #137333)" : s.status === "FAILED" ? "var(--error-text, #c5221f)" : "var(--text-muted, #575757)";
+              const detail = s.diagnosticDetail || s.message || s.status;
+              return `<li style="margin-bottom: 0.25rem;">
+                ${icon} <strong style="color: ${color};">${StateFormatter.escapeHtml(s.step)}:</strong>
+                ${StateFormatter.escapeHtml(detail)}
+              </li>`;
+            }).join("")}
+          </ul>
+        </div>
+      ` : ''}
 
       ${data.skippedActions && data.skippedActions.length > 0 ? `
         <div style="margin-top: 0.75rem;">

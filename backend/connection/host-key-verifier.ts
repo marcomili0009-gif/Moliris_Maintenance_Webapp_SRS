@@ -1,6 +1,7 @@
 // Requisiti soddisfatti: RNF-SEC-003, RF-ROB-005, SRS §9, §11.2
 
 import crypto from "crypto";
+import fs from "fs";
 import { type HostKeyVerificationParams } from "../../storage/robot-models.ts";
 
 /**
@@ -58,12 +59,71 @@ export function isValidSha256Fingerprint(fingerprint: string): boolean {
 }
 
 /**
+ * Verifica l'impronta o la chiave pubblica dell'host all'interno di un file known_hosts di OpenSSH (RNF-SEC-003).
+ */
+export function verifyAgainstKnownHosts(
+  filePath: string,
+  host: string,
+  port: number,
+  serverHostKey: Buffer
+): { matched: boolean; expectedFingerprint: string } {
+  const trimmedPath = filePath.trim();
+  if (!fs.existsSync(trimmedPath)) {
+    return { matched: false, expectedFingerprint: `File known_hosts '${trimmedPath}' non trovato` };
+  }
+
+  try {
+    const content = fs.readFileSync(trimmedPath, "utf-8");
+    const lines = content.split("\n");
+    const portSuffix = port !== 22 ? `:${port}` : "";
+    const targetPatterns = [
+      host,
+      `[${host}]:${port}`,
+      port !== 22 ? `[${host}]${portSuffix}` : host,
+    ];
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const parts = line.split(/\s+/);
+      if (parts.length < 3) continue;
+
+      const hostPart = parts[0];
+      const keyBase64 = parts[2];
+      const hostsInLine = hostPart.split(",");
+
+      const hostMatches = hostsInLine.some(
+        (h) => targetPatterns.includes(h) || h === host || h === `[${host}]:${port}`
+      );
+
+      if (hostMatches) {
+        try {
+          const entryKeyBuffer = Buffer.from(keyBase64, "base64");
+          if (entryKeyBuffer.equals(serverHostKey)) {
+            const fp = computeHostKeyFingerprint(entryKeyBuffer);
+            return { matched: true, expectedFingerprint: fp.openSshFormat };
+          }
+        } catch {
+          // Riga non valida, continua
+        }
+      }
+    }
+
+    return {
+      matched: false,
+      expectedFingerprint: `Nessuna chiave valida corrispondente per ${host}:${port} nel file '${trimmedPath}'`,
+    };
+  } catch (err: any) {
+    return {
+      matched: false,
+      expectedFingerprint: `Errore durante la lettura del file '${trimmedPath}': ${err.message}`,
+    };
+  }
+}
+
+/**
  * Implementazione predefinita della verifica chiave host (RNF-SEC-003, RF-ROB-005).
- * REQUISITI FONDAMENTALI:
- * 1. Solo fingerprint SHA-256 in anagrafica: il fingerprint è OBBLIGATORIO.
- * 2. Il percorso di fiducia knownHostsPath è stato rimosso per garantire univocità crittografica.
- * 3. Il confronto OpenSSH (SHA256:base64) è rigorosamente CASE-SENSITIVE per la componente base64.
- * 4. Non disabilita MAI la verifica e blocca categoricamente qualsiasi mismatch (fail-closed).
+ * Supporta la verifica sia tramite fingerprint SHA-256 diretto sia tramite file known_hosts locale.
  */
 export class DefaultHostKeyVerifier implements HostKeyVerifier {
   public verify(
@@ -75,8 +135,19 @@ export class DefaultHostKeyVerifier implements HostKeyVerifier {
     const { sha256Hex, sha256Base64, openSshFormat } = computeHostKeyFingerprint(serverHostKey || Buffer.alloc(0));
 
     const expected = (params?.fingerprint || "").trim();
+    const knownHostsPath = (params?.knownHostsPath || "").trim();
 
-    // In anagrafica il fingerprint SHA-256 è obbligatorio
+    // 1. Se è specificato un file known_hosts e non c'è fingerprint diretto
+    if (!expected && knownHostsPath) {
+      const knownHostsRes = verifyAgainstKnownHosts(knownHostsPath, host, port, serverHostKey);
+      return {
+        matched: knownHostsRes.matched,
+        expectedFingerprint: knownHostsRes.expectedFingerprint,
+        receivedFingerprint: openSshFormat,
+      };
+    }
+
+    // 2. Se non è specificata né impronta né known_hosts
     if (!expected) {
       return {
         matched: false,
