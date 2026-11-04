@@ -259,6 +259,75 @@ await c2.close();
 assert.strictEqual(connManager.getUserConnectionCount("user_limited"), 0, "Rilascio completo connessioni utente");
 console.log("  PASS: Limiti di concorrenza applicati e rilascio garantito (RNF-PERF-003, RNF-REL-005).");
 
+// --- 5B. Test concorrenza apertura connessioni SSH (RNF-PERF-003) ---
+const delayedCredentialProvider = new InMemoryCredentialProvider();
+delayedCredentialProvider.registerSecret("vault://creds/robot_valid", {
+  method: "password",
+  password: "ValidRobotPassword123!",
+});
+
+const originalGetCredentials = delayedCredentialProvider.getCredentials.bind(delayedCredentialProvider);
+delayedCredentialProvider.getCredentials = async (reference, method) => {
+  await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  return originalGetCredentials(reference, method);
+};
+
+const concurrentManager = new RobotConnectionManager(
+  delayedCredentialProvider,
+  hostKeyVerifier,
+  {
+    maxConcurrentPerUser: 5,
+    maxConcurrentPerRobot: 1,
+    maxConcurrentServer: 5,
+    connectionTimeoutMs: 3000,
+  },
+  testLogger
+);
+
+const concurrentRobot = createTestRobotEntity({ id: "robot_concurrent_test" });
+const concurrentResults = await Promise.allSettled([
+  concurrentManager.acquireConnection("user_concurrent", concurrentRobot),
+  concurrentManager.acquireConnection("user_concurrent", concurrentRobot),
+]);
+
+const concurrentSuccesses = concurrentResults.filter(
+  (result) => result.status === "fulfilled"
+);
+const concurrentFailures = concurrentResults.filter(
+  (result) => result.status === "rejected"
+);
+
+assert.strictEqual(
+  concurrentSuccesses.length,
+  1,
+  "Con due aperture contemporanee deve riuscire una sola connessione per robot"
+);
+assert.strictEqual(
+  concurrentFailures.length,
+  1,
+  "La seconda apertura contemporanea deve essere rifiutata"
+);
+
+const concurrentFailure = concurrentFailures[0];
+assert(
+  concurrentFailure.status === "rejected" &&
+    concurrentFailure.reason instanceof MolirisAppError &&
+    concurrentFailure.reason.code === ErrorCode.INSUFFICIENT_STORAGE,
+  "La richiesta eccedente deve essere rifiutata per superamento del limite"
+);
+
+assert.strictEqual(concurrentManager.getRobotConnectionCount(concurrentRobot.id), 1);
+
+if (concurrentSuccesses[0].status === "fulfilled") {
+  await concurrentSuccesses[0].value.close();
+}
+
+assert.strictEqual(concurrentManager.getRobotConnectionCount(concurrentRobot.id), 0);
+assert.strictEqual(concurrentManager.getActiveConnectionCount(), 0);
+await concurrentManager.closeAll();
+
+console.log("  PASS: Limite per robot rispettato anche con aperture SSH contemporanee (RNF-PERF-003).");
+
 // --- 6. Test Isolamento Errori tra Robot (RNF-REL-001) ---
 // Connessione attiva su robot A
 const connRobotA = await connManager.acquireConnection("user_multi", robotOk);
