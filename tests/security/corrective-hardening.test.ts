@@ -334,6 +334,7 @@ try {
   const termAuditRepo = new InMemoryAuditRepository();
   const termRobotRepo = new InMemoryRobotRepository();
   const termSessionManager = new SessionManager(30);
+  const termUserSession = termSessionManager.createSession(userEntity);
 
   const mockClient: any = {
     on: () => {},
@@ -393,7 +394,7 @@ try {
     updatedAt: new Date(),
   });
 
-  const termSession = await termService.openTerminalSession(userEntity, "robot_term_test", { cols: 80, rows: 24 }, "session_term_123");
+  const termSession = await termService.openTerminalSession(userEntity, "robot_term_test", { cols: 80, rows: 24 }, termUserSession.sessionId);
   assert.strictEqual(termService.getActiveSessionCount(), 1);
 
   // Primo aggancio WebSocket -> consentito

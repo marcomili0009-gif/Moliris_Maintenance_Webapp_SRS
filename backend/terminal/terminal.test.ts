@@ -757,7 +757,29 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   assert.strictEqual(limitReached, true, "Superamento limite per robot deve generare errore INSUFFICIENT_STORAGE");
 
   await limitedService.closeSession(term1.sessionId, "USER_EXPLICIT");
-  console.log("  PASS: RNF-PERF-003 - Rispetto dei limiti di concorrenza e blocco al raggiungimento del massimo.");
+
+  // Verifica aperture SSH simultanee: il limite deve considerare anche le aperture in corso.
+  const simultaneousResults = await Promise.allSettled([
+    limitedService.openTerminalSession(opUserAuthorized, "robot_limited", {}, userSession.sessionId),
+    limitedService.openTerminalSession(opUserAuthorized, "robot_limited", {}, userSession.sessionId),
+  ]);
+
+  const successfulResult = simultaneousResults.find((result) => result.status === "fulfilled");
+  const rejectedResult = simultaneousResults.find((result) => result.status === "rejected");
+
+  assert.ok(successfulResult && successfulResult.status === "fulfilled",
+    "Una delle due aperture simultanee deve riuscire");
+  assert.ok(rejectedResult && rejectedResult.status === "rejected",
+    "Una delle due aperture simultanee deve essere bloccata");
+  if (rejectedResult?.status === "rejected") {
+    assert.strictEqual((rejectedResult.reason as any).code, ErrorCode.INSUFFICIENT_STORAGE,
+      "La richiesta concorrente eccedente il limite deve essere rifiutata");
+  }
+  if (successfulResult?.status === "fulfilled") {
+    await limitedService.closeSession(successfulResult.value.sessionId, "USER_EXPLICIT");
+  }
+
+  console.log("  PASS: RNF-PERF-003 - Limiti di concorrenza, incluse aperture SSH simultanee.");
 }
 
 // Chiusura test server SSH e pulizia
