@@ -272,6 +272,16 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
   const maxConcurrentTerminalSessionsServer = env["MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"] && !isNaN(Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"]))
     ? Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"])
     : undefined;
+  if (
+    maxConcurrentTerminalSessionsServer !== undefined &&
+    (!Number.isInteger(maxConcurrentTerminalSessionsServer) ||
+      maxConcurrentTerminalSessionsServer < 1 ||
+      maxConcurrentTerminalSessionsServer > 20)
+  ) {
+    throw new Error(
+      "Valore non valido per MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER: deve essere un intero compreso tra 1 e 20."
+    );
+  }
 
   const maxConcurrentTerminalSessionsPerUser = env["MOLIRIS_MAX_TERMINAL_SESSIONS_PER_USER"] && !isNaN(Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_PER_USER"]))
     ? Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_PER_USER"])

@@ -160,5 +160,20 @@ try {
 } catch (err: any) {
   assert(err.message.includes("Valore non valido per MOLIRIS_ROBOT_USERNAME_UNIQUENESS"));
 }
+// Test 10: Limite massimo sessioni terminale server (max 20)
+const configTerminal20 = loadAndValidateConfig({
+  ...validEnv,
+  MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER: "20",
+});
+assert.strictEqual(configTerminal20.maxConcurrentTerminalSessionsServer, 20);
 
+try {
+  loadAndValidateConfig({
+    ...validEnv,
+    MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER: "21",
+  });
+  assert.fail("Avrebbe dovuto rifiutare più di 20 sessioni terminale");
+} catch (err: any) {
+  assert(err.message.includes("Valore non valido per MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"));
+}
 console.log("PASS: Test configurazione completato con successo.");
