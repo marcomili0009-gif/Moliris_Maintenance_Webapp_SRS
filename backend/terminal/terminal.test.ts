@@ -524,9 +524,50 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
     const term = await terminalService.openTerminalSession(opUserAuthorized, "robot_ssh_04", { cols: 80, rows: 24 }, ephemeralUserSession.sessionId);
     assert.strictEqual(terminalService.getActiveSessionCount(), 1);
 
+    let socketMessage: any = null;
+    let socketCloseCode = 0;
+    let socketCloseReason = "";
+    let resolveSocketClosed!: () => void;
+    const socketClosed = new Promise<void>((resolve) => {
+      resolveSocketClosed = resolve;
+    });
+
+    const mockSocket: any = {
+      readyState: 1,
+      on: () => {},
+      send: (raw: string) => {
+        socketMessage = JSON.parse(raw);
+      },
+      close: (code: number, reason: string) => {
+        socketCloseCode = code;
+        socketCloseReason = reason;
+        resolveSocketClosed();
+      },
+      terminate: () => {},
+      ping: () => {},
+    };
+
+    terminalService.attachWebSocket(term.sessionId, opUserAuthorized, mockSocket);
+
     // Logout utente distrugge la sessione e scatena l'hook di pulizia
     sessionManager.destroySession(ephemeralUserSession.sessionId);
-    await new Promise((r) => setTimeout(r, 50));
+
+    let closeTimeout!: ReturnType<typeof setTimeout>;
+    await Promise.race([
+      socketClosed,
+      new Promise<void>((_, reject) => {
+        closeTimeout = setTimeout(
+          () => reject(new Error("Timeout: WebSocket non chiuso dopo il logout")),
+          1000
+        );
+      }),
+    ]);
+    clearTimeout(closeTimeout);
+
+    assert.strictEqual(socketMessage?.type, "session_closed", "Il WebSocket deve ricevere la notifica di chiusura");
+    assert.strictEqual(socketMessage?.reason, "USER_SESSION_TERMINATED", "La notifica deve indicare il logout");
+    assert.strictEqual(socketCloseCode, 1000, "Il WebSocket deve essere chiuso con codice 1000");
+    assert.strictEqual(socketCloseReason, "USER_SESSION_TERMINATED", "La chiusura deve indicare il motivo corretto");
     assert.strictEqual(terminalService.getActiveSessionCount(), 0, "La sessione terminale deve essere chiusa al logout");
     assert.strictEqual(connectionManager.getActiveConnectionCount(), 0, "Nessuna connessione SSH residua");
   }
