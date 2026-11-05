@@ -35,15 +35,15 @@
 //   [Install]
 //   WantedBy=multi-user.target
 //
-// NOTA ARCHITETTURALE SULLA VARIABILE MONGO URI:
-// Si segnala che questo script usa MOLIRIS_MONGO_URI mentre il server usa MOLIRIS_MONGODB_URI.
-// Per conformità alle baseline e ai vincoli di non alterazione non autorizzata, la variabile
-// MOLIRIS_MONGO_URI è mantenuta (con fallback su MOLIRIS_MONGODB_URI se definita).
+// CONFIGURAZIONE MONGODB:
+// Il server e gli script condividono la risoluzione di MOLIRIS_MONGODB_URI,
+// MOLIRIS_MONGO_URI (alias compatibile) e MOLIRIS_DB_NAME tramite config/mongodb.ts.
 
 import fs from "fs";
 import { MongoClient } from "mongodb";
 import { hashPassword, type UserEntity } from "../backend/auth/user-models.ts";
 import { MongoUserRepository } from "../backend/auth/user-repository.ts";
+import { resolveMongoConfig } from "../config/mongodb.ts";
 
 export interface SeedPasswords {
   operatorPassword: string;
@@ -193,17 +193,12 @@ if (process.argv[1] && process.argv[1].endsWith("seed-users.ts")) {
     }
   }
 
-  const mongoUri = process.env["MOLIRIS_MONGODB_URI"];
-
-  if (!mongoUri) {
-    throw new Error("Variabile MOLIRIS_MONGODB_URI non configurata");
-  }
-
-  const client = new MongoClient(mongoUri);
+  const mongoConfig = resolveMongoConfig();
+  const client = new MongoClient(mongoConfig.uri);
   try {
     const passwords = loadSeedPasswords({ passwordFile: passwordFileArg });
     await client.connect();
-    const db = process.env["MOLIRIS_DB_NAME"] ? client.db(process.env["MOLIRIS_DB_NAME"]) : client.db();
+    const db = client.db(mongoConfig.dbName);
     const repo = new MongoUserRepository(db);
     await repo.initIndexes();
     await seedInitialUsers(repo, passwords.operatorPassword, passwords.adminPassword);

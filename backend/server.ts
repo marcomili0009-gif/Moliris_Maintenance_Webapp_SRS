@@ -5,6 +5,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { type SystemConfiguration, loadAndValidateConfig } from "../config/configuration.ts";
+import { resolveMongoConfig } from "../config/mongodb.ts";
 import { MolirisLogger } from "../logging/logger.ts";
 import { SessionManager } from "./auth/session-manager.ts";
 import { type UserRepository, InMemoryUserRepository, MongoUserRepository } from "./auth/user-repository.ts";
@@ -368,16 +369,11 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
 
   try {
     const config = loadAndValidateConfig(process.env);
-    const mongoUri = process.env["MOLIRIS_MONGODB_URI"];
-
-    if (!mongoUri) {
-      throw new Error("Variabile MOLIRIS_MONGODB_URI non configurata");
-    }
-
-    mongoClient = new MongoClient(mongoUri);
+    const mongoConfig = resolveMongoConfig();
+    mongoClient = new MongoClient(mongoConfig.uri);
     await mongoClient.connect();
 
-    const db = mongoClient.db();
+    const db = mongoClient.db(mongoConfig.dbName);
     const robotRepository = new MongoRobotRepository(db);
     await robotRepository.initIndexes();
 

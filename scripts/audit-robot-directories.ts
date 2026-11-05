@@ -19,6 +19,7 @@
 import fs from "fs";
 import path from "path";
 import { MongoClient } from "mongodb";
+import { resolveMongoConfig } from "../config/mongodb.ts";
 import { StandardRobotDirectoryNamingPolicy } from "../storage/robot-models.ts";
 
 interface AuditReportItem {
@@ -46,11 +47,9 @@ export async function runDirectoryAudit(options?: {
   collisionCount: number;
   items: AuditReportItem[];
 }> {
-  const mongoUri =
-    options?.mongoUri ||
-    process.env.MOLIRIS_MONGODB_URI ||
-    process.env.MOLIRIS_MONGO_URI ||
-    "mongodb://127.0.0.1:27017/moliris_maintenance";
+  const mongoConfig = resolveMongoConfig(process.env, {
+    uri: options?.mongoUri,
+  });
 
   const fsRoot =
     options?.fsRoot ||
@@ -58,11 +57,11 @@ export async function runDirectoryAudit(options?: {
     "/var/lib/moliris/server-fs";
 
   const namingPolicy = new StandardRobotDirectoryNamingPolicy();
-  const client = new MongoClient(mongoUri);
+  const client = new MongoClient(mongoConfig.uri);
 
   try {
     await client.connect();
-    const db = client.db();
+    const db = client.db(mongoConfig.dbName);
     const robotsCollection = db.collection("robots");
 
     const robots = await robotsCollection.find({}).toArray();
@@ -131,7 +130,7 @@ export async function runDirectoryAudit(options?: {
       console.log("\n==============================================================================");
       console.log("   MOLIRIS MAINTENANCE WEBAPP - REPORT AUDIT DIRECTORY ROBOT (DRY-RUN)");
       console.log("==============================================================================");
-      console.log(`Database MongoDB: ${mongoUri}`);
+      console.log(`Database MongoDB: ${mongoConfig.uri}`);
       console.log(`Root Filesystem : ${fsRoot}`);
       console.log(`Data e Ora      : ${new Date().toISOString()}`);
       console.log(`Modalità        : SOLA LETTURA (Nessuna scrittura su DB o disco)`);
