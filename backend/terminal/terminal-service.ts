@@ -224,6 +224,12 @@ export class TerminalService {
       );
     }
 
+    // Snapshot delle generation PRIMA di leggere lo stato del robot: se il robot viene
+    // disabilitato durante l'await, la prenotazione risulta invalidata invece di usare
+    // la generation già incrementata con uno stato letto ormai obsoleto.
+    const openRobotGeneration = this.robotGenerations.get(robotId) || 0;
+    const openServerGeneration = this.serverGeneration;
+
     const robot = await this.robotRepository.findById(robotId);
     if (!robot) {
       throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${robotId}' non trovato.`);
@@ -279,8 +285,8 @@ export class TerminalService {
       userId: user.id,
       userSessionId,
       robotId: robot.id,
-      robotGeneration: this.robotGenerations.get(robot.id) || 0,
-      serverGeneration: this.serverGeneration,
+      robotGeneration: openRobotGeneration,
+      serverGeneration: openServerGeneration,
     });
     this.userSessionCounts.set(user.id, userCount + 1);
     this.robotSessionCounts.set(robot.id, robotCount + 1);
