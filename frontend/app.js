@@ -1624,73 +1624,31 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Download Server -> Client (RF-TRF-001)
-  async function downloadServerFile(robotId, relativePath) {
-    showNotification(`Avvio download di '${relativePath}'...`, "info");
-    try {
-      const res = await fetch(
-        `/api/robots/${encodeURIComponent(robotId)}/transfers/client-server/download?path=${encodeURIComponent(relativePath)}`,
-        { credentials: "same-origin" }
-      );
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        showNotification(errorData, "danger");
-        return;
-      }
-      const blob = await res.blob();
-      const blobUrl = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      const contentDisp = res.headers.get("content-disposition");
-      let filename = relativePath.split("/").pop() || "download";
-      if (contentDisp && contentDisp.includes("filename=")) {
-        const match = contentDisp.match(/filename="?([^"]+)"?/);
-        if (match && match[1]) filename = decodeURIComponent(match[1]);
-      }
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(blobUrl);
-      showNotification(`Download completato: ${filename}`, "success");
-      setTimeout(loadTransfersList, 1000);
-    } catch (err) {
-      showNotification(err, "danger");
-    }
+  function downloadServerFile(robotId, relativePath) {
+    const filename = relativePath.split("/").pop() || "download";
+    showNotification(`Avvio download di '${filename}' in streaming...`, "info");
+    const downloadUrl = `/api/robots/${encodeURIComponent(robotId)}/transfers/client-server/download?path=${encodeURIComponent(relativePath)}`;
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(loadTransfersList, 1000);
   }
 
   // Download Robot -> Client (RF-TRF-003)
-  async function downloadRobotFile(robotId, remotePath) {
-    showNotification(`Avvio download dal robot per '${remotePath}'...`, "info");
-    try {
-      const res = await fetch(
-        `/api/robots/${encodeURIComponent(robotId)}/transfers/client-robot/download?path=${encodeURIComponent(remotePath)}`,
-        { credentials: "same-origin" }
-      );
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        showNotification(errorData, "danger");
-        return;
-      }
-      const blob = await res.blob();
-      const blobUrl = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      const contentDisp = res.headers.get("content-disposition");
-      let filename = remotePath.split("/").pop() || "download";
-      if (contentDisp && contentDisp.includes("filename=")) {
-        const match = contentDisp.match(/filename="?([^"]+)"?/);
-        if (match && match[1]) filename = decodeURIComponent(match[1]);
-      }
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(blobUrl);
-      showNotification(`Download dal robot completato: ${filename}`, "success");
-      setTimeout(loadTransfersList, 1000);
-    } catch (err) {
-      showNotification(err, "danger");
-    }
+  function downloadRobotFile(robotId, remotePath) {
+    const filename = remotePath.split("/").pop() || "download";
+    showNotification(`Avvio download dal robot per '${filename}' in streaming...`, "info");
+    const downloadUrl = `/api/robots/${encodeURIComponent(robotId)}/transfers/client-robot/download?path=${encodeURIComponent(remotePath)}`;
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(loadTransfersList, 1000);
   }
 
   // Upload Client -> Server (RF-TRF-001)

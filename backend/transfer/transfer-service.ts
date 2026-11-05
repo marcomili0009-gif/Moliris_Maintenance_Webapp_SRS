@@ -32,6 +32,7 @@ import {
 } from "./transfer-models.ts";
 import { resolveChecksumAlgorithm, ChecksumTransformStream } from "./checksum-service.ts";
 import { ProgressTrackerStream } from "./transfer-progress.ts";
+import { PipelinedSftpReadStream, PipelinedSftpWriteStream } from "../remote-fs/remote-fs-service.ts";
 
 export class TransferService {
   private config: SystemConfiguration;
@@ -593,11 +594,19 @@ export class TransferService {
         highWaterMark: this.getChunkSize(),
       });
 
-      const remoteWriteStream = sftp.createWriteStream(remoteTempPath, {
-        flags: writeFlags,
-        autoClose: true,
-        highWaterMark: this.getChunkSize(),
-      });
+      const remoteWriteStream = typeof (sftp as any).open === "function"
+        ? new PipelinedSftpWriteStream(sftp, remoteTempPath, {
+            flags: writeFlags,
+            concurrency: 32,
+            chunkSize: 32768,
+            highWaterMark: this.getChunkSize(),
+            start: startOffset,
+          })
+        : sftp.createWriteStream(remoteTempPath, {
+            flags: writeFlags,
+            autoClose: true,
+            highWaterMark: this.getChunkSize(),
+          });
 
       record.cleanupHandlers.push(async () => {
         try { localReadStream.destroy(); } catch {}
@@ -1010,11 +1019,18 @@ export class TransferService {
       this.transfers.set(transferId, record);
       await this.recordAuditStart(record);
 
-      const remoteWriteStream = sftp.createWriteStream(remoteTempPath, {
-        flags: "w",
-        autoClose: true,
-        highWaterMark: this.getChunkSize(),
-      });
+      const remoteWriteStream = typeof (sftp as any).open === "function"
+        ? new PipelinedSftpWriteStream(sftp, remoteTempPath, {
+            flags: "w",
+            concurrency: 32,
+            chunkSize: 32768,
+            highWaterMark: this.getChunkSize(),
+          })
+        : sftp.createWriteStream(remoteTempPath, {
+            flags: "w",
+            autoClose: true,
+            highWaterMark: this.getChunkSize(),
+          });
 
       record.cleanupHandlers.push(async () => {
         try { incomingStream.destroy(); } catch {}
@@ -1791,7 +1807,13 @@ export class TransferService {
 
   private async computeRemoteFileDigest(sftpClient: any, remotePath: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const readStream = sftpClient.createReadStream(remotePath, { highWaterMark: this.getChunkSize() });
+      const readStream = typeof (sftpClient as any).open === "function"
+        ? new PipelinedSftpReadStream(sftpClient, remotePath, {
+            concurrency: 32,
+            chunkSize: 32768,
+            highWaterMark: this.getChunkSize(),
+          })
+        : sftpClient.createReadStream(remotePath, { highWaterMark: this.getChunkSize() });
       const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm, this.getChunkSize());
       readStream.on("error", reject);
       checksumStream.on("error", reject);

@@ -3,7 +3,7 @@
 // SRS §1.2, §5.5, §9, §10.3, §11.5, §11.6, §11.7, CA-FS-001
 
 import path from "path";
-import { type Readable, type Writable } from "stream";
+import { Readable, Writable } from "stream";
 import { type SFTPWrapper } from "ssh2";
 import { type SystemConfiguration } from "../../config/configuration.ts";
 import { type RobotEntity } from "../../storage/robot-models.ts";
@@ -22,6 +22,283 @@ import {
   type RemoteReadStreamHandle,
   type RemoteWriteStreamHandle,
 } from "./remote-fs-models.ts";
+
+export interface PipelinedStreamOptions {
+  concurrency?: number;
+  chunkSize?: number;
+  highWaterMark?: number;
+  start?: number;
+}
+
+/**
+ * Flusso in scrittura SFTP ad alte prestazioni basato su sliding-window (RNF-PERF-001, §6.7).
+ * Mantiene fino a N richieste in volo simultaneamente, eliminando il collo di bottiglia stop-and-wait.
+ */
+export class PipelinedSftpWriteStream extends Writable {
+  private sftp: SFTPWrapper;
+  private remotePath: string;
+  private flags: string;
+  private mode: number;
+  private concurrency: number;
+  private chunkSize: number;
+  private handle: Buffer | null = null;
+  private pos: number;
+  private inFlight = 0;
+  private drainCb: (() => void) | null = null;
+  private openError: Error | null = null;
+  private isClosing = false;
+
+  constructor(sftp: SFTPWrapper, remotePath: string, options?: PipelinedStreamOptions & { flags?: string; mode?: number }) {
+    super({ highWaterMark: options?.highWaterMark || 2 * 1024 * 1024 });
+    this.sftp = sftp;
+    this.remotePath = remotePath;
+    this.flags = options?.flags || "w";
+    this.mode = options?.mode || 0o644;
+    this.concurrency = options?.concurrency || 32;
+    this.chunkSize = options?.chunkSize || 32768;
+    this.pos = options?.start || 0;
+  }
+
+  _construct(callback: (error?: Error | null) => void): void {
+    this.sftp.open(this.remotePath, this.flags as any, this.mode, (err, handle) => {
+      if (err) {
+        this.openError = err;
+        return callback(err);
+      }
+      this.handle = handle;
+      callback();
+    });
+  }
+
+  _write(chunk: any, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    if (!this.handle) {
+      if (this.openError) return callback(this.openError);
+      return callback(new Error("SFTP handle non pronto"));
+    }
+
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
+    let offset = 0;
+    const total = buf.length;
+
+    const dispatch = () => {
+      while (offset < total && this.inFlight < this.concurrency) {
+        const len = Math.min(this.chunkSize, total - offset);
+        const sub = buf.subarray(offset, offset + len);
+        const writePos = this.pos;
+        this.pos += len;
+        offset += len;
+        this.inFlight++;
+
+        this.sftp.write(this.handle!, sub, 0, len, writePos, (err) => {
+          this.inFlight--;
+          if (err) {
+            this.destroy(err);
+            return;
+          }
+          if (this.drainCb && this.inFlight < this.concurrency) {
+            const cb = this.drainCb;
+            this.drainCb = null;
+            cb();
+          }
+        });
+      }
+
+      if (offset < total) {
+        this.drainCb = dispatch;
+      } else {
+        callback();
+      }
+    };
+
+    dispatch();
+  }
+
+  _final(callback: (error?: Error | null) => void): void {
+    if (this.isClosing) return callback();
+    this.isClosing = true;
+
+    const finalize = () => {
+      if (this.inFlight > 0) {
+        setTimeout(finalize, 2);
+        return;
+      }
+      if (this.handle) {
+        const h = this.handle;
+        this.handle = null;
+        this.sftp.close(h, callback);
+      } else {
+        callback();
+      }
+    };
+    finalize();
+  }
+
+  _destroy(error: Error | null, callback: (error: Error | null) => void): void {
+    if (this.handle) {
+      const h = this.handle;
+      this.handle = null;
+      this.sftp.close(h, () => callback(error));
+    } else {
+      callback(error);
+    }
+  }
+}
+
+/**
+ * Flusso in lettura SFTP ad alte prestazioni basato su prefetching sliding-window (RNF-PERF-001, §6.7).
+ * Prefetch ordinato di blocchi consecutivi in parallelo con memoria costante.
+ */
+export class PipelinedSftpReadStream extends Readable {
+  private sftp: SFTPWrapper;
+  private remotePath: string;
+  private fileSize?: number | null;
+  private concurrency: number;
+  private chunkSize: number;
+  private handle: Buffer | null = null;
+  private requestPos: number;
+  private emitPos: number;
+  private inFlight = 0;
+  private pendingChunks = new Map<number, Buffer>();
+  private eofReached = false;
+  private isReading = false;
+  private isClosing = false;
+  private openError: Error | null = null;
+
+  constructor(
+    sftp: SFTPWrapper,
+    remotePath: string,
+    fileSizeOrOptions?: number | null | PipelinedStreamOptions,
+    options?: PipelinedStreamOptions
+  ) {
+    let actualSize: number | null | undefined = null;
+    let actualOpts: PipelinedStreamOptions | undefined = options;
+    if (typeof fileSizeOrOptions === "number") {
+      actualSize = fileSizeOrOptions;
+    } else if (fileSizeOrOptions && typeof fileSizeOrOptions === "object") {
+      actualOpts = fileSizeOrOptions as PipelinedStreamOptions;
+    }
+    super({ highWaterMark: actualOpts?.highWaterMark || 2 * 1024 * 1024 });
+    this.sftp = sftp;
+    this.remotePath = remotePath;
+    this.fileSize = actualSize;
+    this.concurrency = actualOpts?.concurrency || 32;
+    this.chunkSize = actualOpts?.chunkSize || 32768;
+    this.requestPos = actualOpts?.start || 0;
+    this.emitPos = this.requestPos;
+  }
+
+  _construct(callback: (error?: Error | null) => void): void {
+    this.sftp.open(this.remotePath, "r" as any, 0o644, (err, handle) => {
+      if (err) {
+        this.openError = err;
+        return callback(err);
+      }
+      this.handle = handle;
+      callback();
+    });
+  }
+
+  _read(size: number): void {
+    if (!this.handle) {
+      if (this.openError) {
+        this.destroy(this.openError);
+        return;
+      }
+      return;
+    }
+    this.isReading = true;
+    this._drainAndPrefetch();
+  }
+
+  private _drainAndPrefetch(): void {
+    while (this.pendingChunks.has(this.emitPos)) {
+      const chunk = this.pendingChunks.get(this.emitPos)!;
+      this.pendingChunks.delete(this.emitPos);
+      this.emitPos += chunk.length;
+      const canContinue = this.push(chunk);
+      if (!canContinue) {
+        this.isReading = false;
+        break;
+      }
+    }
+
+    if (this.eofReached && this.pendingChunks.size === 0) {
+      this.push(null);
+      this._closeHandle();
+      return;
+    }
+    if (this.fileSize !== undefined && this.fileSize !== null && this.emitPos >= this.fileSize) {
+      this.push(null);
+      this._closeHandle();
+      return;
+    }
+
+    if (!this.isReading || this.eofReached) {
+      return;
+    }
+
+    while (this.inFlight < this.concurrency && !this.eofReached) {
+      if (this.fileSize !== undefined && this.fileSize !== null && this.requestPos >= this.fileSize) {
+        break;
+      }
+
+      const readPos = this.requestPos;
+      let len = this.chunkSize;
+      if (this.fileSize !== undefined && this.fileSize !== null) {
+        len = Math.min(len, this.fileSize - readPos);
+        if (len <= 0) break;
+      }
+
+      this.requestPos += len;
+      this.inFlight++;
+
+      const buf = Buffer.allocUnsafe(len);
+      this.sftp.read(this.handle!, buf, 0, len, readPos, (err, bytesRead) => {
+        this.inFlight--;
+        if (err) {
+          if ((err as any).code === 1 || (err as any).message?.toLowerCase().includes("eof")) {
+            this.eofReached = true;
+            this._drainAndPrefetch();
+            return;
+          }
+          this.destroy(err);
+          return;
+        }
+
+        if (bytesRead === 0) {
+          this.eofReached = true;
+        } else {
+          const finalChunk = bytesRead < len ? buf.subarray(0, bytesRead) : buf;
+          this.pendingChunks.set(readPos, finalChunk);
+          if (bytesRead < len) {
+            this.eofReached = true;
+          }
+        }
+
+        this._drainAndPrefetch();
+      });
+    }
+  }
+
+  private _closeHandle(): void {
+    if (this.handle && !this.isClosing) {
+      this.isClosing = true;
+      const h = this.handle;
+      this.handle = null;
+      this.sftp.close(h, () => {});
+    }
+  }
+
+  _destroy(error: Error | null, callback: (error: Error | null) => void): void {
+    if (this.handle) {
+      const h = this.handle;
+      this.handle = null;
+      this.sftp.close(h, () => callback(error));
+    } else {
+      callback(error);
+    }
+  }
+}
 
 export class RemoteFilesystemService {
   private config: SystemConfiguration;
@@ -453,12 +730,30 @@ export class RemoteFilesystemService {
         });
       });
 
-      // Apertura flusso di lettura (senza buffer in RAM, RNF-PERF-001, con highWaterMark ad alte prestazioni)
-      const stream = sftp.createReadStream(targetPath, {
-        autoClose: true,
-        highWaterMark: this.getTransferBufferSize(),
-        ...(options?.start !== undefined ? { start: options.start } : {}),
-      });
+      // Apertura flusso di lettura ad alte prestazioni con sliding window pipelined (RNF-PERF-001)
+      let stream: Readable;
+      if (typeof (sftp as any).open === "function") {
+        let fileSize: number | null = null;
+        try {
+          const statRes: any = await new Promise((resolve) => sftp.stat(targetPath, (err, st) => resolve(err ? null : st)));
+          if (statRes && typeof statRes.size === "number") {
+            fileSize = statRes.size;
+          }
+        } catch {}
+
+        stream = new PipelinedSftpReadStream(sftp, targetPath, fileSize, {
+          concurrency: 32,
+          chunkSize: 32768,
+          highWaterMark: this.getTransferBufferSize(),
+          ...(options?.start !== undefined ? { start: options.start } : {}),
+        });
+      } else {
+        stream = sftp.createReadStream(targetPath, {
+          autoClose: true,
+          highWaterMark: this.getTransferBufferSize(),
+          ...(options?.start !== undefined ? { start: options.start } : {}),
+        });
+      }
 
       let closed = false;
       const cleanup = async () => {
@@ -548,10 +843,11 @@ export class RemoteFilesystemService {
         );
       }
 
-      // Apertura flusso di scrittura (senza caricare in RAM l'intero file, RNF-PERF-001, con highWaterMark ad alte prestazioni)
-      const stream = sftp.createWriteStream(targetPath, {
+      // Apertura flusso di scrittura ad alte prestazioni con sliding window pipelined (RNF-PERF-001)
+      const stream = new PipelinedSftpWriteStream(sftp, targetPath, {
         flags: "w",
-        autoClose: true,
+        concurrency: 32,
+        chunkSize: 32768,
         highWaterMark: this.getTransferBufferSize(),
       });
 

@@ -26,7 +26,8 @@ export class ProgressTrackerStream extends Transform {
   private onProgressCallback?: (snapshot: TransferProgressSnapshot) => void;
   private onIdleTimeoutCallback?: () => void;
   private idleTimeoutMs?: number;
-  private idleTimer: NodeJS.Timeout | null = null;
+  private lastActivityTime: number;
+  private watchdogTimer: NodeJS.Timeout | null = null;
 
   constructor(options: ProgressTrackerOptions) {
     super({ highWaterMark: options.highWaterMark || 2 * 1024 * 1024 });
@@ -38,31 +39,40 @@ export class ProgressTrackerStream extends Transform {
     this.idleTimeoutMs = options.idleTimeoutMs;
     this.startTime = Date.now();
     this.lastUpdateTime = this.startTime;
+    this.lastActivityTime = this.startTime;
 
-    this.resetIdleTimer();
+    this.startWatchdog();
   }
 
-  private resetIdleTimer(): void {
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer);
-      this.idleTimer = null;
-    }
-    if (this.idleTimeoutMs && this.idleTimeoutMs > 0) {
-      this.idleTimer = setTimeout(() => {
-        if (this.onIdleTimeoutCallback) {
-          this.onIdleTimeoutCallback();
+  private startWatchdog(): void {
+    if (this.idleTimeoutMs && this.idleTimeoutMs > 0 && !this.watchdogTimer) {
+      const checkIntervalMs = Math.min(1000, Math.max(200, Math.floor(this.idleTimeoutMs / 4)));
+      this.watchdogTimer = setInterval(() => {
+        const idleElapsed = Date.now() - this.lastActivityTime;
+        if (idleElapsed >= this.idleTimeoutMs!) {
+          this.stopWatchdog();
+          if (this.onIdleTimeoutCallback) {
+            this.onIdleTimeoutCallback();
+          }
+          this.emit("idleTimeout");
         }
-        this.emit("idleTimeout");
-      }, this.idleTimeoutMs);
+      }, checkIntervalMs);
+    }
+  }
+
+  private stopWatchdog(): void {
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
     }
   }
 
   public _transform(chunk: any, encoding: BufferEncoding, callback: TransformCallback): void {
     const len = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk, encoding);
     this.transferredBytes += len;
-    this.resetIdleTimer();
+    this.lastActivityTime = Date.now();
 
-    const now = Date.now();
+    const now = this.lastActivityTime;
     const elapsedSinceLastUpdate = now - this.lastUpdateTime;
 
     // Aggiornamento periodico dei parametri di velocità ed ETA ogni 200ms
@@ -84,19 +94,17 @@ export class ProgressTrackerStream extends Transform {
   }
 
   public _flush(callback: TransformCallback): void {
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer);
-      this.idleTimer = null;
+    this.stopWatchdog();
+    const totalElapsedSec = (Date.now() - this.startTime) / 1000;
+    if (totalElapsedSec > 0 && this.transferredBytes > 0) {
+      this.currentSpeed = Math.round(this.transferredBytes / totalElapsedSec);
     }
     this.emitProgressSnapshot();
     callback();
   }
 
   public _destroy(error: Error | null, callback: (error: Error | null) => void): void {
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer);
-      this.idleTimer = null;
-    }
+    this.stopWatchdog();
     callback(error);
   }
 
