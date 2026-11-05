@@ -51,5 +51,8 @@
   "bugs": {
     "url": "https://github.com/marcomili0009-gif/Moliris_Maintenance_Webapp_SRS/issues"
   },
-  "homepage": "https://github.com/marcomili0009-gif/Moliris_Maintenance_Webapp_SRS#readme"
+  "homepage": "https://github.com/marcomili0009-gif/Moliris_Maintenance_Webapp_SRS#readme",
+  "overrides": {
+    "minimatch": "11.0.1"
+  }
 }
