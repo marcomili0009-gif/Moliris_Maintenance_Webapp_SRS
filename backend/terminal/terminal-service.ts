@@ -91,7 +91,7 @@ export class TerminalService {
       const termReason: TerminalCloseReason = "USER_SESSION_TERMINATED";
       for (const session of Array.from(this.activeSessions.values())) {
         if (session.authorizedContext.sessionId === userSessionId) {
-          this.closeSession(session.sessionId, termReason, `Sessione utente terminata (${reason})`);
+          this.closeSessionSafely(session.sessionId, termReason, `Sessione utente terminata (${reason})`);
         }
       }
     });
@@ -110,7 +110,7 @@ export class TerminalService {
 
       for (const session of Array.from(this.activeSessions.values())) {
         if (now - session.lastActivityAt.getTime() > timeoutMs) {
-          this.closeSession(session.sessionId, "IDLE_TIMEOUT", "Timeout inattività terminale superato.");
+          this.closeSessionSafely(session.sessionId, "IDLE_TIMEOUT", "Timeout inattività terminale superato.");
         }
       }
     }, intervalMs);
@@ -337,19 +337,19 @@ export class TerminalService {
       registeredSession = session;
 
       ptyChannel.on("exit", () => {
-        this.closeSession(sessionId, "SHELL_EXIT", "Processo shell terminato dall'utente (exit).");
+        this.closeSessionSafely(sessionId, "SHELL_EXIT", "Processo shell terminato dall'utente (exit).");
       });
 
       ptyChannel.on("close", () => {
-        this.closeSession(sessionId, "SHELL_EXIT", "Canale PTY remoto chiuso.");
+        this.closeSessionSafely(sessionId, "SHELL_EXIT", "Canale PTY remoto chiuso.");
       });
 
       ptyChannel.on("end", () => {
-        this.closeSession(sessionId, "SHELL_EXIT", "Stream PTY terminato.");
+        this.closeSessionSafely(sessionId, "SHELL_EXIT", "Stream PTY terminato.");
       });
 
       ptyChannel.on("error", (err: any) => {
-        this.closeSession(sessionId, "ROBOT_DISCONNECT", `Errore PTY robot: ${err?.message}`);
+        this.closeSessionSafely(sessionId, "ROBOT_DISCONNECT", `Errore PTY robot: ${err?.message}`);
       });
 
       await this.auditRepository.record({
@@ -496,7 +496,7 @@ export class TerminalService {
             return;
           }
           if (parsed.type === "close") {
-            this.closeSession(sessionId, "USER_EXPLICIT");
+            this.closeSessionSafely(sessionId, "USER_EXPLICIT");
             return;
           }
           if (parsed.type === "input" && typeof parsed.data === "string") {
@@ -537,7 +537,7 @@ export class TerminalService {
           try {
             socket.terminate();
           } catch {}
-          this.closeSession(sessionId, "CLIENT_DISCONNECT", "Perdita heartbeat WebSocket");
+          this.closeSessionSafely(sessionId, "CLIENT_DISCONNECT", "Perdita heartbeat WebSocket");
           return;
         }
 
@@ -549,7 +549,7 @@ export class TerminalService {
         } catch {
           clearInterval(pingTimer);
           session.pingTimer = undefined;
-          this.closeSession(sessionId, "CLIENT_DISCONNECT", "Errore invio ping heartbeat");
+          this.closeSessionSafely(sessionId, "CLIENT_DISCONNECT", "Errore invio ping heartbeat");
         }
       }, pingIntervalMs);
 
@@ -567,7 +567,7 @@ export class TerminalService {
         session.pingTimer = undefined;
       }
       session.ptyChannel.removeListener("data", onPtyData);
-      this.closeSession(sessionId, "CLIENT_DISCONNECT");
+      this.closeSessionSafely(sessionId, "CLIENT_DISCONNECT");
     });
 
     socket.on("error", (err: any) => {
@@ -576,7 +576,7 @@ export class TerminalService {
         session.pingTimer = undefined;
       }
       session.ptyChannel.removeListener("data", onPtyData);
-      this.closeSession(sessionId, "CLIENT_DISCONNECT", err?.message);
+      this.closeSessionSafely(sessionId, "CLIENT_DISCONNECT", err?.message);
     });
   }
 
@@ -681,6 +681,20 @@ export class TerminalService {
         console.error("closeSession fallita", { sessionId: session.sessionId, robotId, error: (err as Error).name });
       }
     }
+  }
+
+  /**
+   * Chiusura "fire-and-forget" sicura per listener ed eventi in cui nessuno può gestire l'errore:
+   * evita unhandled rejection (che in Node terminano il processo). Nessun dato sensibile nei log (RNF-SEC-002).
+   */
+  private closeSessionSafely(sessionId: string, reason: TerminalCloseReason, diagnosticMessage?: string): void {
+    this.closeSession(sessionId, reason, diagnosticMessage).catch((err) => {
+      this.logger.warn("Errore durante la chiusura asincrona della sessione terminale.", {
+        sessionId,
+        reason,
+        error: redactSensitiveData(String(err)),
+      });
+    });
   }
 
   private closeMessageForRobot(robotId: string, reason: TerminalCloseReason): string {
