@@ -658,16 +658,30 @@ export class TerminalService {
   public async closeSessionsForRobot(robotId: string, reason: TerminalCloseReason = "ADMIN_DISABLED"): Promise<void> {
     this.robotGenerations.set(robotId, (this.robotGenerations.get(robotId) || 0) + 1);
 
-    for (const [reservationId, reservation] of this.pendingOpens) {
+    for (const [reservationId, reservation] of Array.from(this.pendingOpens)) {
       if (reservation.robotId === robotId) {
         this.releasePendingOpen(reservationId);
       }
     }
 
+    const message = this.closeMessageForRobot(robotId, reason);
     const toClose = Array.from(this.activeSessions.values()).filter((s) => s.robotId === robotId);
+
     for (const session of toClose) {
-      await this.closeSession(session.sessionId, reason, `Robot '${robotId}' disabilitato o rimosso.`);
+      try {
+        await this.closeSession(session.sessionId, reason, message);
+      } catch (err) {
+        // Un errore su una sessione non deve lasciare aperte le altre (nessun dato sensibile nei log, RNF-SEC-002)
+        console.error("closeSession fallita", { sessionId: session.sessionId, robotId, error: (err as Error).name });
+      }
     }
+  }
+
+  private closeMessageForRobot(robotId: string, reason: TerminalCloseReason): string {
+    const messages: Partial<Record<TerminalCloseReason, string>> = {
+      ADMIN_DISABLED: `Robot '${robotId}' disabilitato o rimosso.`,
+    };
+    return messages[reason] ?? `Sessioni del robot '${robotId}' chiuse (motivo: ${reason}).`;
   }
 
   /**
@@ -676,22 +690,28 @@ export class TerminalService {
   public async closeAll(reason: TerminalCloseReason = "SERVICE_SHUTDOWN"): Promise<void> {
     this.serverGeneration++;
 
-    if (this.idleCheckTimer) {
-      clearInterval(this.idleCheckTimer);
-      this.idleCheckTimer = null;
-    }
+    try {
+      if (this.idleCheckTimer) {
+        clearInterval(this.idleCheckTimer);
+        this.idleCheckTimer = null;
+      }
 
-    for (const reservationId of Array.from(this.pendingOpens.keys())) {
-      this.releasePendingOpen(reservationId);
-    }
+      for (const reservationId of Array.from(this.pendingOpens.keys())) {
+        this.releasePendingOpen(reservationId);
+      }
 
-    const sessions = Array.from(this.activeSessions.values());
-    for (const session of sessions) {
-      await this.closeSession(session.sessionId, reason, "Arresto ordinato del servizio.");
+      const sessions = Array.from(this.activeSessions.values());
+      for (const session of sessions) {
+        try {
+          await this.closeSession(session.sessionId, reason, "Arresto ordinato del servizio.");
+        } catch (err) {
+          console.error("closeSession fallita in closeAll", { sessionId: session.sessionId, error: (err as Error).name });
+        }
+      }
+    } finally {
+      this.activeSessions.clear();
+      this.userSessionCounts.clear();
+      this.robotSessionCounts.clear();
     }
-
-    this.activeSessions.clear();
-    this.userSessionCounts.clear();
-    this.robotSessionCounts.clear();
   }
 }
