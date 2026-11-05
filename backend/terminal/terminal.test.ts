@@ -849,6 +849,59 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   console.log("  PASS: RNF-PERF-003 - Limiti di concorrenza, incluse aperture SSH simultanee.");
 }
 
+// TEST 8: Disabilitazione robot durante la lettura dello stato in apertura (race su findById)
+{
+  const robotRepo = new InMemoryRobotRepository();
+  const auditRepo = new InMemoryAuditRepository();
+  const userRepo = new InMemoryUserRepository();
+  await userRepo.create({ ...opUserAuthorized, passwordHash: "h" });
+
+  const sessionManager = new SessionManager(30);
+  const terminalService = new TerminalService(
+    testConfig,
+    robotRepo,
+    auditRepo,
+    connectionManager,
+    sessionManager,
+    roleMapping,
+    logger
+  );
+
+  await robotRepo.create(createRobot("robot_ssh_race"));
+  const userSession = sessionManager.createSession(opUserAuthorized);
+
+  // Simula la disabilitazione mentre l'apertura sta leggendo il robot: la lettura restituisce
+  // lo stato vecchio (attivo) ma la generation del robot è già stata incrementata.
+  const originalFindById = robotRepo.findById.bind(robotRepo);
+  (robotRepo as any).findById = async (id: string) => {
+    const stale = await originalFindById(id);
+    await terminalService.closeSessionsForRobot(id, "ADMIN_DISABLED");
+    return stale ? { ...stale } : stale;
+  };
+
+  // Deve fallire proprio per l'invalidazione della prenotazione, non per un errore qualsiasi (es. rete).
+  await assert.rejects(
+    terminalService.openTerminalSession(opUserAuthorized, "robot_ssh_race", { cols: 80, rows: 24 }, userSession.sessionId),
+    (err: any) => {
+      assert.strictEqual(err.code, ErrorCode.INSUFFICIENT_PERMISSIONS);
+      assert.match(String(err.diagnosticDetail), /Apertura del terminale annullata/);
+      return true;
+    }
+  );
+  assert.strictEqual(terminalService.getActiveSessionCount(), 0, "Nessuna sessione orfana dopo l'apertura annullata");
+  assert.strictEqual(connectionManager.getActiveConnectionCount(), 0, "Nessuna connessione SSH residua");
+
+  // I contatori devono essere stati rilasciati: una nuova apertura (senza race) deve riuscire.
+  (robotRepo as any).findById = originalFindById;
+  const term = await terminalService.openTerminalSession(opUserAuthorized, "robot_ssh_race", { cols: 80, rows: 24 }, userSession.sessionId);
+  assert.strictEqual(terminalService.getActiveSessionCount(), 1);
+  await terminalService.closeSession(term.sessionId, "USER_EXPLICIT");
+  assert.strictEqual(terminalService.getActiveSessionCount(), 0);
+  assert.strictEqual(connectionManager.getActiveConnectionCount(), 0);
+
+  console.log("  PASS: Race - Disabilitazione robot durante l'apertura: apertura annullata e risorse rilasciate.");
+}
+
 // Chiusura test server SSH e pulizia
 for (const client of activeSshClients) {
   try { client.end(); } catch {}
