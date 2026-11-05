@@ -318,6 +318,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   const ws = new WebSocket(`wss://127.0.0.1:${serverPort}/api/terminal/ws/${allocBody.sessionId}`, {
     rejectUnauthorized: false,
     headers: {
+      Origin: `https://127.0.0.1:${serverPort}`,
       cookie: `moliris_session=${userSession.sessionId}`,
     },
   });
@@ -395,7 +396,10 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
 
   const ws = new WebSocket(`wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`, {
     rejectUnauthorized: false,
-    headers: { cookie: `moliris_session=${userSession.sessionId}` },
+    headers: {
+      Origin: `https://127.0.0.1:${serverPort}`,
+      cookie: `moliris_session=${userSession.sessionId}`,
+    },
   });
 
   await new Promise<void>((resolve) => ws.on("open", resolve));
@@ -604,10 +608,69 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   assert.strictEqual(legitimateRes.statusCode, 201);
   const { sessionId } = JSON.parse(legitimateRes.body);
 
-  // 3. Tentativo di hijacking sessione altrui da parte di opUserAttacker (RF-SSH-006, CA-SSH-005)
+  // 3. Rifiuto WebSocket con Origin esterno o assente
+  const externalOriginStatus = await new Promise<number>((resolve, reject) => {
+    const ws = new WebSocket(
+      `wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`,
+      {
+        rejectUnauthorized: false,
+        headers: {
+          Origin: "https://attacker.example",
+          cookie: `moliris_session=${validSession.sessionId}`,
+        },
+      }
+    );
+
+    ws.on("unexpected-response", (_request, response) => {
+      response.resume();
+      resolve(response.statusCode ?? 0);
+    });
+    ws.on("error", () => {});
+  });
+
+  assert.strictEqual(externalOriginStatus, 403, "Un Origin esterno deve ricevere HTTP 403");
+
+  const missingOriginStatus = await new Promise<number>((resolve, reject) => {
+    const ws = new WebSocket(
+      `wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`,
+      {
+        rejectUnauthorized: false,
+        headers: {
+          cookie: `moliris_session=${validSession.sessionId}`,
+        },
+      }
+    );
+
+    ws.on("unexpected-response", (_request, response) => {
+      response.resume();
+      resolve(response.statusCode ?? 0);
+    });
+    ws.on("error", () => {});
+  });
+
+  assert.strictEqual(missingOriginStatus, 403, "Un Origin assente deve ricevere HTTP 403");
+
+  const originAudits = await auditRepo.query({
+    userId: "anonymous",
+    operation: AuditOperation.SECURITY_AUTHORIZATION_ERROR,
+  });
+
+  assert.ok(
+    originAudits.some((event) => event.details?.reason === "WS_ORIGIN_INVALID_OR_MISMATCH"),
+    "L'Origin esterno deve essere registrato nell'audit"
+  );
+  assert.ok(
+    originAudits.some((event) => event.details?.reason === "WS_ORIGIN_MISSING"),
+    "L'Origin assente deve essere registrato nell'audit"
+  );
+
+  // 4. Tentativo di hijacking sessione altrui da parte di opUserAttacker (RF-SSH-006, CA-SSH-005)
   const attackerWs = new WebSocket(`wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`, {
     rejectUnauthorized: false,
-    headers: { cookie: `moliris_session=${attackerSession.sessionId}` },
+    headers: {
+      Origin: `https://127.0.0.1:${serverPort}`,
+      cookie: `moliris_session=${attackerSession.sessionId}`,
+    },
   });
 
   let attackerClosedCode = 0;
@@ -633,6 +696,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   // 4. Tentativo di collegamento anonimo senza cookie di sessione (RNF-SEC-004)
   const anonWs = new WebSocket(`wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`, {
     rejectUnauthorized: false,
+    headers: { Origin: `https://127.0.0.1:${serverPort}` },
   });
 
   let anonClosedCode = 0;
@@ -658,7 +722,10 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   // 5. Il tentativo non autorizzato non deve bloccare il collegamento del proprietario
   const ownerWs = new WebSocket(`wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`, {
     rejectUnauthorized: false,
-    headers: { cookie: `moliris_session=${validSession.sessionId}` },
+    headers: {
+      Origin: `https://127.0.0.1:${serverPort}`,
+      cookie: `moliris_session=${validSession.sessionId}`,
+    },
   });
 
   let ownerOpened = false;
