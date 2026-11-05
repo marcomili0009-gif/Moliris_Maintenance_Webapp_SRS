@@ -95,6 +95,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const fsRemoteError = document.getElementById("fs-remote-error");
   const fsRemoteFileInput = document.getElementById("fs-remote-file-input");
   const btnFsRemoteUpload = document.getElementById("btn-fs-remote-upload");
+  const btnFsRemotePurge = document.getElementById("btn-fs-remote-purge");
   let currentRemoteFsPath = "";
   let currentRemoteParentPath = null;
 
@@ -111,6 +112,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const transfersEmptyMsg = document.getElementById("transfers-empty-msg");
   const transfersActiveCount = document.getElementById("transfers-active-count");
   const btnRefreshTransfers = document.getElementById("btn-refresh-transfers");
+  const btnPurgeTransfersTemp = document.getElementById("btn-purge-transfers-temp");
   let transfersPollingInterval = null;
 
   // Modal Conferma Sovrascrittura
@@ -731,7 +733,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let outcomeClass = "alert-info";
     if (data.outcome === "registrazione_completata") outcomeClass = "alert-success";
     else if (data.outcome === "registrazione_rifiutata" || data.outcome === "creazione_directory_fallita") outcomeClass = "alert-danger";
-    else if (data.outcome === "ssh_non_verificata" || data.outcome === "registrazione_incompleta") outcomeClass = "alert-warning";
+    else if (data.outcome === "ssh_non_verificata" || data.outcome === "registrazione_incompleta" || data.outcome === "completata_con_funzionalita_non_verificate") outcomeClass = "alert-warning";
 
     let html = `
       <div class="alert-box ${outcomeClass}">
@@ -1275,9 +1277,9 @@ document.addEventListener("DOMContentLoaded", () => {
           btnSendToRobot.className = "btn btn-secondary btn-sm transfer-action-btn";
           btnSendToRobot.textContent = "➡️ Invia al Robot";
           btnSendToRobot.title = "Trasferisci file dal server al filesystem remoto del robot (RF-TRF-002)";
-          btnSendToRobot.addEventListener("click", () => {
+          btnSendToRobot.addEventListener("click", async () => {
             const relPath = currentFsPath ? `${currentFsPath}/${item.name}` : item.name;
-            transferServerToRobot(robotId, relPath, item.name);
+            await DoubleSubmitGuard.execute(btnSendToRobot, "Avvio...", () => transferServerToRobot(robotId, relPath, item.name));
           });
           btnGroup.appendChild(btnSendToRobot);
 
@@ -1466,11 +1468,11 @@ document.addEventListener("DOMContentLoaded", () => {
           btnCopyToSrv.className = "btn btn-secondary btn-sm transfer-action-btn";
           btnCopyToSrv.textContent = "⬅️ Copia su Server";
           btnCopyToSrv.title = "Trasferisci file dal robot al filesystem locale del server (RF-TRF-002)";
-          btnCopyToSrv.addEventListener("click", () => {
+          btnCopyToSrv.addEventListener("click", async () => {
             const remotePath = currentRemoteFsPath.endsWith("/")
               ? `${currentRemoteFsPath}${item.name}`
               : `${currentRemoteFsPath}/${item.name}`;
-            transferRobotToServer(robotId, remotePath, item.name);
+            await DoubleSubmitGuard.execute(btnCopyToSrv, "Avvio...", () => transferRobotToServer(robotId, remotePath, item.name));
           });
           btnGroup.appendChild(btnCopyToSrv);
 
@@ -1730,17 +1732,31 @@ document.addEventListener("DOMContentLoaded", () => {
 
   let activeUploadController = null;
   let activeUploadCancelled = false;
+  let activeUploadRetryTimeout = null;
+  const cancelledTransferIds = new Set();
 
-  window.addEventListener("beforeunload", () => {
+  function cancelActiveUpload() {
     activeUploadCancelled = true;
+    if (activeUploadRetryTimeout) {
+      clearTimeout(activeUploadRetryTimeout);
+      activeUploadRetryTimeout = null;
+    }
     if (activeUploadController) {
       try { activeUploadController.abort(); } catch {}
       activeUploadController = null;
     }
+  }
+
+  window.addEventListener("beforeunload", () => {
+    cancelActiveUpload();
   });
 
   // Upload Client -> Robot (RF-TRF-003)
   async function uploadClientToRobot(robotId, remoteDir, file, overwrite = false, retryCount = 0) {
+    if (activeUploadRetryTimeout) {
+      clearTimeout(activeUploadRetryTimeout);
+      activeUploadRetryTimeout = null;
+    }
     activeUploadCancelled = false;
     activeUploadController = new AbortController();
     showNotification(`Caricamento verso il robot di '${file.name}' in corso...`, "info");
@@ -1775,17 +1791,18 @@ document.addEventListener("DOMContentLoaded", () => {
       loadRemoteFilesystem(robotId, remoteDir);
       loadTransfersList();
     } catch (err) {
-      if (activeUploadCancelled || err.name === "AbortError") {
+      if (activeUploadCancelled || err.name === "AbortError" || String(err.message || "").toLowerCase().includes("annullato")) {
         showNotification(`Trasferimento di '${file.name}' annullato dall'utente.`, "warning");
         loadTransfersList();
         loadRemoteFilesystem(robotId, remoteDir);
         return;
       }
 
-      // Riscaricamento / ritentativo automatico SOLO su fallimento non intenzionale (MAI se annullato)
-      if (retryCount < 1) {
+      // Riscaricamento / ritentativo automatico SOLO su fallimento non intenzionale (MAI se annullato!)
+      if (!activeUploadCancelled && retryCount < 1) {
         showNotification(`Trasferimento non riuscito per errore di connessione. Tentativo di riscaricamento automatico in corso (tentativo 1 di 1)...`, "warning");
-        setTimeout(() => {
+        activeUploadRetryTimeout = setTimeout(() => {
+          activeUploadRetryTimeout = null;
           if (!activeUploadCancelled) {
             uploadClientToRobot(robotId, remoteDir, file, overwrite, retryCount + 1);
           }
@@ -1944,11 +1961,8 @@ document.addEventListener("DOMContentLoaded", () => {
             cancelBtn.addEventListener("click", async () => {
               if (confirm("Vuoi davvero annullare questo trasferimento?")) {
                 await DoubleSubmitGuard.execute(cancelBtn, "Annullamento...", async () => {
-                  activeUploadCancelled = true;
-                  if (activeUploadController) {
-                    try { activeUploadController.abort(); } catch {}
-                    activeUploadController = null;
-                  }
+                  cancelledTransferIds.add(trf.transferId);
+                  cancelActiveUpload();
                   await apiClient.post(`/api/transfers/${encodeURIComponent(trf.transferId)}/cancel`, {});
                   loadTransfersList();
                   const currentRobotId = fsRobotIdInput.value.trim() || fsRemoteRobotIdInput.value.trim();
@@ -1979,6 +1993,57 @@ document.addEventListener("DOMContentLoaded", () => {
 
   btnRefreshTransfers?.addEventListener("click", async () => {
     await DoubleSubmitGuard.execute(btnRefreshTransfers, "Aggiornamento...", loadTransfersList);
+  });
+
+  // Bonifica file temporanei dal robot e server selezionato (RF-TRF-009, CA-TRF-005)
+  btnFsRemotePurge?.addEventListener("click", async () => {
+    const robotId = fsRemoteRobotIdInput.value.trim();
+    if (!robotId) {
+      showNotification("Specificare prima l'ID del robot per la bonifica.", "warning");
+      return;
+    }
+    if (confirm(`Confermi l'eliminazione definitiva di tutti i file temporanei orfani (.tmp_moliris_*) dal robot '${robotId}' e dal server?`)) {
+      await DoubleSubmitGuard.execute(btnFsRemotePurge, "Bonifica in corso...", async () => {
+        try {
+          const res = await apiClient.post(`/api/robots/${encodeURIComponent(robotId)}/fs/cleanup-temp`, {});
+          const data = await res.json();
+          if (res.ok) {
+            showNotification(data.message || `Bonifica completata: eliminati ${data.purgedCount} file temporanei (${StateFormatter.formatBytes(data.freedBytes)} liberati).`, "success");
+            loadRemoteFilesystem(robotId, currentRemoteFsPath);
+            loadServerFilesystem(robotId, currentFsPath);
+          } else {
+            showNotification(data, "danger");
+          }
+        } catch (err) {
+          showNotification(err, "danger");
+        }
+      });
+    }
+  });
+
+  // Bonifica file temporanei globale da TUTTI i robot e server (Amministratore)
+  btnPurgeTransfersTemp?.addEventListener("click", async () => {
+    if (confirm("Confermi l'eliminazione definitiva di tutti i file temporanei (.tmp_moliris_*) da TUTTI i robot della flotta e dal server?")) {
+      await DoubleSubmitGuard.execute(btnPurgeTransfersTemp, "Bonifica in corso...", async () => {
+        try {
+          const res = await apiClient.post("/api/fs/cleanup-temp-all", {});
+          const data = await res.json();
+          if (res.ok) {
+            showNotification(data.message || `Bonifica globale completata: eliminati ${data.totalPurged} file temporanei (${StateFormatter.formatBytes(data.totalFreedBytes)} liberati).`, "success");
+            const currentRobotId = fsRobotIdInput.value.trim() || fsRemoteRobotIdInput.value.trim();
+            if (currentRobotId) {
+              loadRemoteFilesystem(currentRobotId, currentRemoteFsPath);
+              loadServerFilesystem(currentRobotId, currentFsPath);
+            }
+            loadTransfersList();
+          } else {
+            showNotification(data, "danger");
+          }
+        } catch (err) {
+          showNotification(err, "danger");
+        }
+      });
+    }
   });
 
   // Avvio controllo sessione iniziale

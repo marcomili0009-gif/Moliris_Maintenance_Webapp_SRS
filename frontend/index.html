@@ -160,6 +160,7 @@
               <div class="fs-actions" style="margin-left: auto; display: flex; gap: 0.5rem;">
                 <input type="file" id="fs-remote-file-input" name="fsRemoteFileInput" style="display: none;" aria-label="Seleziona file da caricare sul robot">
                 <button id="btn-fs-remote-upload" class="btn btn-primary btn-sm" title="Carica file dal computer verso il robot (RF-TRF-003)">⬆️ Carica sul Robot</button>
+                <button id="btn-fs-remote-purge" class="btn btn-danger btn-sm" title="Elimina definitivamente tutti i file temporanei orfani (.tmp_moliris_*) dal robot e server">🧹 Bonifica Temp</button>
               </div>
             </div>
 
@@ -193,6 +194,7 @@
                 <small class="fs-subtitle">Monitoraggio in tempo reale di tutte le operazioni di trasferimento (Computer ↔ Server, Server ↔ Robot, Computer ↔ Robot).</small>
               </div>
               <div>
+                <button id="btn-purge-transfers-temp" class="btn btn-danger btn-sm" title="Bonifica file temporanei orfani da tutti i robot e server">🧹 Bonifica File Temp</button>
                 <button id="btn-refresh-transfers" class="btn btn-secondary btn-sm">🔄 Aggiorna Lista</button>
               </div>
             </div>

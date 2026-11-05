@@ -51,7 +51,13 @@ export function registerFleetRoutes(
     async (req: FastifyRequest, reply: FastifyReply) => {
       try {
         const user = req.molirisUser!;
-        const list = await fleetService.listFleet(user);
+        const query = (req.query || {}) as { limit?: string; offset?: string };
+        const rawLimit = query.limit !== undefined ? parseInt(query.limit, 10) : undefined;
+        const rawOffset = query.offset !== undefined ? parseInt(query.offset, 10) : undefined;
+        const list = await fleetService.listFleet(user, {
+          limit: rawLimit !== undefined && Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined,
+          offset: rawOffset !== undefined && Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : undefined,
+        });
         return reply.status(200).send({ robots: list });
       } catch (err: any) {
         return handleError(err, reply);

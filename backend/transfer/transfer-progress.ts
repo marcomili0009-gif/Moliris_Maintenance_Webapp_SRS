@@ -5,6 +5,7 @@ import { type TransferProgressSnapshot } from "./transfer-models.ts";
 
 export interface ProgressTrackerOptions {
   totalBytes: number | null;
+  initialBytes?: number;
   idleTimeoutMs?: number;
   onProgress?: (snapshot: TransferProgressSnapshot) => void;
   onIdleTimeout?: () => void;
@@ -30,6 +31,8 @@ export class ProgressTrackerStream extends Transform {
   constructor(options: ProgressTrackerOptions) {
     super({ highWaterMark: options.highWaterMark || 2 * 1024 * 1024 });
     this.totalBytes = options.totalBytes;
+    this.transferredBytes = options.initialBytes || 0;
+    this.lastBytesAtUpdate = this.transferredBytes;
     this.onProgressCallback = options.onProgress;
     this.onIdleTimeoutCallback = options.onIdleTimeout;
     this.idleTimeoutMs = options.idleTimeoutMs;

@@ -273,3 +273,18 @@ Le seguenti scelte sono state introdotte per completare in sicurezza i requisiti
     - **Stato**: PROPOSTA DA CONFERMARE
     - **Descrizione**: Implementata l'operazione esplicita e controllata di eliminazione file sul Filesystem Server del robot (`DELETE /api/robots/:robotId/fs/server/file?path=...`) protetta dal permesso dedicato `AppPermission.FS_SERVER_DELETE`. In conformità a RNF-FS-003, RF-ROB-013 e §8.4, l'eliminazione è applicabile esclusivamente a singoli file regolari (escludendo directory per evitare cancellazioni massive accidentali), verifica l'isolamento della root del robot e il blocco anti-traversal, e richiede dal frontend una conferma modale esplicita da parte dell'utente prima dell'esecuzione.
     - **Requisiti correlati**: RNF-FS-003, RF-ROB-013, RF-SRVFS-005, §8.4.
+
+18. **Protezione CSRF e Gestione Token di Autenticazione**:
+    - **Stato**: CONFERMATA
+    - **Descrizione**: L'architettura adotta l'autenticazione mista con cookie di sessione dotati di flag `SameSite=Strict`, `HttpOnly` e `Secure` (in HTTPS), affiancati dall'header `Authorization: Bearer <sessionId>` inviato esplicitamente dal frontend per tutte le chiamate API REST mutanti (POST, PUT, DELETE). Poiché i browser non allegano header `Authorization` personalizzati nelle richieste cross-origin involontarie (drive-by / cross-site requests), e i cookie SameSite=Strict non vengono inviati su navigazioni cross-origin, l'applicazione è intrinsecamente protetta da attacchi CSRF senza richiedere doppi token ridondanti.
+    - **Requisiti correlati**: RF-AUTH-002, RF-AUTH-003, RNF-SEC-001, §6.1.
+
+19. **Archiviazione Volatile delle Sessioni in Memoria (RNF-REL)**:
+    - **Stato**: CONFERMATA
+    - **Descrizione**: In stretta aderenza al requisito di affidabilità e sicurezza RNF-REL-005 e RNF-SEC-002, lo stato delle sessioni attive è mantenuto in memoria RAM (`SessionManager`) e non persistito su disco o database. In questo modo, in caso di arresto anomalo, riavvio del demone systemd o failover, nessuna credenziale temporanea, materiale crittografico effimero o socket pendente rischia di rimanere orfano su storage permanente. Gli utenti dovranno effettuare un nuovo login trasparente garantendo il fail-closed.
+    - **Requisiti correlati**: RF-AUTH-003, RF-AUTH-006, RNF-REL-005, RNF-SEC-002.
+
+20. **Accessibilità Filesystem Server con Robot nello Stato "Disabilitato" (§8.4)**:
+    - **Stato**: CONFERMATA
+    - **Descrizione**: In conformità alla tabella degli stati e delle funzionalità ammesse (§8.4), quando un robot si trova nello stato anagrafico "disabilitato" tutte le funzionalità operative e interattive remote verso la macchina fisica (sessioni di terminale SSH/PTY, esplorazione filesystem remoto SFTP, polling di stato e avvio trasferimenti) sono categoricamente bloccate con codice d'errore dedicato. Tuttavia, la consultazione e la visualizzazione della directory del robot residente sul server (`serverFs`, `FS_SERVER_NAVIGATE`) rimangono consentite agli utenti autorizzati per permettere l'ispezione diagnostica, l'audit dei file archiviati e la consultazione storica offline senza alcuna apertura di canali verso il robot.
+    - **Requisiti correlati**: RF-ROB-013, RF-SRVFS-001..007, §8.4.

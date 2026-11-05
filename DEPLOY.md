@@ -55,12 +55,13 @@ sudo chmod 700 /etc/moliris/certs
 
 ---
 
-## 3. Installazione dell'Applicazione
+## 3. Installazione e Compilazione dell'Applicazione
 
 Clonazione o copia del codice sorgente in `/opt/moliris/Moliris_Maintenance_Webapp_SRS`:
 ```bash
 cd /opt/moliris/Moliris_Maintenance_Webapp_SRS
-sudo npm ci --omit=dev
+sudo npm ci
+sudo npm run build
 sudo chown -R root:root /opt/moliris/Moliris_Maintenance_Webapp_SRS
 ```
 

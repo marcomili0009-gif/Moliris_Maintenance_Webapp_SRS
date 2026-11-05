@@ -358,6 +358,80 @@ export function registerTransferRoutes(
       }
     }
   );
+
+  // =========================================================================
+  // 8. BONIFICA FILE TEMPORANEI SUL ROBOT E SERVER (CA-TRF-005, RF-TRF-009)
+  // =========================================================================
+  app.post(
+    "/api/robots/:robotId/fs/cleanup-temp",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.FS_REMOTE_DELETE,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { robotId } = req.params as { robotId: string };
+      const robot = await robotRepository.findById(robotId);
+      if (!robot) {
+        return sendErrorReply(reply, 404, ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${robotId}' non trovato.`);
+      }
+
+      try {
+        const result = await transferService.purgeTempFilesForRobot(robot);
+        return reply.status(200).send({
+          success: true,
+          robotId: robot.id,
+          purgedCount: result.purgedCount,
+          freedBytes: result.freedBytes,
+          purgedFiles: result.purgedFiles,
+          message: `Bonifica completata: eliminati ${result.purgedCount} file temporanei orfani.`,
+        });
+      } catch (err: any) {
+        return handleRouteError(reply, err);
+      }
+    }
+  );
+
+  // =========================================================================
+  // 9. BONIFICA GLOBALE FILE TEMPORANEI DAPPERTUTTO (AMMINISTRATORE)
+  // =========================================================================
+  app.post(
+    "/api/fs/cleanup-temp-all",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(AppPermission.FLEET_VIEW),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      if (!req.molirisUser?.roles.includes("amministratore")) {
+        return sendErrorReply(
+          reply,
+          403,
+          ErrorCode.INSUFFICIENT_PERMISSIONS,
+          "Operazione consentita solo agli utenti con ruolo 'amministratore'."
+        );
+      }
+      try {
+        const result = await transferService.purgeAllTempFiles();
+        return reply.status(200).send({
+          success: true,
+          serverPurged: result.serverPurged,
+          serverFreedBytes: result.serverFreedBytes,
+          robotsPurged: result.robotsPurged,
+          robotsFreedBytes: result.robotsFreedBytes,
+          totalPurged: result.serverPurged + result.robotsPurged,
+          totalFreedBytes: result.serverFreedBytes + result.robotsFreedBytes,
+          details: result.details,
+          message: `Bonifica globale completata: eliminati ${result.serverPurged + result.robotsPurged} file temporanei.`,
+        });
+      } catch (err: any) {
+        return handleRouteError(reply, err);
+      }
+    }
+  );
 }
 
 function sendErrorReply(reply: FastifyReply, status: number, code: ErrorCode, message: string): FastifyReply {

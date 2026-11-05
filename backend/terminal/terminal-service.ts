@@ -436,7 +436,7 @@ export class TerminalService {
       return;
     }
 
-    // 3. Rifiuto di un secondo aggancio (RF-SSH-006)
+    // 3. Rifiuto atomico di un secondo aggancio (RF-SSH-006, check-and-set)
     if (session.hasHadSocket) {
       try {
         socket.send(JSON.stringify({ type: "error", message: "Riconnessione non consentita: la sessione terminale ha già avuto un collegamento WebSocket." }));
@@ -447,6 +447,7 @@ export class TerminalService {
 
     session.hasHadSocket = true;
     session.webSocket = socket;
+    session.drainIntervals = new Set();
 
     // STEP 2 – Streaming PROGRESSIVO dell'output dal PTY verso il WebSocket (CA-SSH-003, RNF-PERF-002)
     const onPtyData = (chunk: Buffer | string) => {
@@ -459,19 +460,22 @@ export class TerminalService {
           } catch {}
 
           const drainInterval = setInterval(() => {
-            if (socket.bufferedAmount === 0 || socket.readyState !== 1) {
+            if (socket.bufferedAmount === 0 || socket.readyState !== 1 || session.state !== "active") {
               clearInterval(drainInterval);
+              session.drainIntervals?.delete(drainInterval);
               try {
                 session.ptyChannel.resume();
               } catch {}
             }
           }, 30);
+          session.drainIntervals?.add(drainInterval);
         }
 
         socket.send(chunk);
       }
     };
 
+    session.onPtyData = onPtyData;
     session.ptyChannel.on("data", onPtyData);
 
     // STEP 2 – Input dal WebSocket verso il PTY (comandi, caratteri di controllo, resize)
@@ -597,6 +601,20 @@ export class TerminalService {
     if (session.pingTimer) {
       clearInterval(session.pingTimer);
       session.pingTimer = undefined;
+    }
+
+    if (session.drainIntervals) {
+      for (const t of session.drainIntervals) {
+        clearInterval(t);
+      }
+      session.drainIntervals.clear();
+    }
+
+    if (session.onPtyData) {
+      try {
+        session.ptyChannel.removeListener("data", session.onPtyData);
+      } catch {}
+      session.onPtyData = undefined;
     }
 
     session.state = "closing";

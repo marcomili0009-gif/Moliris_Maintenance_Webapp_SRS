@@ -110,7 +110,7 @@ function buildFleetTestEnvironment(overrides: Partial<SystemConfiguration> = {})
     DEFAULT_ROLE_PERMISSIONS
   );
 
-  return { cfg, repo, audit, serverFs, fleetService, fsRoot };
+  return { cfg, repo, audit, serverFs, fleetService, fsRoot, creds };
 }
 
 try {
@@ -728,7 +728,118 @@ try {
     console.log("    PASS: Test 10 completato con successo.");
   }
 
-  console.log("PASS: Tutti i 10 test di Unicità Flotta, Isolamento Filesystem e Hardening superati con successo.");
+  // =========================================================================
+  // TEST 11: Rollback credenziali su registrazione fallita in modalità rigorosa (CA-ROB-003, RNF-SEC-002)
+  // =========================================================================
+  {
+    console.log("  -> [Test 11] Rollback credenziali su verifica SSH fallita in modalità rigorosa (CA-ROB-003)...");
+    const { fleetService, creds } = buildFleetTestEnvironment({ registrationMode: "rigorosa" });
+
+    const regResult = await fleetService.registerRobot(adminUser, {
+      id: "robot-strict-fail",
+      displayName: "Robot Strict Fail",
+      remoteUsername: "strict_fail_user",
+      host: "192.0.2.1", // IP TEST-NET non raggiungibile
+      sshPort: 22,
+      sshAuthMethod: "password",
+      password: "TestPasswordOrphan123!",
+      hostKeyVerification: { fingerprint: "0".repeat(64) },
+    });
+
+    assert.strictEqual(regResult.outcome, "ssh_non_verificata");
+    assert.strictEqual(regResult.robot, undefined);
+
+    // Verifica che le credenziali siano state revocate dal CredentialProvider (nessun orfano)
+    let credsFound = false;
+    try {
+      await creds.getCredentials("vault://robots/robot-strict-fail", "password");
+      credsFound = true;
+    } catch {
+      credsFound = false;
+    }
+    assert.strictEqual(credsFound, false, "Le credenziali temporanee non devono persistere se la registrazione fallisce");
+    console.log("    PASS: Test 11 completato con successo.");
+  }
+
+  // =========================================================================
+  // TEST 12: Rollback credenziali su rifiuto directory preesistente (policy 'rifiuta')
+  // =========================================================================
+  {
+    console.log("  -> [Test 12] Rollback credenziali su rifiuto directory preesistente (policy 'rifiuta')...");
+    const { fleetService, creds, fsRoot } = buildFleetTestEnvironment({ existingDirectoryPolicy: "rifiuta" });
+
+    // Pre-crea la directory che causerebbe il conflitto
+    const conflictDir = path.join(fsRoot, "dir_reject_user_robot-dir-reject");
+    fs.mkdirSync(conflictDir, { recursive: true });
+
+    const regResult = await fleetService.registerRobot(adminUser, {
+      id: "robot-dir-reject",
+      displayName: "Robot Dir Reject",
+      remoteUsername: "dir_reject_user",
+      host: "127.0.0.1",
+      sshPort: 22,
+      sshAuthMethod: "password",
+      password: "TestPasswordReject123!",
+      hostKeyVerification: { fingerprint: "0".repeat(64) },
+    });
+
+    assert.strictEqual(regResult.outcome, "creazione_directory_fallita");
+
+    let credsFound = false;
+    try {
+      await creds.getCredentials("vault://robots/robot-dir-reject", "password");
+      credsFound = true;
+    } catch {
+      credsFound = false;
+    }
+    assert.strictEqual(credsFound, false, "Le credenziali non devono persistere se la directory viene rifiutata");
+    console.log("    PASS: Test 12 completato con successo.");
+  }
+
+  // =========================================================================
+  // TEST 13: Paginazione lista flotta listFleet (RNF-PERF-002, RNF-PERF-005)
+  // =========================================================================
+  {
+    console.log("  -> [Test 13] Paginazione lista flotta con limit e offset (RNF-PERF-002)...");
+    const { fleetService, repo } = buildFleetTestEnvironment();
+
+    for (let i = 1; i <= 5; i++) {
+      await repo.create({
+        id: `robot-page-${i}`,
+        displayName: `Robot Page ${i}`,
+        remoteUsername: `page_user_${i}`,
+        host: `127.0.0.${i}`,
+        sshPort: 22,
+        sshAuthMethod: "password",
+        credentialReference: `vault://robots/robot-page-${i}`,
+        hostKeyVerification: { fingerprint: "0".repeat(64) },
+        stateFilePaths: ["/tmp/status.txt"],
+        serverDirectoryPath: `/tmp/robots/page_user_${i}_robot-page-${i}`,
+        anagraphicState: "attivo",
+        connectionState: "raggiungibile",
+        registrationState: "registrazione_completata",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as any);
+    }
+
+    const all = await fleetService.listFleet(adminUser);
+    assert.strictEqual(all.length >= 5, true);
+
+    const page1 = await fleetService.listFleet(adminUser, { limit: 2, offset: 0 });
+    assert.strictEqual(page1.length, 2);
+
+    const page2 = await fleetService.listFleet(adminUser, { limit: 2, offset: 2 });
+    assert.strictEqual(page2.length, 2);
+    assert.notStrictEqual(page1[0].id, page2[0].id);
+
+    const pageEnd = await fleetService.listFleet(adminUser, { limit: 10, offset: 100 });
+    assert.strictEqual(pageEnd.length, 0);
+
+    console.log("    PASS: Test 13 completato con successo.");
+  }
+
+  console.log("PASS: Tutti i test di Unicità Flotta, Isolamento Filesystem e Hardening superati con successo.");
 } finally {
   try {
     fs.rmSync(tmpBase, { recursive: true, force: true });

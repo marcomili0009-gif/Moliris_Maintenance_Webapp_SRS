@@ -43,11 +43,13 @@ export class SessionManager {
   private readonly absoluteTimeoutMs?: number;
   private expiryTimer: NodeJS.Timeout | null = null;
 
+  constructor(inactiveMinutes?: number, absoluteMinutes?: number);
+  constructor(userRepo: unknown, auditRepo: unknown, inactiveMinutes: number, logger?: unknown);
   constructor(
-    arg1: any,
-    arg2?: any,
-    arg3?: any,
-    arg4?: any
+    arg1?: number | unknown,
+    arg2?: number | unknown,
+    arg3?: number,
+    arg4?: unknown
   ) {
     let inactiveMinutes = 30;
     let absoluteMinutes: number | undefined = undefined;

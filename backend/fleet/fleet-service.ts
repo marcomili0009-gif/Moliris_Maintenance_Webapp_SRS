@@ -38,6 +38,7 @@ import {
   toRobotSummaryDto,
   toRobotDetailDto,
 } from "../../storage/dto/robot-dto.ts";
+import { type TerminalService } from "../terminal/terminal-service.ts";
 
 export class FleetService {
   private config: SystemConfiguration;
@@ -51,7 +52,7 @@ export class FleetService {
   private logger: MolirisLogger;
   private roleMapping: RolePermissionMapping;
   private directoryNamingPolicy: StandardRobotDirectoryNamingPolicy;
-  private terminalService?: any;
+  private terminalService?: TerminalService;
 
   constructor(
     config: SystemConfiguration,
@@ -63,7 +64,7 @@ export class FleetService {
     connectionManager: RobotConnectionManager,
     logger: MolirisLogger,
     roleMapping: RolePermissionMapping = DEFAULT_ROLE_PERMISSIONS,
-    terminalService?: any
+    terminalService?: TerminalService
   ) {
     this.config = config;
     this.robotRepository = robotRepository;
@@ -191,11 +192,11 @@ export class FleetService {
    * I robot disabilitati compaiono con stato "disabilitato".
    * I robot non raggiungibili compaiono con stato appropriato (mai nascosti o eliminati).
    */
-  public async listFleet(user: UserEntity): Promise<RobotSummaryDto[]> {
+  public async listFleet(user: UserEntity, pagination?: { limit?: number; offset?: number }): Promise<RobotSummaryDto[]> {
     // Verifica autorizzazione generale FLEET_VIEW
     const allRobots = await this.robotRepository.list();
 
-    const visibleRobots: RobotSummaryDto[] = [];
+    let visibleRobots: RobotSummaryDto[] = [];
     for (const robot of allRobots) {
       // Esclusione robot rimossi dalla lista attiva (RF-ROB-014, CA-ROB-012)
       if (robot.anagraphicState === "rimosso") {
@@ -205,6 +206,17 @@ export class FleetService {
       // Filtro per robot visibili secondo i permessi specifici dell'utente (Prompt 3)
       if (hasPermission(user, AppPermission.FLEET_VIEW, robot.id, this.roleMapping)) {
         visibleRobots.push(toRobotSummaryDto(robot, this.config.staleDataThresholdSeconds));
+      }
+    }
+
+    // Paginazione e limite configurabile (RNF-PERF-002, RNF-PERF-005)
+    if (pagination) {
+      const offset = pagination.offset && pagination.offset > 0 ? pagination.offset : 0;
+      const limit = pagination.limit && pagination.limit > 0 ? pagination.limit : undefined;
+      if (limit !== undefined) {
+        visibleRobots = visibleRobots.slice(offset, offset + limit);
+      } else if (offset > 0) {
+        visibleRobots = visibleRobots.slice(offset);
       }
     }
 
@@ -446,35 +458,22 @@ export class FleetService {
     const host = validation.normalizedHost!;
     const sshPort = validation.normalizedPort!;
 
-    // Risoluzione credenziali: memorizzazione sicura nel CredentialProvider
-    const credentialRef = input.credentialReference || `vault://robots/${input.id.trim()}`;
+    // Risoluzione credenziali: memorizzazione sicura nel CredentialProvider (RF-ROB-005, RNF-SEC-002)
+    let storedCredentialRef: string | undefined;
     if (input.sshAuthMethod === "password" && input.password) {
-      if (typeof this.credentialProvider.store === "function") {
-        await this.credentialProvider.store(input.id.trim(), {
-          method: "password",
-          password: input.password,
-        });
-      } else if ("registerSecret" in this.credentialProvider) {
-        (this.credentialProvider as any).registerSecret(credentialRef, {
-          method: "password",
-          password: input.password,
-        });
-      }
+      storedCredentialRef = await this.credentialProvider.store(input.id.trim(), {
+        method: "password",
+        password: input.password,
+      });
     } else if (input.sshAuthMethod === "key" && input.privateKey) {
-      if (typeof this.credentialProvider.store === "function") {
-        await this.credentialProvider.store(input.id.trim(), {
-          method: "key",
-          privateKey: input.privateKey,
-          passphrase: input.passphrase,
-        });
-      } else if ("registerSecret" in this.credentialProvider) {
-        (this.credentialProvider as any).registerSecret(credentialRef, {
-          method: "key",
-          privateKey: input.privateKey,
-          passphrase: input.passphrase,
-        });
-      }
+      storedCredentialRef = await this.credentialProvider.store(input.id.trim(), {
+        method: "key",
+        privateKey: input.privateKey,
+        passphrase: input.passphrase,
+      });
     }
+
+    const credentialRef = storedCredentialRef || input.credentialReference || `vault://robots/${input.id.trim()}`;
 
     // Risoluzione del percorso della directory server del robot (RF-ROB-008, §8.2)
     const serverDirectoryPath = this.directoryNamingPolicy.resolveDirectoryPath(
@@ -486,6 +485,9 @@ export class FleetService {
     const directoryPreexisting = fs.existsSync(serverDirectoryPath);
 
     if (this.config.existingDirectoryPolicy === "rifiuta" && directoryPreexisting) {
+      if (storedCredentialRef) {
+        await this.credentialProvider.remove(input.id.trim()).catch(() => {});
+      }
       skippedActions.push("fase1_persistenza_transitoria_database", "fase2_creazione_directory", "verifica_connessione_ssh");
       await this.recordAudit(user.username, AuditOperation.ROBOT_REGISTRATION, input.id.trim(), "FAILURE", {
         reason: "EXISTING_DIRECTORY_REJECTED",
@@ -605,6 +607,9 @@ export class FleetService {
     // Gestione modalità di registrazione (§8.1, CA-ROB-003):
     // Se "rigorosa", la registrazione DEVE fallire se i controlli SSH non hanno esito positivo
     if (this.config.registrationMode === "rigorosa" && !sshVerificationSucceeded) {
+      if (storedCredentialRef) {
+        await this.credentialProvider.remove(candidateRobot.id).catch(() => {});
+      }
       skippedActions.push("creazione_directory", "persistenza_database");
       await this.recordAudit(user.username, AuditOperation.ROBOT_REGISTRATION, candidateRobot.id, "FAILURE", {
         mode: "rigorosa",
@@ -641,6 +646,9 @@ export class FleetService {
     try {
       candidateSaved = await this.robotRepository.create(candidateRobot);
     } catch (dbErr: any) {
+      if (storedCredentialRef) {
+        await this.credentialProvider.remove(candidateRobot.id).catch(() => {});
+      }
       this.logger.error("Errore salvataggio transitorio database in registrazione", dbErr.message, { robotId: candidateRobot.id });
       throw new MolirisAppError(
         ErrorCode.DB_PERSISTENCE_ERROR,
@@ -965,38 +973,23 @@ export class FleetService {
       }
     }
 
-    // Aggiornamento credenziali nel CredentialProvider se fornite
+    // Aggiornamento credenziali nel CredentialProvider se fornite (RNF-SEC-002, RF-ROB-005)
     let credentialRef = robot.credentialReference;
     if (update.password) {
       connectionInvalidated = true;
       credentialRef = update.credentialReference || `vault://robots/${robot.id}`;
-      if (typeof this.credentialProvider.replace === "function") {
-        await this.credentialProvider.replace(robot.id, {
-          method: "password",
-          password: update.password,
-        });
-      } else if ("registerSecret" in this.credentialProvider) {
-        (this.credentialProvider as any).registerSecret(credentialRef, {
-          method: "password",
-          password: update.password,
-        });
-      }
+      await this.credentialProvider.replace(robot.id, {
+        method: "password",
+        password: update.password,
+      });
     } else if (update.privateKey) {
       connectionInvalidated = true;
       credentialRef = update.credentialReference || `vault://robots/${robot.id}`;
-      if (typeof this.credentialProvider.replace === "function") {
-        await this.credentialProvider.replace(robot.id, {
-          method: "key",
-          privateKey: update.privateKey,
-          passphrase: update.passphrase,
-        });
-      } else if ("registerSecret" in this.credentialProvider) {
-        (this.credentialProvider as any).registerSecret(credentialRef, {
-          method: "key",
-          privateKey: update.privateKey,
-          passphrase: update.passphrase,
-        });
-      }
+      await this.credentialProvider.replace(robot.id, {
+        method: "key",
+        privateKey: update.privateKey,
+        passphrase: update.passphrase,
+      });
     }
 
     // Aggiornamento impronta chiave host SSH (RNF-SEC-003, §8.3)

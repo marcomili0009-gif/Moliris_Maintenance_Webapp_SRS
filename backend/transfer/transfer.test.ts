@@ -827,6 +827,52 @@ fs.writeFileSync(validPreexistingServerPath, "VALID_SERVER_PREEXISTING_DATA_ORIG
 }
 
 // =========================================================================
+// TEST 11bis: RF-TRF-010 - Ripresa dei trasferimenti interrotti
+// =========================================================================
+{
+  const resumeConfig: SystemConfiguration = {
+    ...testConfig,
+    transferResumeEnabled: true,
+  };
+  const resumeTransferService = new TransferService(
+    resumeConfig,
+    robotRepo,
+    serverFsService,
+    remoteFsService,
+    sessionManager,
+    auditRepo,
+    logger,
+    DEFAULT_ROLE_PERMISSIONS,
+    undefined,
+    connectionManager
+  );
+
+  const fullData = Buffer.from("DATI_COMPLETI_DI_PROVA_PER_RIPRESA_TRASFERIMENTO_RF_TRF_010");
+  const sourceFile = "resume_test_source.bin";
+  const sourcePath = path.join(testRobot.serverDirectoryPath, sourceFile);
+  fs.writeFileSync(sourcePath, fullData);
+
+  // Esecuzione trasferimento con ripresa abilitata
+  const resDto = await resumeTransferService.executeServerRobotTransfer(
+    contextAuth,
+    testRobot,
+    {
+      direction: "SERVER_TO_ROBOT",
+      serverRelativePath: sourceFile,
+      remotePath: "resume_test_dest.bin",
+      overwrite: true,
+    }
+  );
+
+  assert.strictEqual(resDto.status, TransferStatus.COMPLETED);
+  assert.strictEqual(resDto.transferredBytes, fullData.length);
+  assert.strictEqual(resDto.totalBytes, fullData.length);
+
+  fs.unlinkSync(sourcePath);
+  console.log("  PASS: RF-TRF-010 - Ripresa trasferimenti interrotti verificata con successo.");
+}
+
+// =========================================================================
 // TEST 12: Endpoint REST Backend e Fastify Integration (RF-TRF-001..003)
 // =========================================================================
 {

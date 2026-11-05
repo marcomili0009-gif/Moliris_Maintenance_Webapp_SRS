@@ -13,6 +13,7 @@ import { type RobotEntity } from "../../storage/robot-models.ts";
 import { type RobotRepository } from "../../storage/robot-repository.ts";
 import { type ServerFilesystemService } from "../../storage/server-fs.ts";
 import { type RemoteFilesystemService } from "../remote-fs/remote-fs-service.ts";
+import { type RobotConnectionManager, type ManagedRobotConnection } from "../connection/robot-connection-manager.ts";
 import { type SessionManager, type AuthorizedContext } from "../auth/session-manager.ts";
 import { AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "../auth/permissions.ts";
 import { type AuditRepository } from "../../storage/audit-repository.ts";
@@ -37,11 +38,15 @@ export class TransferService {
   private robotRepository: RobotRepository;
   private serverFsService: ServerFilesystemService;
   private remoteFsService: RemoteFilesystemService;
+  private connectionManager: RobotConnectionManager;
   private sessionManager: SessionManager;
   private auditRepository: AuditRepository;
   private roleMapping: RolePermissionMapping;
   private logger: MolirisLogger;
   private checksumAlgorithm: IChecksumAlgorithm;
+
+  // Blocco anti-corsa TOCTOU su percorsi destinazione (RNF-FS-003, RF-TRF-011)
+  private activeDestinationLocks: Set<string> = new Set();
 
   // Registro in memoria dei trasferimenti attivi e recenti (RF-TRF-006, RNF-SEC-007)
   private transfers: Map<string, TransferRecord> = new Map();
@@ -75,12 +80,14 @@ export class TransferService {
     auditRepository: AuditRepository,
     logger: MolirisLogger,
     roleMapping: RolePermissionMapping = DEFAULT_ROLE_PERMISSIONS,
-    customChecksumAlgo?: IChecksumAlgorithm
+    customChecksumAlgo?: IChecksumAlgorithm,
+    connectionManager?: RobotConnectionManager
   ) {
     this.config = config;
     this.robotRepository = robotRepository;
     this.serverFsService = serverFsService;
     this.remoteFsService = remoteFsService;
+    this.connectionManager = connectionManager || remoteFsService.getConnectionManager();
     this.sessionManager = sessionManager;
     this.auditRepository = auditRepository;
     this.roleMapping = roleMapping;
@@ -123,6 +130,21 @@ export class TransferService {
     return this.config.transferChunkSizeBytes || 2 * 1024 * 1024;
   }
 
+  private acquireDestinationLock(lockKey: string): void {
+    if (this.activeDestinationLocks.has(lockKey)) {
+      throw new MolirisAppError(
+        ErrorCode.TRANSFER_INTERRUPTED,
+        `Trasferimento concorrente sullo stesso percorso di destinazione già in corso: ${lockKey}`,
+        "Un trasferimento verso la stessa destinazione è già in corso. Attendi il completamento prima di riprovare."
+      );
+    }
+    this.activeDestinationLocks.add(lockKey);
+  }
+
+  private releaseDestinationLock(lockKey: string): void {
+    this.activeDestinationLocks.delete(lockKey);
+  }
+
   // =========================================================================
   // DIREZIONE A: Computer Utente ↔ Filesystem Server (§6.5, RF-TRF-001, CA-FS-002)
   // =========================================================================
@@ -162,6 +184,9 @@ export class TransferService {
 
     // 4. Acquisizione slot concorrenza (RF-TRF-012, RNF-PERF-003, CA-TRF-007)
     await this.acquireTransferSlot(context.userId, robot.id);
+
+    const destLockKey = `server:${robot.id}:${targetRelative}`;
+    this.acquireDestinationLock(destLockKey);
 
     let record: TransferRecord | null = null;
     try {
@@ -276,6 +301,7 @@ export class TransferService {
         record?.error || "Trasferimento file interrotto prima del completamento."
       );
     } finally {
+      this.releaseDestinationLock(destLockKey);
       this.releaseTransferSlot(context.userId, robot.id);
     }
   }
@@ -470,53 +496,69 @@ export class TransferService {
 
     await this.acquireTransferSlot(context.userId, robot.id);
 
+    const destLockKey = `robot:${robot.id}:${req.remotePath}`;
+    this.acquireDestinationLock(destLockKey);
+
+    let managedConn: ManagedRobotConnection | null = null;
     let record: TransferRecord | null = null;
     try {
       const transferId = crypto.randomUUID();
       const filename = path.basename(sourceServerPath);
 
-      // Risoluzione preventiva del percorso di destinazione definitivo (RF-FS-007, RF-TRF-009)
-      const initConn = await (this.remoteFsService as any).connectionManager.acquireConnection(context.username, robot);
-      let finalResolvedRemote: string;
-      try {
-        const sftp = await initConn.getSftpClient();
-        await this.processPendingCleanupsForRobot(robot.id, sftp);
-        finalResolvedRemote = await this.remoteFsService.resolveAndValidatePath(req.remotePath, context, robot, sftp);
+      // Riutilizzo di UNA sola connessione SSH/SFTP per l'intero ciclo del trasferimento (§6.6, RNF-PERF-001)
+      managedConn = await this.connectionManager.acquireConnection(context.username, robot);
+      const sftp = await managedConn.getSftpClient();
+      await this.processPendingCleanupsForRobot(robot.id, sftp);
+      const finalResolvedRemote = await this.remoteFsService.resolveAndValidatePath(req.remotePath, context, robot, sftp);
 
-        // Controllo anti-corsa TOCTOU preventivo prima dell'avvio della scrittura (Problema A3)
-        const initialExists = await new Promise<boolean>((resolve) => {
-          sftp.stat(finalResolvedRemote, (err: any) => resolve(!err));
-        });
-        if (initialExists) {
-          const policy = this.config.transferOverwritePolicy || "richiedi_conferma";
-          if (policy === "rifiuta") {
-            throw new MolirisAppError(
-              ErrorCode.REMOTE_FS_ERROR,
-              `File remoto finale già esistente: ${finalResolvedRemote}`,
-              "File di destinazione sul robot già esistente. Sovrascrittura categoricamente non consentita dalla politica di sistema."
-            );
-          }
-          if (policy !== "sovrascrivi" && req.overwrite !== true) {
-            throw new MolirisAppError(
-              ErrorCode.REMOTE_FS_ERROR,
-              `File remoto finale già esistente: ${finalResolvedRemote}`,
-              "File di destinazione sul robot già esistente. Sovrascrittura non consentita senza conferma esplicita."
-            );
-          }
+      // Controllo anti-corsa TOCTOU preventivo prima dell'avvio della scrittura (Problema A3)
+      const initialExists = await new Promise<boolean>((resolve) => {
+        sftp.stat(finalResolvedRemote, (err: any) => resolve(!err));
+      });
+      if (initialExists) {
+        const policy = this.config.transferOverwritePolicy || "richiedi_conferma";
+        if (policy === "rifiuta") {
+          throw new MolirisAppError(
+            ErrorCode.REMOTE_FS_ERROR,
+            `File remoto finale già esistente: ${finalResolvedRemote}`,
+            "File di destinazione sul robot già esistente. Sovrascrittura categoricamente non consentita dalla politica di sistema."
+          );
         }
-
-        // Controllo preventivo spazio su disco robot (Problema A4)
-        const remoteTargetDir = path.posix.dirname(finalResolvedRemote);
-        await this.checkRobotDiskSpace(sftp, remoteTargetDir, stat.size, robot.id);
-      } finally {
-        await initConn.close();
+        if (policy !== "sovrascrivi" && req.overwrite !== true) {
+          throw new MolirisAppError(
+            ErrorCode.REMOTE_FS_ERROR,
+            `File remoto finale già esistente: ${finalResolvedRemote}`,
+            "File di destinazione sul robot già esistente. Sovrascrittura non consentita senza conferma esplicita."
+          );
+        }
       }
 
+      // Controllo preventivo spazio su disco robot (Problema A4)
       const remoteTargetDir = path.posix.dirname(finalResolvedRemote);
+      await this.checkRobotDiskSpace(sftp, remoteTargetDir, stat.size, robot.id);
+
       const remoteTempPath = path.posix.join(
         remoteTargetDir,
         `.tmp_moliris_${transferId}.tmp`
       );
+
+      // RF-TRF-010: Ripresa trasferimenti interrotti (opzionale se abilitata)
+      let startOffset = 0;
+      let writeFlags: "w" | "a" = "w";
+      if (this.config.transferResumeEnabled) {
+        const existingTempStat = await new Promise<any>((resolve) => {
+          sftp.stat(remoteTempPath, (err: any, st: any) => resolve(err ? null : st));
+        });
+        if (existingTempStat && existingTempStat.size > 0 && existingTempStat.size < stat.size) {
+          startOffset = existingTempStat.size;
+          writeFlags = "a";
+          this.logger.info("Ripresa trasferimento server->robot attivata (RF-TRF-010)", {
+            robotId: robot.id,
+            offset: startOffset,
+            totalBytes: stat.size,
+          });
+        }
+      }
 
       record = {
         transferId,
@@ -529,7 +571,7 @@ export class TransferService {
         destinationPath: req.remotePath,
         tempDestinationPath: remoteTempPath,
         totalBytes: stat.size,
-        transferredBytes: 0,
+        transferredBytes: startOffset,
         speedBytesPerSec: null,
         etaSeconds: null,
         status: TransferStatus.IN_PROGRESS,
@@ -538,7 +580,7 @@ export class TransferService {
         checksumAlgorithm: this.checksumAlgorithm.name,
         startedAt: new Date(),
         lastProgressUpdateAt: Date.now(),
-        lastBytesAtUpdate: 0,
+        lastBytesAtUpdate: startOffset,
         abortController: new AbortController(),
         cleanupHandlers: [],
       };
@@ -546,36 +588,22 @@ export class TransferService {
       this.transfers.set(transferId, record);
       await this.recordAuditStart(record);
 
-      let remoteWriteHandle: any = null;
-      let sftpClient: any = null;
-
-      // Apertura stream di lettura locale
       const localReadStream = fs.createReadStream(sourceServerPath, {
+        start: startOffset,
         highWaterMark: this.getChunkSize(),
       });
 
-      // Apertura stream di scrittura remoto tramite SFTP (Prompt 9, RF-FS-005)
-      remoteWriteHandle = await this.remoteFsService.openRemoteWriteStream(
-        context,
-        robot,
-        remoteTempPath,
-        { overwrite: true }
-      );
+      const remoteWriteStream = sftp.createWriteStream(remoteTempPath, {
+        flags: writeFlags,
+        autoClose: true,
+        highWaterMark: this.getChunkSize(),
+      });
 
       record.cleanupHandlers.push(async () => {
         try { localReadStream.destroy(); } catch {}
-        if (remoteWriteHandle) {
-          try { await remoteWriteHandle.cleanup(); } catch {}
-          remoteWriteHandle = null;
-        }
+        try { remoteWriteStream.destroy(); } catch {}
         try {
-          const cleanupConn = await (this.remoteFsService as any).connectionManager.acquireConnection(context.username, robot);
-          try {
-            const sftp = await cleanupConn.getSftpClient();
-            await this.safeUnlinkRobotFile(sftp, robot.id, remoteTempPath);
-          } finally {
-            await cleanupConn.close();
-          }
+          await this.safeUnlinkRobotFile(sftp, robot.id, remoteTempPath);
         } catch {
           this.recordPendingCleanup(robot.id, remoteTempPath);
         }
@@ -583,67 +611,56 @@ export class TransferService {
 
       await this.streamWithTrackingAndChecksum(
         localReadStream,
-        remoteWriteHandle.stream,
+        remoteWriteStream,
         record,
-        req.expectedChecksum
+        req.expectedChecksum,
+        startOffset
       );
 
-      // Chiusura ordinata dello stream di scrittura per flush dei buffer remoti
-      await remoteWriteHandle.cleanup();
-      remoteWriteHandle = null;
-
-      // Promozione atomica e verifiche sul robot (RF-TRF-009, Problema A1, A2)
-      const managedConn = await (this.remoteFsService as any).connectionManager.acquireConnection(context.username, robot);
-      try {
-        sftpClient = await managedConn.getSftpClient();
-
-        // 1. Verifica integrità base (Problema A1 punto a): stat su disco robot
-        const remoteStat = await new Promise<any>((resolve, reject) => {
-          sftpClient.stat(remoteTempPath, (err: any, st: any) => {
-            if (err) return reject((this.remoteFsService as any).mapSftpError(err, remoteTempPath, robot.id));
-            resolve(st);
-          });
+      // 1. Verifica integrità base sulla STESSA sftp
+      const remoteStat = await new Promise<any>((resolve, reject) => {
+        sftp.stat(remoteTempPath, (err: any, st: any) => {
+          if (err) return reject(this.remoteFsService.mapSftpError(err, remoteTempPath, robot.id));
+          resolve(st);
         });
+      });
 
-        if (remoteStat.size !== record.transferredBytes) {
-          await this.safeUnlinkRobotFile(sftpClient, robot.id, remoteTempPath);
+      if (remoteStat.size !== record.transferredBytes) {
+        await this.safeUnlinkRobotFile(sftp, robot.id, remoteTempPath);
+        record.status = TransferStatus.INTEGRITY_FAILED;
+        throw new MolirisAppError(
+          ErrorCode.INTEGRITY_CHECK_FAILED,
+          `Verifica integrità fallita: dimensione sul robot (${remoteStat.size}) diversa dai byte trasferiti (${record.transferredBytes})`,
+          "Verifica di integrità del file trasferito fallita."
+        );
+      }
+
+      // 2. Verifica estesa readback opzionale
+      const isReadback = this.config.transferVerifyMode === "readback";
+      if (isReadback) {
+        const readbackDigest = await this.computeRemoteFileDigest(sftp, remoteTempPath);
+        if (readbackDigest.toLowerCase() !== (record.computedChecksum || "").toLowerCase()) {
+          await this.safeUnlinkRobotFile(sftp, robot.id, remoteTempPath);
           record.status = TransferStatus.INTEGRITY_FAILED;
           throw new MolirisAppError(
             ErrorCode.INTEGRITY_CHECK_FAILED,
-            `Verifica integrità fallita: dimensione sul robot (${remoteStat.size}) diversa dai byte trasferiti (${record.transferredBytes})`,
+            `Verifica integrità readback fallita sul robot: atteso ${record.computedChecksum}, calcolato ${readbackDigest}`,
             "Verifica di integrità del file trasferito fallita."
           );
         }
-
-        // 2. Verifica estesa readback opzionale (Problema A1 punto b)
-        const isReadback = this.config.transferVerifyMode === "readback";
-        if (isReadback) {
-          const readbackDigest = await this.computeRemoteFileDigest(sftpClient, remoteTempPath);
-          if (readbackDigest.toLowerCase() !== (record.computedChecksum || "").toLowerCase()) {
-            await this.safeUnlinkRobotFile(sftpClient, robot.id, remoteTempPath);
-            record.status = TransferStatus.INTEGRITY_FAILED;
-            throw new MolirisAppError(
-              ErrorCode.INTEGRITY_CHECK_FAILED,
-              `Verifica integrità readback fallita sul robot: atteso ${record.computedChecksum}, calcolato ${readbackDigest}`,
-              "Verifica di integrità del file trasferito fallita."
-            );
-          }
-        }
-
-        // 3. Sostituzione atomica e controllo anti-corsa TOCTOU prima della promozione (Problema A2, A3)
-        await this.promoteRemoteTempFile(sftpClient, remoteTempPath, finalResolvedRemote, req.overwrite === true, robot.id);
-
-        record.integrityLabel = isReadback
-          ? "completato — digest + dimensione verificata e readback remoto"
-          : "completato — digest + dimensione verificata sul robot";
-        record.integrityVerification = {
-          verified: true,
-          mode: isReadback ? "readback" : "stream",
-          label: record.integrityLabel,
-        };
-      } finally {
-        await managedConn.close();
       }
+
+      // 3. Sostituzione atomica e controllo anti-corsa TOCTOU prima della promozione sulla STESSA sftp
+      await this.promoteRemoteTempFile(sftp, remoteTempPath, finalResolvedRemote, req.overwrite === true, robot.id);
+
+      record.integrityLabel = isReadback
+        ? "completato — digest + dimensione verificata e readback remoto"
+        : "completato — digest + dimensione verificata sul robot";
+      record.integrityVerification = {
+        verified: true,
+        mode: isReadback ? "readback" : "stream",
+        label: record.integrityLabel,
+      };
 
       record.status = TransferStatus.COMPLETED;
       record.completedAt = new Date();
@@ -661,6 +678,10 @@ export class TransferService {
         record?.error || "Trasferimento file interrotto prima del completamento."
       );
     } finally {
+      if (managedConn) {
+        try { await managedConn.close(); } catch {}
+      }
+      this.releaseDestinationLock(destLockKey);
       this.releaseTransferSlot(context.userId, robot.id);
     }
   }
@@ -696,6 +717,16 @@ export class TransferService {
     } else {
       const norm = path.posix.normalize(req.serverRelativePath.trim());
       const fullCandidate = path.resolve(robot.serverDirectoryPath, norm);
+      const expectedPrefix = robot.serverDirectoryPath.endsWith(path.sep)
+        ? robot.serverDirectoryPath
+        : robot.serverDirectoryPath + path.sep;
+      if (fullCandidate !== robot.serverDirectoryPath && !fullCandidate.startsWith(expectedPrefix)) {
+        throw new MolirisAppError(
+          ErrorCode.SECURITY_VIOLATION,
+          `Tentativo di path traversal rilevato nel percorso server: ${redactSensitiveData(norm)}`,
+          "Percorso specificato non valido: accesso al di fuori della cartella del robot non consentito."
+        );
+      }
       if (norm.endsWith("/") || (fs.existsSync(fullCandidate) && fs.statSync(fullCandidate).isDirectory())) {
         targetServerRelative = path.posix.join(norm, safeFilename);
       } else {
@@ -715,11 +746,30 @@ export class TransferService {
 
     await this.acquireTransferSlot(context.userId, robot.id);
 
+    const destLockKey = `server:${robot.id}:${targetServerRelative}`;
+    this.acquireDestinationLock(destLockKey);
+
     let record: TransferRecord | null = null;
     try {
       const transferId = crypto.randomUUID();
       const tempDir = await this.serverFsService.ensureTempDirectory(robot);
       const tempFilePath = path.join(tempDir, `transfer_${transferId}.tmp`);
+
+      // RF-TRF-010: Ripresa trasferimenti interrotti (se abilitata)
+      let startOffset = 0;
+      let writeFlags: "w" | "a" = "w";
+      if (this.config.transferResumeEnabled && fs.existsSync(tempFilePath)) {
+        const existingStat = await fs.promises.stat(tempFilePath);
+        if (existingStat.size > 0 && remoteStats.size !== null && existingStat.size < remoteStats.size) {
+          startOffset = existingStat.size;
+          writeFlags = "a";
+          this.logger.info("Ripresa trasferimento robot->server attivata (RF-TRF-010)", {
+            robotId: robot.id,
+            offset: startOffset,
+            totalBytes: remoteStats.size,
+          });
+        }
+      }
 
       record = {
         transferId,
@@ -732,7 +782,7 @@ export class TransferService {
         destinationPath: targetServerRelative,
         tempDestinationPath: tempFilePath,
         totalBytes: remoteStats.size,
-        transferredBytes: 0,
+        transferredBytes: startOffset,
         speedBytesPerSec: null,
         etaSeconds: null,
         status: TransferStatus.IN_PROGRESS,
@@ -741,7 +791,7 @@ export class TransferService {
         checksumAlgorithm: this.checksumAlgorithm.name,
         startedAt: new Date(),
         lastProgressUpdateAt: Date.now(),
-        lastBytesAtUpdate: 0,
+        lastBytesAtUpdate: startOffset,
         abortController: new AbortController(),
         cleanupHandlers: [],
       };
@@ -752,25 +802,30 @@ export class TransferService {
       let remoteReadHandle: any = null;
       const tempWriteStream = fs.createWriteStream(tempFilePath, {
         mode: 0o700,
-        flags: "w",
+        flags: writeFlags,
         highWaterMark: this.getChunkSize(),
       });
 
       record.cleanupHandlers.push(async () => {
         try { tempWriteStream.destroy(); } catch {}
-        try { if (fs.existsSync(tempFilePath)) await fs.promises.unlink(tempFilePath); } catch {}
+        try {
+          if (fs.existsSync(tempFilePath)) await fs.promises.unlink(tempFilePath);
+        } catch {}
         if (remoteReadHandle) {
           try { await remoteReadHandle.cleanup(); } catch {}
         }
       });
 
-      remoteReadHandle = await this.remoteFsService.openRemoteReadStream(context, robot, req.remotePath);
+      remoteReadHandle = await this.remoteFsService.openRemoteReadStream(context, robot, req.remotePath, {
+        start: startOffset,
+      });
 
       await this.streamWithTrackingAndChecksum(
         remoteReadHandle.stream,
         tempWriteStream,
         record,
-        req.expectedChecksum
+        req.expectedChecksum,
+        startOffset
       );
 
       await remoteReadHandle.cleanup();
@@ -838,6 +893,7 @@ export class TransferService {
         record?.error || "Trasferimento file interrotto prima del completamento."
       );
     } finally {
+      this.releaseDestinationLock(destLockKey);
       this.releaseTransferSlot(context.userId, robot.id);
     }
   }
@@ -871,53 +927,53 @@ export class TransferService {
 
     await this.acquireTransferSlot(context.userId, robot.id);
 
+    const destLockKey = `robot:${robot.id}:${remoteDirectoryPath}/${safeFilename}`;
+    this.acquireDestinationLock(destLockKey);
+
+    let managedConn: ManagedRobotConnection | null = null;
     let record: TransferRecord | null = null;
     try {
       const transferId = crypto.randomUUID();
 
-      // Risoluzione preventiva del percorso di destinazione sul robot
-      const initConn = await (this.remoteFsService as any).connectionManager.acquireConnection(context.username, robot);
-      let finalResolvedRemote: string;
-      try {
-        const sftp = await initConn.getSftpClient();
-        await this.processPendingCleanupsForRobot(robot.id, sftp);
-        const targetBase = remoteDirectoryPath === "." ? "" : remoteDirectoryPath;
-        finalResolvedRemote = await this.remoteFsService.resolveAndValidatePath(
-          path.posix.join(targetBase, safeFilename),
-          context,
-          robot,
-          sftp
-        );
+      // Riutilizzo di UNA sola connessione SSH/SFTP per l'intero ciclo del caricamento client->robot (§6.7, RNF-PERF-001)
+      managedConn = await this.connectionManager.acquireConnection(context.username, robot);
+      const sftp = await managedConn.getSftpClient();
+      await this.processPendingCleanupsForRobot(robot.id, sftp);
 
-        // Controllo anti-corsa TOCTOU preventivo prima dell'avvio dello streaming (Problema A3)
-        const initialExists = await new Promise<boolean>((resolve) => {
-          sftp.stat(finalResolvedRemote, (err: any) => resolve(!err));
-        });
-        if (initialExists) {
-          const policy = this.config.transferOverwritePolicy || "richiedi_conferma";
-          if (policy === "rifiuta") {
-            throw new MolirisAppError(
-              ErrorCode.REMOTE_FS_ERROR,
-              `File remoto finale già esistente: ${finalResolvedRemote}`,
-              "File di destinazione sul robot già esistente. Sovrascrittura categoricamente non consentita dalla politica di sistema."
-            );
-          }
-          if (policy !== "sovrascrivi" && options?.overwrite !== true) {
-            throw new MolirisAppError(
-              ErrorCode.REMOTE_FS_ERROR,
-              `File remoto finale già esistente: ${finalResolvedRemote}`,
-              "File di destinazione sul robot già esistente. Sovrascrittura non consentita senza conferma esplicita."
-            );
-          }
-        }
+      const targetBase = remoteDirectoryPath === "." ? "" : remoteDirectoryPath;
+      const finalResolvedRemote = await this.remoteFsService.resolveAndValidatePath(
+        path.posix.join(targetBase, safeFilename),
+        context,
+        robot,
+        sftp
+      );
 
-        // Controllo preventivo spazio su disco robot (Problema A4)
-        if (totalBytes && totalBytes > 0) {
-          const remoteTargetDir = path.posix.dirname(finalResolvedRemote);
-          await this.checkRobotDiskSpace(sftp, remoteTargetDir, totalBytes, robot.id);
+      // Controllo anti-corsa TOCTOU preventivo prima dell'avvio dello streaming (Problema A3)
+      const initialExists = await new Promise<boolean>((resolve) => {
+        sftp.stat(finalResolvedRemote, (err: any) => resolve(!err));
+      });
+      if (initialExists) {
+        const policy = this.config.transferOverwritePolicy || "richiedi_conferma";
+        if (policy === "rifiuta") {
+          throw new MolirisAppError(
+            ErrorCode.REMOTE_FS_ERROR,
+            `File remoto finale già esistente: ${finalResolvedRemote}`,
+            "File di destinazione sul robot già esistente. Sovrascrittura categoricamente non consentita dalla politica di sistema."
+          );
         }
-      } finally {
-        await initConn.close();
+        if (policy !== "sovrascrivi" && options?.overwrite !== true) {
+          throw new MolirisAppError(
+            ErrorCode.REMOTE_FS_ERROR,
+            `File remoto finale già esistente: ${finalResolvedRemote}`,
+            "File di destinazione sul robot già esistente. Sovrascrittura non consentita senza conferma esplicita."
+          );
+        }
+      }
+
+      // Controllo preventivo spazio su disco robot (Problema A4)
+      if (totalBytes && totalBytes > 0) {
+        const remoteTargetDir = path.posix.dirname(finalResolvedRemote);
+        await this.checkRobotDiskSpace(sftp, remoteTargetDir, totalBytes, robot.id);
       }
 
       const remoteTargetDir = path.posix.dirname(finalResolvedRemote);
@@ -954,28 +1010,17 @@ export class TransferService {
       this.transfers.set(transferId, record);
       await this.recordAuditStart(record);
 
-      let remoteWriteHandle: any = null;
-
-      remoteWriteHandle = await this.remoteFsService.openRemoteWriteStream(
-        context,
-        robot,
-        remoteTempPath,
-        { overwrite: true }
-      );
+      const remoteWriteStream = sftp.createWriteStream(remoteTempPath, {
+        flags: "w",
+        autoClose: true,
+        highWaterMark: this.getChunkSize(),
+      });
 
       record.cleanupHandlers.push(async () => {
-        if (remoteWriteHandle) {
-          try { await remoteWriteHandle.cleanup(); } catch {}
-          remoteWriteHandle = null;
-        }
+        try { incomingStream.destroy(); } catch {}
+        try { remoteWriteStream.destroy(); } catch {}
         try {
-          const cleanupConn = await (this.remoteFsService as any).connectionManager.acquireConnection(context.username, robot);
-          try {
-            const sftp = await cleanupConn.getSftpClient();
-            await this.safeUnlinkRobotFile(sftp, robot.id, remoteTempPath);
-          } finally {
-            await cleanupConn.close();
-          }
+          await this.safeUnlinkRobotFile(sftp, robot.id, remoteTempPath);
         } catch {
           this.recordPendingCleanup(robot.id, remoteTempPath);
         }
@@ -983,66 +1028,55 @@ export class TransferService {
 
       await this.streamWithTrackingAndChecksum(
         incomingStream,
-        remoteWriteHandle.stream,
+        remoteWriteStream,
         record,
         options?.expectedChecksum
       );
 
-      await remoteWriteHandle.cleanup();
-      remoteWriteHandle = null;
-
-      // Promozione atomica e verifiche sul robot (RF-TRF-009, Problema A1, A2)
-      const managedConn = await (this.remoteFsService as any).connectionManager.acquireConnection(context.username, robot);
-      try {
-        const sftpClient = await managedConn.getSftpClient();
-
-        // 1. Verifica integrità base (Problema A1 punto a): stat su disco robot
-        const remoteStat = await new Promise<any>((resolve, reject) => {
-          sftpClient.stat(remoteTempPath, (err: any, st: any) => {
-            if (err) return reject((this.remoteFsService as any).mapSftpError(err, remoteTempPath, robot.id));
-            resolve(st);
-          });
+      // 1. Verifica integrità base sulla STESSA sftp
+      const remoteStat = await new Promise<any>((resolve, reject) => {
+        sftp.stat(remoteTempPath, (err: any, st: any) => {
+          if (err) return reject(this.remoteFsService.mapSftpError(err, remoteTempPath, robot.id));
+          resolve(st);
         });
+      });
 
-        if (remoteStat.size !== record.transferredBytes) {
-          await this.safeUnlinkRobotFile(sftpClient, robot.id, remoteTempPath);
+      if (remoteStat.size !== record.transferredBytes) {
+        await this.safeUnlinkRobotFile(sftp, robot.id, remoteTempPath);
+        record.status = TransferStatus.INTEGRITY_FAILED;
+        throw new MolirisAppError(
+          ErrorCode.INTEGRITY_CHECK_FAILED,
+          `Verifica integrità fallita: dimensione sul robot (${remoteStat.size}) diversa dai byte trasferiti (${record.transferredBytes})`,
+          "Verifica di integrità del file trasferito fallita."
+        );
+      }
+
+      // 2. Verifica estesa readback opzionale (Problema A1 punto b)
+      const isReadback = this.config.transferVerifyMode === "readback";
+      if (isReadback) {
+        const readbackDigest = await this.computeRemoteFileDigest(sftp, remoteTempPath);
+        if (readbackDigest.toLowerCase() !== (record.computedChecksum || "").toLowerCase()) {
+          await this.safeUnlinkRobotFile(sftp, robot.id, remoteTempPath);
           record.status = TransferStatus.INTEGRITY_FAILED;
           throw new MolirisAppError(
             ErrorCode.INTEGRITY_CHECK_FAILED,
-            `Verifica integrità fallita: dimensione sul robot (${remoteStat.size}) diversa dai byte trasferiti (${record.transferredBytes})`,
+            `Verifica integrità readback fallita sul robot: atteso ${record.computedChecksum}, calcolato ${readbackDigest}`,
             "Verifica di integrità del file trasferito fallita."
           );
         }
-
-        // 2. Verifica estesa readback opzionale (Problema A1 punto b)
-        const isReadback = this.config.transferVerifyMode === "readback";
-        if (isReadback) {
-          const readbackDigest = await this.computeRemoteFileDigest(sftpClient, remoteTempPath);
-          if (readbackDigest.toLowerCase() !== (record.computedChecksum || "").toLowerCase()) {
-            await this.safeUnlinkRobotFile(sftpClient, robot.id, remoteTempPath);
-            record.status = TransferStatus.INTEGRITY_FAILED;
-            throw new MolirisAppError(
-              ErrorCode.INTEGRITY_CHECK_FAILED,
-              `Verifica integrità readback fallita sul robot: atteso ${record.computedChecksum}, calcolato ${readbackDigest}`,
-              "Verifica di integrità del file trasferito fallita."
-            );
-          }
-        }
-
-        // 3. Sostituzione atomica e controllo anti-corsa TOCTOU prima della promozione (Problema A2, A3)
-        await this.promoteRemoteTempFile(sftpClient, remoteTempPath, finalResolvedRemote, options?.overwrite === true, robot.id);
-
-        record.integrityLabel = isReadback
-          ? "completato — digest + dimensione verificata e readback remoto"
-          : "completato — digest + dimensione verificata sul robot";
-        record.integrityVerification = {
-          verified: true,
-          mode: isReadback ? "readback" : "stream",
-          label: record.integrityLabel,
-        };
-      } finally {
-        await managedConn.close();
       }
+
+      // 3. Sostituzione atomica e promozione sulla STESSA sftp
+      await this.promoteRemoteTempFile(sftp, remoteTempPath, finalResolvedRemote, options?.overwrite === true, robot.id);
+
+      record.integrityLabel = isReadback
+        ? "completato — digest + dimensione verificata e readback remoto"
+        : "completato — digest + dimensione verificata sul robot";
+      record.integrityVerification = {
+        verified: true,
+        mode: isReadback ? "readback" : "stream",
+        label: record.integrityLabel,
+      };
 
       record.status = TransferStatus.COMPLETED;
       record.completedAt = new Date();
@@ -1060,6 +1094,10 @@ export class TransferService {
         record?.error || "Trasferimento file interrotto prima del completamento."
       );
     } finally {
+      if (managedConn) {
+        try { await managedConn.close(); } catch {}
+      }
+      this.releaseDestinationLock(destLockKey);
       this.releaseTransferSlot(context.userId, robot.id);
     }
   }
@@ -1210,10 +1248,12 @@ export class TransferService {
     sourceStream: Readable,
     destStream: Writable,
     record: TransferRecord,
-    expectedChecksum?: string
+    expectedChecksum?: string,
+    initialBytes: number = 0
   ): Promise<void> {
     const progressTracker = new ProgressTrackerStream({
       totalBytes: record.totalBytes,
+      initialBytes,
       idleTimeoutMs: this.config.transferIdleTimeoutMs,
       highWaterMark: this.getChunkSize(),
       onProgress: (snap) => this.updateProgress(record, snap),
@@ -1768,21 +1808,199 @@ export class TransferService {
   }
 
   private async safeUnlinkRobotFile(sftpClient: any, robotId: string, remoteTempPath: string): Promise<void> {
-    try {
-      await new Promise<void>((resolve, reject) => {
-        sftpClient.unlink(remoteTempPath, (err: any) => {
-          if (err) {
-            if (err.code === 2 || err.code === "ENOENT" || (err.message && err.message.toLowerCase().includes("no such file"))) {
-              return resolve(); // File già rimosso o non esistente
+    let unlinked = false;
+    if (sftpClient && typeof sftpClient.unlink === "function") {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          sftpClient.unlink(remoteTempPath, (err: any) => {
+            if (err) {
+              if (err.code === 2 || err.code === "ENOENT" || (err.message && err.message.toLowerCase().includes("no such file"))) {
+                return resolve(); // File già rimosso o non esistente
+              }
+              return reject(err);
             }
-            return reject(err);
-          }
-          resolve();
+            resolve();
+          });
         });
-      });
-    } catch {
-      this.recordPendingCleanup(robotId, remoteTempPath);
+        unlinked = true;
+      } catch {
+        unlinked = false;
+      }
     }
+
+    if (!unlinked) {
+      // Fallback con connessione dedicata per garantire l'eliminazione immediata (RF-TRF-009)
+      try {
+        const robot = await this.robotRepository.findById(robotId);
+        if (robot && this.connectionManager) {
+          const cleanConn = await this.connectionManager.acquireConnection("system_cleanup", robot);
+          try {
+            const cleanSftp = await cleanConn.getSftpClient();
+            await new Promise<void>((resolve, reject) => {
+              cleanSftp.unlink(remoteTempPath, (err: any) => {
+                if (err && err.code !== 2 && err.code !== "ENOENT" && !(err.message && err.message.toLowerCase().includes("no such file"))) {
+                  return reject(err);
+                }
+                resolve();
+              });
+            });
+            unlinked = true;
+          } finally {
+            await cleanConn.close().catch(() => {});
+          }
+        }
+      } catch {
+        this.recordPendingCleanup(robotId, remoteTempPath);
+      }
+    }
+  }
+
+  public async purgeTempFilesForRobot(robot: RobotEntity): Promise<{
+    purgedCount: number;
+    freedBytes: number;
+    purgedFiles: string[];
+  }> {
+    let purgedCount = 0;
+    let freedBytes = 0;
+    const purgedFiles: string[] = [];
+
+    // 1. Scansione e pulizia sul server (cartella associata a questo robot)
+    if (fs.existsSync(robot.serverDirectoryPath)) {
+      const scanServer = async (dir: string) => {
+        let entries: fs.Dirent[] = [];
+        try {
+          entries = await fs.promises.readdir(dir, { withFileTypes: true });
+        } catch {
+          return;
+        }
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            await scanServer(fullPath);
+          } else if (entry.isFile() && (entry.name.startsWith(".tmp_moliris_") || (entry.name.startsWith(".tmp_") && entry.name.endsWith(".tmp")))) {
+            try {
+              const st = await fs.promises.stat(fullPath);
+              await fs.promises.unlink(fullPath);
+              purgedCount++;
+              freedBytes += st.size;
+              purgedFiles.push(`[SERVER] ${fullPath}`);
+            } catch {}
+          }
+        }
+      };
+      await scanServer(robot.serverDirectoryPath);
+    }
+
+    // 2. Scansione e pulizia sul robot via SFTP
+    let managedConn: ManagedRobotConnection | null = null;
+    try {
+      managedConn = await this.connectionManager.acquireConnection("system_cleanup", robot);
+      const sftp = await managedConn.getSftpClient();
+
+      const dirsToScan = [
+        `/home/${robot.remoteUsername}`,
+        "/tmp",
+      ];
+
+      for (const dir of dirsToScan) {
+        const list: any[] = await new Promise((resolve) => {
+          sftp.readdir(dir, (err: any, files: any) => resolve(err ? [] : files));
+        });
+
+        const tempItems = list.filter((item: any) =>
+          item.filename &&
+          (item.filename.startsWith(".tmp_moliris_") || (item.filename.startsWith(".tmp_") && item.filename.endsWith(".tmp")))
+        );
+
+        for (const item of tempItems) {
+          const remoteFilePath = path.posix.join(dir, item.filename);
+          const size = item.attrs?.size || 0;
+          await new Promise<void>((resolve) => {
+            sftp.unlink(remoteFilePath, () => resolve());
+          });
+          purgedCount++;
+          freedBytes += size;
+          purgedFiles.push(`[ROBOT ${robot.id}] ${remoteFilePath}`);
+        }
+      }
+    } catch (err: any) {
+      this.logger.warn("Bonifica remota sul robot fallita o non disponibile", {
+        robotId: robot.id,
+        error: err.message,
+      });
+    } finally {
+      if (managedConn) {
+        try { await managedConn.close(); } catch {}
+      }
+    }
+
+    // Rimuove eventuali cleanup memorizzati per questo robot
+    this.pendingCleanups = this.pendingCleanups.filter((p) => p.robotId !== robot.id);
+
+    return { purgedCount, freedBytes, purgedFiles };
+  }
+
+  public async purgeAllTempFiles(): Promise<{
+    serverPurged: number;
+    serverFreedBytes: number;
+    robotsPurged: number;
+    robotsFreedBytes: number;
+    details: string[];
+  }> {
+    let serverPurged = 0;
+    let serverFreedBytes = 0;
+    let robotsPurged = 0;
+    let robotsFreedBytes = 0;
+    const details: string[] = [];
+
+    // Scansione root server-fs
+    const rootDir = this.config.serverFilesystemRoot;
+    if (fs.existsSync(rootDir)) {
+      const scanServer = async (dir: string) => {
+        let entries: fs.Dirent[] = [];
+        try {
+          entries = await fs.promises.readdir(dir, { withFileTypes: true });
+        } catch {
+          return;
+        }
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            await scanServer(fullPath);
+          } else if (entry.isFile() && (entry.name.startsWith(".tmp_moliris_") || (entry.name.startsWith(".tmp_") && entry.name.endsWith(".tmp")))) {
+            try {
+              const st = await fs.promises.stat(fullPath);
+              await fs.promises.unlink(fullPath);
+              serverPurged++;
+              serverFreedBytes += st.size;
+              details.push(`[SERVER] ${fullPath} (${(st.size / (1024 * 1024)).toFixed(2)} MB)`);
+            } catch {}
+          }
+        }
+      };
+      await scanServer(rootDir);
+    }
+
+    // Scansione di tutti i robot registrati
+    const robots = await this.robotRepository.list();
+    for (const robot of robots) {
+      const res = await this.purgeTempFilesForRobot(robot);
+      robotsPurged += res.purgedCount;
+      robotsFreedBytes += res.freedBytes;
+      for (const item of res.purgedFiles) {
+        details.push(item);
+      }
+    }
+
+    this.pendingCleanups = [];
+
+    return {
+      serverPurged,
+      serverFreedBytes,
+      robotsPurged,
+      robotsFreedBytes,
+      details,
+    };
   }
 
   private recordPendingCleanup(robotId: string, remoteTempPath: string): void {
@@ -1866,6 +2084,14 @@ export class TransferService {
           } else {
             await scanDirectory(fullPath);
           }
+        } else if (entry.isFile() && (entry.name.startsWith(".tmp_moliris_") || (entry.name.startsWith(".tmp_") && entry.name.endsWith(".tmp")))) {
+          try {
+            const st = await fs.promises.stat(fullPath);
+            if (now - st.mtimeMs > maxAgeMs) {
+              await fs.promises.unlink(fullPath);
+              cleanedCount++;
+            }
+          } catch {}
         }
       }
     };
@@ -1916,7 +2142,7 @@ export class TransferService {
       if (hasPosixRename) {
         await new Promise<void>((resolve, reject) => {
           sftpClient.ext_openssh_rename(remoteTempPath, finalPath, (err: any) => {
-            if (err) return reject((this.remoteFsService as any).mapSftpError(err, finalPath, robotId));
+            if (err) return reject(this.remoteFsService.mapSftpError(err, finalPath, robotId));
             resolve();
           });
         });
@@ -1929,7 +2155,7 @@ export class TransferService {
           await new Promise<void>((res) => sftpClient.unlink(finalPath, () => res()));
           await new Promise<void>((resolve, reject) => {
             sftpClient.rename(remoteTempPath, finalPath, (err: any) => {
-              if (err) return reject((this.remoteFsService as any).mapSftpError(err, finalPath, robotId));
+              if (err) return reject(this.remoteFsService.mapSftpError(err, finalPath, robotId));
               resolve();
             });
           });
@@ -1945,7 +2171,7 @@ export class TransferService {
     } else {
       await new Promise<void>((resolve, reject) => {
         sftpClient.rename(remoteTempPath, finalPath, (err: any) => {
-          if (err) return reject((this.remoteFsService as any).mapSftpError(err, finalPath, robotId));
+          if (err) return reject(this.remoteFsService.mapSftpError(err, finalPath, robotId));
           resolve();
         });
       });

@@ -44,6 +44,10 @@ export class RemoteFilesystemService {
     this.logger = logger;
   }
 
+  public getConnectionManager(): RobotConnectionManager {
+    return this.connectionManager;
+  }
+
   private getTransferBufferSize(): number {
     return this.config.transferChunkSizeBytes || 2 * 1024 * 1024;
   }
@@ -282,7 +286,8 @@ export class RemoteFilesystemService {
   public async openRemoteReadStream(
     context: AuthorizedContext,
     robot: RobotEntity,
-    remotePath: string
+    remotePath: string,
+    options?: { start?: number }
   ): Promise<RemoteReadStreamHandle> {
     // 1. Verifica autorizzazione specifica di download (RF-FS-007, RF-FS-004)
     if (context.targetRobotId && context.targetRobotId !== robot.id) {
@@ -452,6 +457,7 @@ export class RemoteFilesystemService {
       const stream = sftp.createReadStream(targetPath, {
         autoClose: true,
         highWaterMark: this.getTransferBufferSize(),
+        ...(options?.start !== undefined ? { start: options.start } : {}),
       });
 
       let closed = false;
@@ -730,7 +736,7 @@ export class RemoteFilesystemService {
    * Distingue file inesistente, permessi insufficienti, connessione interrotta, timeout e operazioni non consentite.
    * Restituisce messaggi chiari e sicuri all'utente, riservando i dettagli tecnici ai log (RNF-SEC-002).
    */
-  private mapSftpError(err: any, remotePath: string, robotId: string): MolirisAppError {
+  public mapSftpError(err: any, remotePath: string, robotId: string): MolirisAppError {
     const msg = (err?.message || "").toLowerCase();
     const code = err?.code;
 

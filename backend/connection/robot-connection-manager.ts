@@ -172,6 +172,8 @@ export class RobotConnectionManager {
       port: robot.sshPort,
       username: robot.remoteUsername,
       readyTimeout: this.limits.connectionTimeoutMs,
+      keepaliveInterval: 15000,
+      keepaliveCountMax: 3,
       algorithms: {
         cipher: [
           "aes128-gcm@openssh.com",
@@ -322,7 +324,10 @@ export class RobotConnectionManager {
     this.activeConnections.set(connectionId, { client, robotId: robot.id, userId });
     this.pendingConnections.delete(connectionId);
 
+    let released = false;
     const releaseConnection = async () => {
+      if (released) return;
+      released = true;
       const active = this.activeConnections.get(connectionId);
       if (active) {
         this.activeConnections.delete(connectionId);
@@ -416,13 +421,17 @@ export class RobotConnectionManager {
       (this.robotGenerations.get(robotId) || 0) + 1
     );
 
-    // Annulla anche le aperture SSH ancora in corso.
-    for (const pending of this.pendingConnections.values()) {
-      if (pending.robotId === robotId && pending.client) {
-        try {
-          pending.client.end();
-          pending.client.destroy();
-        } catch {}
+    // Annulla e rimuove tutte le aperture SSH ancora in corso per questo robot (elimina ghost slots)
+    for (const [connId, pending] of Array.from(this.pendingConnections.entries())) {
+      if (pending.robotId === robotId) {
+        if (pending.client) {
+          try {
+            pending.client.end();
+            pending.client.destroy();
+          } catch {}
+        }
+        this.pendingConnections.delete(connId);
+        this.releaseConnectionCounts(pending.userId, pending.robotId);
       }
     }
 
@@ -441,14 +450,16 @@ export class RobotConnectionManager {
   public async closeAll(): Promise<void> {
     this.serverGeneration += 1;
 
-    // Le aperture senza client verranno annullate al termine del recupero credenziali.
-    for (const pending of this.pendingConnections.values()) {
+    // Annulla e rimuove tutte le aperture in corso sul server (elimina ghost slots)
+    for (const [connId, pending] of Array.from(this.pendingConnections.entries())) {
       if (pending.client) {
         try {
           pending.client.end();
           pending.client.destroy();
         } catch {}
       }
+      this.pendingConnections.delete(connId);
+      this.releaseConnectionCounts(pending.userId, pending.robotId);
     }
 
     for (const [connId, entry] of this.activeConnections.entries()) {

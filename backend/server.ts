@@ -108,7 +108,7 @@ export function createServer(
         const masterKey = loadMasterKeyFromFile(config.masterKeyFilePath!);
         credentialProvider = new MongoCredentialProvider(deps.db, masterKey, config.allowedSshAuthMethods);
       } else {
-        credentialProvider = new InMemoryCredentialProvider(config.allowedSshAuthMethods);
+        throw new Error("Configurazione non valida: credentialProviderType='mongo' richiede un'istanza di database MongoDB attiva (deps.db). Fallback in memoria vietato da vincolo di sicurezza.");
       }
     } else {
       if (process.env.NODE_ENV === "production") {
@@ -132,6 +132,17 @@ export function createServer(
     auditRepository
   );
 
+  // Servizio di terminale remoto interattivo PTY (Prompt 8, RF-SSH-001..008, §5.4, §6.4)
+  const terminalService = deps.terminalService || new TerminalService(
+    config,
+    robotRepository,
+    auditRepository,
+    connectionManager,
+    sessionManager,
+    roleMapping,
+    logger
+  );
+
   // Servizio di gestione flotta (Prompt 6, RF-ROB-001..014)
   const fleetService = deps.fleetService || new FleetService(
     config,
@@ -142,7 +153,8 @@ export function createServer(
     hostKeyVerifier,
     connectionManager,
     logger,
-    roleMapping
+    roleMapping,
+    terminalService
   );
 
   // Servizio di monitoraggio remoto (Prompt 7, RF-MON-001..006, §5.3, §11.4)
@@ -162,18 +174,6 @@ export function createServer(
     logger
   );
 
-  // Servizio di terminale remoto interattivo PTY (Prompt 8, RF-SSH-001..008, §5.4, §6.4)
-  const terminalService = deps.terminalService || new TerminalService(
-    config,
-    robotRepository,
-    auditRepository,
-    connectionManager,
-    sessionManager,
-    roleMapping,
-    logger
-  );
-  (fleetService as any).terminalService = terminalService;
-
   // Servizio di navigazione filesystem remoto del robot (Prompt 9, RF-FS-001..007, §5.5)
   const remoteFsService = deps.remoteFsService || new RemoteFilesystemService(
     config,
@@ -192,7 +192,9 @@ export function createServer(
     sessionManager,
     auditRepository,
     logger,
-    roleMapping
+    roleMapping,
+    undefined,
+    connectionManager
   );
 
   // Registrazione endpoint di autenticazione e autorizzazione (RF-AUTH-001..006)
@@ -333,7 +335,7 @@ export function createServer(
   const nodeModulesDir = path.resolve(__dirname, "../node_modules");
 
   app.get("/vendor/xterm.js", async (_request, reply) => {
-    const xtermPath = path.join(nodeModulesDir, "xterm/lib/xterm.js");
+    const xtermPath = path.join(nodeModulesDir, "@xterm/xterm/lib/xterm.js");
     if (fs.existsSync(xtermPath)) {
       reply.type("application/javascript").send(fs.readFileSync(xtermPath));
     } else {
@@ -342,7 +344,7 @@ export function createServer(
   });
 
   app.get("/vendor/xterm.css", async (_request, reply) => {
-    const cssPath = path.join(nodeModulesDir, "xterm/css/xterm.css");
+    const cssPath = path.join(nodeModulesDir, "@xterm/xterm/css/xterm.css");
     if (fs.existsSync(cssPath)) {
       reply.type("text/css").send(fs.readFileSync(cssPath));
     } else {
@@ -351,7 +353,7 @@ export function createServer(
   });
 
   app.get("/vendor/xterm-addon-fit.js", async (_request, reply) => {
-    const fitPath = path.join(nodeModulesDir, "xterm-addon-fit/lib/xterm-addon-fit.js");
+    const fitPath = path.join(nodeModulesDir, "@xterm/addon-fit/lib/addon-fit.js");
     if (fs.existsSync(fitPath)) {
       reply.type("application/javascript").send(fs.readFileSync(fitPath));
     } else {
@@ -362,8 +364,13 @@ export function createServer(
   return app;
 }
 
-// Avvio del server se eseguito direttamente
-if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
+export function isMainModule(): boolean {
+  if (!process.argv[1]) return false;
+  const script = process.argv[1].replace(/\\/g, "/");
+  return script.endsWith("server.ts") || script.endsWith("server.js");
+}
+
+export async function startServer(): Promise<void> {
   const logger = new MolirisLogger();
   let mongoClient: MongoClient | undefined;
 
@@ -396,11 +403,27 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
       credentialProvider = new InMemoryCredentialProvider(config.allowedSshAuthMethods);
     }
 
+    const hostKeyVerifier = new DefaultHostKeyVerifier();
+    const connectionLimits = {
+      maxConcurrentPerUser: config.maxConcurrentTransfersPerUser,
+      maxConcurrentPerRobot: config.maxConcurrentTransfersPerRobot,
+      maxConcurrentServer: config.maxConcurrentTransfersServer,
+      connectionTimeoutMs: config.sshConnectionTimeoutMs,
+    };
+    const connectionManager = new RobotConnectionManager(
+      credentialProvider,
+      hostKeyVerifier,
+      connectionLimits,
+      logger,
+      auditRepository
+    );
+
     const server = createServer(config, logger, {
       robotRepository,
       auditRepository,
       credentialProvider,
       userRepository,
+      connectionManager,
       db,
     });
 
@@ -415,6 +438,30 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
 
     logger.info(`Backend HTTPS avviato con successo su ${host}:${port}`);
     (server as any).monitoringService?.startPolling();
+
+    // RNF-REL-005: Chiusura ordinata su ricezione segnali SIGTERM e SIGINT
+    let shuttingDown = false;
+    const shutdown = async (signal: string) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      logger.info(`Ricevuto segnale ${signal}: avvio chiusura ordinata (RNF-REL-005)...`);
+      try {
+        await server.close();
+        (server as any).terminalService?.closeAll("SERVICE_SHUTDOWN");
+        connectionManager.closeAll();
+        if (mongoClient) {
+          await mongoClient.close();
+        }
+        logger.info("Chiusura ordinata delle risorse completata con successo.");
+        process.exit(0);
+      } catch (err: any) {
+        logger.error("Errore durante la chiusura ordinata", err?.message);
+        process.exit(1);
+      }
+    };
+
+    process.on("SIGTERM", () => shutdown("SIGTERM"));
+    process.on("SIGINT", () => shutdown("SIGINT"));
   } catch (error: any) {
     logger.error("Errore inizializzazione backend", error.message);
 
@@ -424,4 +471,9 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
 
     process.exit(1);
   }
+}
+
+// Avvio del server se eseguito come modulo principale
+if (isMainModule()) {
+  startServer();
 }

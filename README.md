@@ -109,6 +109,14 @@ npm run dev
 ```
 L'applicazione è raggiungibile su `https://127.0.0.1:8443`.
 
+### Compilazione e Avvio in Produzione
+```bash
+npm run typecheck  # Controllo statico dei tipi TypeScript
+npm run lint       # Linting del codice
+npm run build      # Compilazione ESM in ./dist
+npm start          # Avvio del server di produzione compilato
+```
+
 ---
 
 ## 4. Esecuzione dei Test Automatizzati
