@@ -44,6 +44,10 @@ export class RemoteFilesystemService {
     this.logger = logger;
   }
 
+  private getTransferBufferSize(): number {
+    return this.config.transferChunkSizeBytes || 2 * 1024 * 1024;
+  }
+
   /**
    * STEP 3 – Validazione e normalizzazione del percorso remoto (§10.3, RNF-SEC-005, RF-FS-007).
    * L'input del frontend non è attendibile.
@@ -444,8 +448,11 @@ export class RemoteFilesystemService {
         });
       });
 
-      // Apertura flusso di lettura (senza buffer in RAM, RNF-PERF-001)
-      const stream = sftp.createReadStream(targetPath, { autoClose: true });
+      // Apertura flusso di lettura (senza buffer in RAM, RNF-PERF-001, con highWaterMark ad alte prestazioni)
+      const stream = sftp.createReadStream(targetPath, {
+        autoClose: true,
+        highWaterMark: this.getTransferBufferSize(),
+      });
 
       let closed = false;
       const cleanup = async () => {
@@ -535,8 +542,12 @@ export class RemoteFilesystemService {
         );
       }
 
-      // Apertura flusso di scrittura (senza caricare in RAM l'intero file, RNF-PERF-001)
-      const stream = sftp.createWriteStream(targetPath, { flags: "w", autoClose: true });
+      // Apertura flusso di scrittura (senza caricare in RAM l'intero file, RNF-PERF-001, con highWaterMark ad alte prestazioni)
+      const stream = sftp.createWriteStream(targetPath, {
+        flags: "w",
+        autoClose: true,
+        highWaterMark: this.getTransferBufferSize(),
+      });
 
       let closed = false;
       const cleanup = async () => {
@@ -609,6 +620,80 @@ export class RemoteFilesystemService {
         size: type === "directory" ? null : stats.size,
         modifiedAt: stats.mtime ? new Date(stats.mtime * 1000).toISOString() : null,
       };
+    } finally {
+      await managedConn.close();
+    }
+  }
+
+  /**
+   * Eliminazione controllata di un file sul filesystem remoto del robot via SFTP (RF-FS-007, RNF-FS-003, RF-ROB-013).
+   * Verifica permessi (FS_REMOTE_DELETE), isolamento robot, validazione percorso ed esclusione directory.
+   */
+  public async deleteRemoteFile(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    remotePath: string
+  ): Promise<void> {
+    if (context.targetRobotId && context.targetRobotId !== robot.id) {
+      await this.recordSecurityViolation(
+        context.username,
+        robot.id,
+        "CROSS_ROBOT_ACCESS_ATTEMPT",
+        { contextRobotId: context.targetRobotId, targetRobotId: robot.id }
+      );
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Operazione non consentita: contesto autorizzato per un robot differente.`
+      );
+    }
+
+    if (!context.permissions.has(AppPermission.FS_REMOTE_DELETE)) {
+      await this.recordSecurityViolation(
+        context.username,
+        robot.id,
+        "PERMISSION_DENIED_FS_REMOTE_DELETE"
+      );
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Utente '${context.username}' non autorizzato all'eliminazione di file sul robot '${robot.id}'.`
+      );
+    }
+
+    this.assertRobotAccessible(robot);
+
+    const managedConn = await this.connectionManager.acquireConnection(context.username, robot);
+    try {
+      const sftp = await managedConn.getSftpClient();
+      const targetPath = await this.resolveAndValidatePath(remotePath, context, robot, sftp);
+
+      const stats = await new Promise<any>((resolve, reject) => {
+        sftp.stat(targetPath, (err, res) => {
+          if (err) return reject(this.mapSftpError(err, targetPath, robot.id));
+          resolve(res);
+        });
+      });
+
+      if (stats.isDirectory()) {
+        throw new MolirisAppError(
+          ErrorCode.REMOTE_FS_ERROR,
+          `Impossibile eliminare una directory: ${targetPath}`,
+          "Impossibile eliminare: il percorso selezionato sul robot è una directory."
+        );
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        sftp.unlink(targetPath, (err) => {
+          if (err) return reject(this.mapSftpError(err, targetPath, robot.id));
+          resolve();
+        });
+      });
+
+      this.logger.info("File eliminato con successo dal filesystem remoto del robot", {
+        robotId: robot.id,
+        file: path.posix.basename(targetPath),
+        path: redactSensitiveData(targetPath),
+        user: context.username,
+      });
     } finally {
       await managedConn.close();
     }

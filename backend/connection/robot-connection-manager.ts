@@ -166,12 +166,22 @@ export class RobotConnectionManager {
     let hostKeyVerified = false;
     let hostKeyError: Error | null = null;
 
-    // Configurazione di connessione SSH2
+    // Configurazione di connessione SSH2 con preferenza per cifrari veloci hardware-accelerati
     const sshConfig: ssh2.ConnectConfig = {
       host: robot.host,
       port: robot.sshPort,
       username: robot.remoteUsername,
       readyTimeout: this.limits.connectionTimeoutMs,
+      algorithms: {
+        cipher: [
+          "aes128-gcm@openssh.com",
+          "chacha20-poly1305@openssh.com",
+          "aes256-gcm@openssh.com",
+          "aes128-ctr",
+          "aes192-ctr",
+          "aes256-ctr",
+        ],
+      },
       // Verifica della chiave host rigorosa (RNF-SEC-003): MAI disabilitata o bypassata
       hostVerifier: (serverHostKey: Buffer) => {
         try {
@@ -241,6 +251,9 @@ export class RobotConnectionManager {
         const onReady = () => {
           if (finished) return;
           finished = true;
+          try {
+            client.setNoDelay(true);
+          } catch {}
           cleanupListeners();
           resolve();
         };

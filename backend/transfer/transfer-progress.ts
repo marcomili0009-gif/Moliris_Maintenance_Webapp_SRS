@@ -8,6 +8,7 @@ export interface ProgressTrackerOptions {
   idleTimeoutMs?: number;
   onProgress?: (snapshot: TransferProgressSnapshot) => void;
   onIdleTimeout?: () => void;
+  highWaterMark?: number;
 }
 
 /**
@@ -27,7 +28,7 @@ export class ProgressTrackerStream extends Transform {
   private idleTimer: NodeJS.Timeout | null = null;
 
   constructor(options: ProgressTrackerOptions) {
-    super();
+    super({ highWaterMark: options.highWaterMark || 2 * 1024 * 1024 });
     this.totalBytes = options.totalBytes;
     this.onProgressCallback = options.onProgress;
     this.onIdleTimeoutCallback = options.onIdleTimeout;

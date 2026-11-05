@@ -119,6 +119,10 @@ export class TransferService {
     }
   }
 
+  private getChunkSize(): number {
+    return this.config.transferChunkSizeBytes || 2 * 1024 * 1024;
+  }
+
   // =========================================================================
   // DIREZIONE A: Computer Utente ↔ Filesystem Server (§6.5, RF-TRF-001, CA-FS-002)
   // =========================================================================
@@ -193,7 +197,11 @@ export class TransferService {
       this.transfers.set(transferId, record);
       await this.recordAuditStart(record);
 
-      const tempWriteStream = fs.createWriteStream(tempFilePath, { mode: 0o700, flags: "w" });
+      const tempWriteStream = fs.createWriteStream(tempFilePath, {
+        mode: 0o700,
+        flags: "w",
+        highWaterMark: this.getChunkSize(),
+      });
       record.cleanupHandlers.push(async () => {
         try { tempWriteStream.destroy(); } catch {}
         try { if (fs.existsSync(tempFilePath)) await fs.promises.unlink(tempFilePath); } catch {}
@@ -343,19 +351,20 @@ export class TransferService {
       await this.recordAuditStart(record);
 
       const rawStream = fs.createReadStream(targetPath, {
-        highWaterMark: this.config.transferChunkSizeBytes || 64 * 1024,
+        highWaterMark: this.getChunkSize(),
       });
 
       const progressTracker = new ProgressTrackerStream({
         totalBytes: stat.size,
         idleTimeoutMs: this.config.transferIdleTimeoutMs,
+        highWaterMark: this.getChunkSize(),
         onProgress: (snap) => this.updateProgress(record!, snap),
         onIdleTimeout: () => {
           this.handleTransferFailure(record!, new MolirisAppError(ErrorCode.TIMEOUT_ERROR, "Timeout inattività download superato."));
         },
       });
 
-      const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm);
+      const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm, this.getChunkSize());
 
       record.cleanupHandlers.push(async () => {
         try { rawStream.destroy(); } catch {}
@@ -479,7 +488,7 @@ export class TransferService {
           sftp.stat(finalResolvedRemote, (err: any) => resolve(!err));
         });
         if (initialExists) {
-          const policy = this.config.transferOverwritePolicy || "rifiuta";
+          const policy = this.config.transferOverwritePolicy || "richiedi_conferma";
           if (policy === "rifiuta") {
             throw new MolirisAppError(
               ErrorCode.REMOTE_FS_ERROR,
@@ -542,7 +551,7 @@ export class TransferService {
 
       // Apertura stream di lettura locale
       const localReadStream = fs.createReadStream(sourceServerPath, {
-        highWaterMark: this.config.transferChunkSizeBytes || 64 * 1024,
+        highWaterMark: this.getChunkSize(),
       });
 
       // Apertura stream di scrittura remoto tramite SFTP (Prompt 9, RF-FS-005)
@@ -557,6 +566,18 @@ export class TransferService {
         try { localReadStream.destroy(); } catch {}
         if (remoteWriteHandle) {
           try { await remoteWriteHandle.cleanup(); } catch {}
+          remoteWriteHandle = null;
+        }
+        try {
+          const cleanupConn = await (this.remoteFsService as any).connectionManager.acquireConnection(context.username, robot);
+          try {
+            const sftp = await cleanupConn.getSftpClient();
+            await this.safeUnlinkRobotFile(sftp, robot.id, remoteTempPath);
+          } finally {
+            await cleanupConn.close();
+          }
+        } catch {
+          this.recordPendingCleanup(robot.id, remoteTempPath);
         }
       });
 
@@ -729,7 +750,11 @@ export class TransferService {
       await this.recordAuditStart(record);
 
       let remoteReadHandle: any = null;
-      const tempWriteStream = fs.createWriteStream(tempFilePath, { mode: 0o700, flags: "w" });
+      const tempWriteStream = fs.createWriteStream(tempFilePath, {
+        mode: 0o700,
+        flags: "w",
+        highWaterMark: this.getChunkSize(),
+      });
 
       record.cleanupHandlers.push(async () => {
         try { tempWriteStream.destroy(); } catch {}
@@ -869,7 +894,7 @@ export class TransferService {
           sftp.stat(finalResolvedRemote, (err: any) => resolve(!err));
         });
         if (initialExists) {
-          const policy = this.config.transferOverwritePolicy || "rifiuta";
+          const policy = this.config.transferOverwritePolicy || "richiedi_conferma";
           if (policy === "rifiuta") {
             throw new MolirisAppError(
               ErrorCode.REMOTE_FS_ERROR,
@@ -941,6 +966,18 @@ export class TransferService {
       record.cleanupHandlers.push(async () => {
         if (remoteWriteHandle) {
           try { await remoteWriteHandle.cleanup(); } catch {}
+          remoteWriteHandle = null;
+        }
+        try {
+          const cleanupConn = await (this.remoteFsService as any).connectionManager.acquireConnection(context.username, robot);
+          try {
+            const sftp = await cleanupConn.getSftpClient();
+            await this.safeUnlinkRobotFile(sftp, robot.id, remoteTempPath);
+          } finally {
+            await cleanupConn.close();
+          }
+        } catch {
+          this.recordPendingCleanup(robot.id, remoteTempPath);
         }
       });
 
@@ -1098,13 +1135,14 @@ export class TransferService {
       const progressTracker = new ProgressTrackerStream({
         totalBytes: stats.size,
         idleTimeoutMs: this.config.transferIdleTimeoutMs,
+        highWaterMark: this.getChunkSize(),
         onProgress: (snap) => this.updateProgress(record!, snap),
         onIdleTimeout: () => {
           this.handleTransferFailure(record!, new MolirisAppError(ErrorCode.TIMEOUT_ERROR, "Timeout inattività download superato."));
         },
       });
 
-      const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm);
+      const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm, this.getChunkSize());
 
       record.cleanupHandlers.push(async () => {
         if (remoteReadHandle) {
@@ -1177,13 +1215,14 @@ export class TransferService {
     const progressTracker = new ProgressTrackerStream({
       totalBytes: record.totalBytes,
       idleTimeoutMs: this.config.transferIdleTimeoutMs,
+      highWaterMark: this.getChunkSize(),
       onProgress: (snap) => this.updateProgress(record, snap),
       onIdleTimeout: () => {
         record.abortController.abort();
       },
     });
 
-    const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm);
+    const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm, this.getChunkSize());
 
     await new Promise<void>((resolve, reject) => {
       const abortHandler = () => {
@@ -1542,7 +1581,7 @@ export class TransferService {
 
   private async checkServerOverwritePolicy(finalPath: string, options?: TransferExecutionOptions): Promise<void> {
     if (fs.existsSync(finalPath)) {
-      const policy = this.config.transferOverwritePolicy || "rifiuta";
+      const policy = this.config.transferOverwritePolicy || "richiedi_conferma";
       if (policy === "rifiuta") {
         throw new MolirisAppError(
           ErrorCode.SERVER_DIR_INACCESSIBLE,
@@ -1694,8 +1733,8 @@ export class TransferService {
 
   private async computeLocalFileDigest(filePath: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const readStream = fs.createReadStream(filePath);
-      const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm);
+      const readStream = fs.createReadStream(filePath, { highWaterMark: this.getChunkSize() });
+      const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm, this.getChunkSize());
       readStream.on("error", reject);
       checksumStream.on("error", reject);
       checksumStream.on("finish", () => {
@@ -1712,8 +1751,8 @@ export class TransferService {
 
   private async computeRemoteFileDigest(sftpClient: any, remotePath: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const readStream = sftpClient.createReadStream(remotePath);
-      const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm);
+      const readStream = sftpClient.createReadStream(remotePath, { highWaterMark: this.getChunkSize() });
+      const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm, this.getChunkSize());
       readStream.on("error", reject);
       checksumStream.on("error", reject);
       checksumStream.on("finish", () => {
@@ -1732,7 +1771,12 @@ export class TransferService {
     try {
       await new Promise<void>((resolve, reject) => {
         sftpClient.unlink(remoteTempPath, (err: any) => {
-          if (err) return reject(err);
+          if (err) {
+            if (err.code === 2 || err.code === "ENOENT" || (err.message && err.message.toLowerCase().includes("no such file"))) {
+              return resolve(); // File già rimosso o non esistente
+            }
+            return reject(err);
+          }
           resolve();
         });
       });
@@ -1846,7 +1890,7 @@ export class TransferService {
     });
 
     if (exists) {
-      const policy = this.config.transferOverwritePolicy || "rifiuta";
+      const policy = this.config.transferOverwritePolicy || "richiedi_conferma";
       if (policy === "rifiuta") {
         await this.safeUnlinkRobotFile(sftpClient, robotId, remoteTempPath);
         throw new MolirisAppError(

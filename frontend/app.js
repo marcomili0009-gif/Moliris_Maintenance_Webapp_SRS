@@ -1474,6 +1474,18 @@ document.addEventListener("DOMContentLoaded", () => {
           });
           btnGroup.appendChild(btnCopyToSrv);
 
+          const btnDelete = document.createElement("button");
+          btnDelete.className = "btn btn-danger btn-sm transfer-action-btn";
+          btnDelete.textContent = "🗑️ Elimina";
+          btnDelete.title = "Elimina file definitivamente dal robot (RF-FS-007, RNF-FS-003, RF-ROB-013)";
+          btnDelete.addEventListener("click", () => {
+            const remotePath = currentRemoteFsPath.endsWith("/")
+              ? `${currentRemoteFsPath}${item.name}`
+              : `${currentRemoteFsPath}/${item.name}`;
+            requestDeleteRemoteFile(robotId, remotePath, item.name);
+          });
+          btnGroup.appendChild(btnDelete);
+
           actionsTd.appendChild(btnGroup);
         }
         tr.appendChild(actionsTd);
@@ -1520,8 +1532,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const file = e.target.files?.[0];
     if (!file) return;
     const robotId = fsRemoteRobotIdInput.value.trim();
-    uploadClientToRobot(robotId, currentRemoteFsPath, file);
     fsRemoteFileInput.value = "";
+    uploadClientToRobot(robotId, currentRemoteFsPath, file);
   });
 
   // =========================================================================
@@ -1563,6 +1575,29 @@ document.addEventListener("DOMContentLoaded", () => {
         } else {
           showNotification(data.message || `File '${filename}' eliminato con successo.`, "success");
           loadServerFilesystem(robotId, currentFsPath);
+        }
+      } catch (err) {
+        showNotification(err, "danger");
+      }
+    };
+    modalConfirmDelete.classList.remove("hidden");
+  }
+
+  // Eliminazione File dal Robot (RF-FS-007, RNF-FS-003, RF-ROB-013)
+  function requestDeleteRemoteFile(robotId, remotePath, filename) {
+    deleteFileTarget.textContent = `${filename} (${remotePath}) [ROBOT: ${robotId}]`;
+    pendingDeleteCallback = async () => {
+      showNotification(`Eliminazione di '${filename}' dal robot in corso...`, "info");
+      try {
+        const res = await apiClient.delete(
+          `/api/robots/${encodeURIComponent(robotId)}/fs/remote/file?path=${encodeURIComponent(remotePath)}`
+        );
+        const data = await res.json();
+        if (!res.ok) {
+          showNotification(data, "danger");
+        } else {
+          showNotification(data.message || `File '${filename}' eliminato con successo dal robot.`, "success");
+          loadRemoteFilesystem(robotId, currentRemoteFsPath);
         }
       } catch (err) {
         showNotification(err, "danger");
@@ -1675,7 +1710,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const data = await res.json();
       if (!res.ok) {
-        if (data.message && data.message.includes("già esistente")) {
+        if (!overwrite && data.message && (data.message.includes("conferma esplicita") || (data.message.includes("già esistente") && !data.message.includes("categoricamente")))) {
           promptOverwriteConfirmation(`Server: ${subPath ? subPath + '/' : ''}${file.name}`, () => {
             uploadClientToServer(robotId, subPath, file, true);
           });
@@ -1693,14 +1728,28 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  let activeUploadController = null;
+  let activeUploadCancelled = false;
+
+  window.addEventListener("beforeunload", () => {
+    activeUploadCancelled = true;
+    if (activeUploadController) {
+      try { activeUploadController.abort(); } catch {}
+      activeUploadController = null;
+    }
+  });
+
   // Upload Client -> Robot (RF-TRF-003)
-  async function uploadClientToRobot(robotId, remoteDir, file, overwrite = false) {
+  async function uploadClientToRobot(robotId, remoteDir, file, overwrite = false, retryCount = 0) {
+    activeUploadCancelled = false;
+    activeUploadController = new AbortController();
     showNotification(`Caricamento verso il robot di '${file.name}' in corso...`, "info");
     try {
       const res = await apiClient.post(
         `/api/robots/${encodeURIComponent(robotId)}/transfers/client-robot/upload`,
         file,
         {
+          signal: activeUploadController.signal,
           headers: {
             "Content-Type": "application/octet-stream",
             "X-Filename": file.name,
@@ -1712,7 +1761,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const data = await res.json();
       if (!res.ok) {
-        if (data.message && data.message.includes("già esistente")) {
+        if (!overwrite && data.message && (data.message.includes("conferma esplicita") || (data.message.includes("già esistente") && !data.message.includes("categoricamente")))) {
           promptOverwriteConfirmation(`Robot: ${remoteDir ? remoteDir + '/' : ''}${file.name}`, () => {
             uploadClientToRobot(robotId, remoteDir, file, true);
           });
@@ -1726,7 +1775,29 @@ document.addEventListener("DOMContentLoaded", () => {
       loadRemoteFilesystem(robotId, remoteDir);
       loadTransfersList();
     } catch (err) {
+      if (activeUploadCancelled || err.name === "AbortError") {
+        showNotification(`Trasferimento di '${file.name}' annullato dall'utente.`, "warning");
+        loadTransfersList();
+        loadRemoteFilesystem(robotId, remoteDir);
+        return;
+      }
+
+      // Riscaricamento / ritentativo automatico SOLO su fallimento non intenzionale (MAI se annullato)
+      if (retryCount < 1) {
+        showNotification(`Trasferimento non riuscito per errore di connessione. Tentativo di riscaricamento automatico in corso (tentativo 1 di 1)...`, "warning");
+        setTimeout(() => {
+          if (!activeUploadCancelled) {
+            uploadClientToRobot(robotId, remoteDir, file, overwrite, retryCount + 1);
+          }
+        }, 2000);
+        return;
+      }
+
       showNotification(err, "danger");
+      loadTransfersList();
+      loadRemoteFilesystem(robotId, remoteDir);
+    } finally {
+      activeUploadController = null;
     }
   }
 
@@ -1746,7 +1817,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const data = await res.json();
       if (!res.ok) {
-        if (data.message && data.message.includes("già esistente")) {
+        if (!overwrite && data.message && (data.message.includes("conferma esplicita") || (data.message.includes("già esistente") && !data.message.includes("categoricamente")))) {
           promptOverwriteConfirmation(`Robot: ${filename}`, () => {
             transferServerToRobot(robotId, serverRelativePath, filename, true);
           });
@@ -1779,7 +1850,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const data = await res.json();
       if (!res.ok) {
-        if (data.message && data.message.includes("già esistente")) {
+        if (!overwrite && data.message && (data.message.includes("conferma esplicita") || (data.message.includes("già esistente") && !data.message.includes("categoricamente")))) {
           promptOverwriteConfirmation(`Server: ${filename}`, () => {
             transferRobotToServer(robotId, remotePath, filename, true);
           });
@@ -1873,8 +1944,17 @@ document.addEventListener("DOMContentLoaded", () => {
             cancelBtn.addEventListener("click", async () => {
               if (confirm("Vuoi davvero annullare questo trasferimento?")) {
                 await DoubleSubmitGuard.execute(cancelBtn, "Annullamento...", async () => {
+                  activeUploadCancelled = true;
+                  if (activeUploadController) {
+                    try { activeUploadController.abort(); } catch {}
+                    activeUploadController = null;
+                  }
                   await apiClient.post(`/api/transfers/${encodeURIComponent(trf.transferId)}/cancel`, {});
                   loadTransfersList();
+                  const currentRobotId = fsRobotIdInput.value.trim() || fsRemoteRobotIdInput.value.trim();
+                  if (currentRobotId) {
+                    loadRemoteFilesystem(currentRobotId, currentRemoteFsPath);
+                  }
                 });
               }
             });

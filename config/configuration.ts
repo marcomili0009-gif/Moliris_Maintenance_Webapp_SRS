@@ -343,7 +343,7 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
   // Parametri opzionali Trasferimento File (§5.5, §11.5, §11.7, RF-TRF-001..014)
   const transferChunkSizeBytes = env["MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES"] && !isNaN(Number(env["MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES"]))
     ? Number(env["MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES"])
-    : undefined;
+    : 2 * 1024 * 1024; // Default ottimizzato a 2MB ad alte prestazioni
 
   const rawChecksumAlgo = env["MOLIRIS_TRANSFER_CHECKSUM_ALGO"]?.trim().toLowerCase();
   const transferChecksumAlgorithm = (rawChecksumAlgo === "sha256" || rawChecksumAlgo === "md5")
@@ -376,9 +376,10 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
   const stateFileSchemaPath = env["MOLIRIS_STATE_FILE_SCHEMA"]?.trim() || undefined;
 
   const rawTrfOverwritePolicy = env["MOLIRIS_TRANSFER_OVERWRITE_POLICY"]?.trim().toLowerCase();
-  const transferOverwritePolicy = (rawTrfOverwritePolicy === "rifiuta" || rawTrfOverwritePolicy === "richiedi_conferma" || rawTrfOverwritePolicy === "sovrascrivi")
-    ? (rawTrfOverwritePolicy as "rifiuta" | "richiedi_conferma" | "sovrascrivi")
-    : undefined;
+  const transferOverwritePolicy: "rifiuta" | "richiedi_conferma" | "sovrascrivi" =
+    (rawTrfOverwritePolicy === "rifiuta" || rawTrfOverwritePolicy === "sovrascrivi")
+      ? rawTrfOverwritePolicy
+      : "richiedi_conferma";
 
   const rawResume = env["MOLIRIS_TRANSFER_RESUME_ENABLED"]?.trim().toLowerCase();
   const transferResumeEnabled = rawResume === "true" ? true : rawResume === "false" ? false : undefined;

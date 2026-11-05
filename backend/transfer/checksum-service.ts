@@ -63,8 +63,8 @@ export class ChecksumTransformStream extends Transform {
   private digestResult: string | null = null;
   public readonly algorithmName: string;
 
-  constructor(algorithm: IChecksumAlgorithm) {
-    super();
+  constructor(algorithm: IChecksumAlgorithm, highWaterMark?: number) {
+    super({ highWaterMark: highWaterMark || 2 * 1024 * 1024 });
     this.algorithmName = algorithm.name;
     this.hasher = algorithm.createHasher();
   }

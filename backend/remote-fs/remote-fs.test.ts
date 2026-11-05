@@ -264,6 +264,9 @@ const testSshServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, 
         // Eventuali tentativi di scrittura/cancellazione non previsti
         sftp.on("REMOVE", (reqid: number, p: string) => {
           mutationAttempts.push(`REMOVE:${p}`);
+          if (p.includes("subfile.txt")) {
+            return sftp.status(reqid, 0 /* OK */);
+          }
           sftp.status(reqid, 3 /* PERMISSION_DENIED */);
         });
         sftp.on("RMDIR", (reqid: number, p: string) => {
@@ -957,8 +960,40 @@ const userNoNavigate: UserEntity = {
   });
   assert.strictEqual(notFoundRes.statusCode, 404);
 
+  // 6. Test DELETE /api/robots/:robotId/fs/remote/file con RBAC
+  const delResOk = await server.inject({
+    method: "DELETE",
+    url: "/api/robots/robot_api_fs/fs/remote/file?path=/home/operator/subfolder/subfile.txt",
+    headers: {
+      cookie: `moliris_session=${authSession.sessionId}`,
+    },
+  });
+  assert.strictEqual(delResOk.statusCode, 200);
+  const delBody = JSON.parse(delResOk.body);
+  assert.strictEqual(delBody.success, true);
+
+  // 7. Test DELETE con utente privo di permesso -> 403
+  const delNoPermRes = await server.inject({
+    method: "DELETE",
+    url: "/api/robots/robot_api_fs/fs/remote/file?path=/home/operator/subfolder/subfile.txt",
+    headers: {
+      cookie: `moliris_session=${noPermSession.sessionId}`,
+    },
+  });
+  assert.strictEqual(delNoPermRes.statusCode, 403);
+
+  // 8. Test DELETE con percorso mancante -> 400
+  const delMissingPathRes = await server.inject({
+    method: "DELETE",
+    url: "/api/robots/robot_api_fs/fs/remote/file",
+    headers: {
+      cookie: `moliris_session=${authSession.sessionId}`,
+    },
+  });
+  assert.strictEqual(delMissingPathRes.statusCode, 400);
+
   await server.close();
-  console.log("  PASS: Endpoint REST /api/robots/:robotId/fs/remote/list con RBAC e gestione parametri.");
+  console.log("  PASS: Endpoint REST /api/robots/:robotId/fs/remote/list e /file (DELETE) con RBAC e gestione parametri.");
 }
 
 // Chiusura test server SSH e pulizia
