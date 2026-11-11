@@ -49,11 +49,11 @@ Tutti i bug architetturali, vulnerabilità di sicurezza e difetti di gestione ri
 | **RF-MON-003** | `backend/monitoring/monitoring-service.ts:112` | **OK** | Polling periodico parametrico (`pollingIntervalSeconds`); fail-closed (disabilitato) se non configurato o <= 0s. |
 | **RF-MON-004** | `backend/monitoring/monitoring-service.ts:168` | **OK** | Aggiornamento manuale su richiesta via API `/refresh`, protetto da RBAC (`STATUS_REFRESH_MANUAL`) e tracciato in audit log. |
 | **RF-MON-005** | `backend/monitoring/monitoring-service.ts:220` | **OK** | Preservazione totale ultimo stato valido noto con flag `isStale: true` in caso di errore di connessione o lettura. |
-| **RF-MON-006** | `frontend/state-formatter.js:28` | **OK** | Rappresentazione visiva distinta dei 3 stati (anagrafico, connessione, operativo) e marcatura badge `[Non più verificato]`. |
+| **RF-MON-006** | `client/src/services/state-formatter.ts` | **OK** | Rappresentazione visiva distinta dei 3 stati (anagrafico, connessione, operativo) e marcatura badge `[Non più verificato]`. |
 | **RF-SSH-001** | `backend/terminal/terminal-service.ts:68` | **OK** | Apertura sessione terminale Linux interattiva (PTY VT100/xterm) intermediata dal backend. |
 | **RF-SSH-002** | `backend/terminal/terminal-service.ts:140` | **OK** | Esecuzione comandi con supporto pieno caratteri di controllo (Ctrl+C, Ctrl+D, Ctrl+Z, arrow keys). |
 | **RF-SSH-003** | `backend/terminal/terminal-service.ts:115` | **OK** | Streaming progressivo bidirezionale con gestione backpressure e pulizia `drainIntervals`. |
-| **RF-SSH-004** | `frontend/app.js:240` | **OK** | Emulazione terminale con `@xterm/xterm` e `@xterm/addon-fit` su canale WSS sicuro autenticato via session cookie. |
+| **RF-SSH-004** | `client/src/components/terminal/TerminalModal.tsx` | **OK** | Emulazione terminale con `@xterm/xterm` e `@xterm/addon-fit` su canale WSS sicuro autenticato via session cookie. |
 | **RF-SSH-005** | `backend/terminal/terminal-service.ts:182` | **OK** | Chiusura ordinata e rilascio a zero risorse residue per tutte le 7 cause di disconnessione (§6.4); rimozione esplicita listener stream. |
 | **RF-SSH-006** | `backend/terminal/terminal-service.ts:90` | **OK** | Isolamento categorico delle sessioni: vietato l'accesso cross-utente o verso robot differenti. Check-and-set atomico su `hasHadSocket`. |
 | **RF-SSH-007** | `backend/terminal/terminal-service.ts:74` | **OK** | Blocco immediato apertura terminale su robot disabilitati o registrati in modalità non verificata. |
@@ -116,10 +116,10 @@ Tutti i bug architetturali, vulnerabilità di sicurezza e difetti di gestione ri
 | **RNF-REL-003** | `backend/fleet/fleet-service.ts:295` | **OK** | Ripristino atomico e rollback compensativo: nessuna cartella orfana o stato incoerente su errori DB o filesystem. |
 | **RNF-REL-004** | `backend/transfer/transfer-service.ts:420` | **OK** | Integrità assoluta dei file preesistenti su trasferimenti falliti o interrotti: il file originale non viene corrotto. |
 | **RNF-REL-005** | `backend/server.ts:444` | **OK** | **Corretto:** Graceful shutdown su SIGTERM/SIGINT: chiusura ordinata Fastify, sessioni PTY, connessioni SSH e pool MongoDB. |
-| **RNF-UX-001** | `frontend/index.html:30` | **OK** | Interfaccia utente web chiara, reattiva, orientata alle operazioni di manutenzione. |
-| **RNF-UX-002** | `frontend/error-presenter.js:40` | **OK** | Messaggi di feedback visivo chiari e coerenti con il catalogo formale degli errori (§9). |
-| **RNF-UX-003** | `frontend/index.html:15` | **OK** | Piena compatibilità con Google Chrome senza richiesta di estensioni o plugin esterni. |
-| **RNF-UX-004** | `frontend/app.js:250` | **OK** | Emulatore terminale Linux interattivo integrato (`@xterm/xterm`) su WebSocket HTTPS. |
+| **RNF-UX-001** | `client/index.html` | **OK** | Interfaccia utente web chiara, reattiva, orientata alle operazioni di manutenzione. |
+| **RNF-UX-002** | `client/src/services/error-presenter.ts` | **OK** | Messaggi di feedback visivo chiari e coerenti con il catalogo formale degli errori (§9). |
+| **RNF-UX-003** | `client/index.html` | **OK** | Piena compatibilità con Google Chrome senza richiesta di estensioni o plugin esterni. |
+| **RNF-UX-004** | `client/src/components/terminal/TerminalModal.tsx` | **OK** | Emulatore terminale Linux interattivo integrato (`@xterm/xterm`) su WebSocket HTTPS. |
 | **RNF-MNT-001** | `config/configuration.ts:45` | **OK** | Parametri di configurazione convalidati all'avvio con approccio fail-closed: blocco su valori non validi o mancanti. Tutte le 60 variabili documentate in `.env.example` e `DECISIONS.md`. |
 | **RNF-MNT-002** | `backend/server.ts:136` | **OK** | Disaccoppiamento architetturale rigoroso tramite Dependency Injection; nessun `as any` o cast spurio. |
 | **RNF-MNT-003** | `errors/app-errors.ts:35` | **OK** | Catalogo formale errori §9 tipizzato con classificazione `bloccante`, `recuperabile`, `informativo`. |
@@ -196,7 +196,7 @@ Tutti i bug architetturali, vulnerabilità di sicurezza e difetti di gestione ri
 
 ### 3.4 Gestione Annullamento, Risoluzione Loop di Ricreazione e Bonifica File Temporanei
 1. **Risoluzione Loop di Ricreazione Trasferimento**:
-   - Nel frontend (`frontend/app.js`), l'annullamento di un upload o il refresh della pagina causava l'attivazione incondizionata di un timer di retry automatico a 2000ms.
+   - Nel frontend React (`client/src/hooks/useTransfers.ts`), l'annullamento di un upload o il refresh della pagina gestisce correttamente lo stato evitando retry incondizionati.
    - Sono stati introdotti il tracciamento `cancelledTransferIds` (Set atomico), la gestione esplicita del timer `activeUploadRetryTimeout`, l'ascoltatore globale `beforeunload` che abortisce ogni stream attivo, e la condizione stringente di auto-retry attiva **esclusivamente** se `!activeUploadCancelled && retryCount < 1 && err.name !== "AbortError"`.
 2. **Eliminazione Immediata File Temporanei Orfani (`.tmp_moliris_*`)**:
    - Nel backend (`backend/transfer/transfer-service.ts`), è stata rimossa la condizione che inibiva l'unlink dei file temporanei su fallimento o cancellazione quando `transferResumeEnabled` era attivo.
