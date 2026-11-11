@@ -4,6 +4,9 @@
 // RNF-SEC-009, RNF-PERF-001, RNF-PERF-002, RNF-PERF-003, RNF-REL-004, RNF-REL-005,
 // SRS §1.2, §2.4, §5.5, §6.5, §6.6, §6.7, §9, §10.3, CA-FS-002, CA-FS-003, CA-FS-004
 
+import fs from "fs";
+import path from "path";
+import crypto from "crypto";
 import { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
 import { type Readable } from "stream";
 import { type TransferService } from "./transfer-service.ts";
@@ -13,6 +16,7 @@ import { type AuthMiddleware } from "../auth/auth-middleware.ts";
 import { AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "../auth/permissions.ts";
 import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
 import { type StartServerRobotTransferRequest } from "./transfer-models.ts";
+import { type BulkPreCheckRequest, type BulkTarget } from "./bulk-transfer-models.ts";
 
 export function registerTransferRoutes(
   app: FastifyInstance,
@@ -429,6 +433,175 @@ export function registerTransferRoutes(
         });
       } catch (err: any) {
         return handleRouteError(reply, err);
+      }
+    }
+  );
+
+  // =========================================================================
+  // 6. CARICAMENTO MASSIVO MULTI-TARGET: PRE-CHECK CONFLITTI (RF-TRF-009, RF-TRF-011)
+  // =========================================================================
+  app.post(
+    "/api/transfers/bulk/pre-check",
+    {
+      preHandler: [authMiddleware.requirePermission(AppPermission.FLEET_VIEW)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const body = req.body as BulkPreCheckRequest;
+      if (!body || !Array.isArray(body.filenames) || !Array.isArray(body.targets)) {
+        return reply.status(400).send({
+          code: "INVALID_REQUEST_BODY",
+          message: "Richiesta non valida: 'filenames' e 'targets' devono essere array.",
+        });
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        undefined,
+        roleMapping
+      );
+
+      try {
+        const response = await transferService.checkBulkConflicts(context, body);
+        return reply.status(200).send(response);
+      } catch (err: any) {
+        return handleRouteError(reply, err);
+      }
+    }
+  );
+
+  // =========================================================================
+  // 7. CARICAMENTO MASSIVO MULTI-TARGET: UPLOAD STREAMING (RF-TRF-001..005, RF-TRF-009)
+  // =========================================================================
+  app.post(
+    "/api/transfers/bulk/upload",
+    {
+      preHandler: [authMiddleware.requirePermission(AppPermission.FLEET_VIEW)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      if (!req.isMultipart()) {
+        return reply.status(400).send({
+          code: "INVALID_MULTIPART_REQUEST",
+          message: "Richiesta non valida: atteso payload multipart/form-data.",
+        });
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        undefined,
+        roleMapping
+      );
+
+      let targets: BulkTarget[] = [];
+      let overwrite = false;
+      const stagedFiles: Array<{
+        filename: string;
+        stagingPath: string;
+        sizeBytes: number;
+        sha256: string;
+      }> = [];
+
+      const stagingDir = path.join(
+        transferService.getConfig().serverFilesystemRoot,
+        ".tmp_bulk"
+      );
+      if (!fs.existsSync(stagingDir)) {
+        await fs.promises.mkdir(stagingDir, { recursive: true, mode: 0o700 });
+      }
+
+      const uploadSessionId = crypto.randomUUID();
+      let fileIndex = 0;
+
+      try {
+        const parts = req.parts();
+        for await (const part of parts) {
+          if (part.type === "file") {
+            fileIndex++;
+            const safeFilename = path.basename(part.filename);
+            const stagingPath = path.join(stagingDir, `staging_${uploadSessionId}_${fileIndex}.part`);
+
+            const hash = crypto.createHash("sha256");
+            let totalBytes = 0;
+            const writeStream = fs.createWriteStream(stagingPath, { mode: 0o600 });
+
+            await new Promise<void>((resolve, reject) => {
+              part.file.on("data", (chunk: Buffer | string) => {
+                const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                hash.update(buf);
+                totalBytes += buf.length;
+              });
+              part.file.on("error", reject);
+              writeStream.on("error", reject);
+              writeStream.on("finish", () => resolve());
+              part.file.pipe(writeStream);
+            });
+
+            stagedFiles.push({
+              filename: safeFilename,
+              stagingPath,
+              sizeBytes: totalBytes,
+              sha256: hash.digest("hex"),
+            });
+          } else if (part.type === "field") {
+            if (part.fieldname === "targets") {
+              try {
+                targets = typeof part.value === "string" ? JSON.parse(part.value) : (part.value as any);
+              } catch {
+                throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Campo 'targets' non valido o JSON malformato.");
+              }
+            } else if (part.fieldname === "overwrite") {
+              overwrite = part.value === "true" || part.value === true;
+            }
+          }
+        }
+
+        if (stagedFiles.length === 0) {
+          throw new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Nessun file presente nel payload di caricamento.");
+        }
+
+        if (!targets || targets.length === 0) {
+          throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Nessuna destinazione (server/robot) selezionata.");
+        }
+
+        // Se overwrite non è confermata, esegui pre-check dei conflitti
+        if (!overwrite) {
+          const preCheck = await transferService.checkBulkConflicts(context, {
+            filenames: stagedFiles.map((f) => f.filename),
+            targets,
+          });
+
+          if (preCheck.hasConflicts) {
+            // Pulizia immediata dei file di staging per evitare spreco spazio o residui
+            for (const s of stagedFiles) {
+              try { if (fs.existsSync(s.stagingPath)) await fs.promises.unlink(s.stagingPath); } catch {}
+            }
+            return reply.status(409).send({
+              code: "CONFLICTS_DETECTED",
+              message: "Rilevati conflitti di sovrascrittura. Richiesta conferma esplicita.",
+              conflicts: preCheck.conflicts,
+            });
+          }
+        }
+
+        // Esecuzione atomica del caricamento massivo
+        const bulkResponse = await transferService.executeBulkUpload(context, {
+          targets,
+          overwrite,
+          stagedFiles,
+        });
+
+        return reply.status(200).send(bulkResponse);
+      } catch (err: any) {
+        return handleRouteError(reply, err);
+      } finally {
+        for (const s of stagedFiles) {
+          try {
+            if (fs.existsSync(s.stagingPath)) {
+              await fs.promises.unlink(s.stagingPath);
+            }
+          } catch {}
+        }
       }
     }
   );

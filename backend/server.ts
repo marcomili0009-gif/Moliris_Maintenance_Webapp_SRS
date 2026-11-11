@@ -29,6 +29,7 @@ import { RemoteRobotReader } from "./monitoring/robot-reader.ts";
 import { MonitoringService } from "./monitoring/monitoring-service.ts";
 import { registerMonitoringRoutes } from "./monitoring/monitoring-routes.ts";
 import websocket from "@fastify/websocket";
+import multipart from "@fastify/multipart";
 import { TerminalService } from "./terminal/terminal-service.ts";
 import { registerTerminalRoutes } from "./terminal/terminal-routes.ts";
 import { RemoteFilesystemService } from "./remote-fs/remote-fs-service.ts";
@@ -82,6 +83,13 @@ export function createServer(
   // Registrazione supporto WebSocket per canale terminale interattivo (RF-SSH-004, §5.4)
   app.register(websocket);
 
+  // Supporto upload multipart in streaming per caricamento massivo (RF-TRF-001, RNF-PERF-001)
+  app.register(multipart, {
+    limits: {
+      files: config.maxBulkUploadFiles || 20,
+    },
+  });
+
   // Dipendenze di autenticazione e sicurezza
   const sessionManager = deps.sessionManager || new SessionManager(config.inactiveSessionTimeoutMinutes, config.sessionAbsoluteMaxMinutes);
   const userRepository = deps.userRepository || new InMemoryUserRepository();
@@ -98,7 +106,12 @@ export function createServer(
 
   // Dipendenze di persistenza e filesystem
   const robotRepository = deps.robotRepository || new InMemoryRobotRepository();
-  const serverFsService = deps.serverFsService || new ServerFilesystemService(config.serverFilesystemRoot, auditRepository, logger);
+  const serverFsService = deps.serverFsService || new ServerFilesystemService(
+    config.serverFilesystemRoot,
+    auditRepository,
+    logger,
+    config.defaultOperatorAllowedPaths
+  );
 
   // Dipendenze di connessione comune verso i robot (Prompt 5, vincolo 2.4 punto 4)
   let credentialProvider = deps.credentialProvider;

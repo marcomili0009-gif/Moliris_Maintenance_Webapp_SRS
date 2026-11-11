@@ -2004,6 +2004,335 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // =========================================================================
+  // GESTIONE CARICAMENTO MASSIVO MULTI-TARGET (RF-TRF-001..005, RF-TRF-009, RF-TRF-011)
+  // =========================================================================
+  const btnBulkUploadOpen = document.getElementById("btn-bulk-upload-open");
+  const modalBulkUpload = document.getElementById("modal-bulk-upload");
+  const btnCloseBulkUpload = document.getElementById("btn-close-bulk-upload");
+  const btnCancelBulkUpload = document.getElementById("btn-cancel-bulk-upload");
+  const btnStartBulkUpload = document.getElementById("btn-start-bulk-upload");
+  const bulkFilesInput = document.getElementById("bulk-files-input");
+  const bulkFilesCount = document.getElementById("bulk-files-count");
+  const bulkFilesPreviewList = document.getElementById("bulk-files-preview-list");
+  const bulkTargetServerCheck = document.getElementById("bulk-target-server-check");
+  const bulkServerConfig = document.getElementById("bulk-server-config");
+  const bulkServerRobotSelect = document.getElementById("bulk-server-robot-select");
+  const bulkServerSubpath = document.getElementById("bulk-server-subpath");
+  const bulkRobotsCheckboxes = document.getElementById("bulk-robots-checkboxes");
+  const bulkRobotRemotepath = document.getElementById("bulk-robot-remotepath");
+  const bulkProgressContainer = document.getElementById("bulk-progress-container");
+  const bulkProgressBar = document.getElementById("bulk-progress-bar");
+  const bulkProgressStatus = document.getElementById("bulk-progress-status");
+  const bulkProgressText = document.getElementById("bulk-progress-text");
+  const bulkResultsContainer = document.getElementById("bulk-results-container");
+  const bulkUploadError = document.getElementById("bulk-upload-error");
+
+  const modalBulkConflicts = document.getElementById("modal-bulk-conflicts");
+  const btnCloseBulkConflicts = document.getElementById("btn-close-bulk-conflicts");
+  const btnBulkCancelConflicts = document.getElementById("btn-bulk-cancel-conflicts");
+  const btnBulkConfirmOverwrite = document.getElementById("btn-bulk-confirm-overwrite");
+  const bulkConflictsList = document.getElementById("bulk-conflicts-list");
+
+  let pendingBulkUpload = null;
+
+  async function openBulkUploadModal() {
+    modalBulkUpload?.classList.remove("hidden");
+    bulkUploadError?.classList.add("hidden");
+    if (bulkResultsContainer) {
+      bulkResultsContainer.innerHTML = "";
+      bulkResultsContainer.classList.add("hidden");
+    }
+    if (bulkProgressContainer) {
+      bulkProgressContainer.classList.add("hidden");
+      if (bulkProgressBar) bulkProgressBar.value = 0;
+    }
+    if (bulkFilesInput) bulkFilesInput.value = "";
+    if (bulkFilesCount) bulkFilesCount.textContent = "Nessun file selezionato (massimo configurato: 20 file).";
+    if (bulkFilesPreviewList) bulkFilesPreviewList.innerHTML = "";
+
+    try {
+      const res = await apiClient.get("/api/robots");
+      if (res.ok) {
+        const data = await res.json();
+        const robots = data.robots || [];
+
+        if (bulkServerRobotSelect) {
+          bulkServerRobotSelect.innerHTML = "";
+          for (const r of robots) {
+            const opt = document.createElement("option");
+            opt.value = r.id;
+            opt.textContent = `${r.displayName} (${r.id})`;
+            bulkServerRobotSelect.appendChild(opt);
+          }
+        }
+
+        if (bulkRobotsCheckboxes) {
+          bulkRobotsCheckboxes.innerHTML = "";
+          if (robots.length === 0) {
+            bulkRobotsCheckboxes.innerHTML = '<div style="color: #64748b; font-size: 0.85rem;">Nessun robot registrato disponibile.</div>';
+          } else {
+            for (const r of robots) {
+              const div = document.createElement("div");
+              div.style.marginBottom = "0.25rem";
+              const isConn = r.connectionState === "connesso" || r.connectionState === "raggiungibile";
+              div.innerHTML = `
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; cursor: pointer;">
+                  <input type="checkbox" class="bulk-robot-target-item" data-robot-id="${StateFormatter.escapeHtml(r.id)}">
+                  <span>${StateFormatter.escapeHtml(r.displayName)} (<code>${StateFormatter.escapeHtml(r.id)}</code>) - <small style="color: ${isConn ? '#16a34a' : '#d97706'}">${StateFormatter.escapeHtml(r.connectionState || 'non_verificato')}</small></span>
+                </label>
+              `;
+              bulkRobotsCheckboxes.appendChild(div);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Impossibile caricare robot per upload massivo:", e);
+    }
+  }
+
+  function closeBulkUploadModal() {
+    modalBulkUpload?.classList.add("hidden");
+    pendingBulkUpload = null;
+  }
+
+  btnBulkUploadOpen?.addEventListener("click", openBulkUploadModal);
+  btnCloseBulkUpload?.addEventListener("click", closeBulkUploadModal);
+  btnCancelBulkUpload?.addEventListener("click", closeBulkUploadModal);
+
+  bulkTargetServerCheck?.addEventListener("change", () => {
+    if (bulkTargetServerCheck.checked) {
+      bulkServerConfig?.classList.remove("hidden");
+    } else {
+      bulkServerConfig?.classList.add("hidden");
+    }
+  });
+
+  bulkFilesInput?.addEventListener("change", () => {
+    const files = bulkFilesInput.files ? Array.from(bulkFilesInput.files) : [];
+    if (files.length === 0) {
+      if (bulkFilesCount) bulkFilesCount.textContent = "Nessun file selezionato.";
+      if (bulkFilesPreviewList) bulkFilesPreviewList.innerHTML = "";
+      return;
+    }
+    const totalSize = files.reduce((acc, f) => acc + f.size, 0);
+    if (bulkFilesCount) {
+      bulkFilesCount.textContent = `${files.length} file selezionati (${StateFormatter.formatBytes(totalSize)} totali).`;
+    }
+    if (bulkFilesPreviewList) {
+      bulkFilesPreviewList.innerHTML = "";
+      for (const f of files) {
+        const li = document.createElement("li");
+        li.textContent = `${f.name} (${StateFormatter.formatBytes(f.size)})`;
+        bulkFilesPreviewList.appendChild(li);
+      }
+    }
+  });
+
+  btnStartBulkUpload?.addEventListener("click", async () => {
+    const files = bulkFilesInput.files ? Array.from(bulkFilesInput.files) : [];
+    if (files.length === 0) {
+      showBulkError("Selezionare almeno un file da caricare.");
+      return;
+    }
+
+    const targets = [];
+    if (bulkTargetServerCheck?.checked) {
+      const robotId = bulkServerRobotSelect?.value;
+      if (!robotId) {
+        showBulkError("Selezionare un robot per il caricamento sul server.");
+        return;
+      }
+      targets.push({
+        type: "server",
+        robotId,
+        directory: bulkServerSubpath?.value.trim() || undefined,
+      });
+    }
+
+    const checkedRobots = document.querySelectorAll(".bulk-robot-target-item:checked");
+    for (const chk of checkedRobots) {
+      const robotId = chk.getAttribute("data-robot-id");
+      if (robotId) {
+        targets.push({
+          type: "robot",
+          robotId,
+          directory: bulkRobotRemotepath?.value.trim() || undefined,
+        });
+      }
+    }
+
+    if (targets.length === 0) {
+      showBulkError("Selezionare almeno una destinazione (Server o Robot).");
+      return;
+    }
+
+    bulkUploadError?.classList.add("hidden");
+
+    try {
+      btnStartBulkUpload.disabled = true;
+      btnStartBulkUpload.textContent = "Verifica conflitti in corso...";
+
+      const preCheckRes = await apiClient.post("/api/transfers/bulk/pre-check", {
+        filenames: files.map((f) => f.name),
+        targets,
+      });
+
+      if (!preCheckRes.ok) {
+        const errData = await preCheckRes.json().catch(() => null);
+        const errObj = ErrorPresenter.formatError(errData);
+        showBulkError(errObj.userMessage);
+        btnStartBulkUpload.disabled = false;
+        btnStartBulkUpload.textContent = "🚀 Avvia Caricamento Massivo";
+        return;
+      }
+
+      const preCheck = await preCheckRes.json();
+      if (preCheck.hasConflicts) {
+        pendingBulkUpload = { files, targets };
+        showBulkConflictsModal(preCheck.conflicts);
+        btnStartBulkUpload.disabled = false;
+        btnStartBulkUpload.textContent = "🚀 Avvia Caricamento Massivo";
+        return;
+      }
+
+      await performBulkUpload(files, targets, false);
+    } catch (err) {
+      showBulkError(err.message || "Errore durante la verifica preventiva dei conflitti.");
+    } finally {
+      btnStartBulkUpload.disabled = false;
+      btnStartBulkUpload.textContent = "🚀 Avvia Caricamento Massivo";
+    }
+  });
+
+  function showBulkError(msg) {
+    if (bulkUploadError) {
+      bulkUploadError.textContent = msg;
+      bulkUploadError.classList.remove("hidden");
+    }
+  }
+
+  function showBulkConflictsModal(conflicts) {
+    if (!bulkConflictsList || !modalBulkConflicts) return;
+    bulkConflictsList.innerHTML = "";
+    for (const c of conflicts) {
+      const div = document.createElement("div");
+      div.style.marginBottom = "0.5rem";
+      div.innerHTML = `
+        <strong>${StateFormatter.escapeHtml(c.filename)}</strong> su 
+        <em>${c.target.type.toUpperCase()}:${StateFormatter.escapeHtml(c.target.robotId)}</em>
+        <br><small style="color: #64748b;">Percorso: ${StateFormatter.escapeHtml(c.destinationPath)}${c.existingSizeBytes ? ` (${StateFormatter.formatBytes(c.existingSizeBytes)})` : ''}</small>
+      `;
+      bulkConflictsList.appendChild(div);
+    }
+    modalBulkConflicts.classList.remove("hidden");
+  }
+
+  btnCloseBulkConflicts?.addEventListener("click", () => {
+    modalBulkConflicts?.classList.add("hidden");
+    pendingBulkUpload = null;
+    showNotification("Caricamento massivo annullato: i file esistenti sono stati preservati intatti.", "info");
+  });
+
+  btnBulkCancelConflicts?.addEventListener("click", () => {
+    modalBulkConflicts?.classList.add("hidden");
+    pendingBulkUpload = null;
+    showNotification("Caricamento massivo annullato: i file esistenti sono stati preservati intatti.", "info");
+  });
+
+  btnBulkConfirmOverwrite?.addEventListener("click", async () => {
+    modalBulkConflicts?.classList.add("hidden");
+    if (!pendingBulkUpload) return;
+    const { files, targets } = pendingBulkUpload;
+    pendingBulkUpload = null;
+    await performBulkUpload(files, targets, true);
+  });
+
+  async function performBulkUpload(files, targets, overwrite) {
+    if (bulkProgressContainer) bulkProgressContainer.classList.remove("hidden");
+    if (bulkProgressBar) bulkProgressBar.value = 0;
+    if (bulkProgressText) bulkProgressText.textContent = "0%";
+    if (bulkProgressStatus) bulkProgressStatus.textContent = "Invio in streaming verso il server...";
+
+    const formData = new FormData();
+    formData.append("targets", JSON.stringify(targets));
+    formData.append("overwrite", String(overwrite));
+    for (const file of files) {
+      formData.append("files", file, file.name);
+    }
+
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/transfers/bulk/upload", true);
+      xhr.withCredentials = true;
+
+      xhr.upload.onprogress = (evt) => {
+        if (evt.lengthComputable) {
+          const percent = Math.round((evt.loaded / evt.total) * 100);
+          if (bulkProgressBar) bulkProgressBar.value = percent;
+          if (bulkProgressText) bulkProgressText.textContent = `${percent}%`;
+          if (bulkProgressStatus) {
+            bulkProgressStatus.textContent = percent < 100
+              ? `Caricamento stream client -> server: ${percent}%`
+              : "Scrittura atomica e verifica checksum sulle destinazioni...";
+          }
+        }
+      };
+
+      const resultPromise = new Promise((resolve, reject) => {
+        xhr.onload = () => {
+          let data = null;
+          try { data = JSON.parse(xhr.responseText); } catch {}
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(data);
+          } else {
+            reject({ status: xhr.status, data });
+          }
+        };
+        xhr.onerror = () => reject({ status: 0, message: "Errore di rete durante il caricamento massivo." });
+      });
+
+      xhr.send(formData);
+      const resData = await resultPromise;
+
+      if (bulkProgressBar) bulkProgressBar.value = 100;
+      if (bulkProgressText) bulkProgressText.textContent = "100%";
+      if (bulkProgressStatus) bulkProgressStatus.textContent = "Caricamento completato con successo!";
+
+      showNotification(`Caricamento massivo completato: ${resData.summary?.completed || 0} completati, ${resData.summary?.failed || 0} falliti, ${resData.summary?.skipped || 0} saltati.`, "success");
+
+      if (bulkResultsContainer && resData.results) {
+        bulkResultsContainer.classList.remove("hidden");
+        let html = '<div style="font-weight: 600; margin-bottom: 0.5rem;">Esito per Destinazione:</div><ul style="padding-left: 1rem; font-size: 0.85rem;">';
+        for (const fileRes of resData.results) {
+          html += `<li><strong>${StateFormatter.escapeHtml(fileRes.filename)}</strong>:`;
+          html += '<ul style="margin: 0.25rem 0;">';
+          for (const t of fileRes.targets) {
+            const ok = t.success;
+            html += `<li style="color: ${ok ? '#16a34a' : '#dc2626'}">${t.target.type.toUpperCase()}:${StateFormatter.escapeHtml(t.target.robotId)} - ${ok ? 'Successo' : StateFormatter.escapeHtml(t.error || 'Fallito')}</li>`;
+          }
+          html += '</ul></li>';
+        }
+        html += '</ul>';
+        bulkResultsContainer.innerHTML = html;
+      }
+
+      const currentRobotId = fsRobotIdInput?.value.trim() || fsRemoteRobotIdInput?.value.trim();
+      if (currentRobotId) {
+        loadServerFilesystem(currentRobotId, currentFsPath);
+      }
+    } catch (err) {
+      if (err.status === 409 && err.data?.conflicts) {
+        pendingBulkUpload = { files, targets };
+        showBulkConflictsModal(err.data.conflicts);
+      } else {
+        const errObj = ErrorPresenter.formatError(err.data || err);
+        showBulkError(errObj.userMessage);
+      }
+    }
+  }
+
   // Avvio controllo sessione iniziale
   initSession();
 });

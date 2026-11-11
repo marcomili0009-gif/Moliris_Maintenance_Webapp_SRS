@@ -55,6 +55,7 @@
         <!-- Barra Azioni Flotta -->
         <div class="actions-bar">
           <button id="btn-register-robot" class="btn btn-accent hidden">＋ Registra Nuovo Robot</button>
+          <button id="btn-bulk-upload-open" class="btn btn-primary">📦 Caricamento Massivo Multi-Target</button>
           <button id="btn-refresh-fleet" class="btn btn-secondary">🔄 Aggiorna Flotta</button>
         </div>
 
@@ -520,6 +521,95 @@
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" id="btn-cancel-delete">Annulla</button>
           <button type="button" class="btn btn-danger" id="btn-confirm-delete">Elimina Definitivamente</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL 9: Caricamento Massivo Multi-Target (RF-TRF-001..005, RNF-PERF-001) -->
+    <div id="modal-bulk-upload" class="modal hidden">
+      <div class="modal-content modal-large">
+        <div class="modal-header">
+          <h3>📦 Caricamento Massivo Multi-Target</h3>
+          <button class="btn-close" id="btn-close-bulk-upload">&times;</button>
+        </div>
+        <div class="modal-body">
+          <form id="form-bulk-upload">
+            <div class="form-group">
+              <label for="bulk-files-input"><strong>1. Seleziona uno o più file:</strong></label>
+              <input type="file" id="bulk-files-input" name="bulkFiles" multiple class="form-control" style="padding: 0.5rem; border: 1px dashed #cbd5e1; border-radius: 6px; width: 100%;">
+              <small id="bulk-files-count" style="display: block; margin-top: 0.25rem; color: #64748b;">Nessun file selezionato (massimo configurato: 20 file).</small>
+              <ul id="bulk-files-preview-list" style="max-height: 120px; overflow-y: auto; margin-top: 0.5rem; padding-left: 1.25rem; font-size: 0.875rem; color: #334155;"></ul>
+            </div>
+
+            <div class="form-group" style="margin-top: 1rem;">
+              <label><strong>2. Seleziona le destinazioni di caricamento:</strong></label>
+              <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.75rem; margin-top: 0.5rem;">
+                <div style="margin-bottom: 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid #e2e8f0;">
+                  <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: 600; cursor: pointer;">
+                    <input type="checkbox" id="bulk-target-server-check"> 🗄️ Server Locale (Archivio Dedicato Robot)
+                  </label>
+                  <div id="bulk-server-config" style="margin-top: 0.5rem; margin-left: 1.5rem;" class="hidden">
+                    <label for="bulk-server-robot-select" style="font-size: 0.85rem;">Associa al Robot:</label>
+                    <select id="bulk-server-robot-select" style="padding: 0.25rem 0.5rem; border-radius: 4px; border: 1px solid #cbd5e1; margin-right: 0.5rem;"></select>
+                    <label for="bulk-server-subpath" style="font-size: 0.85rem;">Cartella destinazione:</label>
+                    <input type="text" id="bulk-server-subpath" placeholder="es. upload" value="upload" style="padding: 0.25rem 0.5rem; border-radius: 4px; border: 1px solid #cbd5e1; width: 140px;">
+                  </div>
+                </div>
+
+                <div>
+                  <div style="font-weight: 600; margin-bottom: 0.25rem;">🌐 Robot Remoti (SFTP Diretto):</div>
+                  <div id="bulk-robots-checkboxes" style="max-height: 140px; overflow-y: auto; padding-left: 0.5rem;">
+                    <div style="color: #64748b; font-size: 0.85rem;">Nessun robot attivo disponibile.</div>
+                  </div>
+                  <div style="margin-top: 0.5rem; margin-left: 0.5rem;">
+                    <label for="bulk-robot-remotepath" style="font-size: 0.85rem;">Cartella remota robot:</label>
+                    <input type="text" id="bulk-robot-remotepath" placeholder="es. /upload" value="/upload" style="padding: 0.25rem 0.5rem; border-radius: 4px; border: 1px solid #cbd5e1; width: 140px;">
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Barra di avanzamento progressiva (RNF-PERF-001, CA-TRF-002) -->
+            <div id="bulk-progress-container" class="hidden" style="margin-top: 1rem; background: #f1f5f9; padding: 0.75rem; border-radius: 8px;">
+              <div style="display: flex; justify-content: space-between; font-size: 0.875rem; margin-bottom: 0.25rem;">
+                <span id="bulk-progress-status">Caricamento in corso...</span>
+                <span id="bulk-progress-text">0%</span>
+              </div>
+              <progress id="bulk-progress-bar" value="0" max="100" style="width: 100%; height: 12px;"></progress>
+            </div>
+
+            <!-- Risultati / Riepilogo per target -->
+            <div id="bulk-results-container" class="hidden" style="margin-top: 1rem; max-height: 160px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0.5rem;"></div>
+
+            <div id="bulk-upload-error" class="error-message hidden" style="margin-top: 0.75rem;"></div>
+          </form>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-bulk-upload">Chiudi</button>
+          <button type="button" class="btn btn-primary" id="btn-start-bulk-upload">🚀 Avvia Caricamento Massivo</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL 10: Rilevamento Collisioni e Conflitti Sovrascrittura (RF-TRF-009, RF-TRF-011, RNF-REL-004) -->
+    <div id="modal-bulk-conflicts" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 style="color: #b91c1c;">⚠️ Rilevati Conflitti di Sovrascrittura</h3>
+          <button class="btn-close" id="btn-close-bulk-conflicts">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p>I seguenti file esistono già nelle destinazioni selezionate:</p>
+          <div id="bulk-conflicts-list" style="max-height: 160px; overflow-y: auto; background: #fef2f2; border: 1px solid #f87171; border-radius: 6px; padding: 0.75rem; margin: 1rem 0; font-family: monospace; font-size: 0.85rem;"></div>
+          <div class="alert-box alert-warning">
+            <strong>Politica di integrità e atomicità (RF-TRF-011, RNF-REL-004):</strong>
+            Se confermi, i file preesistenti verranno sostituiti in modo atomico solo al termine del trasferimento e verifica del checksum.<br>
+            Se annulli, l'intera operazione verrà interrotta immediatamente e i file originari resteranno completamente intatti e inalterati.
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-bulk-cancel-conflicts">Annulla Operazione (Conserva Esistenti)</button>
+          <button type="button" class="btn btn-danger" id="btn-bulk-confirm-overwrite">Sovrascrivi Confermati</button>
         </div>
       </div>
     </div>

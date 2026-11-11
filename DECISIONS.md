@@ -70,6 +70,8 @@ Tutti i parametri di runtime del sistema sono centralizzati nelle variabili d'am
 | `MOLIRIS_INITIAL_ADMIN_PASSWORD` | string | `undefined` | Variabile d'ambiente | Opzionale. Password iniziale per l'utente amministratore (utilizzata unicamente da `scripts/seed-users.ts` se non fornito file protetto). | RF-AUTH-001 |
 | `MOLIRIS_INITIAL_OPERATOR_PASSWORD` | string | `undefined` | Variabile d'ambiente | Opzionale. Password iniziale per l'utente operatore (utilizzata unicamente da `scripts/seed-users.ts` se non fornito file protetto). | RF-AUTH-001 |
 | `MOLIRIS_TRANSFER_POLL_INTERVAL_MS` | number | `1000` | Variabile globale browser | Opzionale. Configurazione frontend (`window.MOLIRIS_TRANSFER_POLL_INTERVAL_MS`) per la frequenza di polling dello stato dei trasferimenti attivi. | RF-TRF-006, §5.1 |
+| `MOLIRIS_MAX_BULK_UPLOAD_FILES` | number | `20` | Variabile d'ambiente | Opzionale. Intero positivo `>= 1`. Limite massimo di file caricabili simultaneamente per singola richiesta massiva. | RF-TRF-001, RNF-MNT-001, RNF-PERF-003 |
+| `MOLIRIS_DEFAULT_OPERATOR_ALLOWED_PATHS` | string | `"/upload,/shared,/logs,/backups"` | Variabile d'ambiente | Opzionale. Percorsi/pattern consentiti per il ruolo Operatore sul filesystem server e remoto (jail RBAC fail-closed). | RF-AUTH-005, RF-SRVFS-005, RNF-SEC-004, RNF-SEC-005 |
 
 ---
 

@@ -176,4 +176,24 @@ try {
 } catch (err: any) {
   assert(err.message.includes("Valore non valido per MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"));
 }
+
+// Test 11: Parametri caricamento massivo e percorsi consentiti operatore (RNF-MNT-001)
+const configBulk = loadAndValidateConfig({
+  ...validEnv,
+  MOLIRIS_MAX_BULK_UPLOAD_FILES: "15",
+  MOLIRIS_DEFAULT_OPERATOR_ALLOWED_PATHS: "/upload, /shared, /custom",
+});
+assert.strictEqual(configBulk.maxBulkUploadFiles, 15);
+assert.deepStrictEqual(configBulk.defaultOperatorAllowedPaths, ["/upload", "/shared", "/custom"]);
+
+try {
+  loadAndValidateConfig({
+    ...validEnv,
+    MOLIRIS_MAX_BULK_UPLOAD_FILES: "0",
+  });
+  assert.fail("Avrebbe dovuto rifiutare maxBulkUploadFiles < 1");
+} catch (err: any) {
+  assert(err.message.includes("MOLIRIS_MAX_BULK_UPLOAD_FILES"));
+}
+
 console.log("PASS: Test configurazione completato con successo.");

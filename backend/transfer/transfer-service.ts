@@ -33,6 +33,15 @@ import {
 import { resolveChecksumAlgorithm, ChecksumTransformStream } from "./checksum-service.ts";
 import { ProgressTrackerStream } from "./transfer-progress.ts";
 import { PipelinedSftpReadStream, PipelinedSftpWriteStream } from "../remote-fs/remote-fs-service.ts";
+import {
+  type BulkTarget,
+  type BulkFileConflict,
+  type BulkPreCheckRequest,
+  type BulkPreCheckResponse,
+  type BulkUploadTargetResult,
+  type BulkFileResult,
+  type BulkUploadResponse,
+} from "./bulk-transfer-models.ts";
 
 export class TransferService {
   private config: SystemConfiguration;
@@ -125,6 +134,10 @@ export class TransferService {
       clearInterval(this.hourlyCleanupTimer);
       this.hourlyCleanupTimer = null;
     }
+  }
+
+  public getConfig(): SystemConfiguration {
+    return this.config;
   }
 
   private getChunkSize(): number {
@@ -2244,5 +2257,380 @@ export class TransferService {
         details: { reason },
       });
     } catch {}
+  }
+
+  /**
+   * Pre-check preventivo dei conflitti di sovrascrittura per upload massivo multi-target (RF-TRF-009, RF-TRF-011).
+   * Verifica le autorizzazioni, il jail dell'operatore e l'esistenza preventiva dei file sulle destinazioni.
+   */
+  public async checkBulkConflicts(
+    context: AuthorizedContext,
+    request: BulkPreCheckRequest
+  ): Promise<BulkPreCheckResponse> {
+    const filenames = request.filenames || [];
+    const targets = request.targets || [];
+
+    if (filenames.length === 0 || targets.length === 0) {
+      return {
+        hasConflicts: false,
+        conflicts: [],
+        allowedTargetsCount: targets.length,
+        totalChecks: 0,
+      };
+    }
+
+    const maxFiles = this.config.maxBulkUploadFiles || 20;
+    if (filenames.length > maxFiles) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Numero di file selezionati (${filenames.length}) superiore al limite massimo consentito (${maxFiles}).`
+      );
+    }
+
+    const conflicts: BulkFileConflict[] = [];
+    let totalChecks = 0;
+
+    for (const target of targets) {
+      const robot = await this.robotRepository.findById(target.robotId);
+      if (!robot) {
+        throw new MolirisAppError(
+          ErrorCode.MISSING_ROBOT_PARAMS,
+          `Robot target '${target.robotId}' non trovato nell'anagrafica.`
+        );
+      }
+
+      if (target.type === "server") {
+        this.assertAuthorized(context, robot, [AppPermission.FS_SERVER_UPLOAD]);
+        this.serverFsService.assertOperatorAccess(context, target.directory, "UPLOAD");
+
+        for (const fname of filenames) {
+          totalChecks++;
+          const safeFilename = this.sanitizeFilename(fname);
+          const relPath = target.directory
+            ? path.posix.join(path.posix.normalize(target.directory), safeFilename)
+            : safeFilename;
+          const fullPath = await this.serverFsService.resolveRobotPath(robot, relPath);
+
+          if (fs.existsSync(fullPath)) {
+            try {
+              const st = await fs.promises.stat(fullPath);
+              conflicts.push({
+                filename: fname,
+                target,
+                destinationPath: fullPath,
+                existingSizeBytes: st.size,
+                existingModifiedAt: st.mtime,
+              });
+            } catch {
+              conflicts.push({
+                filename: fname,
+                target,
+                destinationPath: fullPath,
+              });
+            }
+          }
+        }
+      } else if (target.type === "robot") {
+        this.assertRobotAccessible(robot);
+        this.assertAuthorized(context, robot, [AppPermission.FS_REMOTE_UPLOAD]);
+
+        const managedConn = await this.connectionManager.acquireConnection(context.username, robot);
+        try {
+          const sftp = await managedConn.getSftpClient();
+          const targetDir = target.directory || "/";
+
+          for (const fname of filenames) {
+            totalChecks++;
+            const safeFilename = this.sanitizeFilename(fname);
+            const remotePath = await this.remoteFsService.resolveAndValidatePath(
+              path.posix.join(targetDir, safeFilename),
+              context,
+              robot,
+              sftp
+            );
+
+            try {
+              const stats = await new Promise<any>((resolve, reject) => {
+                sftp.stat(remotePath, (err, res) => (err ? reject(err) : resolve(res)));
+              });
+              conflicts.push({
+                filename: fname,
+                target,
+                destinationPath: remotePath,
+                existingSizeBytes: stats.size,
+                existingModifiedAt: stats.mtime ? new Date(stats.mtime * 1000) : undefined,
+              });
+            } catch {
+              // File non presente, nessun conflitto
+            }
+          }
+        } finally {
+          // Connessione gestita dal connection pool (RobotConnectionManager)
+        }
+      }
+    }
+
+    return {
+      hasConflicts: conflicts.length > 0,
+      conflicts,
+      allowedTargetsCount: targets.length,
+      totalChecks,
+    };
+  }
+
+  /**
+   * Esegue il caricamento massivo multi-target con streaming a memoria costante (< 10 MB RAM)
+   * e sostituzione atomica via staging e file temporanei .part (RF-TRF-001..005, RF-TRF-009, RF-TRF-011, RNF-REL-004).
+   */
+  public async executeBulkUpload(
+    context: AuthorizedContext,
+    options: {
+      targets: BulkTarget[];
+      overwrite: boolean;
+      stagedFiles: Array<{
+        filename: string;
+        stagingPath: string;
+        sizeBytes: number;
+        sha256: string;
+      }>;
+    }
+  ): Promise<BulkUploadResponse> {
+    const { targets, overwrite, stagedFiles } = options;
+    const results: BulkFileResult[] = [];
+    let completed = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    for (const staged of stagedFiles) {
+      const fileTargetResults: BulkUploadTargetResult[] = [];
+      let allTargetsSuccess = true;
+
+      for (const target of targets) {
+        const robot = await this.robotRepository.findById(target.robotId);
+        if (!robot) {
+          fileTargetResults.push({
+            target,
+            success: false,
+            destinationPath: "",
+            error: `Robot '${target.robotId}' non trovato.`,
+          });
+          allTargetsSuccess = false;
+          failed++;
+          continue;
+        }
+
+        if (target.type === "server") {
+          try {
+            this.assertAuthorized(context, robot, [AppPermission.FS_SERVER_UPLOAD]);
+            this.serverFsService.assertOperatorAccess(context, target.directory, "UPLOAD");
+
+            const safeFilename = this.sanitizeFilename(staged.filename);
+            const relPath = target.directory
+              ? path.posix.join(path.posix.normalize(target.directory), safeFilename)
+              : safeFilename;
+            const finalPath = await this.serverFsService.resolveRobotPath(robot, relPath);
+
+            // Verifica esistenza e politica sovrascrittura
+            if (fs.existsSync(finalPath) && !overwrite) {
+              fileTargetResults.push({
+                target,
+                success: false,
+                destinationPath: finalPath,
+                error: "File già esistente. Sovrascrittura non autorizzata.",
+              });
+              allTargetsSuccess = false;
+              skipped++;
+              continue;
+            }
+
+            // Sostituzione atomica: scrittura in file temporaneo .part e rename solo a checksum verificato
+            const tempDir = await this.serverFsService.ensureTempDirectory(robot);
+            const transferId = crypto.randomUUID();
+            const tempPartPath = path.join(tempDir, `bulk_${transferId}.part`);
+
+            // Stream da staging a tempPartPath con calcolo sha256
+            const hash = crypto.createHash("sha256");
+            let writtenBytes = 0;
+            const readStream = fs.createReadStream(staged.stagingPath);
+            const writeStream = fs.createWriteStream(tempPartPath, { mode: 0o600 });
+
+            await new Promise<void>((resolve, reject) => {
+              readStream.on("data", (chunk: Buffer | string) => {
+                const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                hash.update(buf);
+                writtenBytes += buf.length;
+              });
+              readStream.on("error", reject);
+              writeStream.on("error", reject);
+              writeStream.on("finish", () => resolve());
+              readStream.pipe(writeStream);
+            }).catch(async (err) => {
+              try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
+              throw err;
+            });
+
+            const computedHash = hash.digest("hex");
+            if (computedHash !== staged.sha256) {
+              try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
+              throw new MolirisAppError(
+                ErrorCode.INTEGRITY_CHECK_FAILED,
+                "Checksum non corrispondente durante il salvataggio sul server."
+              );
+            }
+
+            // Sostituzione atomica via rename
+            await fs.promises.rename(tempPartPath, finalPath);
+
+            fileTargetResults.push({
+              target,
+              success: true,
+              destinationPath: finalPath,
+              bytesTransferred: writtenBytes,
+              checksum: computedHash,
+            });
+            completed++;
+          } catch (err: any) {
+            fileTargetResults.push({
+              target,
+              success: false,
+              destinationPath: "",
+              error: err.userMessage || err.message || "Errore durante scrittura su server",
+            });
+            allTargetsSuccess = false;
+            failed++;
+          }
+        } else if (target.type === "robot") {
+          let managedConn: ManagedRobotConnection | null = null;
+          let tempRemotePartPath = "";
+          try {
+            this.assertRobotAccessible(robot);
+            this.assertAuthorized(context, robot, [AppPermission.FS_REMOTE_UPLOAD]);
+
+            managedConn = await this.connectionManager.acquireConnection(context.username, robot);
+            const sftp = await managedConn.getSftpClient();
+
+            const safeFilename = this.sanitizeFilename(staged.filename);
+            const targetDir = target.directory || "/";
+            const finalRemotePath = await this.remoteFsService.resolveAndValidatePath(
+              path.posix.join(targetDir, safeFilename),
+              context,
+              robot,
+              sftp
+            );
+
+            // Verifica esistenza preventiva
+            const exists = await new Promise<boolean>((resolve) => {
+              sftp.stat(finalRemotePath, (err) => resolve(!err));
+            });
+            if (exists && !overwrite) {
+              fileTargetResults.push({
+                target,
+                success: false,
+                destinationPath: finalRemotePath,
+                error: "File già esistente sul robot. Sovrascrittura non autorizzata.",
+              });
+              allTargetsSuccess = false;
+              skipped++;
+              continue;
+            }
+
+            // Scrittura atomica remota via .part temporaneo nello stesso filesystem/cartella
+            const transferId = crypto.randomUUID();
+            tempRemotePartPath = path.posix.join(
+              path.posix.dirname(finalRemotePath),
+              `.tmp_moliris_${transferId}.part`
+            );
+
+            const hash = crypto.createHash("sha256");
+            let writtenBytes = 0;
+            const readStream = fs.createReadStream(staged.stagingPath);
+            const remoteWriteStream = new PipelinedSftpWriteStream(sftp, tempRemotePartPath, {
+              flags: "w",
+              mode: 0o600,
+            });
+
+            await new Promise<void>((resolve, reject) => {
+              readStream.on("data", (chunk: Buffer | string) => {
+                const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                hash.update(buf);
+                writtenBytes += buf.length;
+              });
+              readStream.on("error", reject);
+              remoteWriteStream.on("error", reject);
+              remoteWriteStream.on("finish", () => resolve());
+              readStream.pipe(remoteWriteStream);
+            }).catch(async (err) => {
+              try {
+                await new Promise<void>((res) => sftp.unlink(tempRemotePartPath, () => res()));
+              } catch {}
+              throw err;
+            });
+
+            const computedHash = hash.digest("hex");
+            if (computedHash !== staged.sha256) {
+              try {
+                await new Promise<void>((res) => sftp.unlink(tempRemotePartPath, () => res()));
+              } catch {}
+              throw new MolirisAppError(
+                ErrorCode.INTEGRITY_CHECK_FAILED,
+                "Checksum non corrispondente durante il trasferimento al robot."
+              );
+            }
+
+            // Sostituzione atomica sul robot via SFTP rename
+            await new Promise<void>((resolve, reject) => {
+              sftp.rename(tempRemotePartPath, finalRemotePath, (err) => {
+                if (err) return reject(err);
+                resolve();
+              });
+            });
+
+            fileTargetResults.push({
+              target,
+              success: true,
+              destinationPath: finalRemotePath,
+              bytesTransferred: writtenBytes,
+              checksum: computedHash,
+            });
+            completed++;
+          } catch (err: any) {
+            if (tempRemotePartPath && managedConn) {
+              try {
+                const sftp = await managedConn.getSftpClient();
+                await new Promise<void>((res) => sftp.unlink(tempRemotePartPath, () => res()));
+              } catch {}
+            }
+            fileTargetResults.push({
+              target,
+              success: false,
+              destinationPath: "",
+              error: err.userMessage || err.message || "Errore durante trasferimento al robot",
+            });
+            allTargetsSuccess = false;
+            failed++;
+          } finally {
+            // Connessione gestita dal pool (RobotConnectionManager)
+          }
+        }
+      }
+
+      results.push({
+        filename: staged.filename,
+        sizeBytes: staged.sizeBytes,
+        targets: fileTargetResults,
+        overallSuccess: allTargetsSuccess,
+      });
+    }
+
+    return {
+      success: failed === 0,
+      totalFiles: stagedFiles.length,
+      results,
+      summary: {
+        completed,
+        failed,
+        skipped,
+      },
+    };
   }
 }

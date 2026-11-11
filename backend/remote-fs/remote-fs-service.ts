@@ -393,29 +393,73 @@ export class RemoteFilesystemService {
     // 3. Normalizzazione POSIX standard
     const normalized = path.posix.normalize(targetPath);
 
-    // 4. Applicazione restrizioni configurate se presenti (Step 3)
-    // Se non configurate, l'accesso reale è determinato esclusivamente dai permessi dell'account Linux (RF-FS-007)
-    if (this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0) {
-      const isAllowed = this.config.remoteFsAllowedPaths.some((allowed) => {
-        const normAllowed = path.posix.normalize(allowed.trim());
-        return (
-          normalized === normAllowed ||
-          normalized.startsWith(normAllowed.endsWith("/") ? normAllowed : `${normAllowed}/`)
-        );
-      });
+    // 4. Applicazione restrizioni configurate e Jail RBAC Operatore vs Admin (RF-AUTH-005, RNF-SEC-004, RNF-SEC-005)
+    const roles = context.roles || [];
+    const isAdmin = roles.some((r) => {
+      const lower = r.toLowerCase();
+      return lower === "amministratore" || lower === "admin";
+    });
 
-      if (!isAllowed) {
-        await this.recordSecurityViolation(
-          context.username,
-          robot.id,
-          "PATH_OUTSIDE_ALLOWED_RESTRICTIONS",
-          { requestedPath: normalized, allowedPaths: this.config.remoteFsAllowedPaths }
-        );
-        throw new MolirisAppError(
-          ErrorCode.INSUFFICIENT_PERMISSIONS,
-          `Accesso negato: il percorso '${normalized}' è esterno ai percorsi configurati consentiti`,
-          `Accesso al percorso non consentito dalle restrizioni di sistema configurate.`
-        );
+    if (!isAdmin) {
+      // Ruolo Operatore: limitato rigorosamente alle sole cartelle consentite (jail)
+      const allowedPaths =
+        this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0
+          ? this.config.remoteFsAllowedPaths
+          : this.config.defaultOperatorAllowedPaths;
+
+      if (allowedPaths && allowedPaths.length > 0) {
+        const isAllowed = allowedPaths.some((allowed) => {
+          let normAllowed = path.posix.normalize(allowed.trim());
+          if (!normAllowed.startsWith("/")) {
+            normAllowed = "/" + normAllowed;
+          }
+          return (
+            normalized === normAllowed ||
+            normalized.startsWith(normAllowed.endsWith("/") ? normAllowed : `${normAllowed}/`)
+          );
+        });
+
+        if (!isAllowed) {
+          await this.recordSecurityViolation(
+            context.username,
+            robot.id,
+            "PATH_OUTSIDE_ALLOWED_RESTRICTIONS",
+            { requestedPath: normalized, allowedPaths }
+          );
+          throw new MolirisAppError(
+            ErrorCode.INSUFFICIENT_PERMISSIONS,
+            `Accesso negato: il percorso '${normalized}' è esterno ai percorsi configurati consentiti per l'operatore`,
+            `Accesso al percorso non consentito dalle restrizioni di sistema configurate per il ruolo operatore.`
+          );
+        }
+      }
+    } else {
+      // Ruolo Amministratore: se configurata remoteFsAllowedPaths a livello perimetrale di sistema, verifica solo quella
+      if (this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0) {
+        const isAllowed = this.config.remoteFsAllowedPaths.some((allowed) => {
+          let normAllowed = path.posix.normalize(allowed.trim());
+          if (!normAllowed.startsWith("/")) {
+            normAllowed = "/" + normAllowed;
+          }
+          return (
+            normalized === normAllowed ||
+            normalized.startsWith(normAllowed.endsWith("/") ? normAllowed : `${normAllowed}/`)
+          );
+        });
+
+        if (!isAllowed) {
+          await this.recordSecurityViolation(
+            context.username,
+            robot.id,
+            "PATH_OUTSIDE_ALLOWED_RESTRICTIONS",
+            { requestedPath: normalized, allowedPaths: this.config.remoteFsAllowedPaths }
+          );
+          throw new MolirisAppError(
+            ErrorCode.INSUFFICIENT_PERMISSIONS,
+            `Accesso negato: il percorso '${normalized}' è esterno ai percorsi configurati consentiti`,
+            `Accesso al percorso non consentito dalle restrizioni di sistema configurate.`
+          );
+        }
       }
     }
 

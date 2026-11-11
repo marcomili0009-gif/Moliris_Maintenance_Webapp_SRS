@@ -50,14 +50,80 @@ export class ServerFilesystemService {
   private fsRoot: string;
   private auditRepository: AuditRepository;
   private logger: MolirisLogger;
+  private operatorAllowedPaths?: string[];
 
-  constructor(fsRoot: string, auditRepository: AuditRepository, logger: MolirisLogger) {
+  constructor(
+    fsRoot: string,
+    auditRepository: AuditRepository,
+    logger: MolirisLogger,
+    operatorAllowedPaths?: string[]
+  ) {
     if (!fsRoot || fsRoot.trim() === "") {
       throw new Error("La root del filesystem server deve essere definita da configurazione (RNF-MNT-001, RF-SRVFS-001).");
     }
     this.fsRoot = path.resolve(fsRoot.trim());
     this.auditRepository = auditRepository;
     this.logger = logger;
+    this.operatorAllowedPaths = operatorAllowedPaths
+      ? operatorAllowedPaths
+          .map((p) => p.trim().replace(/^\/+|\/+$/g, ""))
+          .filter(Boolean)
+      : undefined;
+  }
+
+  /**
+   * Determina se il contesto appartiene a un ruolo operatore soggetto a jail/sandbox (RF-AUTH-005, RNF-SEC-004).
+   * Gli amministratori non sono soggetti al vincolo di jail.
+   */
+  public isOperator(context: AuthorizedContext): boolean {
+    const roles = context.roles || [];
+    const isAdmin = roles.some((r) => {
+      const lower = r.toLowerCase();
+      return lower === "amministratore" || lower === "admin";
+    });
+    return !isAdmin;
+  }
+
+  /**
+   * Verifica se un percorso relativo ricade all'interno delle cartelle consentite per l'operatore (RNF-SEC-005).
+   */
+  public isPathAllowedForOperator(relativeSubPath?: string): boolean {
+    if (!this.operatorAllowedPaths || this.operatorAllowedPaths.length === 0) {
+      return true;
+    }
+    if (!relativeSubPath || relativeSubPath.trim() === "" || relativeSubPath.trim() === ".") {
+      return false;
+    }
+    const norm = path.normalize(relativeSubPath.trim()).replace(/^\/+|\/+$/g, "");
+    if (norm === "" || norm === ".") {
+      return false;
+    }
+    return this.operatorAllowedPaths.some(
+      (allowed) => norm === allowed || norm.startsWith(allowed + "/") || norm.startsWith(allowed + path.sep)
+    );
+  }
+
+  /**
+   * Guardia di sicurezza per le restrizioni operatore (fail-closed, RNF-SEC-004, RF-SRVFS-005).
+   */
+  public assertOperatorAccess(
+    context: AuthorizedContext,
+    relativeSubPath?: string,
+    operation: string = "Accesso"
+  ): void {
+    if (this.isOperator(context) && this.operatorAllowedPaths && this.operatorAllowedPaths.length > 0) {
+      if (!this.isPathAllowedForOperator(relativeSubPath)) {
+        this.logger.warn(`Accesso negato per ruolo operatore al percorso server: ${relativeSubPath}`, {
+          userId: context.userId,
+          operation,
+        });
+        throw new MolirisAppError(
+          ErrorCode.INSUFFICIENT_PERMISSIONS,
+          `Operazione '${operation}' non consentita: percorso al di fuori delle cartelle consentite per il ruolo operatore.`,
+          "Accesso non consentito: la cartella richiesta è esterna ai percorsi autorizzati per l'operatore."
+        );
+      }
+    }
   }
 
   /**
@@ -276,6 +342,13 @@ export class ServerFilesystemService {
   ): Promise<ServerFileItem[]> {
     this.assertAuthorizedContext(context, robot, AppPermission.FS_SERVER_NAVIGATE);
 
+    const isOp = this.isOperator(context);
+    const isRoot = !relativeSubPath || relativeSubPath.trim() === "" || relativeSubPath.trim() === ".";
+
+    if (isOp && !isRoot) {
+      this.assertOperatorAccess(context, relativeSubPath, "LIST");
+    }
+
     const targetDir = await this.resolveRobotPath(robot, relativeSubPath);
 
     try {
@@ -294,6 +367,11 @@ export class ServerFilesystemService {
       for (const entry of entries) {
         // La directory nascosta .tmp e nomi riservati non compaiono negli elenchi (RNF-SEC-008, §11.1)
         if (entry.name === ".tmp" || entry.name === ".moliris_tmp" || entry.name.startsWith(".")) {
+          continue;
+        }
+
+        // Se l'utente è un operatore che visualizza la root e le restrizioni sono attive, filtra mostrando SOLO le cartelle consentite
+        if (isOp && isRoot && this.operatorAllowedPaths && this.operatorAllowedPaths.length > 0 && !this.operatorAllowedPaths.includes(entry.name)) {
           continue;
         }
 
@@ -335,6 +413,7 @@ export class ServerFilesystemService {
     relativeFilePath: string
   ): Promise<Readable> {
     this.assertAuthorizedContext(context, robot, AppPermission.FS_SERVER_DOWNLOAD);
+    this.assertOperatorAccess(context, relativeFilePath, "DOWNLOAD");
 
     const targetPath = await this.resolveRobotPath(robot, relativeFilePath);
     if (!fs.existsSync(targetPath)) {
@@ -360,6 +439,7 @@ export class ServerFilesystemService {
     options?: { overwrite?: boolean; confirmed?: boolean }
   ): Promise<Writable> {
     this.assertAuthorizedContext(context, robot, AppPermission.FS_SERVER_UPLOAD);
+    this.assertOperatorAccess(context, relativeFilePath, "UPLOAD");
 
     const targetPath = await this.resolveRobotPath(robot, relativeFilePath);
 
@@ -404,6 +484,7 @@ export class ServerFilesystemService {
     relativeFilePath: string
   ): Promise<void> {
     this.assertAuthorizedContext(context, robot, AppPermission.FS_SERVER_DELETE);
+    this.assertOperatorAccess(context, relativeFilePath, "DELETE");
 
     const targetPath = await this.resolveRobotPath(robot, relativeFilePath);
     if (!fs.existsSync(targetPath)) {

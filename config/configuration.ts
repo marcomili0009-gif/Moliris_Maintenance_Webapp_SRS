@@ -95,6 +95,10 @@ export interface SystemConfiguration {
   transferConcurrencyQueuePolicy?: "rifiuta" | "coda";
   transferIdleTimeoutMs?: number;
 
+  // 22. Parametri per Caricamento Massivo Multi-Target e Jail RBAC Operatore (RNF-MNT-001, RF-AUTH-005, RF-SRVFS-005)
+  maxBulkUploadFiles?: number;
+  defaultOperatorAllowedPaths?: string[];
+
   // Modalità verifica integrità trasferimenti (Problema A1, default baseline: stream)
   transferVerifyMode?: "stream" | "readback";
 
@@ -397,6 +401,20 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     ? Number(env["MOLIRIS_DEFAULT_SSH_PORT"])
     : 22;
 
+  // Parametri Caricamento Massivo Multi-Target e Jail RBAC Operatore (RNF-MNT-001, RF-AUTH-005, RF-SRVFS-005)
+  const rawMaxBulk = env["MOLIRIS_MAX_BULK_UPLOAD_FILES"] ?? env["MAX_BULK_UPLOAD_FILES"];
+  if (rawMaxBulk !== undefined && (isNaN(Number(rawMaxBulk)) || Number(rawMaxBulk) < 1)) {
+    throw new Error("Valore non valido per MOLIRIS_MAX_BULK_UPLOAD_FILES: deve essere un intero positivo >= 1.");
+  }
+  const maxBulkUploadFiles = rawMaxBulk && !isNaN(Number(rawMaxBulk)) && Number(rawMaxBulk) >= 1
+    ? Math.floor(Number(rawMaxBulk))
+    : 20;
+
+  const rawOperatorAllowed = env["MOLIRIS_DEFAULT_OPERATOR_ALLOWED_PATHS"] ?? env["DEFAULT_OPERATOR_ALLOWED_PATHS"];
+  const defaultOperatorAllowedPaths = rawOperatorAllowed
+    ? rawOperatorAllowed.split(",").map(p => p.trim()).filter(Boolean)
+    : ["upload", "shared", "logs", "backups", "configs"];
+
   return {
     serverFilesystemRoot,
     pollingIntervalSeconds,
@@ -449,5 +467,7 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     stateFileFormat,
     stateFileSchemaPath,
     defaultSshPort,
+    maxBulkUploadFiles,
+    defaultOperatorAllowedPaths,
   };
 }
