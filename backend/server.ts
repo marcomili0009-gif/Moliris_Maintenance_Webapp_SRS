@@ -5,6 +5,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { type SystemConfiguration, loadAndValidateConfig } from "../config/configuration.ts";
+import { loadConfig, registerAppConfig, type AppConfig } from "../src/config/index.ts";
 import { resolveMongoConfig } from "../config/mongodb.ts";
 import { MolirisLogger } from "../logging/logger.ts";
 import { SessionManager } from "./auth/session-manager.ts";
@@ -58,6 +59,7 @@ export interface ServerDependencies {
   transferService?: TransferService;
   roleMapping?: RolePermissionMapping;
   db?: any;
+  appConfig?: AppConfig;
 }
 
 export function createServer(
@@ -80,6 +82,10 @@ export function createServer(
     logger: false, // Disabilitato il logger standard in favore del logger applicativo con redazione attiva
   });
 
+  // Registrazione e validazione configurazione dell'applicazione conforme all'SRS §2
+  const appConfig = deps.appConfig || loadConfig();
+  registerAppConfig(app, appConfig);
+
   // Intestazioni difensive globali per il frontend.
   app.addHook("onSend", async (_request, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
@@ -99,10 +105,11 @@ export function createServer(
   // Registrazione supporto WebSocket per canale terminale interattivo (RF-SSH-004, §5.4)
   app.register(websocket);
 
-  // Supporto upload multipart in streaming per caricamento massivo (RF-TRF-001, RNF-PERF-001)
+  // Supporto upload multipart in streaming per caricamento massivo (RF-TRF-001, RNF-PERF-001, SRS §2)
   app.register(multipart, {
     limits: {
-      files: config.maxBulkUploadFiles || 20,
+      fileSize: appConfig.maxFileUploadBytes,
+      files: appConfig.bulkUploadConfig.maxConcurrentFiles || config.maxBulkUploadFiles || 20,
     },
   });
 
@@ -404,6 +411,8 @@ export async function startServer(): Promise<void> {
   let mongoClient: MongoClient | undefined;
 
   try {
+    // Caricamento e validazione rigida della configurazione conforme all'SRS §2
+    const appConfig = loadConfig();
     const config = loadAndValidateConfig(process.env);
     const mongoConfig = resolveMongoConfig();
     mongoClient = new MongoClient(mongoConfig.uri);
@@ -454,6 +463,7 @@ export async function startServer(): Promise<void> {
       userRepository,
       connectionManager,
       db,
+      appConfig,
     });
 
     server.addHook("onClose", async () => {

@@ -83,6 +83,7 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionMapping = {
     AppPermission.FLEET_VIEW,
     AppPermission.STATUS_VIEW,
     AppPermission.STATUS_REFRESH_MANUAL,
+    AppPermission.TERMINAL_OPEN,
     AppPermission.FS_REMOTE_NAVIGATE,
     AppPermission.FS_REMOTE_DOWNLOAD,
     AppPermission.FS_REMOTE_UPLOAD,

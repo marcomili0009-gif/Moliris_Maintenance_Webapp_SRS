@@ -200,12 +200,6 @@ export class TerminalService {
     initialDimensions: { cols?: number; rows?: number },
     userSessionId: string
   ): Promise<TerminalSession> {
-    if (!user.roles.includes("amministratore")) {
-      throw new MolirisAppError(
-        ErrorCode.INSUFFICIENT_PERMISSIONS,
-        "Il terminale SSH è riservato agli utenti amministratori."
-      );
-    }
     if (!hasPermission(user, AppPermission.TERMINAL_OPEN, robotId, this.roleMapping)) {
       await this.auditRepository.record({
         userId: user.username,

@@ -58,6 +58,11 @@ const validConfig: SystemConfiguration = {
 };
 
 const server = createServer(validConfig, logger);
+assert(server.hasDecorator("appConfig"), "Il server Fastify deve avere il decoratore 'appConfig'");
+assert.strictEqual(server.appConfig.sessionInactivityTimeoutMinutes, 30);
+assert.strictEqual(server.appConfig.maxFileUploadBytes, 3 * 1024 * 1024 * 1024);
+assert.strictEqual(server.appConfig.bulkUploadConfig.chunkSizeBytes, 2 * 1024 * 1024);
+
 const address = await server.listen({ port: 0, host: "127.0.0.1" });
 const port = (server.server.address() as any).port;
 

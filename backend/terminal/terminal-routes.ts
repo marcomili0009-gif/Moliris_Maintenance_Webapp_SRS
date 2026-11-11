@@ -61,9 +61,6 @@ export function registerTerminalRoutes(
     async (req: FastifyRequest, reply: FastifyReply) => {
       try {
         const user = req.molirisUser!;
-        if (!user.roles.includes("amministratore")) {
-          return reply.status(403).send({ message: "Il terminale SSH è riservato agli utenti amministratori." });
-        }
         const robotId = extractRobotId(req)!;
         const userSessionId = req.molirisSession!.sessionId;
 
@@ -181,11 +178,6 @@ export function registerTerminalRoutes(
       if (!user || !user.enabled) {
         socket.send(JSON.stringify({ type: "error", message: "Account utente disabilitato o non trovato." }));
         socket.close(4401, "User Disabled");
-        return;
-      }
-      if (!user.roles.includes("amministratore")) {
-        socket.send(JSON.stringify({ type: "error", message: "Il terminale SSH è riservato agli utenti amministratori." }));
-        socket.close(4403, "Forbidden");
         return;
       }
 
