@@ -4,6 +4,9 @@ import { StatusBadge } from "../common/StatusBadge.tsx";
 
 interface FleetTableProps {
   robots: RobotSummaryDto[];
+  totalRobotsCount?: number;
+  isFilterActive?: boolean;
+  onResetFilters?: () => void;
   loading: boolean;
   onOpenDetail: (robotId: string) => void;
   onOpenEdit: (robot: RobotSummaryDto) => void;
@@ -17,6 +20,9 @@ interface FleetTableProps {
 
 export const FleetTable: React.FC<FleetTableProps> = ({
   robots,
+  totalRobotsCount = 0,
+  isFilterActive = false,
+  onResetFilters,
   loading,
   onOpenDetail,
   onOpenEdit,
@@ -30,17 +36,14 @@ export const FleetTable: React.FC<FleetTableProps> = ({
   return (
     <section className="fleet-section">
       <h3>Flotta Robot Registrati</h3>
-      <p id="fleet-count" className="fleet-count">
-        {loading
-          ? "Caricamento flotta in corso..."
-          : `Totale robot registrati: ${robots.length}`}
-      </p>
 
       <div className="table-responsive">
-        <table className="data-table" id="fleet-table">
+        <table className="data-table table table-hover table-striped align-middle" id="fleet-table">
           <thead>
             <tr>
-              <th>Nome Visualizzato</th>
+              <th>Cliente</th>
+              <th>Impianto</th>
+              <th>Nome Robot</th>
               <th>ID</th>
               <th>Host : Porta</th>
               <th>Username Remoto</th>
@@ -53,14 +56,30 @@ export const FleetTable: React.FC<FleetTableProps> = ({
           <tbody id="fleet-table-body">
             {loading && robots.length === 0 ? (
               <tr>
-                <td colSpan={8} className="text-center py-4">
+                <td colSpan={10} className="text-center py-4">
                   Caricamento flotta in corso...
                 </td>
               </tr>
             ) : robots.length === 0 ? (
               <tr>
-                <td colSpan={8} className="text-center py-4">
-                  Nessun robot registrato nella flotta.
+                <td colSpan={10} className="text-center py-4" id="fleet-empty-cell">
+                  {isFilterActive ? (
+                    <span>
+                      Nessun robot corrisponde ai filtri.
+                      {onResetFilters && (
+                        <button
+                          type="button"
+                          className="btn btn-link btn-sm ms-2"
+                          id="btn-reset-filters-table"
+                          onClick={onResetFilters}
+                        >
+                          Azzera filtri
+                        </button>
+                      )}
+                    </span>
+                  ) : (
+                    <span>Nessun robot registrato nella flotta.</span>
+                  )}
                 </td>
               </tr>
             ) : (
@@ -70,6 +89,8 @@ export const FleetTable: React.FC<FleetTableProps> = ({
 
                 return (
                   <tr key={robot.id} data-robot-id={robot.id}>
+                    <td>{robot.customerName || "—"}</td>
+                    <td>{robot.plantName || "—"}</td>
                     <td>
                       <strong>{robot.displayName}</strong>
                     </td>
