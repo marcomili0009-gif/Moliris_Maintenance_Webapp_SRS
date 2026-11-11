@@ -23,57 +23,69 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, error }) => {
   };
 
   return (
-    <section id="login-section" className="card">
-      <div className="header">
-        <h1>Moliris Maintenance Webapp</h1>
-        <p className="subtitle">Accesso autorizzato alla flotta robot mobili</p>
-      </div>
+    <main className="container py-5">
+      <div className="row justify-content-center">
+        <div className="col-12 col-md-7 col-lg-5">
+          <section id="login-section" className="card shadow-sm border p-4 bg-white">
+            <div className="header mb-4 text-center">
+              <h1 className="h3 mb-2 text-dark fw-bold">MOLIRIS Ground Control Station</h1>
+              <p className="subtitle text-muted mb-0">Accesso autorizzato alla flotta robot mobili</p>
+            </div>
 
-      <form id="login-form" onSubmit={handleSubmit}>
-        <div className="form-group">
-          <label htmlFor="username">Username:</label>
-          <input
-            type="text"
-            id="username"
-            name="username"
-            ref={usernameRef}
-            required
-            autoComplete="username"
-            autoFocus
-            defaultValue=""
-          />
+            <form id="login-form" onSubmit={handleSubmit}>
+              <div className="form-group mb-3">
+                <label htmlFor="username" className="form-label fw-semibold">
+                  Username:
+                </label>
+                <input
+                  type="text"
+                  className="form-control"
+                  id="username"
+                  name="username"
+                  ref={usernameRef}
+                  required
+                  autoComplete="username"
+                  autoFocus
+                  defaultValue=""
+                />
+              </div>
+
+              <div className="form-group mb-4">
+                <label htmlFor="password" className="form-label fw-semibold">
+                  Password:
+                </label>
+                <input
+                  type="password"
+                  className="form-control"
+                  id="password"
+                  name="password"
+                  ref={passwordRef}
+                  required
+                  autoComplete="current-password"
+                  defaultValue=""
+                />
+              </div>
+
+              <DoubleSubmitButton
+                type="submit"
+                id="btn-login"
+                className="btn btn-success w-100 py-2 fw-semibold"
+                pendingText="Accesso in corso..."
+              >
+                Login
+              </DoubleSubmitButton>
+            </form>
+
+            <div
+              id="login-error"
+              className={`alert alert-danger mt-3 mb-0 text-center ${error ? "" : "d-none"}`}
+              role="alert"
+            >
+              {error}
+            </div>
+          </section>
         </div>
-
-        <div className="form-group">
-          <label htmlFor="password">Password:</label>
-          <input
-            type="password"
-            id="password"
-            name="password"
-            ref={passwordRef}
-            required
-            autoComplete="current-password"
-            defaultValue=""
-          />
-        </div>
-
-        <DoubleSubmitButton
-          type="submit"
-          id="btn-login"
-          className="btn btn-primary"
-          pendingText="Accesso in corso..."
-        >
-          Accedi
-        </DoubleSubmitButton>
-      </form>
-
-      <div
-        id="login-error"
-        className={`error-message ${error ? "" : "hidden"}`}
-        role="alert"
-      >
-        {error}
       </div>
-    </section>
+    </main>
   );
 };

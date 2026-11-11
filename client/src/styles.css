@@ -1,4 +1,4 @@
-/* Requisiti: RNF-UX-002, RNF-UX-003, SRS §2.5 Google Chrome */
+/* Requisiti: RNF-UX-002, RNF-UX-003, SRS §2.5 Google Chrome, SRS §5.1 */
 
 :root {
   /* Palette Bootstrap 5 coerente (Punto 5 UI) */
@@ -32,9 +32,8 @@
   --bs-dark: #212529;
   --bs-dark-hover: #424649;
 
-  /* Alias semantici applicativi mappati su palette Bootstrap */
+  /* Alias semantici applicativi */
   --primary-color: var(--bs-primary);
-  --primary-hover: var(--bs-primary-hover);
   --bg-color: var(--bs-light);
   --card-bg: #ffffff;
   --text-color: var(--bs-dark);
@@ -46,473 +45,35 @@
   --success-text: var(--bs-success-text);
 }
 
-* {
-  box-sizing: border-box;
+body {
+  background-color: var(--bs-light);
+  color: var(--bs-dark);
+  min-height: 100vh;
   margin: 0;
   padding: 0;
-}
-
-body, button, input, select, textarea {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
-body {
-  background-color: var(--bg-color);
-  color: var(--text-color);
+#app {
+  width: 100%;
   min-height: 100vh;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+}
+
+/* Navbar brand link */
+.navbar-brand {
+  display: inline-flex;
   align-items: center;
-  padding: 1.5rem;
+  padding: 0;
 }
 
-#app {
-  width: 100%;
-  max-width: 900px;
+.navbar-brand:focus-visible {
+  outline: 2px solid var(--bs-primary-subtle);
+  outline-offset: 4px;
 }
 
-.card {
-  background-color: var(--card-bg);
-  border-radius: 8px;
-  border: 1px solid var(--border-color);
-  box-shadow: 0 1px 3px rgba(33, 37, 41, 0.08);
-  padding: 2rem;
-}
-
-.header {
-  margin-bottom: 2rem;
-  text-align: center;
-}
-
-.subtitle {
-  color: var(--text-muted);
-  margin-top: 0.5rem;
-}
-
-.form-group {
-  margin-bottom: 1.25rem;
-}
-
-label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-weight: 500;
-}
-
-input {
-  width: 100%;
-  padding: 0.75rem;
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  font-size: 1rem;
-  color: var(--bs-dark);
-  background-color: #ffffff;
-}
-
-input:focus {
-  outline: none;
-  border-color: var(--bs-primary);
-  box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25);
-}
-
-.btn {
-  display: inline-block;
-  padding: 0.65rem 1.15rem;
-  font-size: 0.95rem;
-  font-weight: 500;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background-color 0.15s ease-in-out, border-color 0.15s ease-in-out, color 0.15s ease-in-out;
-}
-
-#login-form .btn-primary {
-  width: 100%;
-}
-
-.btn-primary {
-  background-color: var(--bs-primary);
-  border-color: var(--bs-primary);
-  color: #ffffff;
-}
-
-.btn-primary:hover {
-  background-color: var(--bs-primary-hover);
-  border-color: var(--bs-primary-hover);
-}
-
-.btn-secondary {
-  background-color: var(--bs-secondary);
-  border-color: var(--bs-secondary);
-  color: #ffffff;
-}
-
-.btn-secondary:hover {
-  background-color: var(--bs-secondary-hover);
-  border-color: var(--bs-secondary-hover);
-}
-
-.btn-success,
-.btn-accent {
-  background-color: var(--bs-success);
-  border-color: var(--bs-success);
-  color: #ffffff;
-}
-
-.btn-success:hover,
-.btn-accent:hover {
-  background-color: var(--bs-success-hover);
-  border-color: var(--bs-success-hover);
-}
-
-.btn-light {
-  background-color: var(--bs-light);
-  border-color: var(--border-color);
-  color: var(--bs-dark);
-}
-
-.btn-light:hover {
-  background-color: var(--bs-light-hover);
-}
-
-.btn-dark {
-  background-color: var(--bs-dark);
-  border-color: var(--bs-dark);
-  color: #ffffff;
-}
-
-.btn-dark:hover {
-  background-color: var(--bs-dark-hover);
-}
-
-.hidden {
-  display: none !important;
-}
-
-.banner {
-  padding: 1rem;
-  margin-bottom: 1rem;
-  border-radius: 6px;
-  font-weight: 500;
-}
-
-.banner-warning {
-  background-color: var(--bs-warning-subtle);
-  color: var(--bs-warning-text);
-  border: 1px solid var(--bs-warning);
-}
-
-.error-message {
-  margin-top: 1rem;
-  padding: 0.75rem;
-  background-color: var(--error-bg);
-  color: var(--error-text);
-  border: 1px solid var(--bs-danger);
-  border-radius: 6px;
-  text-align: center;
-  font-size: 0.95rem;
-}
-
-.dashboard-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid var(--border-color);
-  padding-bottom: 1rem;
-  margin-bottom: 1.5rem;
-}
-
-.badge {
-  background-color: #e8f0fe;
-  color: #174ea6;
-  padding: 0.2rem 0.5rem;
-  border-radius: 4px;
-  font-size: 0.9rem;
-  font-weight: 600;
-  margin-right: 0.5rem;
-}
-
-.actions-bar {
-  display: flex;
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
-}
-
-.fleet-box {
-  background-color: #f8fafd;
-  border: 2px dashed var(--border-color);
-  border-radius: 6px;
-  padding: 3rem 1.5rem;
-  text-align: center;
-}
-
-.placeholder-notice h3 {
-  margin-bottom: 0.5rem;
-}
-
-.placeholder-notice p {
-  color: var(--text-muted);
-  margin-bottom: 1rem;
-}
-
-.status-indicator {
-  display: inline-block;
-  padding: 0.4rem 0.8rem;
-  background-color: #e6f4ea;
-  color: #137333;
-  border-radius: 16px;
-  font-size: 0.85rem;
-  font-weight: 600;
-}
-
-/* Stili componente Esplora Filesystem Server e Remoto (RF-SRVFS-002, RF-FS-001..003) */
-.fs-browser-card {
-  margin-top: 2rem;
-  background-color: #ffffff;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  padding: 1.5rem;
-}
-
-.fs-tab-bar {
-  display: flex;
-  gap: 0.5rem;
-  border-bottom: 2px solid #e0e0e0;
-  margin-bottom: 1.5rem;
-}
-
-.fs-tab-btn {
-  background: none;
-  border: none;
-  border-bottom: 3px solid transparent;
-  padding: 0.75rem 1.25rem;
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: all 0.2s ease;
-  margin-bottom: -2px;
-}
-
-.fs-tab-btn:hover {
-  color: var(--primary-color);
-  background-color: #f8fafd;
-}
-
-.fs-tab-btn.active {
-  color: var(--primary-color);
-  border-bottom-color: var(--primary-color);
-  background-color: #ffffff;
-}
-
-.fs-panel {
-  display: block;
-}
-
-.fs-panel.hidden {
-  display: none;
-}
-
-.fs-subtitle {
-  display: block;
-  font-size: 0.85rem;
-  color: var(--text-muted);
-  margin-top: 0.25rem;
-}
-
-.fs-item-link {
-  color: #1a73e8;
-  font-style: italic;
-}
-
-.fs-item-special {
-  color: #e37400;
-  font-family: monospace;
-}
-
-.fs-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
-.fs-robot-selector {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.fs-robot-selector input {
-  width: 180px;
-  padding: 0.4rem 0.6rem;
-}
-
-.fs-navigation-bar {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  background-color: #f1f3f4;
-  padding: 0.6rem 1rem;
-  border-radius: 4px;
-  margin-bottom: 1rem;
-}
-
-.fs-breadcrumb {
-  font-family: monospace;
-  color: var(--text-color);
-}
-
-.fs-table-container {
-  overflow-x: auto;
-}
-
-.fs-table {
-  width: 100%;
-  border-collapse: collapse;
-  text-align: left;
-}
-
-.fs-table th, .fs-table td {
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid #e0e0e0;
-}
-
-.fs-table th {
-  background-color: #f8f9fa;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-
-.fs-table tbody tr:hover {
-  background-color: #f8fafd;
-}
-
-.fs-item-dir {
-  cursor: pointer;
-  color: var(--primary-color);
-  font-weight: 500;
-}
-
-.fs-item-dir:hover {
-  text-decoration: underline;
-}
-
-.fs-empty-msg {
-  text-align: center;
-  color: var(--text-muted);
-  padding: 2rem !important;
-}
-
-/* --- Stili Gestione Flotta (Prompt 6) --- */
-#app {
-  max-width: 1200px;
-}
-
-.fleet-section {
-  margin-top: 1.5rem;
-  margin-bottom: 2rem;
-}
-
-.fleet-section h3 {
-  margin-bottom: 1rem;
-  color: var(--text-color);
-}
-
-.table-responsive {
-  overflow-x: auto;
-  border: 1px solid #e0e0e0;
-  border-radius: 6px;
-  background-color: #fff;
-}
-
-.data-table {
-  width: 100%;
-  border-collapse: collapse;
-  text-align: left;
-  font-size: 0.9rem;
-}
-
-.data-table th, .data-table td {
-  padding: 0.75rem 0.85rem;
-  border-bottom: 1px solid #eee;
-  vertical-align: middle;
-}
-
-.data-table th {
-  background-color: #f1f3f4;
-  color: #333;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.data-table tbody tr:hover {
-  background-color: #f8fafd;
-}
-
-.empty-cell {
-  text-align: center;
-  color: var(--text-muted);
-  padding: 2rem !important;
-}
-
-/* Badges di stato separati (§10.2, RF-ROB-014) */
-.badge-status {
-  display: inline-block;
-  padding: 0.25rem 0.55rem;
-  border-radius: 4px;
-  font-size: 0.78rem;
-  font-weight: 600;
-  text-transform: capitalize;
-}
-
-.badge-attivo { background-color: var(--bs-success-subtle); color: var(--bs-success-text); }
-.badge-disabilitato { background-color: var(--bs-danger-subtle); color: var(--bs-danger-text); }
-.badge-raggiungibile { background-color: var(--bs-success-subtle); color: var(--bs-success-text); }
-.badge-non_raggiungibile { background-color: var(--bs-danger-subtle); color: var(--bs-danger-text); }
-.badge-non_verificato { background-color: var(--bs-warning-subtle); color: var(--bs-warning-text); }
-.badge-errore { background-color: var(--bs-danger-subtle); color: var(--bs-danger-text); }
-.badge-avviso { background-color: var(--bs-warning-subtle); color: var(--bs-warning-text); }
-.badge-nodata { background-color: var(--bs-secondary-subtle); color: var(--bs-secondary-text); font-style: italic; }
-
-.btn-sm {
-  padding: 0.35rem 0.65rem;
-  font-size: 0.82rem;
-}
-
-.btn-accent {
-  background-color: var(--bs-success);
-  border-color: var(--bs-success);
-  color: #ffffff;
-}
-.btn-accent:hover {
-  background-color: var(--bs-success-hover);
-  border-color: var(--bs-success-hover);
-}
-
-.btn-danger {
-  background-color: var(--bs-danger);
-  border-color: var(--bs-danger);
-  color: #ffffff;
-}
-.btn-danger:hover {
-  background-color: var(--bs-danger-hover);
-  border-color: var(--bs-danger-hover);
-}
-
-.btn-warning {
-  background-color: var(--bs-warning);
-  border-color: var(--bs-warning);
-  color: var(--bs-dark);
-}
-.btn-warning:hover {
-  background-color: var(--bs-warning-hover);
-  border-color: var(--bs-warning-hover);
-}
-
-/* Modals */
+/* Modals Overlay (React Modal component) */
 .modal {
   position: fixed;
   top: 0;
@@ -523,24 +84,25 @@ input:focus {
   display: flex;
   justify-content: center;
   align-items: center;
-  z-index: 1000;
+  z-index: 1055;
   padding: 1rem;
 }
 
 .modal.hidden {
-  display: none !important;
+  display: none;
 }
 
 .modal-content {
-  background-color: #fff;
+  background-color: #ffffff;
   border-radius: 8px;
   width: 100%;
   max-width: 600px;
   max-height: 90vh;
   overflow-y: auto;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
   display: flex;
   flex-direction: column;
+  border: 1px solid var(--border-color);
 }
 
 .modal-large {
@@ -552,17 +114,24 @@ input:focus {
   justify-content: space-between;
   align-items: center;
   padding: 1.25rem 1.5rem;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 1px solid var(--border-color);
 }
 
-.btn-close {
+.modal-header h3 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.btn-close-custom {
   background: none;
   border: none;
   font-size: 1.5rem;
   cursor: pointer;
   color: #777;
 }
-.btn-close:hover {
+
+.btn-close-custom:hover {
   color: #000;
 }
 
@@ -573,13 +142,13 @@ input:focus {
 
 .modal-footer {
   padding: 1rem 1.5rem;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border-color);
   display: flex;
   justify-content: flex-end;
   gap: 0.75rem;
 }
 
-/* Grid per form complessi */
+/* Grid per form complessi (Modali Registrazione ed Edit Robot) */
 .form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -591,7 +160,7 @@ input:focus {
 }
 
 .form-fieldset {
-  border: 1px solid #ccc;
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 1rem;
   margin-top: 0.5rem;
@@ -600,7 +169,8 @@ input:focus {
 .form-fieldset legend {
   font-weight: 600;
   padding: 0 0.5rem;
-  color: #333;
+  font-size: 0.95rem;
+  color: var(--bs-dark);
 }
 
 .sftp-subgrid {
@@ -611,21 +181,21 @@ input:focus {
 }
 
 .field-error {
-  color: #d93025;
+  color: var(--bs-danger);
   font-size: 0.8rem;
   margin-top: 0.25rem;
   min-height: 1rem;
 }
 
 .field-hint {
-  color: #666;
+  color: var(--text-muted);
   font-size: 0.8rem;
   margin-top: 0.2rem;
   display: block;
 }
 
 .required {
-  color: #d93025;
+  color: var(--bs-danger);
   font-weight: bold;
 }
 
@@ -642,7 +212,7 @@ input:focus {
 }
 
 .feature-card {
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 1rem;
   display: flex;
@@ -652,13 +222,13 @@ input:focus {
 }
 
 .feature-enabled {
-  background-color: #f6fbf7;
-  border-color: #c6e7ce;
+  background-color: var(--bs-success-subtle);
+  border-color: var(--bs-success);
 }
 
 .feature-disabled {
-  background-color: #f9f9f9;
-  border-color: #e5e5e5;
+  background-color: var(--bs-light);
+  border-color: var(--border-color);
   opacity: 0.8;
 }
 
@@ -678,39 +248,8 @@ input:focus {
 
 .feature-reason {
   font-size: 0.8rem;
-  color: #666;
+  color: var(--text-muted);
   margin-top: 0.5rem;
-}
-
-.alert-box {
-  padding: 0.85rem 1rem;
-  border-radius: 4px;
-  font-size: 0.9rem;
-  margin-bottom: 1rem;
-}
-
-.alert-warning {
-  background-color: var(--bs-warning-subtle);
-  border-left: 4px solid var(--bs-warning);
-  color: var(--bs-warning-text);
-}
-
-.alert-success {
-  background-color: var(--bs-success-subtle);
-  border-left: 4px solid var(--bs-success);
-  color: var(--bs-success-text);
-}
-
-.alert-danger {
-  background-color: var(--bs-danger-subtle);
-  border-left: 4px solid var(--bs-danger);
-  color: var(--bs-danger-text);
-}
-
-.alert-info {
-  background-color: var(--bs-primary-subtle);
-  border-left: 4px solid var(--bs-primary);
-  color: var(--bs-primary-text);
 }
 
 .details-grid {
@@ -723,7 +262,7 @@ input:focus {
 .detail-item strong {
   display: block;
   font-size: 0.8rem;
-  color: #666;
+  color: var(--text-muted);
   text-transform: uppercase;
 }
 
@@ -743,7 +282,7 @@ input:focus {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
 
 .terminal-modal-header {
@@ -771,13 +310,6 @@ input:focus {
   gap: 0.75rem;
 }
 
-.terminal-header-actions .btn-close {
-  color: #aaa;
-}
-.terminal-header-actions .btn-close:hover {
-  color: #fff;
-}
-
 .terminal-body {
   flex: 1;
   padding: 8px;
@@ -786,15 +318,13 @@ input:focus {
   position: relative;
 }
 
-.terminal-body,
-.terminal-body *,
-.xterm,
-.xterm *,
-.xterm-rows,
-.xterm-rows * {
-  font-family: "DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", Menlo, Monaco, Consolas, "Courier New", monospace !important;
-  letter-spacing: normal !important;
-  line-height: normal !important;
+.terminal-modal-window .terminal-body,
+.terminal-modal-window .terminal-body *,
+.terminal-body .xterm,
+.terminal-body .xterm-rows {
+  font-family: "DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", Menlo, Monaco, Consolas, "Courier New", monospace;
+  letter-spacing: normal;
+  line-height: normal;
 }
 
 .terminal-body .xterm {
@@ -812,9 +342,7 @@ input:focus {
   align-items: center;
 }
 
-/* ========================================================================= */
-/* MODULO TRASFERIMENTI FILE (Prompt 10, RF-TRF-001..014)                    */
-/* ========================================================================= */
+/* MODULO TRASFERIMENTI FILE (RF-TRF-001..014) */
 .transfers-list-container {
   padding: 1rem;
 }
@@ -827,7 +355,7 @@ input:focus {
 
 .transfer-card {
   background: #ffffff;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 1rem;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
@@ -861,48 +389,6 @@ input:focus {
   font-weight: 500;
 }
 
-.transfer-status-badge {
-  font-size: 0.75rem;
-  padding: 0.2rem 0.5rem;
-  border-radius: 4px;
-  font-weight: 600;
-}
-
-.transfer-status-IN_PROGRESS {
-  background: #dbeafe;
-  color: #1e40af;
-}
-
-.transfer-status-COMPLETED {
-  background: #dcfce7;
-  color: #166534;
-}
-
-.transfer-status-FAILED {
-  background: #fee2e2;
-  color: #991b1b;
-}
-
-.transfer-status-CANCELLED {
-  background: #f1f5f9;
-  color: #475569;
-}
-
-.transfer-status-QUEUED {
-  background: #fef3c7;
-  color: #92400e;
-}
-
-.transfer-status-INTEGRITY_CHECKING {
-  background: #f3e8ff;
-  color: #6b21a8;
-}
-
-.transfer-status-INTEGRITY_FAILED {
-  background: #fecdd3;
-  color: #9f1239;
-}
-
 .transfer-progress-bar-bg {
   width: 100%;
   height: 8px;
@@ -913,20 +399,20 @@ input:focus {
 
 .transfer-progress-bar-fill {
   height: 100%;
-  background-color: #2563eb;
+  background-color: var(--bs-primary);
   transition: width 0.2s ease;
 }
 
 .transfer-progress-bar-fill.completed {
-  background-color: #16a34a;
+  background-color: var(--bs-success);
 }
 
 .transfer-progress-bar-fill.failed {
-  background-color: #dc2626;
+  background-color: var(--bs-danger);
 }
 
 .transfer-progress-bar-fill.cancelled {
-  background-color: #64748b;
+  background-color: var(--bs-secondary);
 }
 
 .transfer-card-stats {
@@ -939,19 +425,107 @@ input:focus {
   gap: 0.5rem;
 }
 
-.transfer-action-btn {
-  padding: 0.25rem 0.5rem;
-  font-size: 0.75rem;
-  border-radius: 4px;
+/* Stili Filesystem Browser (Server e Remoto) */
+.fs-browser-card {
+  margin-top: 1rem;
 }
 
-.fs-action-btn-group {
+.fs-tab-bar {
   display: flex;
-  gap: 0.35rem;
-  flex-wrap: wrap;
+  gap: 0.5rem;
+  border-bottom: 2px solid var(--border-color);
+  margin-bottom: 1.5rem;
 }
 
-/* Stili di Gestione Centralizzata Errori (§9) e Stati Distinti (§10.2) */
+.fs-tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  padding: 0.75rem 1.25rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-bottom: -2px;
+}
+
+.fs-tab-btn:hover {
+  color: var(--primary-color);
+  background-color: var(--bs-light);
+}
+
+.fs-tab-btn.active {
+  color: var(--primary-color);
+  border-bottom-color: var(--primary-color);
+  background-color: #ffffff;
+}
+
+.fs-item-link {
+  color: var(--bs-primary);
+  font-style: italic;
+}
+
+.fs-item-special {
+  color: #e37400;
+  font-family: monospace;
+}
+
+.fs-navigation-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  background-color: var(--bs-light);
+  padding: 0.6rem 1rem;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+  border: 1px solid var(--border-color);
+}
+
+.fs-breadcrumb {
+  font-family: monospace;
+  color: var(--text-color);
+}
+
+.fs-table-container {
+  overflow-x: auto;
+}
+
+.fs-item-dir {
+  cursor: pointer;
+  color: var(--primary-color);
+  font-weight: 500;
+}
+
+.fs-item-dir:hover {
+  text-decoration: underline;
+}
+
+.fs-empty-msg {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 2rem;
+}
+
+/* Badges e stati (compatibilità con StatusBadge) */
+.badge-status {
+  display: inline-block;
+  padding: 0.25rem 0.55rem;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.badge-attivo { background-color: var(--bs-success-subtle); color: var(--bs-success-text); }
+.badge-disabilitato { background-color: var(--bs-danger-subtle); color: var(--bs-danger-text); }
+.badge-raggiungibile { background-color: var(--bs-success-subtle); color: var(--bs-success-text); }
+.badge-non_raggiungibile { background-color: var(--bs-danger-subtle); color: var(--bs-danger-text); }
+.badge-non_verificato { background-color: var(--bs-warning-subtle); color: var(--bs-warning-text); }
+.badge-errore { background-color: var(--bs-danger-subtle); color: var(--bs-danger-text); }
+.badge-avviso { background-color: var(--bs-warning-subtle); color: var(--bs-warning-text); }
+.badge-nodata { background-color: var(--bs-secondary-subtle); color: var(--bs-secondary-text); font-style: italic; }
+
 .badge-classification {
   font-size: 0.78rem;
   font-weight: 600;
@@ -963,15 +537,15 @@ input:focus {
 }
 
 .badge-recuperabile {
-  background-color: #e8f0fe;
-  color: #1967d2;
-  border: 1px solid #c2e7ff;
+  background-color: var(--bs-primary-subtle);
+  color: var(--bs-primary-text);
+  border: 1px solid var(--border-color);
 }
 
 .badge-amministrativo {
-  background-color: #fce8e6;
-  color: #c5221f;
-  border: 1px solid #f8b8b3;
+  background-color: var(--bs-danger-subtle);
+  color: var(--bs-danger-text);
+  border: 1px solid var(--border-color);
 }
 
 .error-code-badge {
@@ -983,686 +557,11 @@ input:focus {
   color: #444;
 }
 
-.alert-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.35rem;
-}
-
 .input-invalid {
-  border-color: #d93025 !important;
-  background-color: #fef7f7 !important;
+  border-color: var(--bs-danger);
+  background-color: var(--bs-danger-subtle);
 }
 
-.btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  pointer-events: none;
-}
-
-.spinner-inline {
-  display: inline-block;
-}
-
-.states-summary-card {
-  background-color: #f8f9fa;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 1rem;
-  margin-bottom: 1.25rem;
-}
-
-.state-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.4rem 0;
-  border-bottom: 1px solid #edf2f7;
-}
-
-.state-row:last-child {
-  border-bottom: none;
-}
-
-.state-label {
-  font-weight: 500;
-  font-size: 0.88rem;
-  color: #4a5568;
-}
-
-
-
-
-/* Navigazione a pagine separate con Palette Bootstrap (Punto 5 UI) */
-.app-logo-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.25rem 0.4rem 0.25rem 0;
-  margin-bottom: 0.35rem;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: #ffffff;
-  text-align: left;
-  cursor: pointer;
-  transition: opacity 0.15s ease, transform 0.15s ease;
-}
-
-.app-logo-btn:hover {
-  opacity: 0.9;
-}
-
-.app-logo-btn:focus-visible {
-  outline: 3px solid var(--bs-primary-subtle);
-  outline-offset: 2px;
-}
-
-.app-logo-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.app-logo-text-group {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.2;
-}
-
-.app-logo-title {
-  font-size: 1.25rem;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  color: #ffffff;
-}
-
-.app-logo-subtitle {
-  font-size: 0.85rem;
-  font-weight: 500;
-  color: var(--bs-light-hover);
-}
-
-#dashboard-section {
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  grid-template-rows: auto 1fr;
-  max-width: 1440px;
-  padding: 0;
-  overflow: hidden;
-}
-
-#dashboard-section > .dashboard-header {
-  grid-column: 1 / -1;
-  margin: 0;
-  padding: 1.25rem 1.75rem;
-  background: var(--bs-dark);
-  border: 0;
-  border-bottom: 4px solid var(--bs-primary);
-  color: #ffffff;
-}
-
-#dashboard-section .dashboard-header h2 {
-  color: #ffffff;
-}
-
-#dashboard-section .dashboard-header .user-info {
-  color: var(--bs-light);
-}
-
-#dashboard-section .dashboard-header .badge {
-  background: rgba(255, 255, 255, 0.16);
-  color: #ffffff;
-}
-
-#dashboard-section #btn-logout {
-  background: var(--bs-light);
-  border-color: var(--border-color);
-  color: var(--bs-dark);
-}
-
-#dashboard-section #btn-logout:hover {
-  background: var(--bs-light-hover);
-}
-
-#dashboard-section > .main-nav {
-  grid-column: 1;
-  grid-row: 2;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 0.4rem;
-  min-height: calc(100vh - 2rem);
-  padding: 1rem 0.75rem;
-  background: var(--bs-light);
-  border-right: 1px solid var(--border-color);
-}
-
-#dashboard-section .main-nav-btn {
-  width: 100%;
-  padding: 0.85rem 1rem;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--bs-dark);
-  text-align: left;
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-#dashboard-section .main-nav-btn:hover {
-  background: var(--bs-light-hover);
-}
-
-#dashboard-section .main-nav-btn.active {
-  background: var(--bs-primary);
-  color: #ffffff;
-}
-
-#dashboard-section > .dashboard-content {
-  grid-column: 2;
-  grid-row: 2;
-  min-width: 0;
-  padding: 1.5rem;
-}
-
-#dashboard-section .fleet-section,
-#dashboard-section .fs-browser-card {
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  background: #ffffff;
-  box-shadow: 0 4px 14px rgba(33, 37, 41, 0.06);
-}
-
-#fs-browser-section > .fs-tab-bar {
+.hidden {
   display: none;
-}
-
-@media (max-width: 850px) {
-  #dashboard-section {
-    display: flex;
-    flex-direction: column;
-  }
-
-  #dashboard-section > .dashboard-header,
-  #dashboard-section > .main-nav,
-  #dashboard-section > .dashboard-content {
-    width: 100%;
-  }
-
-  #dashboard-section > .main-nav {
-    position: sticky;
-    top: 0;
-    z-index: 20;
-    min-height: 0;
-    flex-direction: row;
-    overflow-x: auto;
-    border-right: 0;
-    border-bottom: 1px solid var(--border-color);
-  }
-
-  #dashboard-section .main-nav-btn {
-    width: auto;
-    white-space: nowrap;
-    text-align: center;
-  }
-
-  #dashboard-section > .dashboard-content {
-    padding: 1rem;
-  }
-}
-
-/* Barra dei Filtri Flotta (Punto 5 UI) */
-.fleet-filters-bar {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)) auto;
-  gap: 0.75rem;
-  align-items: end;
-  padding: 1rem;
-  margin-bottom: 1.25rem;
-  background-color: var(--bs-light);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-}
-
-.fleet-filters-bar .filter-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  min-width: 0;
-}
-
-.fleet-filters-bar .filter-field label {
-  margin-bottom: 0;
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--bs-dark);
-}
-
-.fleet-filters-bar .filter-field input {
-  padding: 0.5rem 0.65rem;
-  font-size: 0.9rem;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-}
-
-.fleet-filters-bar .filter-actions {
-  display: flex;
-  align-items: center;
-}
-
-@media (max-width: 650px) {
-  .fleet-filters-bar {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* Flotta: righe distinte e stati facili da leggere */
-#dashboard-section .fleet-section {
-  padding: 1.4rem;
-  border-top: 4px solid var(--bs-primary);
-}
-
-#fleet-table {
-  border-collapse: separate;
-  border-spacing: 0 0.65rem;
-}
-
-#fleet-table thead th {
-  position: sticky;
-  top: 0;
-  padding: 0.9rem 0.75rem;
-  background: var(--bs-dark);
-  color: #ffffff;
-}
-
-#fleet-table thead th:first-child {
-  border-radius: 8px 0 0 8px;
-}
-
-#fleet-table thead th:last-child {
-  border-radius: 0 8px 8px 0;
-}
-
-#fleet-table tbody tr {
-  background: #ffffff;
-  box-shadow: 0 2px 8px rgba(33, 37, 41, 0.08);
-}
-
-#fleet-table tbody td {
-  padding: 1rem 0.75rem;
-  border-top: 1px solid var(--border-color);
-  border-bottom: 1px solid var(--border-color);
-}
-
-#fleet-table tbody td:first-child {
-  border-left: 1px solid var(--border-color);
-  border-radius: 9px 0 0 9px;
-}
-
-#fleet-table tbody td:last-child {
-  border-right: 1px solid var(--border-color);
-  border-radius: 0 9px 9px 0;
-}
-
-#fleet-table tbody tr:hover td {
-  background: var(--bs-light);
-}
-
-#fleet-table tbody td:first-child strong {
-  color: var(--bs-primary);
-  font-size: 1rem;
-}
-
-#fleet-table .badge-status {
-  padding: 0.35rem 0.6rem;
-  border-radius: 999px;
-}
-
-#fleet-table .btn {
-  background: var(--bs-secondary);
-  border-color: var(--bs-secondary);
-  color: #ffffff;
-}
-
-#fleet-table .btn:hover {
-  background: var(--bs-secondary-hover);
-  border-color: var(--bs-secondary-hover);
-}
-
-@media (max-width: 850px) {
-  #dashboard-section .fleet-section {
-    padding: 0.85rem;
-  }
-
-  #fleet-table {
-    min-width: 1050px;
-  }
-}
-
-
-/* Pagina file: selezione e percorso in evidenza */
-#fs-browser-section {
-  padding: 1.25rem;
-  border-top: 4px solid var(--bs-primary);
-  border-radius: 12px;
-  background: #ffffff;
-  box-shadow: 0 4px 14px rgba(33, 37, 41, 0.06);
-}
-
-#fs-browser-section .fs-header {
-  padding: 1rem;
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  background: var(--bs-light);
-}
-
-#fs-browser-section .fs-header h3 {
-  color: var(--bs-dark);
-}
-
-#fs-browser-section .fs-robot-selector {
-  padding: 0.7rem;
-  border: 1px solid var(--border-color);
-  border-radius: 9px;
-  background: #ffffff;
-}
-
-#fs-browser-section .fs-robot-selector label {
-  color: var(--bs-dark);
-  font-weight: 700;
-}
-
-#fs-browser-section .fs-robot-selector input {
-  border-color: var(--border-color);
-}
-
-#fs-browser-section .fs-navigation-bar {
-  flex-wrap: wrap;
-  border: 1px solid var(--border-color);
-  border-left: 4px solid var(--bs-primary);
-  border-radius: 9px;
-  background: var(--bs-light);
-}
-
-#fs-browser-section .fs-breadcrumb strong {
-  color: var(--bs-primary);
-  overflow-wrap: anywhere;
-}
-
-#fs-browser-section .fs-table-container {
-  overflow-x: auto;
-  border: 1px solid var(--border-color);
-  border-radius: 9px;
-}
-
-#fs-browser-section .fs-table th {
-  background: var(--bs-dark);
-  color: #ffffff;
-}
-
-#fs-browser-section .fs-table tbody tr:hover {
-  background: var(--bs-light);
-}
-
-#fs-browser-section .fs-empty-msg {
-  padding: 2rem;
-  text-align: center;
-}
-
-@media (max-width: 760px) {
-  #fs-browser-section {
-    padding: 0.75rem;
-  }
-
-  #fs-browser-section .fs-header,
-  #fs-browser-section .fs-robot-selector,
-  #fs-browser-section .fs-navigation-bar {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  #fs-browser-section .fs-robot-selector input {
-    width: 100%;
-  }
-
-  #fs-browser-section .fs-actions {
-    margin-left: 0 !important;
-    flex-wrap: wrap;
-  }
-}
-
-
-/* Flotta robot: schede verticali */
-#dashboard-section #fleet-table {
-  display: block;
-  width: 100%;
-  min-width: 0;
-  border-collapse: separate;
-  border-spacing: 0;
-}
-
-#dashboard-section #fleet-table thead {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
-#dashboard-section #fleet-table tbody {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 1rem;
-}
-
-#dashboard-section #fleet-table tbody tr {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  padding: 0.5rem 1rem;
-  border: 1px solid var(--border-color);
-  border-left: 4px solid var(--bs-primary);
-  border-radius: 10px;
-  background: #ffffff;
-  box-shadow: 0 3px 12px rgba(33, 37, 41, 0.08);
-}
-
-#dashboard-section #fleet-table tbody td {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  min-width: 0;
-  padding: 0.65rem 0;
-  overflow-wrap: anywhere;
-  border: 0;
-  border-bottom: 1px solid var(--border-color);
-  border-radius: 0;
-  background: transparent;
-}
-
-#dashboard-section #fleet-table tbody td:last-child {
-  border-bottom: 0;
-}
-
-#dashboard-section #fleet-table tbody td::before {
-  color: var(--bs-secondary);
-  font-size: 0.76rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-
-#dashboard-section #fleet-table tbody td:nth-child(1)::before { content: "Nome visualizzato"; }
-#dashboard-section #fleet-table tbody td:nth-child(2)::before { content: "ID"; }
-#dashboard-section #fleet-table tbody td:nth-child(3)::before { content: "Cliente"; }
-#dashboard-section #fleet-table tbody td:nth-child(4)::before { content: "Impianto"; }
-#dashboard-section #fleet-table tbody td:nth-child(5)::before { content: "Host : Porta"; }
-#dashboard-section #fleet-table tbody td:nth-child(6)::before { content: "Username remoto"; }
-#dashboard-section #fleet-table tbody td:nth-child(7)::before { content: "Stato anagrafico"; }
-#dashboard-section #fleet-table tbody td:nth-child(8)::before { content: "Stato connessione"; }
-#dashboard-section #fleet-table tbody td:nth-child(9)::before { content: "Stato operativo"; }
-#dashboard-section #fleet-table tbody td:nth-child(10)::before { content: "Ultimo aggiornamento"; }
-#dashboard-section #fleet-table tbody td:nth-child(11)::before { content: "Avvisi / Errori"; }
-#dashboard-section #fleet-table tbody td:nth-child(12)::before { content: "Azioni"; }
-
-#dashboard-section #fleet-table tbody td:first-child strong {
-  color: var(--bs-primary);
-  font-size: 1.05rem;
-}
-
-#dashboard-section #fleet-table tbody tr:hover td {
-  background: transparent;
-}
-
-#dashboard-section #fleet-table tbody td.empty-cell {
-  display: block;
-  padding: 1rem;
-  border: 0;
-  text-align: center;
-}
-
-#dashboard-section #fleet-table tbody td.empty-cell::before {
-  content: none;
-}
-
-@media (min-width: 900px) {
-  #dashboard-section #fleet-table tbody {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 899px) {
-  #dashboard-section #fleet-table tbody {
-    grid-template-columns: 1fr;
-  }
-}
-
-
-/* Flotta robot: stato vuoto a tutta larghezza */
-#dashboard-section #fleet-table tbody tr:has(> td.empty-cell) {
-  display: block;
-  grid-column: 1 / -1;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-}
-
-#dashboard-section #fleet-table tbody td.empty-cell {
-  display: grid;
-  place-items: center;
-  width: 100%;
-  min-height: 110px;
-  box-sizing: border-box;
-  padding: 1.25rem;
-  border: 1px solid var(--border-color);
-  border-left: 4px solid var(--bs-primary);
-  border-radius: 10px;
-  background: #ffffff;
-  color: var(--bs-secondary);
-  text-align: center;
-}
-
-
-/* Flotta vuota: mostra le intestazioni in verticale */
-#dashboard-section #fleet-table:has(tbody td.empty-cell) thead {
-  position: static;
-  display: block;
-  width: auto;
-  height: auto;
-  margin: 0 0 1rem;
-  overflow: visible;
-  clip: auto;
-  white-space: normal;
-}
-
-#dashboard-section #fleet-table:has(tbody td.empty-cell) thead tr {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  overflow: hidden;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-}
-
-#dashboard-section #fleet-table:has(tbody td.empty-cell) thead th {
-  position: static;
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 0.7rem 1rem;
-  border: 0;
-  border-bottom: 1px solid var(--border-color);
-  border-radius: 0;
-  background: var(--bs-light);
-  color: var(--bs-dark);
-  text-align: left;
-}
-
-#dashboard-section #fleet-table:has(tbody td.empty-cell) thead th:last-child {
-  border-bottom: 0;
-}
-
-
-/* Contatore della flotta */
-#dashboard-section .fleet-count {
-  display: inline-block;
-  margin: -0.35rem 0 1rem;
-  padding: 0.4rem 0.75rem;
-  border-radius: 999px;
-  background: var(--bs-primary-subtle);
-  color: var(--bs-primary-text);
-  font-size: 0.9rem;
-  font-weight: 700;
-}
-
-
-/* Pulsante principale della flotta (Bootstrap Success) */
-#dashboard-section #btn-register-robot {
-  padding: 0.85rem 1.2rem;
-  border: 2px solid var(--bs-success);
-  border-radius: 8px;
-  background: var(--bs-success);
-  color: #ffffff;
-  font-size: 1rem;
-  font-weight: 700;
-  box-shadow: 0 3px 8px rgba(25, 135, 84, 0.22);
-  transition: background-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
-}
-
-#dashboard-section #btn-register-robot::before {
-  content: "+";
-  display: inline-block;
-  margin-right: 0.55rem;
-  font-size: 1.25rem;
-  line-height: 0.8;
-  vertical-align: -0.05rem;
-}
-
-#dashboard-section #btn-register-robot:hover {
-  background: var(--bs-success-hover);
-  border-color: var(--bs-success-hover);
-  box-shadow: 0 5px 12px rgba(25, 135, 84, 0.3);
-  transform: translateY(-1px);
-}
-
-#dashboard-section #btn-register-robot:focus-visible {
-  outline: 3px solid var(--bs-success-subtle);
-  outline-offset: 3px;
-}
-
-@media (max-width: 550px) {
-  #dashboard-section #btn-register-robot {
-    width: 100%;
-  }
 }

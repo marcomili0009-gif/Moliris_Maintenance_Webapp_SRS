@@ -1,13 +1,21 @@
 import React from "react";
 
-interface StatusBadgeProps {
-  type: "anagraphic" | "connection" | "operational" | "outcome" | "classification";
-  state?: string | null;
-  operationalData?: Record<string, unknown> | null;
+export interface StatusBadgeProps {
+  type: "anagraphic" | "connection" | "operational" | "classification";
+  state?: string;
+  operationalData?: unknown;
   isStale?: boolean;
   className?: string;
 }
 
+/**
+ * Badge di stato conforme alla palette semantica Bootstrap (SRS §5.1):
+ * - attivo/raggiungibile -> text-bg-success
+ * - disabilitato -> text-bg-secondary
+ * - rimosso/errore/non_raggiungibile -> text-bg-danger
+ * - avviso/stale -> text-bg-warning
+ * - non_verificato -> text-bg-info
+ */
 export const StatusBadge: React.FC<StatusBadgeProps> = ({
   type,
   state,
@@ -17,20 +25,24 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
 }) => {
   if (type === "anagraphic") {
     const s = state || "attivo";
-    const badgeClass = s === "attivo" ? "badge-attivo" : "badge-disabilitato";
-    return <span className={`badge-status ${badgeClass} ${className}`}>{s}</span>;
+    const bgClass =
+      s === "attivo"
+        ? "text-bg-success"
+        : s === "rimosso"
+        ? "text-bg-danger"
+        : "text-bg-secondary";
+    return <span className={`badge ${bgClass} badge-status ${className}`}>{s}</span>;
   }
 
   if (type === "connection") {
     const s = state || "non_verificato";
-    let badgeClass = "badge-non_verificato";
-    if (s === "raggiungibile") badgeClass = "badge-raggiungibile";
-    else if (s === "non_raggiungibile") badgeClass = "badge-non_raggiungibile";
-    else if (s === "errore") badgeClass = "badge-errore";
-    else if (s === "avviso") badgeClass = "badge-avviso";
+    let bgClass = "text-bg-info"; // non_verificato -> info
+    if (s === "raggiungibile") bgClass = "text-bg-success";
+    else if (s === "non_raggiungibile" || s === "errore") bgClass = "text-bg-danger";
+    else if (s === "avviso") bgClass = "text-bg-warning";
 
     return (
-      <span className={`badge-status ${badgeClass} ${className}`}>
+      <span className={`badge ${bgClass} badge-status ${className}`}>
         {s.replace(/_/g, " ")}
       </span>
     );
@@ -39,18 +51,18 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
   if (type === "operational") {
     if (!operationalData) {
       return (
-        <span className={`badge-status badge-nodata ${className}`}>
+        <span className={`badge text-bg-danger badge-status badge-nodata ${className}`}>
           dato non disponibile (RF-MON-005)
         </span>
       );
     }
 
     return (
-      <span className={`operational-state-container ${className}`}>
+      <span className="operational-container">
         <code>{JSON.stringify(operationalData)}</code>
         {isStale && (
           <span
-            className="badge-status badge-avviso ml-1.5"
+            className="badge text-bg-warning badge-status badge-avviso ms-2"
             title="Dato non aggiornato oltre la soglia temporale o ultimo tentativo fallito"
           >
             [Non più verificato]
@@ -62,10 +74,10 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
 
   if (type === "classification") {
     const isCritical = state === "richiede_intervento_amministrativo";
-    const badgeClass = isCritical ? "badge-amministrativo" : "badge-recuperabile";
+    const bgClass = isCritical ? "text-bg-danger" : "text-bg-warning";
     const text = isCritical ? "Intervento Amministrativo" : "Errore Recuperabile";
-    return <span className={`badge-status ${badgeClass} ${className}`}>{text}</span>;
+    return <span className={`badge ${bgClass} badge-status ${className}`}>{text}</span>;
   }
 
-  return <span className={`badge-status ${className}`}>{state || "-"}</span>;
+  return <span className={`badge text-bg-secondary badge-status ${className}`}>{state || "-"}</span>;
 };
