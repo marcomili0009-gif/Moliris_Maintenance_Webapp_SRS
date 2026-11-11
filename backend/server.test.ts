@@ -95,6 +95,25 @@ await new Promise<void>((resolve, reject) => {
   req.on("error", reject);
 });
 
+// Test 3: Verifica rotta asset statici /assets/:filename con Content-Type per immagini PNG
+const distAssetsDir = path.join(import.meta.dirname, "..", "dist", "frontend", "assets");
+fs.mkdirSync(distAssetsDir, { recursive: true });
+const testPngPath = path.join(distAssetsDir, "test-asset-route.png");
+fs.writeFileSync(testPngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+
+try {
+  const assetResponse = await server.inject({
+    method: "GET",
+    url: "/assets/test-asset-route.png",
+  });
+  assert.strictEqual(assetResponse.statusCode, 200, "La rotta /assets deve restituire 200 per file PNG esistenti");
+  assert.strictEqual(assetResponse.headers["content-type"], "image/png", "Il Content-Type deve essere image/png");
+} finally {
+  if (fs.existsSync(testPngPath)) {
+    fs.unlinkSync(testPngPath);
+  }
+}
+
 // Chiusura del server
 await server.close();
 
