@@ -14,6 +14,7 @@ import { BulkConflictsModal } from "../components/bulk/BulkConflictsModal.tsx";
 import { ConfirmDialog } from "../components/common/ConfirmDialog.tsx";
 import { NotificationBanner } from "../components/common/NotificationBanner.tsx";
 import { Modal } from "../components/common/Modal.tsx";
+import { FleetFilterBar } from "../components/fleet/FleetFilterBar.tsx";
 
 import { useFleet } from "../hooks/useFleet.ts";
 import { useFilesystem } from "../hooks/useFilesystem.ts";
@@ -25,6 +26,7 @@ interface DashboardViewProps {
   onLogout: () => Promise<void>;
   idleWarning: string | null;
   onDismissIdleWarning: () => void;
+  goHomeTrigger?: number;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -32,6 +34,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onLogout,
   idleWarning,
   onDismissIdleWarning,
+  goHomeTrigger,
 }) => {
   const isAdmin = user.roles.includes("amministratore");
   const [activeMainView, setActiveMainView] = useState<"fleet" | "server" | "remote" | "transfers">("fleet");
@@ -41,6 +44,45 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const fs = useFilesystem();
   const transfers = useTransfers(true);
   const terminal = useTerminal();
+
+  // Fleet Filter State
+  const [filteredRobots, setFilteredRobots] = useState<RobotSummaryDto[]>(fleet.robots);
+  const [isFilterActive, setIsFilterActive] = useState<boolean>(false);
+  const [filterResetTrigger, setFilterResetTrigger] = useState<number>(0);
+
+  const handleFilteredChange = React.useCallback(
+    (filtered: RobotSummaryDto[], active: boolean) => {
+      setFilteredRobots(filtered);
+      setIsFilterActive(active);
+    },
+    []
+  );
+
+  const handleResetFilters = React.useCallback(() => {
+    setFilterResetTrigger((prev) => prev + 1);
+  }, []);
+
+  const handleGoHome = React.useCallback(() => {
+    setActiveMainView("fleet");
+    handleResetFilters();
+    fleet.setSelectedRobot(null);
+    setEditingRobot(null);
+    setIsRegisterOpen(false);
+    setIsBulkUploadOpen(false);
+    setRegistrationOutcome(null);
+    setRemovingRobot(null);
+    setOverwriteTarget(null);
+    setDeleteTarget(null);
+    setBulkConflicts(null);
+    // Preserva intatti i trasferimenti attivi e la sessione terminale aperta
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [fleet, handleResetFilters]);
+
+  React.useEffect(() => {
+    if (goHomeTrigger !== undefined && goHomeTrigger > 0) {
+      handleGoHome();
+    }
+  }, [goHomeTrigger, handleGoHome]);
 
   // Modals state
   const [isRegisterOpen, setIsRegisterOpen] = useState<boolean>(false);
@@ -176,23 +218,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <p id="idle-warning-message">{idleWarning}</p>
       </Modal>
 
-      <header className="dashboard-header">
+      <header className="dashboard-header d-flex justify-content-between align-items-center pb-3 mb-3 border-bottom">
         <div>
-          <h2>Pannello di Gestione Flotta</h2>
-          <div className="user-info">
-            Utente: <span id="current-username" className="badge">{user.username}</span>
-            Ruoli: <span id="current-roles" className="badge">{user.roles.join(", ")}</span>
+          <h2 className="h4 mb-1">Pannello di Gestione Flotta</h2>
+          <div className="user-info text-muted small">
+            Utente: <span id="current-username" className="badge text-bg-secondary me-2">{user.username}</span>
+            Ruoli: <span id="current-roles" className="badge text-bg-info">{user.roles.join(", ")}</span>
           </div>
         </div>
-        <button id="btn-logout" className="btn btn-secondary" onClick={onLogout}>
+        <button id="btn-logout" className="btn btn-outline-danger" onClick={onLogout}>
           Disconnetti (Logout)
         </button>
       </header>
 
-      <nav className="main-nav" aria-label="Navigazione principale">
+      <nav className="main-nav nav nav-pills gap-2 mb-3" aria-label="Navigazione principale">
         <button
           type="button"
-          className={`main-nav-btn ${activeMainView === "fleet" ? "active" : ""}`}
+          className={`main-nav-btn nav-link ${activeMainView === "fleet" ? "active" : ""}`}
           data-view="fleet"
           onClick={() => handleNavClick("fleet")}
         >
@@ -200,7 +242,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </button>
         <button
           type="button"
-          className={`main-nav-btn ${activeMainView === "server" ? "active" : ""}`}
+          className={`main-nav-btn nav-link ${activeMainView === "server" ? "active" : ""}`}
           data-view="server"
           onClick={() => handleNavClick("server")}
         >
@@ -208,7 +250,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </button>
         <button
           type="button"
-          className={`main-nav-btn ${activeMainView === "remote" ? "active" : ""}`}
+          className={`main-nav-btn nav-link ${activeMainView === "remote" ? "active" : ""}`}
           data-view="remote"
           onClick={() => handleNavClick("remote")}
         >
@@ -216,7 +258,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </button>
         <button
           type="button"
-          className={`main-nav-btn ${activeMainView === "transfers" ? "active" : ""}`}
+          className={`main-nav-btn nav-link ${activeMainView === "transfers" ? "active" : ""}`}
           data-view="transfers"
           onClick={() => handleNavClick("transfers")}
         >
@@ -226,11 +268,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       <main className="dashboard-content">
         {/* Barra Azioni Flotta */}
-        <div className="actions-bar">
+        <div className="actions-bar d-flex gap-2 mb-3 flex-wrap">
           {isAdmin && (
             <button
               id="btn-register-robot"
-              className="btn btn-accent"
+              className="btn btn-primary"
               onClick={() => setIsRegisterOpen(true)}
             >
               ＋ Registra Nuovo Robot
@@ -238,14 +280,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           )}
           <button
             id="btn-bulk-upload-open"
-            className="btn btn-primary"
+            className="btn btn-outline-primary"
             onClick={() => setIsBulkUploadOpen(true)}
           >
             📦 Caricamento Massivo Multi-Target
           </button>
           <button
             id="btn-refresh-fleet"
-            className="btn btn-secondary"
+            className="btn btn-outline-secondary"
             onClick={() => fleet.loadFleet()}
           >
             🔄 Aggiorna Flotta
@@ -254,18 +296,28 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         {/* Vista Flotta */}
         {activeMainView === "fleet" && (
-          <FleetTable
-            robots={fleet.robots}
-            loading={fleet.loading}
-            onOpenDetail={handleOpenDetail}
-            onOpenEdit={(r) => setEditingRobot(r)}
-            onOpenTerminal={handleOpenTerminal}
-            onToggleStatus={(id, s) => fleet.toggleEnableDisable(id, s)}
-            onOpenRemove={handleOpenRemove}
-            onRefreshStatus={(id) => fleet.refreshStatus(id)}
-            onRepairRobot={(id) => fleet.repairRobot(id)}
-            isAdmin={isAdmin}
-          />
+          <>
+            <FleetFilterBar
+              robots={fleet.robots}
+              onFilteredChange={handleFilteredChange}
+              resetTrigger={filterResetTrigger}
+            />
+            <FleetTable
+              robots={filteredRobots}
+              totalRobotsCount={fleet.robots.length}
+              isFilterActive={isFilterActive}
+              onResetFilters={handleResetFilters}
+              loading={fleet.loading}
+              onOpenDetail={handleOpenDetail}
+              onOpenEdit={(r) => setEditingRobot(r)}
+              onOpenTerminal={handleOpenTerminal}
+              onToggleStatus={(id, s) => fleet.toggleEnableDisable(id, s)}
+              onOpenRemove={handleOpenRemove}
+              onRefreshStatus={(id) => fleet.refreshStatus(id)}
+              onRepairRobot={(id) => fleet.repairRobot(id)}
+              isAdmin={isAdmin}
+            />
+          </>
         )}
 
         {/* Vista Filesystem (Server, Remote, Transfers) */}

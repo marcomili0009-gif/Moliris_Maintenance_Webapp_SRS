@@ -366,6 +366,9 @@ export function createServer(
       if (filename.endsWith(".js")) reply.type("application/javascript");
       else if (filename.endsWith(".css")) reply.type("text/css");
       else if (filename.endsWith(".svg")) reply.type("image/svg+xml");
+      else if (filename.endsWith(".png")) reply.type("image/png");
+      else if (filename.endsWith(".webp")) reply.type("image/webp");
+      else if (filename.endsWith(".ico")) reply.type("image/x-icon");
       return reply.send(fs.readFileSync(filePath));
     }
     return reply.status(404).send("Asset non trovato");

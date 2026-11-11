@@ -13,6 +13,10 @@ export interface RobotSummaryDto {
   lastAttemptOutcome: InterpretedState["lastAttemptOutcome"];
   isStale?: boolean;
   hasWarningsOrErrors?: boolean;
+  clientId?: string;
+  customerName?: string;
+  plantId?: string;
+  plantName?: string;
 }
 
 export interface RobotDetailDto extends RobotSummaryDto {
@@ -60,6 +64,8 @@ export interface RegisterRobotPayload {
   sftpHost?: string;
   sftpPort?: number;
   sftpUser?: string;
+  customerName?: string;
+  plantName?: string;
 }
 
 export interface RegistrationOutcome {
@@ -83,4 +89,6 @@ export interface EditRobotPayload {
   passphrase?: string;
   fingerprint?: string;
   remoteMonitoringPath?: string;
+  customerName?: string;
+  plantName?: string;
 }

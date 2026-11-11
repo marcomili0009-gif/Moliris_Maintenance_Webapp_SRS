@@ -29,6 +29,8 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
   const [passphrase, setPassphrase] = useState<string>("");
   const [fingerprint, setFingerprint] = useState<string>("");
   const [knownHostsPath, setKnownHostsPath] = useState<string>("");
+  const [customerName, setCustomerName] = useState<string>("");
+  const [plantName, setPlantName] = useState<string>("");
   const [remoteMonitoringPath, setRemoteMonitoringPath] = useState<string>("");
   const [sftpHost, setSftpHost] = useState<string>("");
   const [sftpPort, setSftpPort] = useState<string>("");
@@ -72,6 +74,8 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
       host: host.trim(),
       sshPort: Number(sshPort),
       sshAuthMethod,
+      customerName: customerName.trim() || undefined,
+      plantName: plantName.trim() || undefined,
       password: sshAuthMethod === "password" ? password : undefined,
       privateKey: sshAuthMethod === "key" ? privateKey : undefined,
       passphrase: sshAuthMethod === "key" && passphrase ? passphrase : undefined,
@@ -174,6 +178,30 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
                 <div className="field-error" id="err-remoteUsername">
                   {fieldErrors["remoteUsername"]}
                 </div>
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="reg-customerName">Nome Cliente (opzionale):</label>
+                <input
+                  type="text"
+                  id="reg-customerName"
+                  name="customerName"
+                  placeholder="es. Acme Industries"
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="reg-plantName">Nome Impianto (opzionale):</label>
+                <input
+                  type="text"
+                  id="reg-plantName"
+                  name="plantName"
+                  placeholder="es. Milano HQ"
+                  value={plantName}
+                  onChange={(e) => setPlantName(e.target.value)}
+                />
               </div>
 
               <div className="form-group">

@@ -23,6 +23,8 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
   const [privateKey, setPrivateKey] = useState<string>("");
   const [fingerprint, setFingerprint] = useState<string>("");
   const [remoteMonitoringPath, setRemoteMonitoringPath] = useState<string>("");
+  const [customerName, setCustomerName] = useState<string>("");
+  const [plantName, setPlantName] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -34,6 +36,8 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
       setPrivateKey("");
       setFingerprint("");
       setRemoteMonitoringPath("");
+      setCustomerName(robot.customerName ?? "");
+      setPlantName(robot.plantName ?? "");
       setError(null);
     }
   }, [robot]);
@@ -49,6 +53,8 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
       host: host.trim(),
       sshPort: Number(sshPort),
       sshAuthMethod,
+      customerName: customerName.trim() || undefined,
+      plantName: plantName.trim() || undefined,
       password: password ? password : undefined,
       privateKey: privateKey.trim() ? privateKey.trim() : undefined,
       fingerprint: fingerprint.trim() ? fingerprint.trim() : undefined,
@@ -109,6 +115,30 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
                   disabled
                   value={robot.remoteUsername}
                   title="Il cambio di username remoto non è consentito perché associato alla directory del server"
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="edit-customerName">Nome Cliente (opzionale):</label>
+                <input
+                  type="text"
+                  id="edit-customerName"
+                  name="customerName"
+                  placeholder="es. Acme Industries"
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="edit-plantName">Nome Impianto (opzionale):</label>
+                <input
+                  type="text"
+                  id="edit-plantName"
+                  name="plantName"
+                  placeholder="es. Milano HQ"
+                  value={plantName}
+                  onChange={(e) => setPlantName(e.target.value)}
                 />
               </div>
 

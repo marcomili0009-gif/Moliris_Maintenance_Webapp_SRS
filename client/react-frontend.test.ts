@@ -20,6 +20,8 @@ import { RobotConnectionManager } from "../backend/connection/robot-connection-m
 
 import { ErrorPresenter, ERROR_CATALOG } from "./src/services/error-presenter.ts";
 import { StateFormatter } from "./src/services/state-formatter.ts";
+import { filterRobots } from "./src/utils/filterRobots.ts";
+import type { RobotSummaryDto } from "./src/types/fleet.ts";
 
 console.log("--> Esecuzione test E2E React Frontend su Google Chrome CDP...");
 
@@ -64,6 +66,91 @@ assert.ok(staleDataHtml.includes("[Non più verificato]"), "Il dato stale deve m
 const connBadge = StateFormatter.renderConnectionBadge("non_raggiungibile");
 assert.ok(connBadge.includes("badge-non_raggiungibile"));
 console.log("  PASS: StateFormatter React garantisce separazione categorica dei 3 stati.");
+
+// Test 3: filterRobots - Ricerca e filtri flotta con accenti e case-insensitivity (SRS §5.1)
+console.log("  -> Test filterRobots (SRS §5.1): verifica filtri cliente, impianto, nome, ID, accenti e resilienza");
+const mockFleetForFilter: RobotSummaryDto[] = [
+  {
+    id: "robot_alpha_01",
+    displayName: "Robot Ispettivo Alpha",
+    remoteUsername: "operator",
+    host: "10.0.0.1",
+    sshPort: 22,
+    anagraphicState: "attivo",
+    connectionState: "raggiungibile",
+    operationalState: null,
+    lastValidUpdateAt: null,
+    lastAttemptOutcome: null,
+    customerName: "Acme Corporation",
+    plantName: "Milano Impianto Nord",
+  },
+  {
+    id: "robot_beta_02",
+    displayName: "Robot Trasporto Beta",
+    remoteUsername: "operator",
+    host: "10.0.0.2",
+    sshPort: 22,
+    anagraphicState: "attivo",
+    connectionState: "raggiungibile",
+    operationalState: null,
+    lastValidUpdateAt: null,
+    lastAttemptOutcome: null,
+    customerName: "Barilla Città",
+    plantName: "Parma Ovest",
+  },
+  {
+    id: "robot_gamma_03",
+    displayName: "Robot Magazzino Gamma",
+    remoteUsername: "operator",
+    host: "10.0.0.3",
+    sshPort: 22,
+    anagraphicState: "attivo",
+    connectionState: "raggiungibile",
+    operationalState: null,
+    lastValidUpdateAt: null,
+    lastAttemptOutcome: null,
+    // customerName e plantName volutamente assenti
+  },
+];
+
+// a) Query vuota o spazi = lista completa
+assert.strictEqual(filterRobots(mockFleetForFilter, "").length, 3, "Query vuota deve restituire tutta la flotta");
+assert.strictEqual(filterRobots(mockFleetForFilter, "   ").length, 3, "Query con soli spazi deve restituire tutta la flotta");
+
+// b) Match per cliente
+const resCliente = filterRobots(mockFleetForFilter, "acme", "cliente");
+assert.strictEqual(resCliente.length, 1);
+assert.strictEqual(resCliente[0].id, "robot_alpha_01");
+
+// c) Match per impianto
+const resImpianto = filterRobots(mockFleetForFilter, "parma", "impianto");
+assert.strictEqual(resImpianto.length, 1);
+assert.strictEqual(resImpianto[0].id, "robot_beta_02");
+
+// d) Match per nome robot
+const resNome = filterRobots(mockFleetForFilter, "magazzino", "nome_robot");
+assert.strictEqual(resNome.length, 1);
+assert.strictEqual(resNome[0].id, "robot_gamma_03");
+
+// e) Match per ID robot
+const resId = filterRobots(mockFleetForFilter, "beta_02", "id_robot");
+assert.strictEqual(resId.length, 1);
+assert.strictEqual(resId[0].id, "robot_beta_02");
+
+// f) Case-insensitive e rimozione accenti (citta trova Città)
+const resAccenti = filterRobots(mockFleetForFilter, "citta", "tutti");
+assert.strictEqual(resAccenti.length, 1, "La ricerca 'citta' deve trovare 'Barilla Città'");
+assert.strictEqual(resAccenti[0].customerName, "Barilla Città");
+
+// g) Resilienza a campi mancanti (robot_gamma_03 senza cliente/impianto)
+const resMissing = filterRobots(mockFleetForFilter, "gamma", "tutti");
+assert.strictEqual(resMissing.length, 1);
+assert.strictEqual(resMissing[0].id, "robot_gamma_03");
+
+// h) Nessun risultato = array vuoto
+const resNoMatch = filterRobots(mockFleetForFilter, "non_esistente", "tutti");
+assert.strictEqual(resNoMatch.length, 0, "Filtro senza riscontri deve restituire array vuoto");
+console.log("  PASS: filterRobots supera tutti i controlli (cliente, impianto, accenti, case-insensitive, campi mancanti).");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "moliris-react-test-"));
@@ -311,6 +398,63 @@ try {
     document.querySelector('button[data-view="fleet"]').click();
   `);
   await new Promise((r) => setTimeout(r, 200));
+
+  // Test AppNavbar: logo con link href="/", aria-label e click che riporta alla Home (SRS §5.1)
+  console.log("  -> Test AppNavbar: verifica logo link href='/', aria-label e navigazione Home");
+  const navbarBrandData = await evaluateInBrowser<{ href: string; ariaLabel: string; hasImg: boolean }>(`{
+    const brandLink = document.querySelector('nav.navbar a.navbar-brand');
+    ({
+      href: brandLink ? brandLink.getAttribute('href') : '',
+      ariaLabel: brandLink ? brandLink.getAttribute('aria-label') : '',
+      hasImg: Boolean(brandLink && brandLink.querySelector('img')),
+    })
+  }`);
+  assert.strictEqual(navbarBrandData.href, "/", "Il link del brand deve avere href='/'");
+  assert.ok(navbarBrandData.ariaLabel.includes("Home"), "Il link del brand deve avere aria-label verso la Home");
+  assert.strictEqual(navbarBrandData.hasImg, true, "Il logo deve contenere il tag img con l'asset PNG");
+
+  // Naviga a vista File sul robot
+  await evaluateInBrowser<void>(`
+    document.querySelector('button[data-view="remote"]').click();
+  `);
+  await new Promise((r) => setTimeout(r, 200));
+  const isRemoteActive = await evaluateInBrowser<boolean>(
+    "Boolean(document.getElementById('fs-panel-remote'))"
+  );
+  assert.strictEqual(isRemoteActive, true, "Deve trovarsi sulla vista File sul robot");
+
+  // Click sul logo per tornare alla Home (vista Flotta) senza reload
+  await evaluateInBrowser<void>(`
+    document.querySelector('nav.navbar a.navbar-brand').click();
+  `);
+  await new Promise((r) => setTimeout(r, 200));
+  const isFleetActiveAfterHome = await evaluateInBrowser<boolean>(
+    "Boolean(document.getElementById('fleet-table'))"
+  );
+  assert.strictEqual(isFleetActiveAfterHome, true, "Il click sul logo deve riportare alla Home (vista Flotta)");
+  console.log("  PASS: AppNavbar logo funge da pulsante Home verso Flotta senza ricaricare la pagina.");
+
+  // Test Route /assets per file .png con Content-Type image/png
+  console.log("  -> Test Route /assets: verifica Content-Type image/png per file .png");
+  const distAssetsDir = path.join(import.meta.dirname, "..", "dist", "frontend", "assets");
+  fs.mkdirSync(distAssetsDir, { recursive: true });
+  const testPngName = "react-test-logo.png";
+  const testPngPath = path.join(distAssetsDir, testPngName);
+  fs.writeFileSync(testPngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+
+  try {
+    const pngResponse = await server.inject({
+      method: "GET",
+      url: `/assets/${testPngName}`,
+    });
+    assert.strictEqual(pngResponse.statusCode, 200, "La rotta /assets deve restituire 200 per immagini PNG");
+    assert.strictEqual(pngResponse.headers["content-type"], "image/png", "Il Content-Type deve essere image/png");
+  } finally {
+    if (fs.existsSync(testPngPath)) {
+      fs.unlinkSync(testPngPath);
+    }
+  }
+  console.log("  PASS: La route /assets serve correttamente file .png con Content-Type image/png.");
 
   // Test Sicurezza di rete: nessuna richiesta verso host remoti non intermediati (SRS §1.2, §2.4)
   console.log("  -> Test Sicurezza Rete: Verifica che nessuna richiesta sia stata inviata a host robot");
