@@ -340,78 +340,35 @@ export function createServer(
     return reply.status(204).send();
   });
 
-  // Servizio statico del frontend client compatibile Google Chrome (§2.5, §5.1, RNF-UX-002/003)
-  const frontendDir = path.resolve(__dirname, "../frontend");
+  // Servizio statico del frontend client React compatibile Google Chrome (§2.5, §5.1, RNF-UX-002/003)
+  const distFrontendDir = path.resolve(__dirname, "../dist/frontend");
 
   app.get("/", async (_request, reply) => {
-    const indexPath = path.join(frontendDir, "index.html");
+    const indexPath = path.join(distFrontendDir, "index.html");
     if (fs.existsSync(indexPath)) {
       reply.type("text/html").send(fs.readFileSync(indexPath));
     } else {
-      reply.status(404).send("Frontend non trovato");
+      reply.status(404).send("Frontend React non trovato. Eseguire 'npm run build:client'.");
     }
   });
 
-  app.get("/styles.css", async (_request, reply) => {
-    const cssPath = path.join(frontendDir, "styles.css");
-    if (fs.existsSync(cssPath)) {
-      reply.type("text/css").send(fs.readFileSync(cssPath));
-    } else {
-      reply.status(404).send("File styles.css non trovato");
-    }
+  app.get("/react", async (_request, reply) => {
+    return reply.redirect("/");
   });
 
-  app.get("/app.js", async (_request, reply) => {
-    const jsPath = path.join(frontendDir, "app.js");
-    if (fs.existsSync(jsPath)) {
-      reply.type("application/javascript").send(fs.readFileSync(jsPath));
-    } else {
-      reply.status(404).send("File app.js non trovato");
-    }
-  });
-
-  // Servizio moduli frontend modulari ES6 (§5.1, RNF-MNT-002)
-  app.get("/:filename.js", async (request, reply) => {
+  app.get("/assets/:filename", async (request, reply) => {
     const { filename } = request.params as { filename: string };
-    if (!/^[a-zA-Z0-9_-]+$/.test(filename)) {
-      return reply.status(404).send("File non trovato");
+    if (!/^[a-zA-Z0-9_.-]+$/.test(filename)) {
+      return reply.status(404).send("Asset non valido");
     }
-    const jsPath = path.join(frontendDir, `${filename}.js`);
-    if (fs.existsSync(jsPath)) {
-      reply.type("application/javascript").send(fs.readFileSync(jsPath));
-    } else {
-      reply.status(404).send("File non trovato");
+    const filePath = path.join(distFrontendDir, "assets", filename);
+    if (fs.existsSync(filePath)) {
+      if (filename.endsWith(".js")) reply.type("application/javascript");
+      else if (filename.endsWith(".css")) reply.type("text/css");
+      else if (filename.endsWith(".svg")) reply.type("image/svg+xml");
+      return reply.send(fs.readFileSync(filePath));
     }
-  });
-
-  // Risorse statiche per emulatore terminale xterm.js (§5.1, RNF-UX-004)
-  const nodeModulesDir = path.resolve(__dirname, "../node_modules");
-
-  app.get("/vendor/xterm.js", async (_request, reply) => {
-    const xtermPath = path.join(nodeModulesDir, "@xterm/xterm/lib/xterm.js");
-    if (fs.existsSync(xtermPath)) {
-      reply.type("application/javascript").send(fs.readFileSync(xtermPath));
-    } else {
-      reply.status(404).send("File xterm.js non trovato");
-    }
-  });
-
-  app.get("/vendor/xterm.css", async (_request, reply) => {
-    const cssPath = path.join(nodeModulesDir, "@xterm/xterm/css/xterm.css");
-    if (fs.existsSync(cssPath)) {
-      reply.type("text/css").send(fs.readFileSync(cssPath));
-    } else {
-      reply.status(404).send("File xterm.css non trovato");
-    }
-  });
-
-  app.get("/vendor/xterm-addon-fit.js", async (_request, reply) => {
-    const fitPath = path.join(nodeModulesDir, "@xterm/addon-fit/lib/addon-fit.js");
-    if (fs.existsSync(fitPath)) {
-      reply.type("application/javascript").send(fs.readFileSync(fitPath));
-    } else {
-      reply.status(404).send("File xterm-addon-fit.js non trovato");
-    }
+    return reply.status(404).send("Asset non trovato");
   });
 
   return app;

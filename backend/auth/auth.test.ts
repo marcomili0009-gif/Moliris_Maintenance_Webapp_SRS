@@ -280,18 +280,12 @@ for (const event of auditEvents) {
 }
 console.log("  PASS: Eventi di audit verificati ed esenti da segreti (RNF-SEC-009, §10.4).");
 
-// Test File statici Frontend in HTTPS (§2.5, §5.1)
+// Test File statici Frontend React in HTTPS (§2.5, §5.1)
 const indexRes = await makeHttpsRequest("GET", "/");
 assert.strictEqual(indexRes.status, 200);
 assert(String(indexRes.body).includes("Moliris Maintenance Webapp"));
-
-const appJsRes = await makeHttpsRequest("GET", "/app.js");
-assert.strictEqual(appJsRes.status, 200);
-assert(String(appJsRes.body).includes("addEventListener"));
-
-const cssRes = await makeHttpsRequest("GET", "/styles.css");
-assert.strictEqual(cssRes.status, 200);
-console.log("  PASS: Frontend client statico servito in HTTPS.");
+assert(String(indexRes.body).includes('id="root"'));
+console.log("  PASS: Frontend client statico React servito in HTTPS.");
 
 for (let i = 0; i < 10; i++) {
   const limited = await makeHttpsRequest("POST", "/api/auth/login", {

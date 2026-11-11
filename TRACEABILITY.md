@@ -42,15 +42,15 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 | **RF-MON-003** | Polling periodico a intervallo configurabile | `backend/monitoring/monitoring-service.ts`<br>`config/configuration.ts` | `backend/monitoring/monitoring.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-MON-004** | Aggiornamento manuale su richiesta dell'utente | `backend/monitoring/monitoring-service.ts`<br>`backend/monitoring/monitoring-routes.ts` | `backend/monitoring/monitoring.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-MON-005** | Preservazione ultimo stato valido (stale) su guasto | `backend/monitoring/monitoring-service.ts`<br>`storage/robot-repository.ts` | `backend/monitoring/monitoring.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RF-MON-006** | Visualizzazione distinta dei 3 stati (anagrafico, conn, oper) | `storage/dto/robot-dto.ts`<br>`frontend/state-formatter.js` | `backend/monitoring/monitoring.test.ts`<br>`frontend/frontend.test.ts` | **Soddisfatto** |
-
-### 1.4 Terminale Remoto (§3.4, §5.4, §6.4)
-| ID Requisito | Descrizione Sintetica | Modulo Implementazione | Suite di Test Automatizzati | Stato |
-| :--- | :--- | :--- | :--- | :--- |
-| **RF-SSH-001** | Apertura sessione terminale Linux interattivo | `backend/terminal/terminal-service.ts`<br>`backend/terminal/terminal-routes.ts` | `backend/terminal/terminal.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RF-SSH-002** | Esecuzione comandi interattivi remoti | `backend/terminal/terminal-service.ts` | `backend/terminal/terminal.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RF-SSH-003** | Streaming progressivo dell'output della shell | `backend/terminal/terminal-service.ts`<br>`frontend/app.js` | `backend/terminal/terminal.test.ts`<br>`frontend/frontend.test.ts` | **Soddisfatto** |
-| **RF-SSH-004** | Emulazione terminale xterm nel browser e canale WSS | `frontend/app.js`<br>`backend/terminal/terminal-routes.ts` | `backend/terminal/terminal.test.ts`<br>`frontend/frontend.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
+| **RF-MON-006** | Visualizzazione distinta dei 3 stati (anagrafico, conn, oper) | `storage/dto/robot-dto.ts`<br>`client/src/services/state-formatter.ts` | `backend/monitoring/monitoring.test.ts`<br>`client/react-frontend.test.ts` | **Soddisfatto** |
+ 
+ ### 1.4 Terminale Remoto (§3.4, §5.4, §6.4)
+ | ID Requisito | Descrizione Sintetica | Modulo Implementazione | Suite di Test Automatizzati | Stato |
+ | :--- | :--- | :--- | :--- | :--- |
+ | **RF-SSH-001** | Apertura sessione terminale Linux interattivo | `backend/terminal/terminal-service.ts`<br>`backend/terminal/terminal-routes.ts` | `backend/terminal/terminal.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+ | **RF-SSH-002** | Esecuzione comandi interattivi remoti | `backend/terminal/terminal-service.ts` | `backend/terminal/terminal.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+ | **RF-SSH-003** | Streaming progressivo dell'output della shell | `backend/terminal/terminal-service.ts`<br>`client/src/components/terminal/TerminalModal.tsx` | `backend/terminal/terminal.test.ts`<br>`client/react-frontend.test.ts` | **Soddisfatto** |
+ | **RF-SSH-004** | Emulazione terminale xterm nel browser e canale WSS | `client/src/components/terminal/TerminalModal.tsx`<br>`backend/terminal/terminal-routes.ts` | `backend/terminal/terminal.test.ts`<br>`client/react-frontend.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
 | **RF-SSH-005** | Chiusura ordinata e rilascio a zero risorse (7 cause) | `backend/terminal/terminal-service.ts` | `backend/terminal/terminal.test.ts`<br>`tests/acceptance/acceptance.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
 | **RF-SSH-006** | Isolamento sessioni e divieto accessi non autorizzati | `backend/terminal/terminal-service.ts`<br>`backend/terminal/terminal-models.ts` | `backend/terminal/terminal.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
 | **RF-SSH-007** | Blocco apertura terminale su robot disabilitato/non verificato | `backend/terminal/terminal-service.ts` | `backend/terminal/terminal.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
@@ -85,7 +85,7 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 | **RF-TRF-003** | Trasferimento intermediato client ↔ robot (no SSH diretto) | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-TRF-004** | Streaming e backpressure per file > 1 GB a memoria costante | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/reliability-performance/reliability-perf.test.ts` | **Soddisfatto** |
 | **RF-TRF-005** | Trasferimento a blocchi (chunk size configurabile) | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RF-TRF-006** | Avanzamento in tempo reale (byte, %, velocità, ETA) | `backend/transfer/transfer-service.ts`<br>`frontend/app.js` | `backend/transfer/transfer.test.ts`<br>`frontend/frontend.test.ts` | **Soddisfatto** |
+| **RF-TRF-006** | Avanzamento in tempo reale (byte, %, velocità, ETA) | `backend/transfer/transfer-service.ts`<br>`client/src/hooks/useTransfers.ts` | `backend/transfer/transfer.test.ts`<br>`client/react-frontend.test.ts` | **Soddisfatto** |
 | **RF-TRF-007** | Segnalazione interruzione e non falso completamento | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-TRF-008** | Verifica integrità opzionale tramite checksum | `backend/transfer/transfer-service.ts`<br>`backend/transfer/transfer-models.ts` | `backend/transfer/transfer.test.ts`<br>`tests/security/transfers-monitoring-hardening.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-TRF-009** | Utilizzo file temporanei e pulizia immediata su guasto | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/security/security-hardening.test.ts`<br>`tests/security/transfers-monitoring-hardening.test.ts` | **Soddisfatto** |
@@ -141,16 +141,16 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 ### 2.5 Usabilità e Frontend (RNF-UX-001..004)
 | ID Requisito | Descrizione Sintetica | Modulo Implementazione | Suite di Test Automatizzati | Stato |
 | :--- | :--- | :--- | :--- | :--- |
-| **RNF-UX-001** | Interfaccia intuitiva per manutentore | `frontend/index.html`<br>`frontend/styles.css` | `frontend/frontend.test.ts` | **Soddisfatto** |
-| **RNF-UX-002** | Feedback visivo conforme al catalogo §9 | `frontend/error-presenter.js`<br>`frontend/app.js` | `frontend/frontend.test.ts` | **Soddisfatto** |
-| **RNF-UX-003** | Compatibilità Google Chrome senza plugin aggiuntivi | `frontend/index.html`<br>`frontend/app.js` | `frontend/frontend.test.ts` | **Soddisfatto** |
-| **RNF-UX-004** | Terminale Linux interattivo nel browser (xterm.js su WSS) | `frontend/app.js`<br>`backend/terminal/terminal-service.ts` | `frontend/frontend.test.ts`<br>`backend/terminal/terminal.test.ts` | **Soddisfatto** |
+| **RNF-UX-001** | Interfaccia intuitiva per manutentore | `client/src/views/DashboardView.tsx`<br>`client/src/styles.css` | `client/react-frontend.test.ts` | **Soddisfatto** |
+| **RNF-UX-002** | Feedback visivo conforme al catalogo §9 | `client/src/services/error-presenter.ts`<br>`client/src/components/common/NotificationBanner.tsx` | `client/react-frontend.test.ts` | **Soddisfatto** |
+| **RNF-UX-003** | Compatibilità Google Chrome senza plugin aggiuntivi | `client/index.html`<br>`client/src/App.tsx` | `client/react-frontend.test.ts` | **Soddisfatto** |
+| **RNF-UX-004** | Terminale Linux interattivo nel browser (xterm.js su WSS) | `client/src/components/terminal/TerminalModal.tsx`<br>`backend/terminal/terminal-service.ts` | `client/react-frontend.test.ts`<br>`backend/terminal/terminal.test.ts` | **Soddisfatto** |
 
 ### 2.6 Manutenibilità e Tracciabilità (RNF-MNT-001..003)
 | ID Requisito | Descrizione Sintetica | Modulo Implementazione | Suite di Test Automatizzati | Stato |
 | :--- | :--- | :--- | :--- | :--- |
 | **RNF-MNT-001** | Parametri di configurazione all'avvio fail-closed | `config/configuration.ts` | `config/configuration.test.ts`<br>`tests/security/configuration-coherence.test.ts` | **Soddisfatto** |
-| **RNF-MNT-002** | Disaccoppiamento e separazione dei componenti | `backend/server.ts`<br>`frontend/app.js` | `backend/server.test.ts`<br>`frontend/frontend.test.ts` | **Soddisfatto** |
+| **RNF-MNT-002** | Disaccoppiamento e separazione dei componenti | `backend/server.ts`<br>`client/src/App.tsx` | `backend/server.test.ts`<br>`client/react-frontend.test.ts` | **Soddisfatto** |
 | **RNF-MNT-003** | Tracciabilità completa errori secondo catalogo §9 | `errors/app-errors.ts`<br>`logging/logger.ts` | `errors/app-errors.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
 
 ---

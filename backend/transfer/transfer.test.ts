@@ -722,7 +722,7 @@ fs.writeFileSync(validPreexistingServerPath, "VALID_SERVER_PREEXISTING_DATA_ORIG
     slowStream1,
     { overwrite: true },
     100
-  );
+  ).catch((err) => err);
 
   // Tenta il secondo trasferimento mentre il primo è in corso -> deve essere rifiutato immediatamente!
   try {

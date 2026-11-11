@@ -1,22 +1,11 @@
 // Requisiti soddisfatti: SRS §1.2, §2.4 (vincoli 3-5), §2.5, RNF-SEC-001, RNF-SEC-002, RNF-SEC-004, RF-AUTH-003, RF-AUTH-006
 
-/**
- * Client API HTTP/WebSocket centralizzato e sicuro per il browser Google Chrome.
- *
- * Vincoli e Invarianti di Sicurezza:
- * - Tutte le comunicazioni usano HTTPS o WSS (§2.4 vincolo 3, RNF-SEC-001).
- * - Il browser NON apre MAI connessioni dirette verso i robot (§1.2, §2.4 vincolo 2 e 4).
- * - Nessuna chiave privata o credenziale persistente viene mai conservata dal client (§11.2, RNF-SEC-002).
- * - Gestione uniforme della scadenza sessione (401) e dell'irraggiungibilità dell'applicazione / VPN (RF-AUTH-006, §2.5).
- */
 export class ApiClient {
-  constructor() {
-    this.tokenKey = "moliris_token";
-    this.sessionExpiredListeners = [];
-    this.activityListeners = [];
-  }
+  private readonly tokenKey = "moliris_token";
+  private sessionExpiredListeners: Array<() => void> = [];
+  private activityListeners: Array<() => void> = [];
 
-  getToken() {
+  public getToken(): string | null {
     try {
       return sessionStorage.getItem(this.tokenKey);
     } catch {
@@ -24,7 +13,7 @@ export class ApiClient {
     }
   }
 
-  setToken(token) {
+  public setToken(token: string | null): void {
     try {
       if (token) {
         sessionStorage.setItem(this.tokenKey, token);
@@ -34,29 +23,29 @@ export class ApiClient {
     } catch {}
   }
 
-  clearToken() {
+  public clearToken(): void {
     try {
       sessionStorage.removeItem(this.tokenKey);
     } catch {}
   }
 
-  onSessionExpired(listener) {
-    if (typeof listener === "function") {
-      this.sessionExpiredListeners.push(listener);
-    }
+  public onSessionExpired(listener: () => void): void {
+    this.sessionExpiredListeners.push(listener);
   }
 
-  onQualifiedActivity(listener) {
-    if (typeof listener === "function") this.activityListeners.push(listener);
+  public onQualifiedActivity(listener: () => void): void {
+    this.activityListeners.push(listener);
   }
 
-  notifyQualifiedActivity() {
+  public notifyQualifiedActivity(): void {
     for (const listener of this.activityListeners) {
-      try { listener(); } catch {}
+      try {
+        listener();
+      } catch {}
     }
   }
 
-  notifySessionExpired() {
+  public notifySessionExpired(): void {
     this.clearToken();
     for (const listener of this.sessionExpiredListeners) {
       try {
@@ -69,7 +58,7 @@ export class ApiClient {
    * Verifica preventiva di sicurezza: vieta categoricamente qualsiasi richiesta
    * diretta a host esterni o IP di robot mobili dal browser (§2.4 vincolo 2 e 4).
    */
-  assertLocalBackendEndpoint(endpoint) {
+  public assertLocalBackendEndpoint(endpoint: string): void {
     if (typeof endpoint !== "string") {
       throw new Error("Endpoint non valido");
     }
@@ -86,17 +75,24 @@ export class ApiClient {
   /**
    * Esegue una richiesta HTTP sicura verso il backend Fastify.
    */
-  async request(endpoint, options = {}) {
+  public async request(endpoint: string, options: RequestInit = {}): Promise<Response> {
     this.assertLocalBackendEndpoint(endpoint);
 
-    const headers = { ...(options.headers || {}) };
+    const headers: Record<string, string> = {
+      ...((options.headers as Record<string, string>) || {}),
+    };
     const token = this.getToken();
 
     if (token && !headers["Authorization"]) {
       headers["Authorization"] = `Bearer ${token}`;
     }
 
-    if (options.body !== undefined && !headers["Content-Type"] && !(options.body instanceof FormData) && !(options.body instanceof Blob)) {
+    if (
+      options.body !== undefined &&
+      !headers["Content-Type"] &&
+      !(options.body instanceof FormData) &&
+      !(options.body instanceof Blob)
+    ) {
       headers["Content-Type"] = "application/json";
     }
 
@@ -106,25 +102,29 @@ export class ApiClient {
         headers,
       });
 
-      const isAutomaticStatusPolling = options.method === "GET" && /^\/api\/robots\/[^/]+\/status(?:\?.*)?$/.test(endpoint);
-      if (token && !isAutomaticStatusPolling) this.notifyQualifiedActivity();
+      const isAutomaticStatusPolling =
+        options.method === "GET" && /^\/api\/robots\/[^/]+\/status(?:\?.*)?$/.test(endpoint);
+      if (token && !isAutomaticStatusPolling) {
+        this.notifyQualifiedActivity();
+      }
 
       if (response.status === 401) {
         this.notifySessionExpired();
-        const err = new Error("La sessione è scaduta o non valida. Effettuare nuovamente il login.");
+        const err: any = new Error("La sessione è scaduta o non valida. Effettuare nuovamente il login.");
         err.code = "AUTH_INVALID_CREDENTIALS";
         err.status = 401;
         throw err;
       }
 
       return response;
-    } catch (err) {
+    } catch (err: any) {
       if (err.status === 401 || err.code === "AUTH_INVALID_CREDENTIALS") {
         throw err;
       }
-      // Se si verifica un fallimento di rete / browser (es. assenza connessione o VPN disconnessa)
       if (err instanceof TypeError && err.message && err.message.includes("fetch")) {
-        const netErr = new Error("Applicazione non raggiungibile. Verificare la connessione di rete e l'accesso alla VPN Moliris.");
+        const netErr: any = new Error(
+          "Applicazione non raggiungibile. Verificare la connessione di rete e l'accesso alla VPN Moliris."
+        );
         netErr.code = "NETWORK_DISCONNECTED";
         throw netErr;
       }
@@ -132,19 +132,22 @@ export class ApiClient {
     }
   }
 
-  async get(endpoint) {
+  public async get(endpoint: string): Promise<Response> {
     return this.request(endpoint, { method: "GET" });
   }
 
-  async post(endpoint, body, options = {}) {
+  public async post(endpoint: string, body?: unknown, options: RequestInit = {}): Promise<Response> {
     return this.request(endpoint, {
       method: "POST",
-      body: body instanceof Blob || body instanceof FormData || typeof body === "string" ? body : JSON.stringify(body),
+      body:
+        body instanceof Blob || body instanceof FormData || typeof body === "string"
+          ? body
+          : JSON.stringify(body),
       ...options,
     });
   }
 
-  async put(endpoint, body, options = {}) {
+  public async put(endpoint: string, body?: unknown, options: RequestInit = {}): Promise<Response> {
     return this.request(endpoint, {
       method: "PUT",
       body: typeof body === "string" ? body : JSON.stringify(body),
@@ -152,17 +155,14 @@ export class ApiClient {
     });
   }
 
-  async delete(endpoint, options = {}) {
+  public async delete(endpoint: string, options: RequestInit = {}): Promise<Response> {
     return this.request(endpoint, {
       method: "DELETE",
       ...options,
     });
   }
 
-  /**
-   * Crea la connessione WebSocket sicura per il terminale PTY remoto (RF-SSH-004, §5.4).
-   */
-  createTerminalWebSocket(sessionId) {
+  public createTerminalWebSocket(sessionId: string): WebSocket {
     const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${wsProto}//${window.location.host}/api/terminal/ws/${encodeURIComponent(sessionId)}`;
     return new WebSocket(wsUrl);
