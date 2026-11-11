@@ -80,6 +80,22 @@ export function createServer(
     logger: false, // Disabilitato il logger standard in favore del logger applicativo con redazione attiva
   });
 
+  // Intestazioni difensive globali per il frontend.
+  app.addHook("onSend", async (_request, reply, payload) => {
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("X-Frame-Options", "DENY");
+    reply.header("Referrer-Policy", "no-referrer");
+    reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    reply.header(
+      "Content-Security-Policy",
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' wss:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+    );
+    if (process.env.NODE_ENV === "production") {
+      reply.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    }
+    return payload;
+  });
+
   // Registrazione supporto WebSocket per canale terminale interattivo (RF-SSH-004, §5.4)
   app.register(websocket);
 

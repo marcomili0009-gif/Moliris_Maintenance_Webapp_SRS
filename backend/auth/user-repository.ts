@@ -65,7 +65,10 @@ export class MongoUserRepository implements UserRepository {
 
   async initIndexes(): Promise<void> {
     try {
-      await this.collection.createIndex({ username: 1 }, { unique: true });
+      await this.collection.createIndex(
+        { username: 1 },
+        { unique: true, name: "username_unique_case_insensitive", collation: { locale: "en", strength: 2 } }
+      );
       await this.collection.createIndex({ id: 1 }, { unique: true });
     } catch (err: any) {
       throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore inizializzazione indici utenti: ${err.message}`);
@@ -74,7 +77,10 @@ export class MongoUserRepository implements UserRepository {
 
   async findByUsername(username: string): Promise<UserEntity | null> {
     try {
-      const doc = await this.collection.findOne({ username }, { projection: { _id: 0 } });
+      const doc = await this.collection.findOne(
+        { username },
+        { projection: { _id: 0 }, collation: { locale: "en", strength: 2 } }
+      );
       return doc ? (doc as UserEntity) : null;
     } catch (err: any) {
       throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore query utente per username: ${err.message}`);

@@ -1,0 +1,958 @@
+/* Requisiti: RNF-UX-002, RNF-UX-003, SRS §2.5 Google Chrome */
+
+:root {
+  --primary-color: #0b57d0;
+  --primary-hover: #0842a0;
+  --bg-color: #f8fafd;
+  --card-bg: #ffffff;
+  --text-color: #1f1f1f;
+  --text-muted: #575757;
+  --border-color: #c4c7c5;
+  --error-bg: #fce8e6;
+  --error-text: #c5221f;
+  --success-bg: #e6f4ea;
+  --success-text: #137333;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body, button, input, select, textarea {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+body {
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 1.5rem;
+}
+
+#app {
+  width: 100%;
+  max-width: 900px;
+}
+
+.card {
+  background-color: var(--card-bg);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  padding: 2rem;
+}
+
+.header {
+  margin-bottom: 2rem;
+  text-align: center;
+}
+
+.subtitle {
+  color: var(--text-muted);
+  margin-top: 0.5rem;
+}
+
+.form-group {
+  margin-bottom: 1.25rem;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+}
+
+input {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 1rem;
+}
+
+input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(11, 87, 208, 0.2);
+}
+
+.btn {
+  display: inline-block;
+  padding: 0.75rem 1.25rem;
+  font-size: 1rem;
+  font-weight: 500;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s ease-in-out;
+}
+
+.btn-primary {
+  width: 100%;
+  background-color: var(--primary-color);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background-color: var(--primary-hover);
+}
+
+.btn-secondary {
+  background-color: #eaeef4;
+  color: var(--text-color);
+}
+
+.btn-secondary:hover {
+  background-color: #dbe2ed;
+}
+
+.btn-accent {
+  background-color: #1a73e8;
+  color: #fff;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.banner {
+  padding: 1rem;
+  margin-bottom: 1rem;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.banner-warning {
+  background-color: #fef7e0;
+  color: #b06000;
+  border: 1px solid #f9ab00;
+}
+
+.error-message {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background-color: var(--error-bg);
+  color: var(--error-text);
+  border-radius: 4px;
+  text-align: center;
+  font-size: 0.95rem;
+}
+
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.badge {
+  background-color: #e8f0fe;
+  color: #174ea6;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-right: 0.5rem;
+}
+
+.actions-bar {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.fleet-box {
+  background-color: #f8fafd;
+  border: 2px dashed var(--border-color);
+  border-radius: 6px;
+  padding: 3rem 1.5rem;
+  text-align: center;
+}
+
+.placeholder-notice h3 {
+  margin-bottom: 0.5rem;
+}
+
+.placeholder-notice p {
+  color: var(--text-muted);
+  margin-bottom: 1rem;
+}
+
+.status-indicator {
+  display: inline-block;
+  padding: 0.4rem 0.8rem;
+  background-color: #e6f4ea;
+  color: #137333;
+  border-radius: 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+/* Stili componente Esplora Filesystem Server e Remoto (RF-SRVFS-002, RF-FS-001..003) */
+.fs-browser-card {
+  margin-top: 2rem;
+  background-color: #ffffff;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 1.5rem;
+}
+
+.fs-tab-bar {
+  display: flex;
+  gap: 0.5rem;
+  border-bottom: 2px solid #e0e0e0;
+  margin-bottom: 1.5rem;
+}
+
+.fs-tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  padding: 0.75rem 1.25rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-bottom: -2px;
+}
+
+.fs-tab-btn:hover {
+  color: var(--primary-color);
+  background-color: #f8fafd;
+}
+
+.fs-tab-btn.active {
+  color: var(--primary-color);
+  border-bottom-color: var(--primary-color);
+  background-color: #ffffff;
+}
+
+.fs-panel {
+  display: block;
+}
+
+.fs-panel.hidden {
+  display: none;
+}
+
+.fs-subtitle {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+}
+
+.fs-item-link {
+  color: #1a73e8;
+  font-style: italic;
+}
+
+.fs-item-special {
+  color: #e37400;
+  font-family: monospace;
+}
+
+.fs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.fs-robot-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fs-robot-selector input {
+  width: 180px;
+  padding: 0.4rem 0.6rem;
+}
+
+.fs-navigation-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  background-color: #f1f3f4;
+  padding: 0.6rem 1rem;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+}
+
+.fs-breadcrumb {
+  font-family: monospace;
+  color: var(--text-color);
+}
+
+.fs-table-container {
+  overflow-x: auto;
+}
+
+.fs-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.fs-table th, .fs-table td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.fs-table th {
+  background-color: #f8f9fa;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.fs-table tbody tr:hover {
+  background-color: #f8fafd;
+}
+
+.fs-item-dir {
+  cursor: pointer;
+  color: var(--primary-color);
+  font-weight: 500;
+}
+
+.fs-item-dir:hover {
+  text-decoration: underline;
+}
+
+.fs-empty-msg {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 2rem !important;
+}
+
+/* --- Stili Gestione Flotta (Prompt 6) --- */
+#app {
+  max-width: 1200px;
+}
+
+.fleet-section {
+  margin-top: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.fleet-section h3 {
+  margin-bottom: 1rem;
+  color: var(--text-color);
+}
+
+.table-responsive {
+  overflow-x: auto;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background-color: #fff;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+.data-table th, .data-table td {
+  padding: 0.75rem 0.85rem;
+  border-bottom: 1px solid #eee;
+  vertical-align: middle;
+}
+
+.data-table th {
+  background-color: #f1f3f4;
+  color: #333;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.data-table tbody tr:hover {
+  background-color: #f8fafd;
+}
+
+.empty-cell {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 2rem !important;
+}
+
+/* Badges di stato separati (§10.2, RF-ROB-014) */
+.badge-status {
+  display: inline-block;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.badge-attivo { background-color: #e6f4ea; color: #137333; }
+.badge-disabilitato { background-color: #fce8e6; color: #c5221f; }
+.badge-raggiungibile { background-color: #e6f4ea; color: #137333; }
+.badge-non_raggiungibile { background-color: #fce8e6; color: #c5221f; }
+.badge-non_verificato { background-color: #fef7e0; color: #b06000; }
+.badge-errore { background-color: #fce8e6; color: #c5221f; }
+.badge-avviso { background-color: #fef7e0; color: #b06000; }
+.badge-nodata { background-color: #f1f3f4; color: #575757; font-style: italic; }
+
+.btn-sm {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.82rem;
+}
+
+.btn-accent {
+  background-color: #0b8043;
+  color: #fff;
+}
+.btn-accent:hover {
+  background-color: #096a37;
+}
+
+.btn-danger {
+  background-color: #d93025;
+  color: #fff;
+}
+.btn-danger:hover {
+  background-color: #b3261e;
+}
+
+.btn-warning {
+  background-color: #f9ab00;
+  color: #202124;
+}
+.btn-warning:hover {
+  background-color: #e39b00;
+}
+
+/* Modals */
+.modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.modal.hidden {
+  display: none !important;
+}
+
+.modal-content {
+  background-color: #fff;
+  border-radius: 8px;
+  width: 100%;
+  max-width: 600px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-large {
+  max-width: 850px;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.btn-close {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  cursor: pointer;
+  color: #777;
+}
+.btn-close:hover {
+  color: #000;
+}
+
+.modal-body {
+  padding: 1.5rem;
+  overflow-y: auto;
+}
+
+.modal-footer {
+  padding: 1rem 1.5rem;
+  border-top: 1px solid #e0e0e0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+/* Grid per form complessi */
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.full-width {
+  grid-column: 1 / -1;
+}
+
+.form-fieldset {
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 1rem;
+  margin-top: 0.5rem;
+}
+
+.form-fieldset legend {
+  font-weight: 600;
+  padding: 0 0.5rem;
+  color: #333;
+}
+
+.sftp-subgrid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 2fr;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.field-error {
+  color: #d93025;
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+  min-height: 1rem;
+}
+
+.field-hint {
+  color: #666;
+  font-size: 0.8rem;
+  margin-top: 0.2rem;
+  display: block;
+}
+
+.required {
+  color: #d93025;
+  font-weight: bold;
+}
+
+/* Griglia Funzionalità Dettaglio Robot (RF-ROB-011) */
+.features-container {
+  margin-top: 1.5rem;
+}
+
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+.feature-card {
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 110px;
+}
+
+.feature-enabled {
+  background-color: #f6fbf7;
+  border-color: #c6e7ce;
+}
+
+.feature-disabled {
+  background-color: #f9f9f9;
+  border-color: #e5e5e5;
+  opacity: 0.8;
+}
+
+.feature-title {
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.feature-status {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+}
+
+.feature-reason {
+  font-size: 0.8rem;
+  color: #666;
+  margin-top: 0.5rem;
+}
+
+.alert-box {
+  padding: 0.85rem 1rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.alert-warning {
+  background-color: #fef7e0;
+  border-left: 4px solid #f9ab00;
+  color: #663c00;
+}
+
+.alert-success {
+  background-color: #e6f4ea;
+  border-left: 4px solid #137333;
+  color: #0d5224;
+}
+
+.alert-danger {
+  background-color: #fce8e6;
+  border-left: 4px solid #d93025;
+  color: #a51d24;
+}
+
+.alert-info {
+  background-color: #e8f0fe;
+  border-left: 4px solid #1a73e8;
+  color: #155724;
+}
+
+.details-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.detail-item strong {
+  display: block;
+  font-size: 0.8rem;
+  color: #666;
+  text-transform: uppercase;
+}
+
+.detail-item span {
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+/* Stili Finestra Terminale Remoto PTY (RF-SSH-003, RNF-UX-004) */
+.modal-terminal-window {
+  max-width: 1000px;
+  width: 95%;
+  height: 82vh;
+  background-color: #1e1e1e;
+  color: #f1f1f1;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+
+.terminal-modal-header {
+  background-color: #252526;
+  border-bottom: 1px solid #333;
+  padding: 0.75rem 1.25rem;
+  color: #fff;
+}
+
+.terminal-title-container {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.terminal-title-container h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: #fff;
+}
+
+.terminal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.terminal-header-actions .btn-close {
+  color: #aaa;
+}
+.terminal-header-actions .btn-close:hover {
+  color: #fff;
+}
+
+.terminal-body {
+  flex: 1;
+  padding: 8px;
+  background-color: #1e1e1e;
+  overflow: hidden;
+  position: relative;
+}
+
+.terminal-body,
+.terminal-body *,
+.xterm,
+.xterm *,
+.xterm-rows,
+.xterm-rows * {
+  font-family: "DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", Menlo, Monaco, Consolas, "Courier New", monospace !important;
+  letter-spacing: normal !important;
+  line-height: normal !important;
+}
+
+.terminal-body .xterm {
+  height: 100%;
+}
+
+.terminal-footer {
+  background-color: #252526;
+  border-top: 1px solid #333;
+  padding: 0.4rem 1.25rem;
+  font-size: 0.8rem;
+  color: #888;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* ========================================================================= */
+/* MODULO TRASFERIMENTI FILE (Prompt 10, RF-TRF-001..014)                    */
+/* ========================================================================= */
+.transfers-list-container {
+  padding: 1rem;
+}
+
+.transfers-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.transfer-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 1rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.transfer-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.transfer-card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.transfer-direction-badge {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  background: #e0e7ff;
+  color: #3730a3;
+  font-weight: 500;
+}
+
+.transfer-status-badge {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.transfer-status-IN_PROGRESS {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.transfer-status-COMPLETED {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.transfer-status-FAILED {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.transfer-status-CANCELLED {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.transfer-status-QUEUED {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.transfer-status-INTEGRITY_CHECKING {
+  background: #f3e8ff;
+  color: #6b21a8;
+}
+
+.transfer-status-INTEGRITY_FAILED {
+  background: #fecdd3;
+  color: #9f1239;
+}
+
+.transfer-progress-bar-bg {
+  width: 100%;
+  height: 8px;
+  background-color: #e2e8f0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.transfer-progress-bar-fill {
+  height: 100%;
+  background-color: #2563eb;
+  transition: width 0.2s ease;
+}
+
+.transfer-progress-bar-fill.completed {
+  background-color: #16a34a;
+}
+
+.transfer-progress-bar-fill.failed {
+  background-color: #dc2626;
+}
+
+.transfer-progress-bar-fill.cancelled {
+  background-color: #64748b;
+}
+
+.transfer-card-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8rem;
+  color: #64748b;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.transfer-action-btn {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  border-radius: 4px;
+}
+
+.fs-action-btn-group {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+/* Stili di Gestione Centralizzata Errori (§9) e Stati Distinti (§10.2) */
+.badge-classification {
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.badge-recuperabile {
+  background-color: #e8f0fe;
+  color: #1967d2;
+  border: 1px solid #c2e7ff;
+}
+
+.badge-amministrativo {
+  background-color: #fce8e6;
+  color: #c5221f;
+  border: 1px solid #f8b8b3;
+}
+
+.error-code-badge {
+  font-family: monospace;
+  font-size: 0.75rem;
+  background-color: rgba(0, 0, 0, 0.05);
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  color: #444;
+}
+
+.alert-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.35rem;
+}
+
+.input-invalid {
+  border-color: #d93025 !important;
+  background-color: #fef7f7 !important;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.spinner-inline {
+  display: inline-block;
+}
+
+.states-summary-card {
+  background-color: #f8f9fa;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.state-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid #edf2f7;
+}
+
+.state-row:last-child {
+  border-bottom: none;
+}
+
+.state-label {
+  font-weight: 500;
+  font-size: 0.88rem;
+  color: #4a5568;
+}
+
+

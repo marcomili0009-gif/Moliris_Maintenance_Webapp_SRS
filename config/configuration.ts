@@ -271,7 +271,7 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
 
   const terminalSessionTimeoutMinutes = env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"] && !isNaN(Number(env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"]))
     ? Number(env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"])
-    : undefined;
+    : 15;
 
   const maxConcurrentTerminalSessionsServer = env["MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"] && !isNaN(Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"]))
     ? Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"])

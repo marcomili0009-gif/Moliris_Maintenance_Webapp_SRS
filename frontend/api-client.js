@@ -13,6 +13,7 @@ export class ApiClient {
   constructor() {
     this.tokenKey = "moliris_token";
     this.sessionExpiredListeners = [];
+    this.activityListeners = [];
   }
 
   getToken() {
@@ -42,6 +43,16 @@ export class ApiClient {
   onSessionExpired(listener) {
     if (typeof listener === "function") {
       this.sessionExpiredListeners.push(listener);
+    }
+  }
+
+  onQualifiedActivity(listener) {
+    if (typeof listener === "function") this.activityListeners.push(listener);
+  }
+
+  notifyQualifiedActivity() {
+    for (const listener of this.activityListeners) {
+      try { listener(); } catch {}
     }
   }
 
@@ -94,6 +105,9 @@ export class ApiClient {
         ...options,
         headers,
       });
+
+      const isAutomaticStatusPolling = options.method === "GET" && /^\/api\/robots\/[^/]+\/status(?:\?.*)?$/.test(endpoint);
+      if (token && !isAutomaticStatusPolling) this.notifyQualifiedActivity();
 
       if (response.status === 401) {
         this.notifySessionExpired();

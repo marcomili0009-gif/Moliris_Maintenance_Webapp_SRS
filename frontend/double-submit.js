@@ -22,7 +22,7 @@ export class DoubleSubmitGuard {
     buttonElement.disabled = true;
     buttonElement.dataset.pending = "true";
     if (pendingText) {
-      buttonElement.innerHTML = `<span class="spinner-inline">⏳</span> ${pendingText}`;
+      buttonElement.innerHTML = `<span class="spinner-inline">…</span> ${pendingText}`;
     }
 
     try {

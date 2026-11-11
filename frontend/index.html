@@ -13,6 +13,13 @@
   <div id="app">
     <!-- Banner Notifiche e Errori Globali -->
     <div id="notification-banner" class="banner hidden" role="alert"></div>
+    <div id="modal-idle-warning" class="modal hidden" role="alertdialog" aria-modal="true" aria-labelledby="idle-warning-title">
+      <div class="modal-content">
+        <div class="modal-header"><h3 id="idle-warning-title">Avviso di scadenza</h3></div>
+        <p id="idle-warning-message"></p>
+        <div class="modal-footer"><button type="button" id="btn-dismiss-idle-warning" class="btn btn-primary">OK</button></div>
+      </div>
+    </div>
 
     <!-- 1. Schermata di Login (§6.1 punto 1, RF-AUTH-001) -->
     <section id="login-section" class="card">
@@ -51,17 +58,30 @@
         <button id="btn-logout" class="btn btn-secondary">Disconnetti (Logout)</button>
       </header>
 
+      <nav class="main-nav" aria-label="Navigazione principale">
+        <button type="button" class="main-nav-btn active" data-view="fleet">Flotta</button>
+        <button type="button" class="main-nav-btn" data-view="server">File sul server</button>
+        <button type="button" class="main-nav-btn" data-view="remote">File sul robot</button>
+        <button type="button" class="main-nav-btn" data-view="transfers">Trasferimenti</button>
+      </nav>
+
       <main class="dashboard-content">
         <!-- Barra Azioni Flotta -->
         <div class="actions-bar">
+<<<<<<< Updated upstream
           <button id="btn-register-robot" class="btn btn-accent hidden">＋ Registra Nuovo Robot</button>
           <button id="btn-bulk-upload-open" class="btn btn-primary">📦 Caricamento Massivo Multi-Target</button>
           <button id="btn-refresh-fleet" class="btn btn-secondary">🔄 Aggiorna Flotta</button>
+=======
+          <button id="btn-register-robot" class="btn btn-accent hidden">Registra Nuovo Robot</button>
+          <button id="btn-refresh-fleet" class="btn btn-secondary">Aggiorna Flotta</button>
+>>>>>>> Stashed changes
         </div>
 
         <!-- Sezione Elenco Flotta (RF-ROB-001, RF-ROB-014, CA-ROB-012) -->
         <section class="fleet-section">
           <h3>Flotta Robot Registrati</h3>
+          <p id="fleet-count" class="fleet-count">Caricamento flotta...</p>
           <div class="table-responsive">
             <table class="data-table" id="fleet-table">
               <thead>
@@ -88,12 +108,12 @@
         </section>
 
         <!-- Componente Navigazione Filesystem Server e Remoto (RF-SRVFS-002, RF-FS-001..003, RNF-UX-001/002/003) -->
-        <section id="fs-browser-section" class="fs-browser-card">
+        <section id="fs-browser-section" class="fs-browser-card hidden">
           <!-- Barra Selettore Tab: Distinzione netta Server vs Robot Remoto vs Trasferimenti (RF-TRF-001..006) -->
           <div class="fs-tab-bar">
-            <button id="btn-tab-fs-server" class="fs-tab-btn active" type="button">🗄️ File sul Server (Archivio Locale)</button>
-            <button id="btn-tab-fs-remote" class="fs-tab-btn" type="button">🌐 File sul Robot (Filesystem Remoto SFTP)</button>
-            <button id="btn-tab-transfers" class="fs-tab-btn" type="button">🔄 Gestione Trasferimenti (<span id="transfers-active-count">0</span> attivi)</button>
+            <button id="btn-tab-fs-server" class="fs-tab-btn active" type="button">File sul Server (Archivio Locale)</button>
+            <button id="btn-tab-fs-remote" class="fs-tab-btn" type="button">File sul Robot (Filesystem Remoto SFTP)</button>
+            <button id="btn-tab-transfers" class="fs-tab-btn" type="button">Gestione Trasferimenti (<span id="transfers-active-count">0</span> attivi)</button>
           </div>
 
           <!-- PANNELLO 1: Filesystem Server (RF-SRVFS-002, RF-TRF-001, RF-TRF-002) -->
@@ -111,11 +131,11 @@
             </div>
 
             <div class="fs-navigation-bar">
-              <button id="btn-fs-up" class="btn btn-secondary" title="Torna al livello superiore">⬆ Torna su</button>
+              <button id="btn-fs-up" class="btn btn-secondary" title="Torna al livello superiore">Torna su</button>
               <span class="fs-breadcrumb">Percorso Server: <strong id="fs-current-path">/</strong></span>
               <div class="fs-actions" style="margin-left: auto; display: flex; gap: 0.5rem;">
                 <input type="file" id="fs-server-file-input" name="fsServerFileInput" style="display: none;" aria-label="Seleziona file da caricare sul server">
-                <button id="btn-fs-server-upload" class="btn btn-primary btn-sm" title="Carica file dal computer al server (RF-TRF-001)">⬆️ Carica sul Server</button>
+                <button id="btn-fs-server-upload" class="btn btn-primary btn-sm" title="Carica file dal computer al server (RF-TRF-001)">Carica sul Server</button>
               </div>
             </div>
 
@@ -156,12 +176,12 @@
             </div>
 
             <div class="fs-navigation-bar">
-              <button id="btn-fs-remote-up" class="btn btn-secondary" title="Torna al livello precedente (RF-FS-003)">⬆ Torna al livello precedente</button>
+              <button id="btn-fs-remote-up" class="btn btn-secondary" title="Torna al livello precedente (RF-FS-003)">Torna al livello precedente</button>
               <span class="fs-breadcrumb">Percorso Remoto: <strong id="fs-remote-current-path">/</strong></span>
               <div class="fs-actions" style="margin-left: auto; display: flex; gap: 0.5rem;">
                 <input type="file" id="fs-remote-file-input" name="fsRemoteFileInput" style="display: none;" aria-label="Seleziona file da caricare sul robot">
-                <button id="btn-fs-remote-upload" class="btn btn-primary btn-sm" title="Carica file dal computer verso il robot (RF-TRF-003)">⬆️ Carica sul Robot</button>
-                <button id="btn-fs-remote-purge" class="btn btn-danger btn-sm" title="Elimina definitivamente tutti i file temporanei orfani (.tmp_moliris_*) dal robot e server">🧹 Bonifica Temp</button>
+                <button id="btn-fs-remote-upload" class="btn btn-primary btn-sm" title="Carica file dal computer verso il robot (RF-TRF-003)">Carica sul Robot</button>
+                <button id="btn-fs-remote-purge" class="btn btn-danger btn-sm" title="Elimina definitivamente tutti i file temporanei orfani (.tmp_moliris_*) dal robot e server">Bonifica Temp</button>
               </div>
             </div>
 
@@ -195,8 +215,8 @@
                 <small class="fs-subtitle">Monitoraggio in tempo reale di tutte le operazioni di trasferimento (Computer ↔ Server, Server ↔ Robot, Computer ↔ Robot).</small>
               </div>
               <div>
-                <button id="btn-purge-transfers-temp" class="btn btn-danger btn-sm" title="Bonifica file temporanei orfani da tutti i robot e server">🧹 Bonifica File Temp</button>
-                <button id="btn-refresh-transfers" class="btn btn-secondary btn-sm">🔄 Aggiorna Lista</button>
+                <button id="btn-purge-transfers-temp" class="btn btn-danger btn-sm" title="Bonifica file temporanei orfani da tutti i robot e server">Bonifica File Temp</button>
+                <button id="btn-refresh-transfers" class="btn btn-secondary btn-sm">Aggiorna Lista</button>
               </div>
             </div>
 
@@ -459,7 +479,7 @@
       <div class="modal-content modal-terminal-window">
         <div class="modal-header terminal-modal-header">
           <div class="terminal-title-container">
-            <h3 id="terminal-robot-title">💻 Terminale Remoto</h3>
+            <h3 id="terminal-robot-title">Terminale Remoto</h3>
             <span id="terminal-session-status" class="badge-status badge-non_verificato">In connessione...</span>
           </div>
           <div class="terminal-header-actions">
@@ -481,7 +501,7 @@
     <div id="modal-confirm-overwrite" class="modal hidden">
       <div class="modal-content">
         <div class="modal-header">
-          <h3 style="color: #b91c1c;">⚠️ Conferma Sovrascrittura File</h3>
+          <h3 style="color: #b91c1c;">Avviso: Conferma Sovrascrittura File</h3>
           <button class="btn-close" id="btn-close-overwrite">&times;</button>
         </div>
         <div class="modal-body">
@@ -505,7 +525,7 @@
     <div id="modal-confirm-delete" class="modal hidden">
       <div class="modal-content">
         <div class="modal-header">
-          <h3 style="color: #b91c1c;">🗑️ Conferma Eliminazione File</h3>
+          <h3 style="color: #b91c1c;">Conferma Eliminazione File</h3>
           <button class="btn-close" id="btn-close-delete">&times;</button>
         </div>
         <div class="modal-body">

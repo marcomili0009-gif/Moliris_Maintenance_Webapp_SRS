@@ -70,6 +70,10 @@ await new Promise<void>((resolve, reject) => {
     { rejectUnauthorized: false }, // Certificato autofirmato locale per il test
     (res) => {
       assert.strictEqual(res.statusCode, 200, "L'endpoint /healthz deve restituire status 200");
+      assert.strictEqual(res.headers["x-content-type-options"], "nosniff");
+      assert.strictEqual(res.headers["x-frame-options"], "DENY");
+      assert.strictEqual(res.headers["referrer-policy"], "no-referrer");
+      assert(String(res.headers["content-security-policy"]).includes("frame-ancestors 'none'"));
       let data = "";
       res.on("data", (chunk) => (data += chunk));
       res.on("end", () => {

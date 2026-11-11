@@ -17,6 +17,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnLogin = document.getElementById("btn-login");
   const loginError = document.getElementById("login-error");
   const notificationBanner = document.getElementById("notification-banner");
+  const modalIdleWarning = document.getElementById("modal-idle-warning");
+  const idleWarningMessage = document.getElementById("idle-warning-message");
+  document.getElementById("btn-dismiss-idle-warning")?.addEventListener("click", () => modalIdleWarning.classList.add("hidden"));
 
   const currentUsername = document.getElementById("current-username");
   const currentRoles = document.getElementById("current-roles");
@@ -24,6 +27,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnRegisterRobot = document.getElementById("btn-register-robot");
   const btnRefreshFleet = document.getElementById("btn-refresh-fleet");
   const fleetTableBody = document.getElementById("fleet-table-body");
+  const fleetCount = document.getElementById("fleet-count");
 
   // Modali
   const modalDetail = document.getElementById("modal-robot-detail");
@@ -74,6 +78,43 @@ document.addEventListener("DOMContentLoaded", () => {
   let activeXterm = null;
   let activeFitAddon = null;
   let terminalWebSocket = null;
+  let terminalIdleWarningTimer = null;
+  let terminalIdleExpiryTimer = null;
+  let terminalIdleCountdown = null;
+  let idleWarningKind = null;
+
+  function showIdleWarning(message, kind) {
+    idleWarningKind = kind;
+    idleWarningMessage.textContent = message;
+    modalIdleWarning.classList.remove("hidden");
+  }
+
+  function hideIdleWarning(kind) {
+    if (idleWarningKind === kind) {
+      modalIdleWarning.classList.add("hidden");
+      idleWarningKind = null;
+    }
+  }
+
+  function resetTerminalIdleWarning() {
+    clearTimeout(terminalIdleWarningTimer);
+    clearTimeout(terminalIdleExpiryTimer);
+    clearInterval(terminalIdleCountdown);
+    terminalIdleWarningTimer = terminalIdleExpiryTimer = terminalIdleCountdown = null;
+    hideIdleWarning("terminal");
+    if (!activeTerminalSessionId) return;
+    terminalIdleWarningTimer = setTimeout(() => {
+      let minutesLeft = 5;
+      showIdleWarning(`Il terminale SSH verrà chiuso per inattività tra ${minutesLeft} minuti.`, "terminal");
+      terminalIdleCountdown = setInterval(() => {
+        minutesLeft -= 1;
+        if (minutesLeft > 0) showIdleWarning(`Il terminale SSH verrà chiuso per inattività tra ${minutesLeft} minuti.`, "terminal");
+      }, 60_000);
+    }, 10 * 60_000);
+    terminalIdleExpiryTimer = setTimeout(() => {
+      showIdleWarning("Il terminale SSH è stato chiuso per inattività.", "terminal");
+    }, 15 * 60_000);
+  }
 
   // Navigazione Filesystem Server
   const fsRobotIdInput = document.getElementById("fs-robot-id");
@@ -132,6 +173,33 @@ document.addEventListener("DOMContentLoaded", () => {
   let pendingDeleteCallback = null;
 
   let currentUser = null;
+  let sessionWarningTimer = null;
+  let sessionExpiryTimer = null;
+  let sessionCountdownTimer = null;
+
+  function stopSessionCountdown() {
+    clearTimeout(sessionWarningTimer);
+    clearTimeout(sessionExpiryTimer);
+    clearInterval(sessionCountdownTimer);
+    sessionWarningTimer = sessionExpiryTimer = sessionCountdownTimer = null;
+  }
+
+  function startSessionCountdown() {
+    stopSessionCountdown();
+    if (!currentUser) return;
+    hideIdleWarning("session");
+    sessionWarningTimer = setTimeout(() => {
+      let minutesLeft = 5;
+      showIdleWarning(`La sessione scadrà per inattività tra ${minutesLeft} minuti.`, "session");
+      sessionCountdownTimer = setInterval(() => {
+        minutesLeft -= 1;
+        if (minutesLeft > 0) showIdleWarning(`La sessione scadrà per inattività tra ${minutesLeft} minuti.`, "session");
+      }, 60_000);
+    }, 25 * 60_000);
+    sessionExpiryTimer = setTimeout(() => {
+      showLoginView("La sessione è scaduta per inattività. Effettuare nuovamente il login.");
+    }, 30 * 60_000);
+  }
 
   // =========================================================================
   // GESTIONE NOTIFICHE ED ERRORI GLOBALI
@@ -167,6 +235,8 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function showLoginView(expiredMessage = null) {
+    stopSessionCountdown();
+    modalIdleWarning.classList.add("hidden");
     closeAllModals();
     dashboardSection.classList.add("hidden");
     loginSection.classList.remove("hidden");
@@ -181,6 +251,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function showDashboardView(user) {
     currentUser = user;
+    startSessionCountdown();
     loginSection.classList.add("hidden");
     dashboardSection.classList.remove("hidden");
     hideNotification();
@@ -205,6 +276,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // Registrazione hook scadenza sessione centralizzato (Step 5)
   apiClient.onSessionExpired(() => {
     showLoginView("La sessione è scaduta o non valida. Effettuare nuovamente il login.");
+  });
+  apiClient.onQualifiedActivity(() => {
+    if (currentUser) startSessionCountdown();
   });
 
   // Verifica sessione attiva all'avvio
@@ -277,11 +351,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // STEP 1 & 2 – LISTA DELLA FLOTTA E STATI DISTINTI (RF-ROB-001, RF-ROB-014, CA-ROB-012)
   // =========================================================================
   async function loadFleetData() {
+    fleetCount.textContent = "Caricamento flotta...";
     fleetTableBody.innerHTML = '<tr><td colspan="10" class="empty-cell">Caricamento flotta in corso...</td></tr>';
     try {
       const res = await apiClient.get("/api/robots");
       if (!res.ok) {
         const data = await res.json().catch(() => null);
+        fleetCount.textContent = "Conteggio non disponibile";
         const errObj = ErrorPresenter.formatError(data);
         fleetTableBody.innerHTML = `<tr><td colspan="10" class="empty-cell" style="color: #c5221f;">${StateFormatter.escapeHtml(errObj.userMessage)}</td></tr>`;
         return;
@@ -289,6 +365,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const data = await res.json();
       const robots = data.robots || [];
+      fleetCount.textContent = `Robot registrati: ${robots.length}`;
 
       if (robots.length === 0) {
         fleetTableBody.innerHTML = '<tr><td colspan="10" class="empty-cell">Nessun robot registrato o visibile per questo account.</td></tr>';
@@ -343,7 +420,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const tdWarnings = document.createElement("td");
         if (robot.hasWarningsOrErrors && robot.lastAttemptOutcome) {
           const diagMsg = robot.lastAttemptOutcome.diagnosticMessage || "Errore ultimo tentativo";
-          tdWarnings.innerHTML = `<span style="color: #c5221f; font-size: 0.82rem;">⚠️ ${StateFormatter.escapeHtml(diagMsg)}</span>`;
+          tdWarnings.innerHTML = `<span style="color: #c5221f; font-size: 0.82rem;">Avviso: ${StateFormatter.escapeHtml(diagMsg)}</span>`;
         } else {
           tdWarnings.textContent = "Nessuno";
         }
@@ -361,6 +438,7 @@ document.addEventListener("DOMContentLoaded", () => {
         fleetTableBody.appendChild(tr);
       }
     } catch (err) {
+      fleetCount.textContent = "Conteggio non disponibile";
       const formatted = ErrorPresenter.formatError(err);
       fleetTableBody.innerHTML = `<tr><td colspan="10" class="empty-cell" style="color: #c5221f;">${StateFormatter.escapeHtml(formatted.userMessage)}</td></tr>`;
     }
@@ -452,21 +530,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
         <!-- Barra Pulsanti Azione Robot (con guardie di doppio invio) -->
         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid #e0e0e0;">
-          <button class="btn btn-primary btn-sm" id="btn-detail-refresh-status">🔄 Aggiorna Stato (Refresh)</button>
-          ${feat.terminal ? '<button class="btn btn-primary btn-sm" id="btn-detail-open-terminal">💻 Apri Terminale</button>' : ''}
-          <button class="btn btn-secondary btn-sm" id="btn-detail-reverify">🔍 Ripeti Verifica Connessione</button>
-          ${hasUpdatePerm ? '<button class="btn btn-secondary btn-sm" id="btn-detail-edit">✏️ Modifica Configurazione</button>' : ''}
+          <button class="btn btn-primary btn-sm" id="btn-detail-refresh-status">Aggiorna Stato (Refresh)</button>
+          ${feat.terminal ? '<button class="btn btn-primary btn-sm" id="btn-detail-open-terminal">Apri Terminale</button>' : ''}
+          <button class="btn btn-secondary btn-sm" id="btn-detail-reverify">Ripeti Verifica Connessione</button>
+          ${hasUpdatePerm ? '<button class="btn btn-secondary btn-sm" id="btn-detail-edit">Modifica Configurazione</button>' : ''}
           ${hasDisablePerm ? (robot.anagraphicState === "attivo"
               ? '<button class="btn btn-warning btn-sm" id="btn-detail-disable">⏸ Disabilita Robot</button>'
               : '<button class="btn btn-accent btn-sm" id="btn-detail-enable">▶ Riabilita Robot</button>')
             : ''}
-          ${hasRemovePerm ? '<button class="btn btn-danger btn-sm" id="btn-detail-remove">🗑 Rimuovi Robot</button>' : ''}
+          ${hasRemovePerm ? '<button class="btn btn-danger btn-sm" id="btn-detail-remove">Rimuovi Robot</button>' : ''}
           ${robot.registrationState === "registrazione_incompleta" || robot.registrationState === "creazione_directory_fallita"
-              ? '<button class="btn btn-accent btn-sm" id="btn-detail-repair">🛠 Ripara Registrazione</button>'
+              ? '<button class="btn btn-accent btn-sm" id="btn-detail-repair">Ripara Registrazione</button>'
               : ''}
-          <button class="btn btn-secondary btn-sm" id="btn-detail-open-fs">📁 Esplora Server FS</button>
-          ${feat.remoteFs ? '<button class="btn btn-primary btn-sm" id="btn-detail-open-remote-fs">🌐 Esplora Remoto</button>' : ''}
-          <button class="btn btn-secondary btn-sm" id="btn-detail-open-transfers">🔄 Gestione Trasferimenti</button>
+          <button class="btn btn-secondary btn-sm" id="btn-detail-open-fs">Esplora Server FS</button>
+          ${feat.remoteFs ? '<button class="btn btn-primary btn-sm" id="btn-detail-open-remote-fs">Esplora Remoto</button>' : ''}
+          <button class="btn btn-secondary btn-sm" id="btn-detail-open-transfers">Gestione Trasferimenti</button>
         </div>
 
         <!-- Funzionalità Autorizzate per Utente/Robot (RF-ROB-011, CA-ROB-010) con MOTIVAZIONI TRASPARENTI -->
@@ -478,43 +556,43 @@ document.addEventListener("DOMContentLoaded", () => {
             <div class="feature-card ${feat.monitoring ? 'feature-enabled' : 'feature-disabled'}">
               <div>
                 <div class="feature-title">
-                  <span>📊 Monitoraggio Flotta</span>
+                  <span>Monitoraggio Flotta</span>
                   <span class="feature-status ${feat.monitoring ? 'badge-attivo' : 'badge-disabilitato'}">${feat.monitoring ? 'Disponibile' : 'Disabilitato'}</span>
                 </div>
                 <div class="feature-reason">${feat.monitoring ? 'Servizio di monitoraggio remoto attivo.' : StateFormatter.escapeHtml(feat.reasons.monitoring || 'Non disponibile')}</div>
               </div>
-              <button class="btn btn-primary btn-sm" id="btn-feature-refresh-status" style="margin-top: 0.5rem;" ${feat.monitoring ? '' : 'disabled'}>🔄 Aggiorna Stato Remoto</button>
+              <button class="btn btn-primary btn-sm" id="btn-feature-refresh-status" style="margin-top: 0.5rem;" ${feat.monitoring ? '' : 'disabled'}>Aggiorna Stato Remoto</button>
             </div>
 
             <!-- Terminale Remoto -->
             <div class="feature-card ${feat.terminal ? 'feature-enabled' : 'feature-disabled'}">
               <div>
                 <div class="feature-title">
-                  <span>💻 Terminale Remoto</span>
+                  <span>Terminale Remoto</span>
                   <span class="feature-status ${feat.terminal ? 'badge-attivo' : 'badge-disabilitato'}">${feat.terminal ? 'Disponibile' : 'Disabilitato'}</span>
                 </div>
                 <div class="feature-reason">${feat.terminal ? 'Sessione PTY interattiva bidirezionale pronta (RF-SSH-001..004).' : StateFormatter.escapeHtml(feat.reasons.terminal || 'Non disponibile')}</div>
               </div>
-              <button class="btn btn-primary btn-sm" id="btn-feature-open-terminal" style="margin-top: 0.5rem;" ${feat.terminal ? '' : 'disabled'}>💻 Apri Terminale Remoto</button>
+              <button class="btn btn-primary btn-sm" id="btn-feature-open-terminal" style="margin-top: 0.5rem;" ${feat.terminal ? '' : 'disabled'}>Apri Terminale Remoto</button>
             </div>
 
             <!-- Filesystem Remoto -->
             <div class="feature-card ${feat.remoteFs ? 'feature-enabled' : 'feature-disabled'}">
               <div>
                 <div class="feature-title">
-                  <span>🌐 Filesystem Remoto</span>
+                  <span>Filesystem Remoto</span>
                   <span class="feature-status ${feat.remoteFs ? 'badge-attivo' : 'badge-disabilitato'}">${feat.remoteFs ? 'Disponibile' : 'Disabilitato'}</span>
                 </div>
                 <div class="feature-reason">${feat.remoteFs ? 'Navigazione SFTP attiva nel filesystem del robot.' : StateFormatter.escapeHtml(feat.reasons.remoteFs || 'Non disponibile')}</div>
               </div>
-              <button class="btn btn-primary btn-sm" id="btn-card-remote-fs" style="margin-top: 0.5rem;" ${feat.remoteFs ? '' : 'disabled'}>🌐 Esplora Filesystem Remoto</button>
+              <button class="btn btn-primary btn-sm" id="btn-card-remote-fs" style="margin-top: 0.5rem;" ${feat.remoteFs ? '' : 'disabled'}>Esplora Filesystem Remoto</button>
             </div>
 
             <!-- Filesystem Server -->
             <div class="feature-card ${feat.serverFs ? 'feature-enabled' : 'feature-disabled'}">
               <div>
                 <div class="feature-title">
-                  <span>🗄️ Filesystem Server</span>
+                  <span>Filesystem Server</span>
                   <span class="feature-status ${feat.serverFs ? 'badge-attivo' : 'badge-disabilitato'}">${feat.serverFs ? 'Disponibile' : 'Disabilitato'}</span>
                 </div>
                 <div class="feature-reason">${feat.serverFs ? 'Accesso attivo alla directory dedicata sul server.' : StateFormatter.escapeHtml(feat.reasons.serverFs || 'Non disponibile')}</div>
@@ -595,7 +673,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const loadFsAction = () => {
         modalDetail.classList.add("hidden");
-        btnTabFsServer?.click();
+        navigateDashboardPage("server");
         fsRobotIdInput.value = robot.id;
         loadServerFilesystem(robot.id, "");
         document.getElementById("fs-browser-section")?.scrollIntoView({ behavior: "smooth" });
@@ -605,7 +683,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const loadRemoteFsAction = () => {
         modalDetail.classList.add("hidden");
-        btnTabFsRemote?.click();
+        navigateDashboardPage("remote");
         if (fsRemoteRobotIdInput) fsRemoteRobotIdInput.value = robot.id;
         loadRemoteFilesystem(robot.id, "");
         document.getElementById("fs-browser-section")?.scrollIntoView({ behavior: "smooth" });
@@ -615,7 +693,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const openTransfersAction = () => {
         modalDetail.classList.add("hidden");
-        btnTabTransfers?.click();
+        navigateDashboardPage("transfers");
         if (fsRobotIdInput) fsRobotIdInput.value = robot.id;
         if (fsRemoteRobotIdInput) fsRemoteRobotIdInput.value = robot.id;
         loadTransfersList();
@@ -750,7 +828,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <h5>Azioni eseguite con successo:</h5>
         <ul>
           ${(data.performedActions || []).length > 0
-            ? (data.performedActions || []).map((a) => `<li>✔️ ${StateFormatter.escapeHtml(a)}</li>`).join("")
+            ? (data.performedActions || []).map((a) => `<li>OK ${StateFormatter.escapeHtml(a)}</li>`).join("")
             : '<li style="color: var(--text-muted); font-style: italic;">Nessuna azione completata</li>'}
         </ul>
       </div>
@@ -759,7 +837,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <div style="margin-top: 0.75rem;">
           <h5>Azione fallita:</h5>
           <ul>
-            <li style="color: var(--error-text, #c5221f); font-weight: 500;">❌ ${StateFormatter.escapeHtml(data.failedAction)}</li>
+            <li style="color: var(--error-text, #c5221f); font-weight: 500;">Errore ${StateFormatter.escapeHtml(data.failedAction)}</li>
           </ul>
         </div>
       ` : ''}
@@ -769,7 +847,7 @@ document.addEventListener("DOMContentLoaded", () => {
           <h5>Dettaglio Controlli di Verifica SSH:</h5>
           <ul style="font-size: 0.88rem; list-style: none; padding-left: 0;">
             ${data.verificationSteps.map((s) => {
-              const icon = s.status === "SUCCESS" ? "✔️" : s.status === "FAILED" ? "❌" : "⏭️";
+              const icon = s.status === "SUCCESS" ? "OK" : s.status === "FAILED" ? "Errore" : "Saltato";
               const color = s.status === "SUCCESS" ? "var(--success-text, #137333)" : s.status === "FAILED" ? "var(--error-text, #c5221f)" : "var(--text-muted, #575757)";
               const detail = s.diagnosticDetail || s.message || s.status;
               return `<li style="margin-bottom: 0.25rem;">
@@ -785,7 +863,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <div style="margin-top: 0.75rem;">
           <h5>Azioni non eseguite o interrotte:</h5>
           <ul>
-            ${data.skippedActions.map((a) => `<li>⏭️ ${StateFormatter.escapeHtml(a)}</li>`).join("")}
+            ${data.skippedActions.map((a) => `<li>Saltato ${StateFormatter.escapeHtml(a)}</li>`).join("")}
           </ul>
         </div>
       ` : ''}
@@ -838,7 +916,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     modalTerminal.classList.remove("hidden");
-    terminalRobotTitle.textContent = `💻 Terminale Remoto: ${StateFormatter.escapeHtml(displayName)} (${StateFormatter.escapeHtml(robotId)})`;
+    terminalRobotTitle.textContent = `Terminale Remoto: ${StateFormatter.escapeHtml(displayName)} (${StateFormatter.escapeHtml(robotId)})`;
     terminalSessionStatus.className = "badge-status badge-non_verificato";
     terminalSessionStatus.textContent = "Allocazione PTY in corso...";
     terminalContainer.innerHTML = "";
@@ -859,6 +937,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       activeTerminalSessionId = data.sessionId;
+      resetTerminalIdleWarning();
       terminalSessionStatus.className = "badge-status badge-non_verificato";
       terminalSessionStatus.textContent = "Connessione WebSocket...";
 
@@ -969,12 +1048,16 @@ document.addEventListener("DOMContentLoaded", () => {
       };
 
       activeXterm.onData((inputData) => {
+        resetTerminalIdleWarning();
+        apiClient.notifyQualifiedActivity();
         if (terminalWebSocket && terminalWebSocket.readyState === WebSocket.OPEN) {
           terminalWebSocket.send(inputData);
         }
       });
 
       activeXterm.onResize(({ cols, rows }) => {
+        resetTerminalIdleWarning();
+        apiClient.notifyQualifiedActivity();
         terminalFooterDims.textContent = `${cols} x ${rows}`;
         if (terminalWebSocket && terminalWebSocket.readyState === WebSocket.OPEN) {
           terminalWebSocket.send(JSON.stringify({ type: "resize", cols, rows }));
@@ -989,6 +1072,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function closeTerminal() {
+    clearTimeout(terminalIdleWarningTimer);
+    clearTimeout(terminalIdleExpiryTimer);
+    clearInterval(terminalIdleCountdown);
+    terminalIdleWarningTimer = terminalIdleExpiryTimer = terminalIdleCountdown = null;
     if (activeTerminalSessionId && terminalWebSocket && terminalWebSocket.readyState === WebSocket.OPEN) {
       try {
         terminalWebSocket.send(JSON.stringify({ type: "close" }));
@@ -1230,7 +1317,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const tr = document.createElement("tr");
 
         const typeTd = document.createElement("td");
-        typeTd.textContent = item.type === "directory" ? "📁 [DIR]" : "📄 [FILE]";
+        typeTd.textContent = item.type === "directory" ? "[DIR]" : "[FILE]";
         tr.appendChild(typeTd);
 
         const nameTd = document.createElement("td");
@@ -1275,7 +1362,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
           const btnSendToRobot = document.createElement("button");
           btnSendToRobot.className = "btn btn-secondary btn-sm transfer-action-btn";
-          btnSendToRobot.textContent = "➡️ Invia al Robot";
+          btnSendToRobot.textContent = "Invia al Robot";
           btnSendToRobot.title = "Trasferisci file dal server al filesystem remoto del robot (RF-TRF-002)";
           btnSendToRobot.addEventListener("click", async () => {
             const relPath = currentFsPath ? `${currentFsPath}/${item.name}` : item.name;
@@ -1285,7 +1372,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
           const btnDelete = document.createElement("button");
           btnDelete.className = "btn btn-danger btn-sm transfer-action-btn";
-          btnDelete.textContent = "🗑️ Elimina";
+          btnDelete.textContent = "Elimina";
           btnDelete.title = "Elimina file definitivamente dal server (RNF-FS-003, RF-ROB-013)";
           btnDelete.addEventListener("click", () => {
             const relPath = currentFsPath ? `${currentFsPath}/${item.name}` : item.name;
@@ -1370,6 +1457,35 @@ document.addEventListener("DOMContentLoaded", () => {
     loadTransfersList();
   });
 
+  const dashboardNavButtons = document.querySelectorAll(".main-nav-btn");
+  const fleetActionsBar = document.querySelector(".actions-bar");
+  const fleetSection = document.querySelector(".fleet-section");
+  const fsBrowserSection = document.getElementById("fs-browser-section");
+
+  function navigateDashboardPage(view) {
+    dashboardNavButtons.forEach((button) => {
+      button.classList.toggle("active", button.dataset.view === view);
+    });
+
+    const showFleet = view === "fleet";
+    fleetActionsBar?.classList.toggle("hidden", !showFleet);
+    fleetSection?.classList.toggle("hidden", !showFleet);
+    fsBrowserSection?.classList.toggle("hidden", showFleet);
+
+    if (!showFleet) {
+      const tabs = {
+        server: btnTabFsServer,
+        remote: btnTabFsRemote,
+        transfers: btnTabTransfers,
+      };
+      tabs[view]?.click();
+    }
+  }
+
+  dashboardNavButtons.forEach((button) => {
+    button.addEventListener("click", () => navigateDashboardPage(button.dataset.view));
+  });
+
   // =========================================================================
   // NAVIGAZIONE FILESYSTEM REMOTO ROBOT VIA SFTP (RF-FS-001..007, CA-FS-001)
   // =========================================================================
@@ -1406,13 +1522,13 @@ document.addEventListener("DOMContentLoaded", () => {
         // Tipo (RF-FS-002)
         const typeTd = document.createElement("td");
         if (item.type === "directory") {
-          typeTd.innerHTML = '<span class="badge-status badge-attivo">📁 [DIR]</span>';
+          typeTd.innerHTML = '<span class="badge-status badge-attivo">[DIR]</span>';
         } else if (item.type === "link") {
-          typeTd.innerHTML = '<span class="badge-status badge-avviso fs-item-link">🔗 [LINK]</span>';
+          typeTd.innerHTML = '<span class="badge-status badge-avviso fs-item-link">[LINK]</span>';
         } else if (item.type === "special") {
-          typeTd.innerHTML = '<span class="badge-status badge-avviso fs-item-special">⚙️ [SPECIAL]</span>';
+          typeTd.innerHTML = '<span class="badge-status badge-avviso fs-item-special">[SPECIAL]</span>';
         } else {
-          typeTd.innerHTML = '<span class="badge-status badge-raggiungibile">📄 [FILE]</span>';
+          typeTd.innerHTML = '<span class="badge-status badge-raggiungibile">[FILE]</span>';
         }
         tr.appendChild(typeTd);
 
@@ -1478,7 +1594,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
           const btnDelete = document.createElement("button");
           btnDelete.className = "btn btn-danger btn-sm transfer-action-btn";
-          btnDelete.textContent = "🗑️ Elimina";
+          btnDelete.textContent = "Elimina";
           btnDelete.title = "Elimina file definitivamente dal robot (RF-FS-007, RNF-FS-003, RF-ROB-013)";
           btnDelete.addEventListener("click", () => {
             const remotePath = currentRemoteFsPath.endsWith("/")
@@ -1498,7 +1614,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (data.truncated || data.isTruncated) {
         const count = data.items ? data.items.length : 0;
         const truncTr = document.createElement("tr");
-        truncTr.innerHTML = `<td colspan="5" style="text-align: center; color: #b06000; font-size: 0.85rem; font-weight: bold; background-color: #fff9e6;">⚠️ elenco incompleto: ${count} elementi mostrati</td>`;
+        truncTr.innerHTML = `<td colspan="5" style="text-align: center; color: #b06000; font-size: 0.85rem; font-weight: bold; background-color: #fff9e6;">Avviso: elenco incompleto: ${count} elementi mostrati</td>`;
         fsRemoteTableBody.appendChild(truncTr);
       }
     } catch (err) {
@@ -1869,12 +1985,12 @@ document.addEventListener("DOMContentLoaded", () => {
           card.className = "transfer-card";
 
           const dirLabels = {
-            CLIENT_TO_SERVER: "💻 Computer ➔ 🗄️ Server",
-            SERVER_TO_CLIENT: "🗄️ Server ➔ 💻 Computer",
-            SERVER_TO_ROBOT: "🗄️ Server ➔ 🌐 Robot",
-            ROBOT_TO_SERVER: "🌐 Robot ➔ 🗄️ Server",
-            CLIENT_TO_ROBOT: "💻 Computer ➔ 🌐 Robot",
-            ROBOT_TO_CLIENT: "🌐 Robot ➔ 💻 Computer",
+            CLIENT_TO_SERVER: "Computer ➔ Server",
+            SERVER_TO_CLIENT: "Server ➔ Computer",
+            SERVER_TO_ROBOT: "Server ➔ Robot",
+            ROBOT_TO_SERVER: "Robot ➔ Server",
+            CLIENT_TO_ROBOT: "Computer ➔ Robot",
+            ROBOT_TO_CLIENT: "Robot ➔ Computer",
           };
 
           const statusLabels = {
@@ -1908,7 +2024,7 @@ document.addEventListener("DOMContentLoaded", () => {
             <div class="transfer-card-stats">
               <span>${StateFormatter.formatBytes(trf.transferredBytes)} / ${trf.totalBytes ? StateFormatter.formatBytes(trf.totalBytes) : 'dim. sconosciuta'} (${percent})</span>
               <span>${speed} ${eta ? '| ' + eta : ''}</span>
-              ${trf.integrityLabel ? `<span class="transfer-integrity-badge" style="font-weight: 500; color: #1e40af;">🛡️ ${StateFormatter.escapeHtml(trf.integrityLabel)}</span>` : ''}
+              ${trf.integrityLabel ? `<span class="transfer-integrity-badge" style="font-weight: 500; color: #1e40af;">${StateFormatter.escapeHtml(trf.integrityLabel)}</span>` : ''}
               ${trf.checksum ? `<span title="Checksum ${trf.checksumAlgorithm || ''}">Digest: ${trf.checksum.substring(0, 10)}...</span>` : ''}
               ${trf.error ? `<span style="color: #dc2626; width: 100%; margin-top: 0.25rem;">Errore: ${StateFormatter.escapeHtml(trf.error)}</span>` : ''}
             </div>
