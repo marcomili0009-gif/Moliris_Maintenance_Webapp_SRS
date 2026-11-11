@@ -746,6 +746,105 @@ const isSessModalClosed = await evaluateInBrowser<boolean>(
 );
 assert.strictEqual(isSessModalClosed, true, "Il modal di avviso sessione deve chiudersi al dismiss");
 
+// Test 16: Punto 5 UI - Barra filtri multi-criterio, Palette Bootstrap e Logo cliccabile
+console.log("  -> Test Punto 5 UI: Barra filtri, Palette Bootstrap e Logo navigazione Home");
+await evaluateInBrowser<void>(`
+  document.getElementById('username').value = 'admin';
+  document.getElementById('password').value = 'AdminPassword123!';
+  document.getElementById('btn-login').click();
+`);
+for (let i = 0; i < 30; i++) {
+  const ready = await evaluateInBrowser<boolean>(`
+    !document.getElementById('dashboard-section').classList.contains('hidden') &&
+    document.getElementById('fleet-table-body').innerHTML.includes('Robot Online Alpha')
+  `);
+  if (ready) break;
+  await new Promise((r) => setTimeout(r, 100));
+}
+
+// Verifica token palette Bootstrap applicati nel CSS
+const bsVars = await evaluateInBrowser<Record<string, string>>(`
+  (() => {
+    const s = getComputedStyle(document.documentElement);
+    return {
+      primary: s.getPropertyValue('--bs-primary').trim(),
+      secondary: s.getPropertyValue('--bs-secondary').trim(),
+      success: s.getPropertyValue('--bs-success').trim(),
+      danger: s.getPropertyValue('--bs-danger').trim(),
+      warning: s.getPropertyValue('--bs-warning').trim(),
+      light: s.getPropertyValue('--bs-light').trim(),
+      dark: s.getPropertyValue('--bs-dark').trim(),
+    };
+  })()
+`);
+assert.strictEqual(bsVars.primary, "#0d6efd");
+assert.strictEqual(bsVars.secondary, "#6c757d");
+assert.strictEqual(bsVars.success, "#198754");
+assert.strictEqual(bsVars.danger, "#dc3545");
+assert.strictEqual(bsVars.warning, "#ffc107");
+assert.strictEqual(bsVars.light, "#f8f9fa");
+assert.strictEqual(bsVars.dark, "#212529");
+
+// Verifica filtro case-insensitive per Nome Cliente + Impianto + Nome + ID combinati
+await evaluateInBrowser<void>(`{
+  const fc = document.getElementById('filter-customer');
+  fc.value = 'acme';
+  fc.dispatchEvent(new Event('input'));
+}`);
+const afterCustomerRows = await evaluateInBrowser<number>("document.querySelectorAll('#fleet-table-body tr').length");
+assert.strictEqual(afterCustomerRows, 1, "Filtro per Nome Cliente case-insensitive deve isolare Acme Industries");
+
+await evaluateInBrowser<void>(`{
+  const fp = document.getElementById('filter-plant');
+  fp.value = 'MILANO';
+  fp.dispatchEvent(new Event('input'));
+  const fid = document.getElementById('filter-robot-id');
+  fid.value = 'ONLINE';
+  fid.dispatchEvent(new Event('input'));
+}`);
+const combinedMatchText = await evaluateInBrowser<string>("document.getElementById('fleet-table-body').textContent");
+assert.ok(combinedMatchText.includes("Robot Online Alpha"), "I filtri combinati case-insensitive devono mostrare il robot corrispondente");
+
+// Filtro senza risultati -> messaggio esplicito
+await evaluateInBrowser<void>(`{
+  const fn = document.getElementById('filter-robot-name');
+  fn.value = 'robot_inesistente_xyz';
+  fn.dispatchEvent(new Event('input'));
+}`);
+const noResultText = await evaluateInBrowser<string>("document.getElementById('fleet-table-body').textContent");
+assert.ok(noResultText.includes("Nessun robot corrisponde ai filtri"), "Quando non ci sono risultati deve comparire un messaggio esplicito");
+
+// Pulizia filtri -> ripristino flotta completa senza ricaricare la pagina
+await evaluateInBrowser<void>("document.getElementById('btn-clear-filters').click()");
+const restoredRows = await evaluateInBrowser<number>("document.querySelectorAll('#fleet-table-body tr').length");
+assert.ok(restoredRows >= 3, "Il pulsante Cancella filtri deve ripristinare tutti i robot registrati");
+
+// Filtro per Nome Robot case-insensitive
+await evaluateInBrowser<void>(`{
+  const fn = document.getElementById('filter-robot-name');
+  fn.value = 'offline';
+  fn.dispatchEvent(new Event('input'));
+}`);
+const offlineOnlyText = await evaluateInBrowser<string>("document.getElementById('fleet-table-body').textContent");
+assert.ok(offlineOnlyText.includes("Robot Offline Beta") && !offlineOnlyText.includes("Robot Online Alpha"));
+await evaluateInBrowser<void>("document.getElementById('btn-clear-filters').click()");
+
+// Verifica Logo cliccabile per tornare alla Home tramite sistema di navigazione esistente
+await evaluateInBrowser<void>("document.querySelector('.main-nav-btn[data-view=\"server\"]').click()");
+const isFleetHiddenOnServerView = await evaluateInBrowser<boolean>(
+  "document.querySelector('.fleet-section').classList.contains('hidden')"
+);
+assert.strictEqual(isFleetHiddenOnServerView, true, "La sezione flotta deve nascondersi navigando su File sul server");
+
+await evaluateInBrowser<void>("document.getElementById('app-logo-home').click()");
+const isBackHomeOnLogoClick = await evaluateInBrowser<boolean>(`
+  !document.querySelector('.fleet-section').classList.contains('hidden') &&
+  document.getElementById('fs-browser-section').classList.contains('hidden') &&
+  document.querySelector('.main-nav-btn[data-view="fleet"]').classList.contains('active')
+`);
+assert.strictEqual(isBackHomeOnLogoClick, true, "Il clic sul logo deve riportare alla Home (Flotta) tramite la navigazione esistente");
+console.log("  PASS: Punto 5 UI (Filtri, Bootstrap palette, Logo Home) verificato con successo.");
+
 // Chiusura risorse di test
 console.log("  -> Chiusura CDP WebSocket...");
 cdpWs.close();

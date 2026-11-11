@@ -49,13 +49,24 @@
     <section id="dashboard-section" class="card hidden">
       <header class="dashboard-header">
         <div>
-          <h2>Pannello di Gestione Flotta</h2>
+          <button type="button" id="app-logo-home" class="app-logo-btn" title="Torna alla Home (Flotta)" aria-label="Moliris Maintenance Webapp - Torna alla Home">
+            <span class="app-logo-mark" aria-hidden="true">
+              <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect width="32" height="32" rx="8" fill="#0d6efd"/>
+                <path d="M8 22V10L16 17L24 10V22" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            <span class="app-logo-text-group">
+              <span class="app-logo-title">Moliris</span>
+              <span class="app-logo-subtitle">Pannello di Gestione Flotta</span>
+            </span>
+          </button>
           <div class="user-info">
             Utente: <span id="current-username" class="badge"></span>
             Ruoli: <span id="current-roles" class="badge"></span>
           </div>
         </div>
-        <button id="btn-logout" class="btn btn-secondary">Disconnetti (Logout)</button>
+        <button id="btn-logout" class="btn btn-light">Disconnetti (Logout)</button>
       </header>
 
       <nav class="main-nav" aria-label="Navigazione principale">
@@ -77,6 +88,30 @@
         <section class="fleet-section">
           <h3>Flotta Robot Registrati</h3>
           <p id="fleet-count" class="fleet-count">Caricamento flotta...</p>
+
+          <!-- Barra dei Filtri Flotta (Punto 5 UI) -->
+          <div id="fleet-filters-bar" class="fleet-filters-bar" role="search" aria-label="Filtri ricerca flotta robot">
+            <div class="filter-field">
+              <label for="filter-customer">Nome Cliente</label>
+              <input type="search" id="filter-customer" placeholder="Filtra per cliente..." autocomplete="off">
+            </div>
+            <div class="filter-field">
+              <label for="filter-plant">Nome Impianto</label>
+              <input type="search" id="filter-plant" placeholder="Filtra per impianto..." autocomplete="off">
+            </div>
+            <div class="filter-field">
+              <label for="filter-robot-name">Nome Robot</label>
+              <input type="search" id="filter-robot-name" placeholder="Filtra per nome robot..." autocomplete="off">
+            </div>
+            <div class="filter-field">
+              <label for="filter-robot-id">ID Robot</label>
+              <input type="search" id="filter-robot-id" placeholder="Filtra per ID..." autocomplete="off">
+            </div>
+            <div class="filter-actions">
+              <button type="button" id="btn-clear-filters" class="btn btn-secondary btn-sm">Cancella filtri</button>
+            </div>
+          </div>
+
           <div class="table-responsive">
             <table class="data-table" id="fleet-table">
               <thead>

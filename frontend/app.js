@@ -28,6 +28,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnRefreshFleet = document.getElementById("btn-refresh-fleet");
   const fleetTableBody = document.getElementById("fleet-table-body");
   const fleetCount = document.getElementById("fleet-count");
+  const filterCustomerInput = document.getElementById("filter-customer");
+  const filterPlantInput = document.getElementById("filter-plant");
+  const filterRobotNameInput = document.getElementById("filter-robot-name");
+  const filterRobotIdInput = document.getElementById("filter-robot-id");
+  const btnClearFilters = document.getElementById("btn-clear-filters");
+  const btnAppLogoHome = document.getElementById("app-logo-home");
+  let loadedFleetRobots = [];
 
   // Modali
   const modalDetail = document.getElementById("modal-robot-detail");
@@ -332,6 +339,13 @@ document.addEventListener("DOMContentLoaded", () => {
     closeTerminal();
   }
 
+  function clearFleetFilterInputs() {
+    if (filterCustomerInput) filterCustomerInput.value = "";
+    if (filterPlantInput) filterPlantInput.value = "";
+    if (filterRobotNameInput) filterRobotNameInput.value = "";
+    if (filterRobotIdInput) filterRobotIdInput.value = "";
+  }
+
   function showLoginView(expiredMessage = null) {
     if (sessionInactivityTimer) {
       clearInterval(sessionInactivityTimer);
@@ -340,6 +354,9 @@ document.addEventListener("DOMContentLoaded", () => {
     stopSessionCountdown();
     modalIdleWarning?.classList.add("hidden");
     closeAllModals();
+    loadedFleetRobots = [];
+    clearFleetFilterInputs();
+    if (fleetTableBody) fleetTableBody.innerHTML = "";
     dashboardSection.classList.add("hidden");
     loginSection.classList.remove("hidden");
     loginError.classList.add("hidden");
@@ -451,8 +468,142 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // =========================================================================
-  // STEP 1 & 2 – LISTA DELLA FLOTTA E STATI DISTINTI (RF-ROB-001, RF-ROB-014, CA-ROB-012)
+  // STEP 1 & 2 – LISTA DELLA FLOTTA E FILTRI (RF-ROB-001, RF-ROB-014, CA-ROB-012, Punto 5 UI)
   // =========================================================================
+  function getActiveFleetFilters() {
+    return {
+      customer: (filterCustomerInput?.value || "").trim().toLowerCase(),
+      plant: (filterPlantInput?.value || "").trim().toLowerCase(),
+      robotName: (filterRobotNameInput?.value || "").trim().toLowerCase(),
+      robotId: (filterRobotIdInput?.value || "").trim().toLowerCase(),
+    };
+  }
+
+  function renderFleetRows() {
+    if (loadedFleetRobots.length === 0) {
+      if (fleetCount) fleetCount.textContent = "Robot registrati: 0";
+      fleetTableBody.innerHTML = '<tr><td colspan="12" class="empty-cell">Nessun robot registrato o visibile per questo account.</td></tr>';
+      return;
+    }
+
+    const filters = getActiveFleetFilters();
+    const hasFilters = Boolean(filters.customer || filters.plant || filters.robotName || filters.robotId);
+
+    const filteredRobots = loadedFleetRobots.filter((robot) => {
+      if (filters.customer && !String(robot.customerName || "").toLowerCase().includes(filters.customer)) {
+        return false;
+      }
+      if (filters.plant && !String(robot.plantName || "").toLowerCase().includes(filters.plant)) {
+        return false;
+      }
+      if (filters.robotName && !String(robot.displayName || "").toLowerCase().includes(filters.robotName)) {
+        return false;
+      }
+      if (filters.robotId && !String(robot.id || "").toLowerCase().includes(filters.robotId)) {
+        return false;
+      }
+      return true;
+    });
+
+    if (fleetCount) {
+      fleetCount.textContent = hasFilters
+        ? `Robot visualizzati: ${filteredRobots.length} su ${loadedFleetRobots.length}`
+        : `Robot registrati: ${loadedFleetRobots.length}`;
+    }
+
+    if (filteredRobots.length === 0) {
+      fleetTableBody.innerHTML = '<tr><td colspan="12" class="empty-cell">Nessun robot corrisponde ai filtri di ricerca impostati.</td></tr>';
+      return;
+    }
+
+    fleetTableBody.innerHTML = "";
+    for (const robot of filteredRobots) {
+      const tr = document.createElement("tr");
+
+      // 1. Nome Visualizzato
+      const tdName = document.createElement("td");
+      tdName.innerHTML = `<strong>${StateFormatter.escapeHtml(robot.displayName)}</strong>`;
+      tr.appendChild(tdName);
+
+      // 2. ID
+      const tdId = document.createElement("td");
+      tdId.textContent = robot.id;
+      tr.appendChild(tdId);
+
+      // 3. Cliente (RF-05)
+      const tdCustomer = document.createElement("td");
+      tdCustomer.className = "robot-customer-cell";
+      tdCustomer.textContent = robot.customerName || "-";
+      tr.appendChild(tdCustomer);
+
+      // 4. Impianto (RF-05)
+      const tdPlant = document.createElement("td");
+      tdPlant.className = "robot-plant-cell";
+      tdPlant.textContent = robot.plantName || "-";
+      tr.appendChild(tdPlant);
+
+      // 5. Host : Porta
+      const tdHost = document.createElement("td");
+      tdHost.textContent = `${robot.host}:${robot.sshPort}`;
+      tr.appendChild(tdHost);
+
+      // 6. Username Remoto
+      const tdUser = document.createElement("td");
+      tdUser.textContent = robot.remoteUsername;
+      tr.appendChild(tdUser);
+
+      // 7. Stato Anagrafico (§10.2, RF-ROB-014)
+      const tdAnagr = document.createElement("td");
+      tdAnagr.innerHTML = StateFormatter.renderAnagraphicBadge(robot.anagraphicState);
+      tr.appendChild(tdAnagr);
+
+      // 8. Stato Connessione (§10.2, RF-ROB-014, CA-ROB-012)
+      const tdConn = document.createElement("td");
+      tdConn.innerHTML = StateFormatter.renderConnectionBadge(robot.connectionState);
+      tr.appendChild(tdConn);
+
+      // 9. Stato Operativo (§10.2, RF-MON-005, RF-MON-006)
+      const tdOp = document.createElement("td");
+      tdOp.innerHTML = StateFormatter.renderOperationalState(robot.operationalState, robot.isStale);
+      tr.appendChild(tdOp);
+
+      // 10. Data Ultimo Aggiornamento Stato
+      const tdUpdate = document.createElement("td");
+      tdUpdate.textContent = StateFormatter.formatDate(robot.lastValidUpdateAt);
+      tr.appendChild(tdUpdate);
+
+      // 11. Avvisi / Errori di connessione ed esito ultimo tentativo
+      const tdWarnings = document.createElement("td");
+      if (robot.hasWarningsOrErrors && robot.lastAttemptOutcome) {
+        const diagMsg = robot.lastAttemptOutcome.diagnosticMessage || "Errore ultimo tentativo";
+        tdWarnings.innerHTML = `<span style="color: var(--bs-danger, #dc3545); font-size: 0.82rem;">Avviso: ${StateFormatter.escapeHtml(diagMsg)}</span>`;
+      } else {
+        tdWarnings.textContent = "Nessuno";
+      }
+      tr.appendChild(tdWarnings);
+
+      // 12. Azioni
+      const tdActions = document.createElement("td");
+      const btnDetail = document.createElement("button");
+      btnDetail.className = "btn btn-secondary btn-sm";
+      btnDetail.textContent = "Dettaglio";
+      btnDetail.addEventListener("click", () => openRobotDetail(robot.id));
+      tdActions.appendChild(btnDetail);
+      tr.appendChild(tdActions);
+
+      fleetTableBody.appendChild(tr);
+    }
+  }
+
+  [filterCustomerInput, filterPlantInput, filterRobotNameInput, filterRobotIdInput].forEach((inputEl) => {
+    inputEl?.addEventListener("input", () => renderFleetRows());
+  });
+
+  btnClearFilters?.addEventListener("click", () => {
+    clearFleetFilterInputs();
+    renderFleetRows();
+  });
+
   async function loadFleetData() {
     if (fleetCount) fleetCount.textContent = "Caricamento flotta...";
     fleetTableBody.innerHTML = '<tr><td colspan="12" class="empty-cell">Caricamento flotta in corso...</td></tr>';
@@ -460,102 +611,19 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await apiClient.get("/api/robots");
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        fleetCount.textContent = "Conteggio non disponibile";
+        if (fleetCount) fleetCount.textContent = "Conteggio non disponibile";
         const errObj = ErrorPresenter.formatError(data);
-        fleetTableBody.innerHTML = `<tr><td colspan="12" class="empty-cell" style="color: #c5221f;">${StateFormatter.escapeHtml(errObj.userMessage)}</td></tr>`;
+        fleetTableBody.innerHTML = `<tr><td colspan="12" class="empty-cell" style="color: var(--bs-danger, #dc3545);">${StateFormatter.escapeHtml(errObj.userMessage)}</td></tr>`;
         return;
       }
 
       const data = await res.json();
-      const robots = data.robots || [];
-      fleetCount.textContent = `Robot registrati: ${robots.length}`;
-
-      if (robots.length === 0) {
-        fleetTableBody.innerHTML = '<tr><td colspan="12" class="empty-cell">Nessun robot registrato o visibile per questo account.</td></tr>';
-        return;
-      }
-
-      fleetTableBody.innerHTML = "";
-      for (const robot of robots) {
-        const tr = document.createElement("tr");
-
-        // 1. Nome Visualizzato
-        const tdName = document.createElement("td");
-        tdName.innerHTML = `<strong>${StateFormatter.escapeHtml(robot.displayName)}</strong>`;
-        tr.appendChild(tdName);
-
-        // 2. ID
-        const tdId = document.createElement("td");
-        tdId.textContent = robot.id;
-        tr.appendChild(tdId);
-
-        // 3. Cliente (RF-05)
-        const tdCustomer = document.createElement("td");
-        tdCustomer.className = "robot-customer-cell";
-        tdCustomer.textContent = robot.customerName || "-";
-        tr.appendChild(tdCustomer);
-
-        // 4. Impianto (RF-05)
-        const tdPlant = document.createElement("td");
-        tdPlant.className = "robot-plant-cell";
-        tdPlant.textContent = robot.plantName || "-";
-        tr.appendChild(tdPlant);
-
-        // 5. Host : Porta
-        const tdHost = document.createElement("td");
-        tdHost.textContent = `${robot.host}:${robot.sshPort}`;
-        tr.appendChild(tdHost);
-
-        // 4. Username Remoto
-        const tdUser = document.createElement("td");
-        tdUser.textContent = robot.remoteUsername;
-        tr.appendChild(tdUser);
-
-        // 5. Stato Anagrafico (§10.2, RF-ROB-014)
-        const tdAnagr = document.createElement("td");
-        tdAnagr.innerHTML = StateFormatter.renderAnagraphicBadge(robot.anagraphicState);
-        tr.appendChild(tdAnagr);
-
-        // 6. Stato Connessione (§10.2, RF-ROB-014, CA-ROB-012)
-        const tdConn = document.createElement("td");
-        tdConn.innerHTML = StateFormatter.renderConnectionBadge(robot.connectionState);
-        tr.appendChild(tdConn);
-
-        // 7. Stato Operativo (§10.2, RF-MON-005, RF-MON-006)
-        const tdOp = document.createElement("td");
-        tdOp.innerHTML = StateFormatter.renderOperationalState(robot.operationalState, robot.isStale);
-        tr.appendChild(tdOp);
-
-        // 8. Data Ultimo Aggiornamento Stato
-        const tdUpdate = document.createElement("td");
-        tdUpdate.textContent = StateFormatter.formatDate(robot.lastValidUpdateAt);
-        tr.appendChild(tdUpdate);
-
-        // 9. Avvisi / Errori di connessione ed esito ultimo tentativo
-        const tdWarnings = document.createElement("td");
-        if (robot.hasWarningsOrErrors && robot.lastAttemptOutcome) {
-          const diagMsg = robot.lastAttemptOutcome.diagnosticMessage || "Errore ultimo tentativo";
-          tdWarnings.innerHTML = `<span style="color: #c5221f; font-size: 0.82rem;">Avviso: ${StateFormatter.escapeHtml(diagMsg)}</span>`;
-        } else {
-          tdWarnings.textContent = "Nessuno";
-        }
-        tr.appendChild(tdWarnings);
-
-        // 10. Azioni
-        const tdActions = document.createElement("td");
-        const btnDetail = document.createElement("button");
-        btnDetail.className = "btn btn-secondary btn-sm";
-        btnDetail.textContent = "Dettaglio";
-        btnDetail.addEventListener("click", () => openRobotDetail(robot.id));
-        tdActions.appendChild(btnDetail);
-        tr.appendChild(tdActions);
-
-        fleetTableBody.appendChild(tr);
-      }
+      loadedFleetRobots = data.robots || [];
+      renderFleetRows();
     } catch (err) {
-      fleetCount.textContent = "Conteggio non disponibile";
+      if (fleetCount) fleetCount.textContent = "Conteggio non disponibile";
       const formatted = ErrorPresenter.formatError(err);
-      fleetTableBody.innerHTML = `<tr><td colspan="10" class="empty-cell" style="color: #c5221f;">${StateFormatter.escapeHtml(formatted.userMessage)}</td></tr>`;
+      fleetTableBody.innerHTML = `<tr><td colspan="12" class="empty-cell" style="color: var(--bs-danger, #dc3545);">${StateFormatter.escapeHtml(formatted.userMessage)}</td></tr>`;
     }
   }
 
@@ -1637,6 +1705,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
   dashboardNavButtons.forEach((button) => {
     button.addEventListener("click", () => navigateDashboardPage(button.dataset.view));
+  });
+
+  // Punto 5 UI: Logo cliccabile per tornare alla Home tramite il sistema di navigazione esistente
+  btnAppLogoHome?.addEventListener("click", () => {
+    navigateDashboardPage("fleet");
   });
 
   // =========================================================================
