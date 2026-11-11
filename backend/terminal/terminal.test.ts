@@ -1140,7 +1140,10 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   // 3. Operatore tenta connessione diretta WebSocket alla sessione dell'admin -> BLOCCATO 4403
   const operatorDirectWs = new WebSocket(`wss://127.0.0.1:${serverPort}/api/terminal/ws/${adminSessionId}`, {
     rejectUnauthorized: false,
-    headers: { cookie: `moliris_session=${operatorSession.sessionId}` },
+    headers: {
+      Origin: `https://127.0.0.1:${serverPort}`,
+      cookie: `moliris_session=${operatorSession.sessionId}`,
+    },
   });
 
   let wsClosedCode = 0;

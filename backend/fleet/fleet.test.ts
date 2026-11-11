@@ -740,7 +740,7 @@ try {
 
     // 1. Creazione di un robot con Nome Cliente e Nome Impianto
     const regResult = await service.registerRobot(adminUser, {
-      id: "robot_rf05_01",
+      id: "robot-rf05-01",
       displayName: "Robot Verniciatura 1",
       remoteUsername: "op_paint_1",
       host: "127.0.0.1",
@@ -772,7 +772,7 @@ try {
     assert.strictEqual(savedPlant.clientId, savedClient.id);
 
     // 2. Modifica dei due dati
-    const updated = await service.updateConfiguration(adminUser, "robot_rf05_01", {
+    const updated = await service.updateConfiguration(adminUser, "robot-rf05-01", {
       customerName: "Ferrari Corse",
       plantName: "Maranello Reparto Corse",
     });
@@ -784,13 +784,13 @@ try {
     assert.strictEqual(updated.clientId, updatedClient.id);
 
     // 3. Salvataggio e recupero dal database
-    const fetchedDetail = await service.getRobotDetail(adminUser, "robot_rf05_01");
+    const fetchedDetail = await service.getRobotDetail(adminUser, "robot-rf05-01");
     assert.strictEqual(fetchedDetail.robot.customerName, "Ferrari Corse");
     assert.strictEqual(fetchedDetail.robot.plantName, "Maranello Reparto Corse");
     assert.strictEqual(fetchedDetail.robot.clientId, updatedClient.id);
 
     const fleetList = await service.listFleet(adminUser);
-    const summaryRobot = fleetList.find(r => r.id === "robot_rf05_01");
+    const summaryRobot = fleetList.find(r => r.id === "robot-rf05-01");
     assert.ok(summaryRobot, "Robot presente nella lista flotta");
     assert.strictEqual(summaryRobot.customerName, "Ferrari Corse");
     assert.strictEqual(summaryRobot.plantName, "Maranello Reparto Corse");
@@ -798,7 +798,7 @@ try {
     // 4. Gestione dei campi mancanti o non validi
     // 4a. Campi mancanti durante creazione -> campi undefined / non valorizzati
     const robotNoClient = await service.registerRobot(adminUser, {
-      id: "robot_rf05_no_client",
+      id: "robot-rf05-no-client",
       displayName: "Robot Senza Cliente",
       remoteUsername: "op_no_cli",
       host: "127.0.0.1",
@@ -815,7 +815,7 @@ try {
 
     // 4b. Validazione campi non validi (null byte, tipo non stringa, lunghezza eccessiva)
     const valResult1 = await service.validateRegistrationInput({
-      id: "robot_val_err",
+      id: "robot-val-err",
       displayName: "Robot Err",
       remoteUsername: "op_val_err",
       host: "127.0.0.1",
@@ -827,7 +827,7 @@ try {
     assert.ok(valResult1.errors["customerName"]?.includes("caratteri non validi"));
 
     const valResult2 = await service.validateRegistrationInput({
-      id: "robot_val_err2",
+      id: "robot-val-err2",
       displayName: "Robot Err",
       remoteUsername: "op_val_err2",
       host: "127.0.0.1",
@@ -840,7 +840,7 @@ try {
 
     // 5. Compatibilità con i robot già esistenti (senza campi cliente/impianto)
     await repo.create({
-      id: "robot_legacy_01",
+      id: "robot-legacy-01",
       displayName: "Robot Legacy",
       remoteUsername: "op_legacy",
       serverDirectoryPath: path.join(testFsRoot, "op_legacy"),
@@ -861,16 +861,16 @@ try {
       updatedAt: new Date(),
     });
 
-    const legacyDetail = await service.getRobotDetail(adminUser, "robot_legacy_01");
+    const legacyDetail = await service.getRobotDetail(adminUser, "robot-legacy-01");
     assert.strictEqual(legacyDetail.robot.customerName, undefined);
     assert.strictEqual(legacyDetail.robot.plantName, undefined);
 
-    const legacySummary = (await service.listFleet(adminUser)).find(r => r.id === "robot_legacy_01");
+    const legacySummary = (await service.listFleet(adminUser)).find(r => r.id === "robot-legacy-01");
     assert.strictEqual(legacySummary?.customerName, undefined);
     assert.strictEqual(legacySummary?.plantName, undefined);
 
     // Possibilità di aggiornare un robot legacy aggiungendo Cliente e Impianto
-    const updatedLegacy = await service.updateConfiguration(adminUser, "robot_legacy_01", {
+    const updatedLegacy = await service.updateConfiguration(adminUser, "robot-legacy-01", {
       customerName: "Cliente Aggiunto",
       plantName: "Impianto Aggiunto",
     });
@@ -878,7 +878,7 @@ try {
     assert.strictEqual(updatedLegacy.plantName, "Impianto Aggiunto");
 
     // 6. Rimozione/Svuotamento dei dati cliente e impianto durante modifica
-    const clearedLegacy = await service.updateConfiguration(adminUser, "robot_legacy_01", {
+    const clearedLegacy = await service.updateConfiguration(adminUser, "robot-legacy-01", {
       customerName: "",
       plantName: "",
     });
@@ -887,7 +887,7 @@ try {
 
     // 7. Persistenza dei dati dopo il riavvio del backend (simulato riutilizzando il repository esistente)
     const { service: restartedService } = createService({ registrationMode: "differita" }, repo, clientRepo, plantRepo);
-    const postRestartDetail = await restartedService.getRobotDetail(adminUser, "robot_rf05_01");
+    const postRestartDetail = await restartedService.getRobotDetail(adminUser, "robot-rf05-01");
     assert.strictEqual(postRestartDetail.robot.customerName, "Ferrari Corse");
     assert.strictEqual(postRestartDetail.robot.plantName, "Maranello Reparto Corse");
     assert.strictEqual(postRestartDetail.robot.clientId, updatedClient.id);

@@ -441,16 +441,6 @@ export class TerminalService {
       return;
     }
 
-    // 1b. Rifiuto di un secondo aggancio a una sessione che ha già avuto un socket (RF-SSH-006)
-    if (session.hasHadSocket) {
-      try {
-        socket.send(JSON.stringify({ type: "error", message: "Riconnessione non consentita: la sessione terminale ha già avuto un collegamento WebSocket." }));
-        socket.close(4409, "Second Attach Forbidden");
-      } catch {}
-      return;
-    }
-    session.hasHadSocket = true;
-
     // 1c. Verifica ruolo Admin (RF-04: terminale riservato esclusivamente agli admin)
     const isAdmin = Array.isArray(requestingUser.roles) && requestingUser.roles.some((r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore");
     if (!isAdmin) {
