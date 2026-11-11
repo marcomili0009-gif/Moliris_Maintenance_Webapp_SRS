@@ -51,7 +51,7 @@ function findMolirisVarsInDir(dirPath: string): string[] {
 }
 
 const codeVars = new Set<string>();
-const scanDirs = ["config", "backend", "storage", "scripts", "frontend"];
+const scanDirs = ["config", "backend", "storage", "scripts", "client"];
 for (const dir of scanDirs) {
   const dirPath = path.join(rootDir, dir);
   if (fs.existsSync(dirPath)) {

@@ -15,5 +15,5 @@
     "outDir": "./dist"
   },
   "include": ["**/*.ts"],
-  "exclude": ["node_modules", "dist", "backup-imports"]
+  "exclude": ["node_modules", "dist", "backup-imports", "client"]
 }

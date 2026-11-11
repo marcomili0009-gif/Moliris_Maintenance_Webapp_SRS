@@ -59,14 +59,13 @@ Moliris_Maintenance_Webapp_SRS/
 │   ├── audit-repository.ts# Registro immutabile di audit con politica di conservazione
 │   ├── server-fs.ts       # Servizio di allocazione, isolamento e navigazione server-fs
 │   └── dto/robot-dto.ts   # Data Transfer Object rigorosamente privi di credenziali
-├── frontend/
-│   ├── index.html         # Interfaccia grafica HTML5 conforme a Google Chrome (§2.5)
-│   ├── styles.css         # Stile visuale con distinzione semantica degli stati
-│   ├── api-client.js      # Client API REST e WSS con gestione credenziali di sessione
-│   ├── error-presenter.js # Traduzione centralizzata errori sicuri conformi a SRS §9
-│   ├── state-formatter.js # Formattazione e separazione rigorosa dei 3 stati
-│   ├── double-submit.js   # Protezione da doppi click concorrenti
-│   └── app.js             # Controller applicativo e integrazione terminale xterm.js
+├── client/                # Frontend SPA moderno sviluppato in React 19.3.1 e Vite
+│   ├── src/components/    # Componenti UI accessibili (Flotta, Filesystem, Terminale, Bulk)
+│   ├── src/hooks/         # Custom React hooks (useAuth, useFleet, useFilesystem, useTerminal)
+│   ├── src/services/      # Client API, ErrorPresenter (§9) e StateFormatter (3 stati)
+│   ├── src/views/         # Viste applicative (LoginView, DashboardView)
+│   ├── vite.config.ts     # Configurazione Vite (output in dist/frontend)
+│   └── react-frontend.test.ts # Suite E2E Google Chrome CDP per il frontend React
 ├── config/                # Validazione configurazione fail-closed e variabili d'ambiente
 ├── errors/                # Modello formale errori §9 e classificazione severità
 ├── logging/               # Logger strutturato JSON con redazione automatica segreti
@@ -140,7 +139,7 @@ La suite esegue sequenzialmente:
 11. `backend/terminal/terminal.test.ts`: shell PTY, WebSocket, resize e 7 cause chiusura.
 12. `backend/remote-fs/remote-fs.test.ts`: navigazione remota SFTP e sola lettura.
 13. `backend/transfer/transfer.test.ts`: trasferimenti 6 direzioni, integrità e timeout.
-14. `frontend/frontend.test.ts`: test E2E su Google Chrome Headless via CDP.
+14. `client/react-frontend.test.ts`: test E2E React su Google Chrome Headless via CDP.
 15. `tests/security/security-hardening.test.ts`: verifica hardening (RNF-SEC-001..009).
 16. `tests/reliability-performance/reliability-perf.test.ts`: misurazione reale heap > 1 GB su 6 direzioni, riavvio a zero perdite e multi-device.
 17. `tests/acceptance/acceptance.test.ts`: collaudo formale dei 35 Criteri §7 e 18 Obiettivi §12.
