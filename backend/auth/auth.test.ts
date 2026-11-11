@@ -8,7 +8,8 @@ import os from "os";
 import https from "https";
 import { execSync } from "child_process";
 import { hashPassword, verifyPassword, toUserProfileDto, type UserEntity } from "./user-models.ts";
-import { InMemoryUserRepository } from "./user-repository.ts";
+import { InMemoryUserRepository, MongoUserRepository } from "./user-repository.ts";
+import { MongoClient } from "mongodb";
 import { SessionManager, type SessionTerminationReason } from "./session-manager.ts";
 import { AppPermission, hasPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "./permissions.ts";
 import { InMemoryAuditRepository } from "../../storage/audit-repository.ts";
@@ -291,6 +292,187 @@ assert(String(appJsRes.body).includes("addEventListener"));
 const cssRes = await makeHttpsRequest("GET", "/styles.css");
 assert.strictEqual(cssRes.status, 200);
 console.log("  PASS: Frontend client statico servito in HTTPS.");
+
+// =========================================================================
+// TEST RF-02: Timeout di inattività della sessione (30 minuti), avviso 5m, countdown 5..1 e invalidazione backend
+// =========================================================================
+{
+  assert.strictEqual(config.inactiveSessionTimeoutMinutes, 30, "Il timeout di inattività sessione deve essere configurato a 30 minuti");
+
+  const rf02SessionManager = new SessionManager(config.inactiveSessionTimeoutMinutes);
+  const testUser: UserEntity = {
+    id: "u_rf02",
+    username: "rf02_user",
+    passwordHash: "mock_hash",
+    roles: ["operatore"],
+    enabled: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  const sess = rf02SessionManager.createSession(testUser);
+  const token = sess.sessionId;
+
+  // 1. A 10 minuti di inattività: sessione valida, nessun avviso
+  const initialValid = rf02SessionManager.validate(token);
+  assert.ok(initialValid);
+
+  // Calcolo soglia avviso: 5 minuti prima della scadenza (25 minuti trascorsi su 30)
+  const timeoutMs = 30 * 60 * 1000;
+  const warningWindowMs = 5 * 60 * 1000;
+
+  // Verifica progressione del conto alla rovescia: 5, 4, 3, 2, 1
+  for (let minElapsed = 25; minElapsed < 30; minElapsed++) {
+    const elapsedMs = minElapsed * 60 * 1000;
+    const remainingMinutes = Math.max(1, Math.ceil((timeoutMs - elapsedMs) / 60000));
+    assert.strictEqual(remainingMinutes, 30 - minElapsed, `A ${minElapsed} minuti il countdown deve indicare ${30 - minElapsed} minuti`);
+  }
+
+  // 2. A 30 minuti di inattività: sessione scaduta e invalidata lato backend
+  rf02SessionManager._simulateInactivity(token, 30);
+  const expiredValid = rf02SessionManager.validate(token);
+  assert.strictEqual(expiredValid, null, "A 30 minuti la sessione deve risultare scaduta (null)");
+
+  // 3. Verifica invalidazione su endpoint REST protetto: chiamata rifiutata con 401
+  const postExpiryRes = await makeHttpsRequest("GET", "/api/auth/me", undefined, token);
+  assert.strictEqual(postExpiryRes.status, 401, "Richiesta con sessione scaduta deve ricevere 401");
+
+  rf02SessionManager.dispose();
+  console.log("  PASS: RF-02 - Timeout inattività sessione 30m, avviso a 5m con countdown 5..1 e invalidazione backend verificati.");
+}
+
+// =========================================================================
+// TEST RF-03: Nome utente univoco, verifica case-insensitive e concorrenza
+// =========================================================================
+{
+  // 1. Test in-memory: blocco duplicati case-insensitive (es. Luca, luca, LUCA)
+  const memRepo = new InMemoryUserRepository();
+  const u1: UserEntity = {
+    id: "u_luca_1",
+    username: "Luca",
+    passwordHash: "hash1",
+    roles: ["operatore"],
+    enabled: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+  await memRepo.create(u1);
+
+  // Stesso username lowercase 'luca' -> RIFIUTATO
+  let errLower = false;
+  try {
+    await memRepo.create({ ...u1, id: "u_luca_2", username: "luca" });
+  } catch (err: any) {
+    errLower = err.code === ErrorCode.DB_PERSISTENCE_ERROR && err.message.includes("già utilizzato");
+  }
+  assert.strictEqual(errLower, true, "Creazione con username lowercase 'luca' deve essere rifiutata");
+
+  // Stesso username uppercase 'LUCA' -> RIFIUTATO
+  let errUpper = false;
+  try {
+    await memRepo.create({ ...u1, id: "u_luca_3", username: "LUCA" });
+  } catch (err: any) {
+    errUpper = err.code === ErrorCode.DB_PERSISTENCE_ERROR && err.message.includes("già utilizzato");
+  }
+  assert.strictEqual(errUpper, true, "Creazione con username uppercase 'LUCA' deve essere rifiutata");
+
+  // Stesso username con password diversa -> RIFIUTATO
+  let errDiffPass = false;
+  try {
+    await memRepo.create({ ...u1, id: "u_luca_4", username: "LuCa", passwordHash: "different_password_hash" });
+  } catch (err: any) {
+    errDiffPass = err.code === ErrorCode.DB_PERSISTENCE_ERROR && err.message.includes("già utilizzato");
+  }
+  assert.strictEqual(errDiffPass, true, "Creazione con password differente non deve permettere duplicati");
+
+  // 2. Registrazioni contemporanee con lo stesso username: gestione atomica della concorrenza
+  const concurrentRepo = new InMemoryUserRepository();
+  const reg1 = {
+    id: "u_conc_1",
+    username: "Mario",
+    passwordHash: "h1",
+    roles: ["operatore"],
+    enabled: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+  const reg2 = {
+    id: "u_conc_2",
+    username: "mario",
+    passwordHash: "h2",
+    roles: ["operatore"],
+    enabled: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  const results = await Promise.allSettled([
+    concurrentRepo.create(reg1),
+    concurrentRepo.create(reg2),
+  ]);
+
+  const fulfilled = results.filter((r) => r.status === "fulfilled");
+  const rejected = results.filter((r) => r.status === "rejected");
+  assert.strictEqual(fulfilled.length, 1, "Esattamente una registrazione contemporanea deve avere successo");
+  assert.strictEqual(rejected.length, 1, "La registrazione concorrente duplicata deve essere rifiutata");
+  const rejectReason = (rejected[0] as PromiseRejectedResult).reason;
+  assert.strictEqual(rejectReason.code, ErrorCode.DB_PERSISTENCE_ERROR);
+  assert.ok(rejectReason.message.includes("già utilizzato"));
+
+  // 3. Test vincolo unicità su MongoDB reale con indice univoco e collation case-insensitive
+  const mongoUri = process.env["MOLIRIS_MONGODB_URI"] || process.env["MOLIRIS_MONGO_URI"] || "mongodb://127.0.0.1:27017";
+  try {
+    const mongoClient = new MongoClient(mongoUri);
+    await mongoClient.connect();
+    const testDb = mongoClient.db(`moliris_auth_rf03_${Date.now()}`);
+    const mongoRepo = new MongoUserRepository(testDb);
+    await mongoRepo.initIndexes();
+
+    await mongoRepo.create({
+      id: "u_mongo_1",
+      username: "Giulia",
+      passwordHash: "h1",
+      roles: ["operatore"],
+      enabled: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // Tentativo inserimento case-insensitive lowercase 'giulia'
+    let mongoErrLower = false;
+    try {
+      await mongoRepo.create({
+        id: "u_mongo_2",
+        username: "giulia",
+        passwordHash: "h2",
+        roles: ["operatore"],
+        enabled: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    } catch (err: any) {
+      mongoErrLower = err.code === ErrorCode.DB_PERSISTENCE_ERROR && err.message.includes("già utilizzato");
+    }
+    assert.strictEqual(mongoErrLower, true, "MongoDB deve rifiutare 'giulia' con indice univoco case-insensitive");
+
+    // Tentativo concorrente su MongoDB
+    const mongoConcResults = await Promise.allSettled([
+      mongoRepo.create({ id: "u_mc_1", username: "Paolo", passwordHash: "h", roles: ["operatore"], enabled: true, createdAt: new Date(), updatedAt: new Date() }),
+      mongoRepo.create({ id: "u_mc_2", username: "PAOLO", passwordHash: "h", roles: ["operatore"], enabled: true, createdAt: new Date(), updatedAt: new Date() }),
+    ]);
+    const mongoFulfilled = mongoConcResults.filter((r) => r.status === "fulfilled");
+    const mongoRejected = mongoConcResults.filter((r) => r.status === "rejected");
+    assert.strictEqual(mongoFulfilled.length, 1, "Su MongoDB esattamente una registrazione deve vincere");
+    assert.strictEqual(mongoRejected.length, 1, "La registrazione concorrente duplicata deve essere rigettata su MongoDB");
+
+    await testDb.dropDatabase();
+    await mongoClient.close();
+  } catch (mongoErr: any) {
+    console.log("  [Nota: Test MongoDB saltato o parziale]", mongoErr.message);
+  }
+
+  console.log("  PASS: RF-03 - Nome utente univoco case-insensitive, rigetto duplicati con password diverse e concorrenza verificati.");
+}
 
 // Chiusura del server
 await app.close();

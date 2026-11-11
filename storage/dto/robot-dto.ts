@@ -31,6 +31,10 @@ export interface RobotSummaryDto {
   hasWarningsOrErrors: boolean;
   lastAttemptOutcome: LastAttemptOutcome | null;
   isStale?: boolean;
+  clientId?: string;
+  customerName?: string;
+  plantId?: string;
+  plantName?: string;
 }
 
 /**
@@ -60,6 +64,10 @@ export interface RobotDetailDto {
   createdAt: Date;
   updatedAt: Date;
   isStale?: boolean;
+  clientId?: string;
+  customerName?: string;
+  plantId?: string;
+  plantName?: string;
 }
 
 /**
@@ -92,6 +100,10 @@ export function toRobotSummaryDto(robot: RobotEntity, staleThresholdSeconds?: nu
     hasWarningsOrErrors,
     lastAttemptOutcome: robot.lastAttemptOutcome,
     isStale,
+    clientId: robot.clientId,
+    customerName: robot.customerName,
+    plantId: robot.plantId,
+    plantName: robot.plantName,
   };
 }
 
@@ -130,5 +142,9 @@ export function toRobotDetailDto(robot: RobotEntity, staleThresholdSeconds?: num
     createdAt: robot.createdAt,
     updatedAt: robot.updatedAt,
     isStale,
+    clientId: robot.clientId,
+    customerName: robot.customerName,
+    plantId: robot.plantId,
+    plantName: robot.plantName,
   };
 }

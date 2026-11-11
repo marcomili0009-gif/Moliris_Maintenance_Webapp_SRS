@@ -144,6 +144,24 @@ export function registerTerminalRoutes(
         return;
       }
 
+      // RF-04: Controllo di sicurezza lato backend per WebSocket diretto - Riservato esclusivamente ad Admin
+      const session = terminalService.getSession(sessionId);
+      const isAdmin = Array.isArray(user.roles) && user.roles.some((r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore");
+      if (!isAdmin) {
+        await auditRepository.record({
+          userId: user.username,
+          robotId: session?.robotId,
+          operation: AuditOperation.SECURITY_AUTHORIZATION_ERROR,
+          outcome: "FAILURE",
+          timestamp: new Date(),
+          details: { reason: "WS_TERMINAL_ACCESS_DENIED_NOT_ADMIN", sessionId, roles: user.roles },
+        });
+
+        socket.send(JSON.stringify({ type: "error", message: "Accesso negato: l'utilizzo del terminale SSH è riservato agli utenti amministratori." }));
+        socket.close(4403, "Forbidden");
+        return;
+      }
+
       // 3. Convalida titolarità e aggancio del flusso (RF-SSH-006, CA-SSH-005)
       terminalService.attachWebSocket(sessionId, user, socket);
     }

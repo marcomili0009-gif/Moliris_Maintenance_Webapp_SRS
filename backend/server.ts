@@ -10,6 +10,14 @@ import { SessionManager } from "./auth/session-manager.ts";
 import { type UserRepository, InMemoryUserRepository, MongoUserRepository } from "./auth/user-repository.ts";
 import { type AuditRepository, InMemoryAuditRepository } from "../storage/audit-repository.ts";
 import { type RobotRepository, InMemoryRobotRepository, MongoRobotRepository } from "../storage/robot-repository.ts";
+import {
+  type ClientRepository,
+  type PlantRepository,
+  InMemoryClientRepository,
+  InMemoryPlantRepository,
+  MongoClientRepository,
+  MongoPlantRepository,
+} from "../storage/client-plant-repository.ts";
 import { MongoClient } from "mongodb";
 import { ServerFilesystemService } from "../storage/server-fs.ts";
 import { AuthMiddleware } from "./auth/auth-middleware.ts";
@@ -43,6 +51,8 @@ export interface ServerDependencies {
   userRepository?: UserRepository;
   auditRepository?: AuditRepository;
   robotRepository?: RobotRepository;
+  clientRepository?: ClientRepository;
+  plantRepository?: PlantRepository;
   serverFsService?: ServerFilesystemService;
   credentialProvider?: CredentialProvider;
   hostKeyVerifier?: HostKeyVerifier;
@@ -131,7 +141,12 @@ export function createServer(
     auditRepository
   );
 
-  // Servizio di gestione flotta (Prompt 6, RF-ROB-001..014)
+  // Servizio di gestione flotta (Prompt 6, RF-ROB-001..014, RF-05)
+  const clientRepository =
+    deps.clientRepository || (deps.db ? new MongoClientRepository(deps.db) : new InMemoryClientRepository());
+  const plantRepository =
+    deps.plantRepository || (deps.db ? new MongoPlantRepository(deps.db) : new InMemoryPlantRepository());
+
   const fleetService = deps.fleetService || new FleetService(
     config,
     robotRepository,
@@ -141,7 +156,10 @@ export function createServer(
     hostKeyVerifier,
     connectionManager,
     logger,
-    roleMapping
+    roleMapping,
+    undefined,
+    clientRepository,
+    plantRepository
   );
 
   // Servizio di monitoraggio remoto (Prompt 7, RF-MON-001..006, §5.3, §11.4)
@@ -392,8 +410,16 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
     const userRepository = new MongoUserRepository(db);
     await userRepository.initIndexes();
 
+    const clientRepository = new MongoClientRepository(db);
+    await clientRepository.initIndexes();
+
+    const plantRepository = new MongoPlantRepository(db);
+    await plantRepository.initIndexes();
+
     const server = createServer(config, logger, {
       robotRepository,
+      clientRepository,
+      plantRepository,
       credentialProvider,
       userRepository,
       db

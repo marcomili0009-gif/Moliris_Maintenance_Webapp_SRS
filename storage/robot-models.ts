@@ -138,6 +138,12 @@ export interface RobotEntity {
   remoteMonitoringPath?: string;
   sftpParameters?: SftpParameters;
   customParameters?: Record<string, unknown>;
+
+  // Campi per associazione Cliente e Impianto (RF-05)
+  clientId?: string;
+  customerName?: string;
+  plantId?: string;
+  plantName?: string;
 }
 
 /**

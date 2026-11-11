@@ -12,6 +12,6 @@ export const DEFAULT_TERMINAL_LIMITS: TerminalConcurrencyLimits = {
   maxConcurrentServer: 20,
   maxConcurrentPerUser: 5,
   maxConcurrentPerRobot: 3,
-  sessionTimeoutMinutes: 30,
+  sessionTimeoutMinutes: 15, // RF-01: 15 minuti di timeout inattività terminale
   maxBufferedBytes: 256 * 1024, // 256 KB di buffer di backpressure controllato (RNF-PERF-002)
 };

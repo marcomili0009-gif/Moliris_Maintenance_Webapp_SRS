@@ -37,10 +37,18 @@ import {
   toRobotSummaryDto,
   toRobotDetailDto,
 } from "../../storage/dto/robot-dto.ts";
+import {
+  type ClientRepository,
+  type PlantRepository,
+  InMemoryClientRepository,
+  InMemoryPlantRepository,
+} from "../../storage/client-plant-repository.ts";
 
 export class FleetService {
   private config: SystemConfiguration;
   private robotRepository: RobotRepository;
+  private clientRepository: ClientRepository;
+  private plantRepository: PlantRepository;
   private auditRepository: AuditRepository;
   private serverFsService: ServerFilesystemService;
   private credentialProvider: CredentialProvider;
@@ -62,7 +70,9 @@ export class FleetService {
     connectionManager: RobotConnectionManager,
     logger: MolirisLogger,
     roleMapping: RolePermissionMapping = DEFAULT_ROLE_PERMISSIONS,
-    terminalService?: any
+    terminalService?: any,
+    clientRepository?: ClientRepository,
+    plantRepository?: PlantRepository
   ) {
     this.config = config;
     this.robotRepository = robotRepository;
@@ -74,6 +84,8 @@ export class FleetService {
     this.logger = logger;
     this.roleMapping = roleMapping;
     this.terminalService = terminalService;
+    this.clientRepository = clientRepository || new InMemoryClientRepository();
+    this.plantRepository = plantRepository || new InMemoryPlantRepository();
     this.destinationValidator = new DestinationValidator(
       config.allowedDestinations,
       config.maxConcurrentRegistrationVerifications
@@ -359,6 +371,27 @@ export class FleetService {
       }
     }
 
+    // 10. Validazione dati Cliente e Impianto (RF-05)
+    if (input.customerName !== undefined && input.customerName !== null) {
+      if (typeof input.customerName !== "string") {
+        errors["customerName"] = "Il nome cliente deve essere una stringa.";
+      } else if (input.customerName.includes("\0")) {
+        errors["customerName"] = "Il nome cliente contiene caratteri non validi.";
+      } else if (input.customerName.trim().length > 100) {
+        errors["customerName"] = "Il nome cliente non può superare 100 caratteri.";
+      }
+    }
+
+    if (input.plantName !== undefined && input.plantName !== null) {
+      if (typeof input.plantName !== "string") {
+        errors["plantName"] = "Il nome impianto deve essere una stringa.";
+      } else if (input.plantName.includes("\0")) {
+        errors["plantName"] = "Il nome impianto contiene caratteri non validi.";
+      } else if (input.plantName.trim().length > 100) {
+        errors["plantName"] = "Il nome impianto non può superare 100 caratteri.";
+      }
+    }
+
     return {
       valid: Object.keys(errors).length === 0,
       errors,
@@ -447,6 +480,30 @@ export class FleetService {
       { id: input.id.trim(), remoteUsername: input.remoteUsername.trim(), host }
     );
 
+    // Risoluzione entità collegate Cliente e Impianto (RF-05)
+    let clientId = input.clientId;
+    let customerName = input.customerName?.trim();
+    if (customerName) {
+      const client = await this.clientRepository.findOrCreate(customerName);
+      clientId = client.id;
+      customerName = client.name;
+    }
+
+    let plantId = input.plantId;
+    let plantName = input.plantName?.trim();
+    if (plantName) {
+      let effectiveClientId = clientId;
+      if (!effectiveClientId) {
+        const defaultClient = await this.clientRepository.findOrCreate("Cliente Predefinito");
+        effectiveClientId = defaultClient.id;
+        clientId = defaultClient.id;
+        customerName = defaultClient.name;
+      }
+      const plant = await this.plantRepository.findOrCreate(effectiveClientId, plantName);
+      plantId = plant.id;
+      plantName = plant.name;
+    }
+
     // Costruzione bozza entità robot per i controlli di connessione
     const candidateRobot: RobotEntity = {
       id: input.id.trim(),
@@ -461,6 +518,10 @@ export class FleetService {
         ? [...input.stateFilePaths]
         : (input.remoteMonitoringPath ? [input.remoteMonitoringPath] : [...this.config.stateFilePaths]),
       serverDirectoryPath,
+      clientId,
+      customerName,
+      plantId,
+      plantName,
       anagraphicState: "attivo",
       connectionState: "non_verificato",
       operationalState: null,
@@ -984,6 +1045,55 @@ export class FleetService {
     if (update.remoteMonitoringPath !== undefined) cleanUpdate.remoteMonitoringPath = update.remoteMonitoringPath;
     if (update.sftpParameters !== undefined) cleanUpdate.sftpParameters = update.sftpParameters;
     if (update.customParameters !== undefined) cleanUpdate.customParameters = update.customParameters;
+
+    // Aggiornamento associazione Cliente e Impianto (RF-05)
+    if (update.customerName !== undefined) {
+      if (typeof update.customerName !== "string") {
+        throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Il nome cliente deve essere una stringa.");
+      }
+      if (update.customerName.includes("\0")) {
+        throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Il nome cliente contiene caratteri non validi.");
+      }
+      if (update.customerName.trim().length > 100) {
+        throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Il nome cliente non può superare 100 caratteri.");
+      }
+
+      const trimmedCustomer = update.customerName.trim();
+      if (trimmedCustomer === "") {
+        cleanUpdate.customerName = "";
+        cleanUpdate.clientId = "";
+      } else {
+        const client = await this.clientRepository.findOrCreate(trimmedCustomer);
+        cleanUpdate.clientId = client.id;
+        cleanUpdate.customerName = client.name;
+      }
+    }
+
+    if (update.plantName !== undefined) {
+      if (typeof update.plantName !== "string") {
+        throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Il nome impianto deve essere una stringa.");
+      }
+      if (update.plantName.includes("\0")) {
+        throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Il nome impianto contiene caratteri non validi.");
+      }
+      if (update.plantName.trim().length > 100) {
+        throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Il nome impianto non può superare 100 caratteri.");
+      }
+
+      const trimmedPlant = update.plantName.trim();
+      if (trimmedPlant === "") {
+        cleanUpdate.plantName = "";
+        cleanUpdate.plantId = "";
+      } else {
+        const targetClientId =
+          cleanUpdate.clientId ||
+          robot.clientId ||
+          (await this.clientRepository.findOrCreate(cleanUpdate.customerName || robot.customerName || "Cliente Predefinito")).id;
+        const plant = await this.plantRepository.findOrCreate(targetClientId, trimmedPlant);
+        cleanUpdate.plantId = plant.id;
+        cleanUpdate.plantName = plant.name;
+      }
+    }
 
     const updatedEntity = await this.robotRepository.updateConfiguration(robotId, cleanUpdate);
 

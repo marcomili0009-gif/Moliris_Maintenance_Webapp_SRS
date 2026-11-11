@@ -1,0 +1,64 @@
+{
+  "mode": "implement",
+  "objective": "Implementazione RF-05: Associazione dati Cliente e Impianto con entit\u00e0 collegate MongoDB e visualizzazione frontend",
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "statement": "RF-05.1: Modelli ed entit\u00e0 collegate per Cliente e Impianto con relative collezioni e indici MongoDB"
+    },
+    {
+      "id": "AC2",
+      "statement": "RF-05.2: Associazione Nome Cliente e Nome Impianto in creazione e modifica robot con validazione backend"
+    },
+    {
+      "id": "AC3",
+      "statement": "RF-05.3: Visualizzazione chiara di Cliente e Impianto nell interfaccia (tabella flotta e scheda dettaglio)"
+    },
+    {
+      "id": "AC4",
+      "statement": "RF-05.4: Persistenza database, tolleranza dati mancanti e retrocompatibilita totale con robot esistenti"
+    }
+  ],
+  "allowed_write_scope": [
+    "storage/robot-models.ts",
+    "storage/client-plant-models.ts",
+    "storage/client-plant-repository.ts",
+    "storage/dto/robot-dto.ts",
+    "storage/robot-repository.ts",
+    "backend/server.ts",
+    "backend/fleet/fleet-types.ts",
+    "backend/fleet/fleet-service.ts",
+    "backend/fleet/fleet-routes.ts",
+    "backend/fleet/fleet.test.ts",
+    "frontend/index.html",
+    "frontend/app.js",
+    "frontend/styles.css",
+    "frontend/frontend.test.ts",
+    "tests/acceptance/acceptance.test.ts",
+    "tests/security/security-hardening.test.ts",
+    "tests/security/corrective-hardening.test.ts",
+    "backend/terminal/terminal-limits.ts",
+    "backend/terminal/terminal-service.ts",
+    "backend/terminal/terminal-routes.ts",
+    "backend/auth/permissions.ts",
+    "backend/auth/user-repository.ts",
+    "backend/auth/session-manager.ts",
+    "backend/auth/auth.test.ts",
+    "backend/terminal/terminal.test.ts"
+  ],
+  "validators": [
+    {
+      "id": "npm-test",
+      "command": [
+        "npm",
+        "test"
+      ]
+    }
+  ],
+  "required_validators": [
+    "npm-test"
+  ],
+  "risk": "medium",
+  "budget": "balanced",
+  "verification": "impact"
+}

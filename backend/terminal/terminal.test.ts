@@ -184,24 +184,34 @@ const connectionManager = new RobotConnectionManager(
   logger
 );
 
-// Utenti e ruoli
+// Utenti e ruoli (RF-04: terminale riservato esclusivamente ad admin / amministratore)
 const opUserAuthorized: UserEntity = {
-  id: "u_op_term",
-  username: "operatore_term",
-  roles: ["operatore"],
+  id: "u_admin_term",
+  username: "admin_term",
+  roles: ["amministratore"],
   enabled: true,
-    updatedAt: new Date(),
-    passwordHash: "mock_hash",
+  updatedAt: new Date(),
+  passwordHash: "mock_hash",
   createdAt: new Date(),
 };
 
 const opUserAttacker: UserEntity = {
   id: "u_attacker",
-  username: "utente_malevolo",
+  username: "admin_malevolo",
+  roles: ["amministratore"],
+  enabled: true,
+  updatedAt: new Date(),
+  passwordHash: "mock_hash",
+  createdAt: new Date(),
+};
+
+const opUserOperator: UserEntity = {
+  id: "u_operator",
+  username: "operatore_semplice",
   roles: ["operatore"],
   enabled: true,
-    updatedAt: new Date(),
-    passwordHash: "mock_hash",
+  updatedAt: new Date(),
+  passwordHash: "mock_hash",
   createdAt: new Date(),
 };
 
@@ -210,16 +220,25 @@ const opUserDenied: UserEntity = {
   username: "operatore_negato",
   roles: ["operatore_solo_vista"],
   enabled: true,
-    updatedAt: new Date(),
-    passwordHash: "mock_hash",
+  updatedAt: new Date(),
+  passwordHash: "mock_hash",
   createdAt: new Date(),
 };
 
 const roleMapping: RolePermissionMapping = {
-  operatore: [
+  admin: [
     AppPermission.FLEET_VIEW,
     AppPermission.STATUS_VIEW,
     AppPermission.TERMINAL_OPEN,
+  ],
+  amministratore: [
+    AppPermission.FLEET_VIEW,
+    AppPermission.STATUS_VIEW,
+    AppPermission.TERMINAL_OPEN,
+  ],
+  operatore: [
+    AppPermission.FLEET_VIEW,
+    AppPermission.STATUS_VIEW,
   ],
   operatore_solo_vista: [
     AppPermission.FLEET_VIEW,
@@ -721,6 +740,210 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
 
   await limitedService.closeSession(term1.sessionId, "USER_EXPLICIT");
   console.log("  PASS: RNF-PERF-003 - Rispetto dei limiti di concorrenza e blocco al raggiungimento del massimo.");
+}
+
+// =========================================================================
+// TEST 7: RF-01 - Timeout inattività terminale 15m, avviso 5m, countdown 5..1, reset e rilascio
+// =========================================================================
+{
+  const robotRepo = new InMemoryRobotRepository();
+  const auditRepo = new InMemoryAuditRepository();
+  const sessionManager = new SessionManager(30);
+
+  // TerminalService con limiti RF-01 (15 minuti di timeout inattività)
+  const termService = new TerminalService(
+    testConfig,
+    robotRepo,
+    auditRepo,
+    connectionManager,
+    sessionManager,
+    roleMapping,
+    logger,
+    undefined,
+    { sessionTimeoutMinutes: 15 }
+  );
+
+  await robotRepo.create(createRobot("robot_idle_test"));
+  const userSession = sessionManager.createSession(opUserAuthorized);
+
+  const termSession = await termService.openTerminalSession(
+    opUserAuthorized,
+    "robot_idle_test",
+    { cols: 80, rows: 24 },
+    userSession.sessionId
+  );
+  assert.strictEqual(termService.getActiveSessionCount(), 1);
+
+  // Mock WebSocket per verificare notifiche, countdown e reset
+  const sentMessages: any[] = [];
+  const messageListeners: ((msg: any) => void)[] = [];
+  let wsClosed = false;
+  let wsCloseReason = "";
+
+  const mockWs: any = {
+    readyState: 1, // OPEN
+    bufferedAmount: 0,
+    send: (payload: any) => {
+      try {
+        sentMessages.push(JSON.parse(payload.toString()));
+      } catch {
+        sentMessages.push(payload.toString());
+      }
+    },
+    close: (_code?: number, reason?: string) => {
+      wsClosed = true;
+      wsCloseReason = reason || "";
+    },
+    on: (evt: string, fn: any) => {
+      if (evt === "message") messageListeners.push(fn);
+    },
+    emit: (evt: string, data: any) => {
+      if (evt === "message") {
+        for (const fn of messageListeners) fn(data);
+      }
+    },
+  };
+
+  termService.attachWebSocket(termSession.sessionId, opUserAuthorized, mockWs);
+
+  const baseTime = Date.now();
+  termSession.lastActivityAt = new Date(baseTime);
+
+  // 1. A 5 minuti trascorsi (10 minuti rimanenti): nessun avviso
+  termService.checkIdleSessions(baseTime + 5 * 60 * 1000);
+  assert.strictEqual(sentMessages.length, 0, "A 10m rimanenti nessun avviso deve essere inviato");
+
+  // 2. A 10 minuti trascorsi (5 minuti rimanenti): avviso con countdown 5
+  termService.checkIdleSessions(baseTime + 10 * 60 * 1000);
+  const warn5 = sentMessages.find((m) => m.type === "terminal_idle_warning" && m.remainingMinutes === 5);
+  assert.ok(warn5, "A 5m dalla scadenza deve essere inviato l'avviso con countdown 5");
+
+  // 3. Progressione countdown ogni minuto: 4, 3, 2, 1
+  termService.checkIdleSessions(baseTime + 11 * 60 * 1000);
+  const warn4 = sentMessages.find((m) => m.type === "terminal_idle_warning" && m.remainingMinutes === 4);
+  assert.ok(warn4, "A 4m dalla scadenza deve essere inviato l'avviso con countdown 4");
+
+  termService.checkIdleSessions(baseTime + 12 * 60 * 1000);
+  const warn3 = sentMessages.find((m) => m.type === "terminal_idle_warning" && m.remainingMinutes === 3);
+  assert.ok(warn3, "A 3m dalla scadenza deve essere inviato l'avviso con countdown 3");
+
+  termService.checkIdleSessions(baseTime + 13 * 60 * 1000);
+  const warn2 = sentMessages.find((m) => m.type === "terminal_idle_warning" && m.remainingMinutes === 2);
+  assert.ok(warn2, "A 2m dalla scadenza deve essere inviato l'avviso con countdown 2");
+
+  termService.checkIdleSessions(baseTime + 14 * 60 * 1000);
+  const warn1 = sentMessages.find((m) => m.type === "terminal_idle_warning" && m.remainingMinutes === 1);
+  assert.ok(warn1, "A 1m dalla scadenza deve essere inviato l'avviso con countdown 1");
+
+  // 4. Reset del timer e della notifica all'arrivo di attività utente qualificata
+  mockWs.emit("message", "utente_attivo\r");
+  const resetMsg = sentMessages.find((m) => m.type === "terminal_idle_reset");
+  assert.ok(resetMsg, "L'input dell'utente deve azzerare l'avviso con messaggio terminal_idle_reset");
+
+  // 5. Scadenza effettiva dopo 15 minuti di inattività e rilascio risorse
+  const newBaseTime = termSession.lastActivityAt.getTime();
+  termService.checkIdleSessions(newBaseTime + 15 * 60 * 1000 + 1000);
+
+  assert.strictEqual(termService.getActiveSessionCount(), 0, "Alla scadenza la sessione deve essere rimossa (0 sessioni attive)");
+  const closedMsg = sentMessages.find((m) => m.type === "session_closed" && m.reason === "IDLE_TIMEOUT");
+  assert.ok(closedMsg, "Alla scadenza deve essere notificato session_closed con reason IDLE_TIMEOUT");
+
+  termService.dispose();
+  console.log("  PASS: RF-01 - Timeout inattività terminale 15m, avviso a 5m con countdown 5..1, reset e rilascio ordinato.");
+}
+
+// =========================================================================
+// TEST 8: RF-04 - Accesso SSH riservato agli Admin, blocco Operatori su HTTP e WS diretto con Audit
+// =========================================================================
+{
+  const robotRepo = new InMemoryRobotRepository();
+  const auditRepo = new InMemoryAuditRepository();
+  const userRepo = new InMemoryUserRepository();
+  await userRepo.create({ ...opUserAuthorized, passwordHash: "h" });
+  await userRepo.create({ ...opUserOperator, passwordHash: "h" });
+
+  const sessionManager = new SessionManager(30);
+  const terminalService = new TerminalService(
+    testConfig,
+    robotRepo,
+    auditRepo,
+    connectionManager,
+    sessionManager,
+    roleMapping,
+    logger
+  );
+
+  await robotRepo.create(createRobot("robot_ssh_rf04"));
+
+  const server = createServer(testConfig, logger, {
+    robotRepository: robotRepo,
+    auditRepository: auditRepo,
+    userRepository: userRepo,
+    sessionManager,
+    roleMapping,
+    terminalService,
+    connectionManager,
+  });
+
+  await server.listen({ port: 0, host: "127.0.0.1" });
+  const serverPort = (server.server.address() as any).port;
+
+  const adminSession = sessionManager.createSession(opUserAuthorized);
+  const operatorSession = sessionManager.createSession(opUserOperator);
+
+  // 1. Admin autorizzato crea con successo la sessione terminale via HTTP (201)
+  const adminRes = await server.inject({
+    method: "POST",
+    url: "/api/robots/robot_ssh_rf04/terminal/sessions",
+    headers: { cookie: `moliris_session=${adminSession.sessionId}` },
+    payload: { cols: 80, rows: 24 },
+  });
+  assert.strictEqual(adminRes.statusCode, 201, "Admin deve poter aprire una sessione terminale (201)");
+  const { sessionId: adminSessionId } = JSON.parse(adminRes.body);
+
+  // 2. Operatore tenta di aprire sessione via HTTP -> BLOCCATO 403 Forbidden
+  const operatorRes = await server.inject({
+    method: "POST",
+    url: "/api/robots/robot_ssh_rf04/terminal/sessions",
+    headers: { cookie: `moliris_session=${operatorSession.sessionId}` },
+    payload: { cols: 80, rows: 24 },
+  });
+  assert.strictEqual(operatorRes.statusCode, 403, "Operatore deve ricevere 403 Forbidden");
+
+  // Verifica audit per tentativo non autorizzato HTTP
+  const auditsAfterHttp = await auditRepo.query({ robotId: "robot_ssh_rf04" });
+  const opHttpAudit = auditsAfterHttp.find(
+    (e) => e.operation === "SECURITY_AUTHORIZATION_ERROR" && e.userId === opUserOperator.username
+  );
+  assert.ok(opHttpAudit, "Deve essere registrato SECURITY_AUTHORIZATION_ERROR per l'operatore su HTTP");
+
+  // 3. Operatore tenta connessione diretta WebSocket alla sessione dell'admin -> BLOCCATO 4403
+  const operatorDirectWs = new WebSocket(`wss://127.0.0.1:${serverPort}/api/terminal/ws/${adminSessionId}`, {
+    rejectUnauthorized: false,
+    headers: { cookie: `moliris_session=${operatorSession.sessionId}` },
+  });
+
+  let wsClosedCode = 0;
+  await new Promise<void>((resolve) => {
+    operatorDirectWs.on("close", (code) => {
+      wsClosedCode = code;
+      resolve();
+    });
+    operatorDirectWs.on("error", () => {});
+  });
+  assert.strictEqual(wsClosedCode, 4403, "Connessione WebSocket diretta da parte di operatore deve essere chiusa con codice 4403");
+
+  // Verifica audit per tentativo non autorizzato WebSocket
+  const auditsAfterWs = await auditRepo.query({ robotId: "robot_ssh_rf04" });
+  const opWsAudit = auditsAfterWs.filter(
+    (e) => e.operation === "SECURITY_AUTHORIZATION_ERROR" && e.userId === opUserOperator.username
+  );
+  assert.ok(opWsAudit.length >= 2, "Devono essere registrati eventi di audit per tutti i tentativi dell'operatore");
+
+  await terminalService.closeSession(adminSessionId, "USER_EXPLICIT");
+  await server.close();
+  terminalService.dispose();
+  console.log("  PASS: RF-04 - Accesso SSH consentito ad Admin, negato categoricamente a Operatori su HTTP e WS diretto con Audit.");
 }
 
 // Chiusura test server SSH e pulizia

@@ -10,6 +10,7 @@ import crypto from "crypto";
 import ssh2 from "ssh2";
 import { type SystemConfiguration } from "../../config/configuration.ts";
 import { InMemoryRobotRepository } from "../../storage/robot-repository.ts";
+import { InMemoryClientRepository, InMemoryPlantRepository } from "../../storage/client-plant-repository.ts";
 import { InMemoryAuditRepository } from "../../storage/audit-repository.ts";
 import { ServerFilesystemService } from "../../storage/server-fs.ts";
 import { InMemoryCredentialProvider } from "../connection/credential-provider.ts";
@@ -136,9 +137,16 @@ const opRestrictedUser: UserEntity = {
   
 };
 
-function createService(overrides: Partial<SystemConfiguration> = {}, repoOverride?: InMemoryRobotRepository) {
+function createService(
+  overrides: Partial<SystemConfiguration> = {},
+  repoOverride?: InMemoryRobotRepository,
+  clientRepoOverride?: InMemoryClientRepository,
+  plantRepoOverride?: InMemoryPlantRepository
+) {
   const cfg = { ...testConfig, ...overrides };
   const repo = repoOverride || new InMemoryRobotRepository();
+  const clientRepo = clientRepoOverride || new InMemoryClientRepository();
+  const plantRepo = plantRepoOverride || new InMemoryPlantRepository();
   const audit = new InMemoryAuditRepository();
   const serverFs = new ServerFilesystemService(cfg.serverFilesystemRoot, audit, testLogger);
   const creds = new InMemoryCredentialProvider(cfg.allowedSshAuthMethods);
@@ -159,10 +167,13 @@ function createService(overrides: Partial<SystemConfiguration> = {}, repoOverrid
     hostVerifier,
     connMgr,
     testLogger,
-    DEFAULT_ROLE_PERMISSIONS
+    DEFAULT_ROLE_PERMISSIONS,
+    undefined,
+    clientRepo,
+    plantRepo
   );
 
-  return { service, repo, audit, serverFs, creds, connMgr, cfg };
+  return { service, repo, clientRepo, plantRepo, audit, serverFs, creds, connMgr, cfg };
 }
 
 try {
@@ -714,6 +725,173 @@ try {
     assert.strictEqual(detail.availableFeatures.terminal, true);
 
     console.log("  PASS: Ripeti verifica connessione e promozione da differita a completata verificati.");
+  }
+
+  // =========================================================================
+  // RF-05: Associazione dati Cliente e Impianto
+  // =========================================================================
+  {
+    console.log("--> Esecuzione test suite RF-05 (Associazione Cliente e Impianto)...");
+    const clientRepo = new InMemoryClientRepository();
+    const plantRepo = new InMemoryPlantRepository();
+    const repo = new InMemoryRobotRepository();
+    const { service } = createService({ registrationMode: "differita" }, repo, clientRepo, plantRepo);
+
+    // 1. Creazione di un robot con Nome Cliente e Nome Impianto
+    const regResult = await service.registerRobot(adminUser, {
+      id: "robot_rf05_01",
+      displayName: "Robot Verniciatura 1",
+      remoteUsername: "op_paint_1",
+      host: "127.0.0.1",
+      sshPort: testServerPort,
+      sshAuthMethod: "password",
+      password: "ValidPass123!",
+      hostKeyVerification: {
+        fingerprint: serverFingerprintInfo.sha256Hex,
+        strictHostKeyChecking: true,
+      },
+      customerName: "Ferrari S.p.A.",
+      plantName: "Maranello Verniciatura",
+    });
+
+    assert.ok(regResult.robot, "Il robot deve essere restituito dopo la registrazione");
+    assert.strictEqual(regResult.robot?.customerName, "Ferrari S.p.A.", "customerName deve coincidere");
+    assert.strictEqual(regResult.robot?.plantName, "Maranello Verniciatura", "plantName deve coincidere");
+    assert.ok(regResult.robot?.clientId?.startsWith("cli_"), "clientId deve essere generato");
+    assert.ok(regResult.robot?.plantId?.startsWith("plant_"), "plantId deve essere generato");
+
+    // Verifica entità collegate nei rispettivi repository
+    const savedClient = await clientRepo.findByName("Ferrari S.p.A.");
+    assert.ok(savedClient, "L'entità cliente deve esistere nella collezione clients");
+    assert.strictEqual(savedClient.id, regResult.robot?.clientId);
+
+    const savedPlant = await plantRepo.findByNameAndClient(savedClient.id, "Maranello Verniciatura");
+    assert.ok(savedPlant, "L'entità impianto deve esistere nella collezione plants collegata al cliente");
+    assert.strictEqual(savedPlant.id, regResult.robot?.plantId);
+    assert.strictEqual(savedPlant.clientId, savedClient.id);
+
+    // 2. Modifica dei due dati
+    const updated = await service.updateConfiguration(adminUser, "robot_rf05_01", {
+      customerName: "Ferrari Corse",
+      plantName: "Maranello Reparto Corse",
+    });
+    assert.strictEqual(updated.customerName, "Ferrari Corse", "customerName aggiornato");
+    assert.strictEqual(updated.plantName, "Maranello Reparto Corse", "plantName aggiornato");
+
+    const updatedClient = await clientRepo.findByName("Ferrari Corse");
+    assert.ok(updatedClient, "Nuova anagrafica cliente creata o associata");
+    assert.strictEqual(updated.clientId, updatedClient.id);
+
+    // 3. Salvataggio e recupero dal database
+    const fetchedDetail = await service.getRobotDetail(adminUser, "robot_rf05_01");
+    assert.strictEqual(fetchedDetail.robot.customerName, "Ferrari Corse");
+    assert.strictEqual(fetchedDetail.robot.plantName, "Maranello Reparto Corse");
+    assert.strictEqual(fetchedDetail.robot.clientId, updatedClient.id);
+
+    const fleetList = await service.listFleet(adminUser);
+    const summaryRobot = fleetList.find(r => r.id === "robot_rf05_01");
+    assert.ok(summaryRobot, "Robot presente nella lista flotta");
+    assert.strictEqual(summaryRobot.customerName, "Ferrari Corse");
+    assert.strictEqual(summaryRobot.plantName, "Maranello Reparto Corse");
+
+    // 4. Gestione dei campi mancanti o non validi
+    // 4a. Campi mancanti durante creazione -> campi undefined / non valorizzati
+    const robotNoClient = await service.registerRobot(adminUser, {
+      id: "robot_rf05_no_client",
+      displayName: "Robot Senza Cliente",
+      remoteUsername: "op_no_cli",
+      host: "127.0.0.1",
+      sshPort: testServerPort,
+      sshAuthMethod: "password",
+      password: "ValidPass123!",
+      hostKeyVerification: {
+        fingerprint: serverFingerprintInfo.sha256Hex,
+        strictHostKeyChecking: true,
+      },
+    });
+    assert.strictEqual(robotNoClient.robot?.customerName, undefined);
+    assert.strictEqual(robotNoClient.robot?.plantName, undefined);
+
+    // 4b. Validazione campi non validi (null byte, tipo non stringa, lunghezza eccessiva)
+    const valResult1 = await service.validateRegistrationInput({
+      id: "robot_val_err",
+      displayName: "Robot Err",
+      remoteUsername: "op_val_err",
+      host: "127.0.0.1",
+      sshAuthMethod: "password",
+      hostKeyVerification: { strictHostKeyChecking: true, fingerprint: serverFingerprintInfo.sha256Hex },
+      customerName: "Cliente Con NullByte\0",
+    });
+    assert.strictEqual(valResult1.valid, false);
+    assert.ok(valResult1.errors["customerName"]?.includes("caratteri non validi"));
+
+    const valResult2 = await service.validateRegistrationInput({
+      id: "robot_val_err2",
+      displayName: "Robot Err",
+      remoteUsername: "op_val_err2",
+      host: "127.0.0.1",
+      sshAuthMethod: "password",
+      hostKeyVerification: { strictHostKeyChecking: true, fingerprint: serverFingerprintInfo.sha256Hex },
+      plantName: "A".repeat(101),
+    });
+    assert.strictEqual(valResult2.valid, false);
+    assert.ok(valResult2.errors["plantName"]?.includes("100 caratteri"));
+
+    // 5. Compatibilità con i robot già esistenti (senza campi cliente/impianto)
+    await repo.create({
+      id: "robot_legacy_01",
+      displayName: "Robot Legacy",
+      remoteUsername: "op_legacy",
+      serverDirectoryPath: path.join(testFsRoot, "op_legacy"),
+      host: "127.0.0.1",
+      sshPort: 22,
+      sshAuthMethod: "password",
+      credentialReference: "vault://creds/legacy",
+      hostKeyVerification: { strictHostKeyChecking: true, fingerprint: serverFingerprintInfo.sha256Hex },
+      stateFilePaths: ["/status.txt"],
+      anagraphicState: "attivo",
+      connectionState: "raggiungibile",
+      operationalState: null,
+      lastValidUpdateAt: null,
+      lastAttemptOutcome: null,
+      registrationState: "registrazione_completata",
+      lastConnectionVerification: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const legacyDetail = await service.getRobotDetail(adminUser, "robot_legacy_01");
+    assert.strictEqual(legacyDetail.robot.customerName, undefined);
+    assert.strictEqual(legacyDetail.robot.plantName, undefined);
+
+    const legacySummary = (await service.listFleet(adminUser)).find(r => r.id === "robot_legacy_01");
+    assert.strictEqual(legacySummary?.customerName, undefined);
+    assert.strictEqual(legacySummary?.plantName, undefined);
+
+    // Possibilità di aggiornare un robot legacy aggiungendo Cliente e Impianto
+    const updatedLegacy = await service.updateConfiguration(adminUser, "robot_legacy_01", {
+      customerName: "Cliente Aggiunto",
+      plantName: "Impianto Aggiunto",
+    });
+    assert.strictEqual(updatedLegacy.customerName, "Cliente Aggiunto");
+    assert.strictEqual(updatedLegacy.plantName, "Impianto Aggiunto");
+
+    // 6. Rimozione/Svuotamento dei dati cliente e impianto durante modifica
+    const clearedLegacy = await service.updateConfiguration(adminUser, "robot_legacy_01", {
+      customerName: "",
+      plantName: "",
+    });
+    assert.strictEqual(clearedLegacy.customerName, undefined);
+    assert.strictEqual(clearedLegacy.plantName, undefined);
+
+    // 7. Persistenza dei dati dopo il riavvio del backend (simulato riutilizzando il repository esistente)
+    const { service: restartedService } = createService({ registrationMode: "differita" }, repo, clientRepo, plantRepo);
+    const postRestartDetail = await restartedService.getRobotDetail(adminUser, "robot_rf05_01");
+    assert.strictEqual(postRestartDetail.robot.customerName, "Ferrari Corse");
+    assert.strictEqual(postRestartDetail.robot.plantName, "Maranello Reparto Corse");
+    assert.strictEqual(postRestartDetail.robot.clientId, updatedClient.id);
+
+    console.log("  PASS: Requisito RF-05 pienamente verificato (Creazione, Modifica, DB, Compatibilità, Persistenza).");
   }
 
   console.log("PASS: Tutti i test di Gestione della Flotta superati con successo.");

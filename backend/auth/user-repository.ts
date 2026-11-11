@@ -13,6 +13,7 @@ export interface UserRepository {
 
 export class InMemoryUserRepository implements UserRepository {
   private users: Map<string, UserEntity> = new Map();
+  private pendingUsernames: Set<string> = new Set();
 
   async findByUsername(username: string): Promise<UserEntity | null> {
     for (const u of this.users.values()) {
@@ -29,16 +30,30 @@ export class InMemoryUserRepository implements UserRepository {
   }
 
   async create(user: UserEntity): Promise<UserEntity> {
-    const existing = await this.findByUsername(user.username);
-    if (existing) {
+    const lower = user.username.toLowerCase();
+    if (this.pendingUsernames.has(lower)) {
       throw new MolirisAppError(
-        ErrorCode.MISSING_ROBOT_PARAMS,
-        `Violazione unicità: utente con username '${user.username}' già esistente.`
+        ErrorCode.DB_PERSISTENCE_ERROR,
+        `Nome utente '${user.username}' già utilizzato. Scegliere uno username differente.`,
+        `Nome utente '${user.username}' già utilizzato. Scegliere uno username differente.`
       );
     }
-    const cloned = structuredClone(user);
-    this.users.set(cloned.id, cloned);
-    return structuredClone(cloned);
+    this.pendingUsernames.add(lower);
+    try {
+      const existing = await this.findByUsername(user.username);
+      if (existing) {
+        throw new MolirisAppError(
+          ErrorCode.DB_PERSISTENCE_ERROR,
+          `Nome utente '${user.username}' già utilizzato. Scegliere uno username differente.`,
+          `Nome utente '${user.username}' già utilizzato. Scegliere uno username differente.`
+        );
+      }
+      const cloned = structuredClone(user);
+      this.users.set(cloned.id, cloned);
+      return structuredClone(cloned);
+    } finally {
+      this.pendingUsernames.delete(lower);
+    }
   }
 
   async update(id: string, update: Partial<UserEntity>): Promise<UserEntity> {
@@ -65,7 +80,10 @@ export class MongoUserRepository implements UserRepository {
 
   async initIndexes(): Promise<void> {
     try {
-      await this.collection.createIndex({ username: 1 }, { unique: true });
+      await this.collection.createIndex(
+        { username: 1 },
+        { unique: true, collation: { locale: "en", strength: 2 }, name: "unique_username_case_insensitive" }
+      );
       await this.collection.createIndex({ id: 1 }, { unique: true });
     } catch (err: any) {
       throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore inizializzazione indici utenti: ${err.message}`);
@@ -74,7 +92,10 @@ export class MongoUserRepository implements UserRepository {
 
   async findByUsername(username: string): Promise<UserEntity | null> {
     try {
-      const doc = await this.collection.findOne({ username }, { projection: { _id: 0 } });
+      const doc = await this.collection.findOne(
+        { username },
+        { projection: { _id: 0 }, collation: { locale: "en", strength: 2 } }
+      );
       return doc ? (doc as UserEntity) : null;
     } catch (err: any) {
       throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore query utente per username: ${err.message}`);
@@ -91,12 +112,24 @@ export class MongoUserRepository implements UserRepository {
   }
 
   async create(user: UserEntity): Promise<UserEntity> {
+    const existing = await this.findByUsername(user.username);
+    if (existing) {
+      throw new MolirisAppError(
+        ErrorCode.DB_PERSISTENCE_ERROR,
+        `Nome utente '${user.username}' già utilizzato. Scegliere uno username differente.`,
+        `Nome utente '${user.username}' già utilizzato. Scegliere uno username differente.`
+      );
+    }
     try {
       await this.collection.insertOne(structuredClone(user));
       return structuredClone(user);
     } catch (err: any) {
       if (err.code === 11000) {
-        throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Utente '${user.username}' già esistente.`);
+        throw new MolirisAppError(
+          ErrorCode.DB_PERSISTENCE_ERROR,
+          `Nome utente '${user.username}' già utilizzato. Scegliere uno username differente.`,
+          `Nome utente '${user.username}' già utilizzato. Scegliere uno username differente.`
+        );
       }
       throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore creazione utente: ${err.message}`);
     }

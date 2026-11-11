@@ -121,6 +121,8 @@ await robotRepo.create({
   anagraphicState: "attivo",
   connectionState: "raggiungibile",
   registrationState: "registrazione_completata",
+  customerName: "Acme Industries",
+  plantName: "Milano HQ",
   operationalState: { battery: 92, status: "idle", task: "patrol" },
   lastValidUpdateAt: new Date(),
   lastAttemptOutcome: {
@@ -475,6 +477,16 @@ const hasOnlineRobot = await evaluateInBrowser<boolean>(`
 `);
 assert.strictEqual(hasOnlineRobot, true, "Robot online deve essere visualizzato con stato raggiungibile");
 
+// Verifica presenza e visualizzazione corretta Nome Cliente e Nome Impianto nella tabella flotta (RF-05)
+const hasCustomerAndPlantInTable = await evaluateInBrowser<boolean>(`
+  Array.from(document.querySelectorAll('#fleet-table-body tr')).some(tr => 
+    tr.textContent.includes('Robot Online Alpha') &&
+    tr.textContent.includes('Acme Industries') &&
+    tr.textContent.includes('Milano HQ')
+  )
+`);
+assert.strictEqual(hasCustomerAndPlantInTable, true, "La tabella della flotta deve mostrare Nome Cliente e Nome Impianto associati (RF-05)");
+
 // Verifica presenza robot_unreachable con stato non_raggiungibile e dato non più verificato (CA-ROB-012, RF-MON-006)
 const hasUnreachableRobot = await evaluateInBrowser<boolean>(`
   Array.from(document.querySelectorAll('#fleet-table-body tr')).some(tr => 
@@ -547,6 +559,8 @@ const detailHtml = await evaluateInBrowser<string>("document.getElementById('det
 assert.ok(detailHtml.includes("Stato Anagrafico"), "Deve mostrare lo stato anagrafico");
 assert.ok(detailHtml.includes("Stato Connessione"), "Deve mostrare lo stato di connessione");
 assert.ok(detailHtml.includes("Stato Operativo"), "Deve mostrare lo stato operativo interpretato");
+assert.ok(detailHtml.includes("Acme Industries"), "Deve mostrare il Nome Cliente associato (RF-05)");
+assert.ok(detailHtml.includes("Milano HQ"), "Deve mostrare il Nome Impianto associato (RF-05)");
 assert.ok(detailHtml.includes("Funzionalità del Robot"), "Deve mostrare la griglia funzionalità (RF-ROB-011)");
 
 // Chiudi dettaglio
@@ -665,6 +679,72 @@ const isOverwriteModalClosed = await evaluateInBrowser<boolean>(
   "document.getElementById('modal-confirm-overwrite').classList.contains('hidden')"
 );
 assert.strictEqual(isOverwriteModalClosed, true, "Il modal di sovrascrittura deve chiudersi all'annullamento");
+
+// Test 14: Modal Avviso Inattività Terminale (RF-01)
+console.log("  -> Test RF-01: Modal Avviso Inattività Terminale");
+await evaluateInBrowser<void>(`
+  const modalTerm = document.getElementById('modal-terminal-idle-warning');
+  const countEl = document.getElementById('terminal-idle-countdown');
+  countEl.textContent = '5';
+  modalTerm.classList.remove('hidden');
+`);
+await new Promise((r) => setTimeout(r, 100));
+
+const isTermModalOpen = await evaluateInBrowser<boolean>(
+  "!document.getElementById('modal-terminal-idle-warning').classList.contains('hidden')"
+);
+assert.strictEqual(isTermModalOpen, true, "Il modal di avviso timeout terminale deve essere visibile");
+
+const termCountdown5 = await evaluateInBrowser<string>(
+  "document.getElementById('terminal-idle-countdown').textContent"
+);
+assert.strictEqual(termCountdown5, "5", "Il conto alla rovescia iniziale del terminale deve essere 5");
+
+await evaluateInBrowser<void>("document.getElementById('terminal-idle-countdown').textContent = '4'");
+const termCountdown4 = await evaluateInBrowser<string>(
+  "document.getElementById('terminal-idle-countdown').textContent"
+);
+assert.strictEqual(termCountdown4, "4", "Il conto alla rovescia del terminale si aggiorna a 4");
+
+await evaluateInBrowser<void>("document.getElementById('btn-dismiss-terminal-idle').click()");
+await new Promise((r) => setTimeout(r, 100));
+const isTermModalClosed = await evaluateInBrowser<boolean>(
+  "document.getElementById('modal-terminal-idle-warning').classList.contains('hidden')"
+);
+assert.strictEqual(isTermModalClosed, true, "Il modal di avviso terminale deve chiudersi al click su Chiudi Avviso");
+
+// Test 15: Modal Avviso Inattività Sessione (RF-02)
+console.log("  -> Test RF-02: Modal Avviso Inattività Sessione");
+await evaluateInBrowser<void>(`
+  const modalSess = document.getElementById('modal-session-idle-warning');
+  const sessCountEl = document.getElementById('session-idle-countdown');
+  sessCountEl.textContent = '5';
+  modalSess.classList.remove('hidden');
+`);
+await new Promise((r) => setTimeout(r, 100));
+
+const isSessModalOpen = await evaluateInBrowser<boolean>(
+  "!document.getElementById('modal-session-idle-warning').classList.contains('hidden')"
+);
+assert.strictEqual(isSessModalOpen, true, "Il modal di avviso inattività sessione deve essere visibile");
+
+const sessCountdown5 = await evaluateInBrowser<string>(
+  "document.getElementById('session-idle-countdown').textContent"
+);
+assert.strictEqual(sessCountdown5, "5", "Il countdown sessione deve mostrare 5 minuti");
+
+await evaluateInBrowser<void>("document.getElementById('session-idle-countdown').textContent = '1'");
+const sessCountdown1 = await evaluateInBrowser<string>(
+  "document.getElementById('session-idle-countdown').textContent"
+);
+assert.strictEqual(sessCountdown1, "1", "Il countdown sessione deve potersi aggiornare fino a 1 minuto");
+
+await evaluateInBrowser<void>("document.getElementById('btn-close-session-idle').click()");
+await new Promise((r) => setTimeout(r, 100));
+const isSessModalClosed = await evaluateInBrowser<boolean>(
+  "document.getElementById('modal-session-idle-warning').classList.contains('hidden')"
+);
+assert.strictEqual(isSessModalClosed, true, "Il modal di avviso sessione deve chiudersi al dismiss");
 
 // Chiusura risorse di test
 cdpWs.close();

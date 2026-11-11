@@ -64,6 +64,10 @@ export interface RobotRegistrationInput {
   stateFilePaths?: string[];
   sftpParameters?: SftpParameters;
   customParameters?: Record<string, unknown>;
+  customerName?: string;
+  plantName?: string;
+  clientId?: string;
+  plantId?: string;
 }
 
 /**
@@ -84,6 +88,10 @@ export interface RobotConfigurationUpdateInput {
   stateFilePaths?: string[];
   sftpParameters?: SftpParameters;
   customParameters?: Record<string, unknown>;
+  customerName?: string;
+  plantName?: string;
+  clientId?: string;
+  plantId?: string;
 }
 
 /**

@@ -67,6 +67,8 @@
                 <tr>
                   <th>Nome Visualizzato</th>
                   <th>ID</th>
+                  <th>Cliente</th>
+                  <th>Impianto</th>
                   <th>Host : Porta</th>
                   <th>Username Remoto</th>
                   <th>Stato Anagrafico</th>
@@ -79,7 +81,7 @@
               </thead>
               <tbody id="fleet-table-body">
                 <tr>
-                  <td colspan="10" class="empty-cell">Caricamento flotta in corso...</td>
+                  <td colspan="12" class="empty-cell">Caricamento flotta in corso...</td>
                 </tr>
               </tbody>
             </table>
@@ -236,6 +238,18 @@
               </div>
 
               <div class="form-group">
+                <label for="reg-customerName">Nome Cliente (RF-05):</label>
+                <input type="text" id="reg-customerName" name="customerName" placeholder="es. Acme Corp">
+                <div class="field-error" id="err-customerName"></div>
+              </div>
+
+              <div class="form-group">
+                <label for="reg-plantName">Nome Impianto (RF-05):</label>
+                <input type="text" id="reg-plantName" name="plantName" placeholder="es. Stabilimento Milano">
+                <div class="field-error" id="err-plantName"></div>
+              </div>
+
+              <div class="form-group">
                 <label for="reg-id">Identificativo interno univoco <span class="required">*</span>:</label>
                 <input type="text" id="reg-id" name="id" required placeholder="es. robot_01">
                 <div class="field-error" id="err-id"></div>
@@ -378,6 +392,16 @@
               </div>
 
               <div class="form-group">
+                <label for="edit-customerName">Nome Cliente (RF-05):</label>
+                <input type="text" id="edit-customerName" name="customerName" placeholder="es. Acme Corp">
+              </div>
+
+              <div class="form-group">
+                <label for="edit-plantName">Nome Impianto (RF-05):</label>
+                <input type="text" id="edit-plantName" name="plantName" placeholder="es. Stabilimento Milano">
+              </div>
+
+              <div class="form-group">
                 <label for="edit-remoteUsername">Username remoto (Immutabile, §11.3):</label>
                 <input type="text" id="edit-remoteUsername" name="remoteUsername" disabled title="Il cambio di username remoto non è consentito perché associato alla directory del server">
               </div>
@@ -494,6 +518,46 @@
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" id="btn-cancel-overwrite">Annulla Operazione</button>
           <button type="button" class="btn btn-danger" id="btn-confirm-overwrite">Sovrascrivi File Esistente</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL 8: Avviso Timeout Inattività Terminale (RF-01) -->
+    <div id="modal-terminal-idle-warning" class="modal hidden" style="z-index: 1050;">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 style="color: #d97706;">⏱️ Avviso Timeout Terminale</h3>
+          <button class="btn-close" id="btn-close-terminal-idle">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p>Il terminale SSH è inattivo e verrà chiuso automaticamente tra <strong id="terminal-idle-countdown" style="font-size: 1.25rem; color: #b45309;">5</strong> minuti.</p>
+          <div class="alert-box alert-warning">
+            Se desideri mantenere attiva la connessione PTY, premi il pulsante <strong>Continua Utilizzo</strong> o premi un tasto all'interno della console.
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-dismiss-terminal-idle">Chiudi Avviso</button>
+          <button type="button" class="btn btn-primary" id="btn-resume-terminal-idle">Continua Utilizzo</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL 9: Avviso Timeout Inattività Sessione (RF-02) -->
+    <div id="modal-session-idle-warning" class="modal hidden" style="z-index: 1100;">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 style="color: #d97706;">⏱️ Avviso Scadenza Sessione</h3>
+          <button class="btn-close" id="btn-close-session-idle">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p>La tua sessione di lavoro scadrà per inattività tra <strong id="session-idle-countdown" style="font-size: 1.25rem; color: #b45309;">5</strong> minuti.</p>
+          <div class="alert-box alert-warning">
+            Alla scadenza verrai disconnesso automaticamente e reindirizzato alla schermata di login. Premi <strong>Continua Sessione</strong> per rinnovarla.
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-logout-session-idle">Disconnetti Ora</button>
+          <button type="button" class="btn btn-primary" id="btn-resume-session-idle">Continua Sessione</button>
         </div>
       </div>
     </div>

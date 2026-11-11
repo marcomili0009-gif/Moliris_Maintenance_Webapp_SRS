@@ -393,7 +393,8 @@ try {
     updatedAt: new Date(),
   });
 
-  const termSession = await termService.openTerminalSession(userEntity, "robot_term_test", { cols: 80, rows: 24 }, "session_term_123");
+  const adminTermUser = { ...userEntity, roles: ["amministratore"] };
+  const termSession = await termService.openTerminalSession(adminTermUser, "robot_term_test", { cols: 80, rows: 24 }, "session_term_123");
   assert.strictEqual(termService.getActiveSessionCount(), 1);
 
   // Primo aggancio WebSocket -> consentito
@@ -410,7 +411,7 @@ try {
     terminate: () => {},
     ping: () => {},
   };
-  termService.attachWebSocket(termSession.sessionId, userEntity, mockSocket1);
+  termService.attachWebSocket(termSession.sessionId, adminTermUser, mockSocket1);
   assert.strictEqual(termSession.hasHadSocket, true);
 
   // Secondo aggancio WebSocket alla stessa sessione -> RIFIUTATO CATEGORICAMENTE (4409)
@@ -425,7 +426,7 @@ try {
       socket2CloseCode = code;
     },
   };
-  termService.attachWebSocket(termSession.sessionId, userEntity, mockSocket2);
+  termService.attachWebSocket(termSession.sessionId, adminTermUser, mockSocket2);
   assert.strictEqual(socket2Closed, true);
   assert.strictEqual(socket2CloseCode, 4409, "Il secondo aggancio deve essere rifiutato con codice 4409");
 

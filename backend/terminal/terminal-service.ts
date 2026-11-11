@@ -85,19 +85,45 @@ export class TerminalService {
     this.startIdleChecker();
   }
 
-  private startIdleChecker(): void {
-    if (this.limits.sessionTimeoutMinutes <= 0) return;
-    const intervalMs = Math.min(this.limits.sessionTimeoutMinutes * 60 * 1000, 30000);
+  public checkIdleSessions(now: number = Date.now()): void {
+    const timeoutMs = this.limits.sessionTimeoutMinutes * 60 * 1000;
+    const warningWindowMs = 5 * 60 * 1000; // 5 minuti prima della scadenza
 
-    this.idleCheckTimer = setInterval(() => {
-      const now = Date.now();
-      const timeoutMs = this.limits.sessionTimeoutMinutes * 60 * 1000;
+    for (const session of Array.from(this.activeSessions.values())) {
+      const idleMs = now - session.lastActivityAt.getTime();
+      const remainingMs = timeoutMs - idleMs;
 
-      for (const session of Array.from(this.activeSessions.values())) {
-        if (now - session.lastActivityAt.getTime() > timeoutMs) {
-          this.closeSession(session.sessionId, "IDLE_TIMEOUT", "Timeout inattività terminale superato.");
+      if (remainingMs <= 0) {
+        this.closeSession(session.sessionId, "IDLE_TIMEOUT", "Timeout inattività terminale superato (15 minuti).");
+      } else if (remainingMs <= warningWindowMs) {
+        // RF-01: Notifica pop-up con countdown aggiornato a ogni minuto (5, 4, 3, 2, 1)
+        const remainingMinutes = Math.max(1, Math.ceil(remainingMs / 60000));
+        if ((session as any).lastWarningMinute !== remainingMinutes) {
+          (session as any).lastWarningMinute = remainingMinutes;
+          if (session.webSocket && session.webSocket.readyState === 1 /* OPEN */) {
+            try {
+              session.webSocket.send(
+                JSON.stringify({
+                  type: "terminal_idle_warning",
+                  remainingMinutes,
+                  remainingSeconds: Math.ceil(remainingMs / 1000),
+                  message: `Il terminale SSH verrà chiuso per inattività tra ${remainingMinutes} minut${remainingMinutes === 1 ? "o" : "i"}.`,
+                })
+              );
+            } catch {}
+          }
         }
       }
+    }
+  }
+
+  private startIdleChecker(): void {
+    if (this.limits.sessionTimeoutMinutes <= 0) return;
+    // RF-01: Controllo frequente a intervalli di max 5s per garantire reattività e countdown a step di 1 minuto
+    const intervalMs = Math.min(this.limits.sessionTimeoutMinutes * 60 * 1000, 5000);
+
+    this.idleCheckTimer = setInterval(() => {
+      this.checkIdleSessions();
     }, intervalMs);
 
     if (this.idleCheckTimer && typeof (this.idleCheckTimer as any).unref === "function") {
@@ -131,20 +157,21 @@ export class TerminalService {
     initialDimensions: { cols?: number; rows?: number },
     userSessionId: string
   ): Promise<TerminalSession> {
-    // 1. Verifica autorizzazione centrale per QUEL robot (RF-AUTH-005, CA-SSH-005, §6.4 passo 3)
-    if (!hasPermission(user, AppPermission.TERMINAL_OPEN, robotId, this.roleMapping)) {
+    // 1. Verifica autorizzazione centrale per QUEL robot e ruolo Admin (RF-04, RF-AUTH-005, CA-SSH-005, §6.4 passo 3)
+    const isAdmin = Array.isArray(user.roles) && user.roles.some((r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore");
+    if (!isAdmin || !hasPermission(user, AppPermission.TERMINAL_OPEN, robotId, this.roleMapping)) {
       await this.auditRepository.record({
         userId: user.username,
         operation: AuditOperation.SECURITY_AUTHORIZATION_ERROR,
         robotId,
         outcome: "FAILURE",
         timestamp: new Date(),
-        details: { reason: "PERMISSION_DENIED_TERMINAL_OPEN" },
+        details: { reason: "PERMISSION_DENIED_TERMINAL_OPEN_NOT_ADMIN", roles: user.roles },
       });
 
       throw new MolirisAppError(
         ErrorCode.INSUFFICIENT_PERMISSIONS,
-        "Operazione non consentita: autorizzazioni insufficienti per aprire il terminale sul robot."
+        "Operazione non consentita: l'accesso al terminale SSH è riservato agli utenti amministratori."
       );
     }
 
@@ -306,6 +333,30 @@ export class TerminalService {
     }
     session.hasHadSocket = true;
 
+    // 1c. Verifica ruolo Admin (RF-04: terminale riservato esclusivamente agli admin)
+    const isAdmin = Array.isArray(requestingUser.roles) && requestingUser.roles.some((r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore");
+    if (!isAdmin) {
+      this.auditRepository.record({
+        userId: requestingUser.username,
+        operation: AuditOperation.SECURITY_AUTHORIZATION_ERROR,
+        robotId: session.robotId,
+        outcome: "FAILURE",
+        timestamp: new Date(),
+        details: {
+          reason: "PERMISSION_DENIED_TERMINAL_WS_NOT_ADMIN",
+          sessionId,
+          roles: requestingUser.roles,
+          requestingUserId: requestingUser.id,
+        },
+      }).catch(() => {});
+
+      try {
+        socket.send(JSON.stringify({ type: "error", message: "Accesso negato: l'utilizzo del terminale SSH è riservato agli utenti amministratori." }));
+        socket.close(4403, "Forbidden");
+      } catch {}
+      return;
+    }
+
     // 2. Verifica di isolamento: divieto di accesso a sessioni altrui (RF-SSH-006, CA-SSH-005)
     if (!this.sharingPolicy.canAccessSession(requestingUser, session)) {
       this.auditRepository.record({
@@ -333,7 +384,7 @@ export class TerminalService {
 
     // STEP 2 – Streaming PROGRESSIVO dell'output dal PTY verso il WebSocket (CA-SSH-003, RNF-PERF-002)
     const onPtyData = (chunk: Buffer | string) => {
-      session.lastActivityAt = new Date();
+      // RF-01: L'output dal robot (PTY) NON rinnova il timer di inattività dell'utente
       if (socket.readyState === 1 /* OPEN */) {
         // Controllo del traffico e buffer limitato (RNF-PERF-002)
         if (socket.bufferedAmount > this.limits.maxBufferedBytes) {
@@ -360,6 +411,15 @@ export class TerminalService {
     // STEP 2 – Input dal WebSocket verso il PTY (comandi, caratteri di controllo, resize)
     socket.on("message", (rawMsg: any) => {
       session.lastActivityAt = new Date();
+      // RF-01: Resetta lo stato di warning all'arrivo di attività utente qualificata
+      if ((session as any).lastWarningMinute !== undefined) {
+        delete (session as any).lastWarningMinute;
+        if (socket.readyState === 1 /* OPEN */) {
+          try {
+            socket.send(JSON.stringify({ type: "terminal_idle_reset" }));
+          } catch {}
+        }
+      }
       // Attività qualificata: input utente o resize dal WebSocket rinnova la sessione applicativa
       if (session.authorizedContext?.sessionId) {
         this.sessionManager.touchSession(session.authorizedContext.sessionId);
@@ -498,18 +558,7 @@ export class TerminalService {
     if (rCount <= 1) this.robotSessionCounts.delete(session.robotId);
     else this.robotSessionCounts.set(session.robotId, rCount - 1);
 
-    // 1. Chiusura del canale PTY
-    try {
-      session.ptyChannel.end();
-      session.ptyChannel.destroy();
-    } catch {}
-
-    // 2. Rilascio garantito della connessione gestita SSH (RNF-REL-005)
-    try {
-      await session.managedConnection.close();
-    } catch {}
-
-    // 3. Notifica e chiusura del socket client se ancora aperto
+    // 1. Notifica e chiusura del socket client se ancora aperto (immediata verso l'utente)
     if (session.webSocket && session.webSocket.readyState === 1 /* OPEN */) {
       try {
         session.webSocket.send(
@@ -522,6 +571,17 @@ export class TerminalService {
         session.webSocket.close(1000, reason);
       } catch {}
     }
+
+    // 2. Chiusura del canale PTY
+    try {
+      session.ptyChannel.end();
+      session.ptyChannel.destroy();
+    } catch {}
+
+    // 3. Rilascio garantito della connessione gestita SSH (RNF-REL-005)
+    try {
+      await session.managedConnection.close();
+    } catch {}
 
     session.state = "closed";
 

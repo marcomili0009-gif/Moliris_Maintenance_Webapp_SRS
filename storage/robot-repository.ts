@@ -30,6 +30,10 @@ export interface RobotConfigurationUpdate {
   remoteMonitoringPath?: string;
   sftpParameters?: SftpParameters;
   customParameters?: Record<string, unknown>;
+  clientId?: string;
+  customerName?: string;
+  plantId?: string;
+  plantName?: string;
 }
 
 /**
@@ -128,6 +132,14 @@ export class InMemoryRobotRepository implements RobotRepository {
       ...update,
       updatedAt: new Date(),
     };
+    if (update.customerName === "" || update.customerName === null) {
+      delete updated.customerName;
+      delete updated.clientId;
+    }
+    if (update.plantName === "" || update.plantName === null) {
+      delete updated.plantName;
+      delete updated.plantId;
+    }
     this.robots.set(id, updated);
     return structuredClone(updated);
   }
@@ -297,14 +309,33 @@ export class MongoRobotRepository implements RobotRepository {
 
   async updateConfiguration(id: string, update: RobotConfigurationUpdate): Promise<RobotEntity> {
     try {
+      const $set: Record<string, unknown> = {
+        updatedAt: new Date(),
+      };
+      const $unset: Record<string, unknown> = {};
+
+      for (const [key, val] of Object.entries(update)) {
+        if (val === undefined) {
+          continue;
+        } else if (val === null || val === "") {
+          if (key === "customerName" || key === "clientId" || key === "plantName" || key === "plantId") {
+            $unset[key] = "";
+          } else {
+            $set[key] = val;
+          }
+        } else {
+          $set[key] = val;
+        }
+      }
+
+      const updateDoc: Record<string, unknown> = { $set };
+      if (Object.keys($unset).length > 0) {
+        updateDoc.$unset = $unset;
+      }
+
       const result = await this.collection.findOneAndUpdate(
         { id },
-        {
-          $set: {
-            ...update,
-            updatedAt: new Date(),
-          },
-        },
+        updateDoc,
         { returnDocument: "after", projection: { _id: 0 } }
       );
       if (!result) {

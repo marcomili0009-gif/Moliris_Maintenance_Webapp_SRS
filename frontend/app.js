@@ -75,6 +75,42 @@ document.addEventListener("DOMContentLoaded", () => {
   let activeFitAddon = null;
   let terminalWebSocket = null;
 
+  // RF-01: Modal Avviso Inattività Terminale
+  const modalTerminalIdle = document.getElementById("modal-terminal-idle-warning");
+  const terminalIdleCountdown = document.getElementById("terminal-idle-countdown");
+  const btnCloseTerminalIdle = document.getElementById("btn-close-terminal-idle");
+  const btnDismissTerminalIdle = document.getElementById("btn-dismiss-terminal-idle");
+  const btnResumeTerminalIdle = document.getElementById("btn-resume-terminal-idle");
+
+  // RF-02: Modal Avviso Inattività Sessione
+  const modalSessionIdle = document.getElementById("modal-session-idle-warning");
+  const sessionIdleCountdown = document.getElementById("session-idle-countdown");
+  const btnCloseSessionIdle = document.getElementById("btn-close-session-idle");
+  const btnLogoutSessionIdle = document.getElementById("btn-logout-session-idle");
+  const btnResumeSessionIdle = document.getElementById("btn-resume-session-idle");
+
+  btnCloseTerminalIdle?.addEventListener("click", () => modalTerminalIdle?.classList.add("hidden"));
+  btnDismissTerminalIdle?.addEventListener("click", () => modalTerminalIdle?.classList.add("hidden"));
+  btnResumeTerminalIdle?.addEventListener("click", () => {
+    modalTerminalIdle?.classList.add("hidden");
+    if (terminalWebSocket && terminalWebSocket.readyState === WebSocket.OPEN) {
+      terminalWebSocket.send(JSON.stringify({ type: "input", data: "" }));
+    }
+  });
+
+  btnCloseSessionIdle?.addEventListener("click", () => modalSessionIdle?.classList.add("hidden"));
+  btnLogoutSessionIdle?.addEventListener("click", () => {
+    modalSessionIdle?.classList.add("hidden");
+    showLoginView("Disconnessione effettuata.");
+  });
+  btnResumeSessionIdle?.addEventListener("click", async () => {
+    modalSessionIdle?.classList.add("hidden");
+    lastUserActivity = Date.now();
+    try {
+      await apiClient.get("/api/auth/me");
+    } catch {}
+  });
+
   // Navigazione Filesystem Server
   const fsRobotIdInput = document.getElementById("fs-robot-id");
   const btnFsLoad = document.getElementById("btn-fs-load");
@@ -142,6 +178,65 @@ document.addEventListener("DOMContentLoaded", () => {
     notificationBanner.innerHTML = "";
   }
 
+  // RF-02: Monitoraggio inattività sessione client-side sincronizzato con backend (30 min)
+  let lastUserActivity = Date.now();
+  let sessionInactivityTimer = null;
+
+  function resetSessionActivity() {
+    lastUserActivity = Date.now();
+    if (modalSessionIdle && !modalSessionIdle.classList.contains("hidden")) {
+      modalSessionIdle.classList.add("hidden");
+    }
+  }
+
+  // Intercettazione eventi qualificati utente con throttling
+  let activityThrottle = 0;
+  const onUserActivity = () => {
+    const now = Date.now();
+    if (now - activityThrottle > 2000) {
+      activityThrottle = now;
+      if (currentUser && apiClient.getToken()) {
+        resetSessionActivity();
+      }
+    }
+  };
+
+  window.addEventListener("mousemove", onUserActivity, { passive: true });
+  window.addEventListener("keydown", onUserActivity, { passive: true });
+  window.addEventListener("click", onUserActivity, { passive: true });
+  window.addEventListener("scroll", onUserActivity, { passive: true });
+
+  function startSessionInactivityTracker() {
+    if (sessionInactivityTimer) clearInterval(sessionInactivityTimer);
+    lastUserActivity = Date.now();
+
+    sessionInactivityTimer = setInterval(async () => {
+      if (!currentUser || !apiClient.getToken()) {
+        return;
+      }
+      const now = Date.now();
+      const elapsedMs = now - lastUserActivity;
+      const timeoutMs = 30 * 60 * 1000; // 30 minuti (RF-02)
+      const warningThresholdMs = 25 * 60 * 1000; // 5 minuti prima della scadenza
+
+      if (elapsedMs >= timeoutMs) {
+        if (sessionInactivityTimer) {
+          clearInterval(sessionInactivityTimer);
+          sessionInactivityTimer = null;
+        }
+        showLoginView("Sessione scaduta per inattività (30 minuti). Effettuare nuovamente il login.");
+      } else if (elapsedMs >= warningThresholdMs) {
+        const remainingMinutes = Math.max(1, Math.ceil((timeoutMs - elapsedMs) / 60000));
+        modalSessionIdle?.classList.remove("hidden");
+        if (sessionIdleCountdown) sessionIdleCountdown.textContent = String(remainingMinutes);
+      } else {
+        if (modalSessionIdle && !modalSessionIdle.classList.contains("hidden")) {
+          modalSessionIdle.classList.add("hidden");
+        }
+      }
+    }, 5000);
+  }
+
   // =========================================================================
   // GESTIONE SESSIONE, LOGIN E LOGOUT (RF-AUTH-001..006, CA-AUTH-001..003)
   // =========================================================================
@@ -152,10 +247,16 @@ document.addEventListener("DOMContentLoaded", () => {
     modalEdit?.classList.add("hidden");
     modalRemoveConfirm?.classList.add("hidden");
     modalConfirmOverwrite?.classList.add("hidden");
+    modalTerminalIdle?.classList.add("hidden");
+    modalSessionIdle?.classList.add("hidden");
     closeTerminal();
   }
 
   function showLoginView(expiredMessage = null) {
+    if (sessionInactivityTimer) {
+      clearInterval(sessionInactivityTimer);
+      sessionInactivityTimer = null;
+    }
     closeAllModals();
     dashboardSection.classList.add("hidden");
     loginSection.classList.remove("hidden");
@@ -188,6 +289,7 @@ document.addEventListener("DOMContentLoaded", () => {
       btnRegisterRobot.classList.add("hidden");
     }
 
+    startSessionInactivityTracker();
     loadFleetData();
   }
 
@@ -266,13 +368,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // STEP 1 & 2 – LISTA DELLA FLOTTA E STATI DISTINTI (RF-ROB-001, RF-ROB-014, CA-ROB-012)
   // =========================================================================
   async function loadFleetData() {
-    fleetTableBody.innerHTML = '<tr><td colspan="10" class="empty-cell">Caricamento flotta in corso...</td></tr>';
+    fleetTableBody.innerHTML = '<tr><td colspan="12" class="empty-cell">Caricamento flotta in corso...</td></tr>';
     try {
       const res = await apiClient.get("/api/robots");
       if (!res.ok) {
         const data = await res.json().catch(() => null);
         const errObj = ErrorPresenter.formatError(data);
-        fleetTableBody.innerHTML = `<tr><td colspan="10" class="empty-cell" style="color: #c5221f;">${StateFormatter.escapeHtml(errObj.userMessage)}</td></tr>`;
+        fleetTableBody.innerHTML = `<tr><td colspan="12" class="empty-cell" style="color: #c5221f;">${StateFormatter.escapeHtml(errObj.userMessage)}</td></tr>`;
         return;
       }
 
@@ -280,7 +382,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const robots = data.robots || [];
 
       if (robots.length === 0) {
-        fleetTableBody.innerHTML = '<tr><td colspan="10" class="empty-cell">Nessun robot registrato o visibile per questo account.</td></tr>';
+        fleetTableBody.innerHTML = '<tr><td colspan="12" class="empty-cell">Nessun robot registrato o visibile per questo account.</td></tr>';
         return;
       }
 
@@ -298,7 +400,19 @@ document.addEventListener("DOMContentLoaded", () => {
         tdId.textContent = robot.id;
         tr.appendChild(tdId);
 
-        // 3. Host : Porta
+        // 3. Cliente (RF-05)
+        const tdCustomer = document.createElement("td");
+        tdCustomer.className = "robot-customer-cell";
+        tdCustomer.textContent = robot.customerName || "-";
+        tr.appendChild(tdCustomer);
+
+        // 4. Impianto (RF-05)
+        const tdPlant = document.createElement("td");
+        tdPlant.className = "robot-plant-cell";
+        tdPlant.textContent = robot.plantName || "-";
+        tr.appendChild(tdPlant);
+
+        // 5. Host : Porta
         const tdHost = document.createElement("td");
         tdHost.textContent = `${robot.host}:${robot.sshPort}`;
         tr.appendChild(tdHost);
@@ -404,6 +518,14 @@ document.addEventListener("DOMContentLoaded", () => {
           <div class="detail-item">
             <strong>Nome Visualizzato</strong>
             <span>${StateFormatter.escapeHtml(robot.displayName)}</span>
+          </div>
+          <div class="detail-item">
+            <strong>Nome Cliente (RF-05)</strong>
+            <span id="detail-customer-name">${robot.customerName ? StateFormatter.escapeHtml(robot.customerName) : '-'}</span>
+          </div>
+          <div class="detail-item">
+            <strong>Nome Impianto (RF-05)</strong>
+            <span id="detail-plant-name">${robot.plantName ? StateFormatter.escapeHtml(robot.plantName) : '-'}</span>
           </div>
           <div class="detail-item">
             <strong>Identificativo Univoco</strong>
@@ -674,6 +796,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const monPath = document.getElementById("reg-remoteMonitoringPath").value.trim();
     if (monPath) payload.remoteMonitoringPath = monPath;
 
+    const regCust = document.getElementById("reg-customerName")?.value.trim();
+    if (regCust) payload.customerName = regCust;
+
+    const regPlant = document.getElementById("reg-plantName")?.value.trim();
+    if (regPlant) payload.plantName = regPlant;
+
     const sftpHost = document.getElementById("reg-sftpHost").value.trim();
     const sftpPort = document.getElementById("reg-sftpPort").value.trim();
     const sftpUser = document.getElementById("reg-sftpUser").value.trim();
@@ -870,7 +998,19 @@ document.addEventListener("DOMContentLoaded", () => {
         if (typeof msg === "string" && msg.startsWith("{") && msg.endsWith("}")) {
           try {
             const parsed = JSON.parse(msg);
+            if (parsed.type === "terminal_idle_warning") {
+              modalTerminalIdle?.classList.remove("hidden");
+              if (terminalIdleCountdown) {
+                terminalIdleCountdown.textContent = String(parsed.remainingMinutes);
+              }
+              return;
+            }
+            if (parsed.type === "terminal_idle_reset") {
+              modalTerminalIdle?.classList.add("hidden");
+              return;
+            }
             if (parsed.type === "session_closed") {
+              modalTerminalIdle?.classList.add("hidden");
               terminalSessionStatus.className = "badge-status badge-disabilitato";
               terminalSessionStatus.textContent = `Chiuso (${parsed.reason || "terminato"})`;
               activeXterm.writeln(`\r\n\x1b[33m[Connessione terminale chiusa dal server: ${StateFormatter.escapeHtml(parsed.message || parsed.reason)}]\x1b[0m\r\n`);
@@ -888,6 +1028,7 @@ document.addEventListener("DOMContentLoaded", () => {
       };
 
       terminalWebSocket.onclose = () => {
+        modalTerminalIdle?.classList.add("hidden");
         terminalSessionStatus.className = "badge-status badge-disabilitato";
         terminalSessionStatus.textContent = "Connessione Chiusa";
         if (activeXterm) {
@@ -896,11 +1037,13 @@ document.addEventListener("DOMContentLoaded", () => {
       };
 
       terminalWebSocket.onerror = () => {
+        modalTerminalIdle?.classList.add("hidden");
         terminalSessionStatus.className = "badge-status badge-errore";
         terminalSessionStatus.textContent = "Errore Canale";
       };
 
       activeXterm.onData((inputData) => {
+        modalTerminalIdle?.classList.add("hidden");
         if (terminalWebSocket && terminalWebSocket.readyState === WebSocket.OPEN) {
           terminalWebSocket.send(inputData);
         }
@@ -944,6 +1087,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     activeTerminalSessionId = null;
     modalTerminal.classList.add("hidden");
+    modalTerminalIdle?.classList.add("hidden");
     terminalContainer.innerHTML = "";
   }
 
@@ -1001,6 +1145,8 @@ document.addEventListener("DOMContentLoaded", () => {
     editSelectAuthMethod.value = robot.sshAuthMethod || "password";
     document.getElementById("edit-fingerprint").value = robot.hostKeyVerification?.fingerprint || "";
     document.getElementById("edit-monitoringPath").value = robot.remoteMonitoringPath || "";
+    document.getElementById("edit-customerName").value = robot.customerName || "";
+    document.getElementById("edit-plantName").value = robot.plantName || "";
 
     document.getElementById("edit-password").value = "";
     document.getElementById("edit-privateKey").value = "";
@@ -1053,6 +1199,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const monPath = document.getElementById("edit-monitoringPath").value.trim();
     if (monPath) payload.remoteMonitoringPath = monPath;
+
+    const editCust = document.getElementById("edit-customerName")?.value.trim();
+    if (editCust !== undefined) payload.customerName = editCust;
+
+    const editPlant = document.getElementById("edit-plantName")?.value.trim();
+    if (editPlant !== undefined) payload.plantName = editPlant;
 
     await DoubleSubmitGuard.execute(btnSubmitEdit, "Salvataggio...", async () => {
       try {
