@@ -138,13 +138,16 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 | **RNF-REL-004** | Integrità dei file esistenti su trasferimenti falliti | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/security/transfers-monitoring-hardening.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RNF-REL-005** | Pulizia delle risorse e riavvio pulito senza lock | `backend/server.ts`<br>`backend/terminal/terminal-service.ts` | `backend/terminal/terminal.test.ts`<br>`tests/reliability-performance/reliability-perf.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
 
-### 2.5 Usabilità e Frontend (RNF-UX-001..004)
+### 2.5 Usabilità e Frontend (§5.1, RNF-UX-001..004)
 | ID Requisito | Descrizione Sintetica | Modulo Implementazione | Suite di Test Automatizzati | Stato |
 | :--- | :--- | :--- | :--- | :--- |
-| **RNF-UX-001** | Interfaccia intuitiva per manutentore | `client/src/views/DashboardView.tsx`<br>`client/src/styles.css` | `client/react-frontend.test.ts` | **Soddisfatto** |
-| **RNF-UX-002** | Feedback visivo conforme al catalogo §9 | `client/src/services/error-presenter.ts`<br>`client/src/components/common/NotificationBanner.tsx` | `client/react-frontend.test.ts` | **Soddisfatto** |
+| **RNF-UX-001** | Interfaccia intuitiva per manutentore con palette Bootstrap 5 | `client/src/views/DashboardView.tsx`<br>`client/src/styles.css`<br>`client/src/components/common/StatusBadge.tsx` | `client/react-frontend.test.ts` | **Soddisfatto** |
+| **RNF-UX-002** | Feedback visivo conforme al catalogo §9 e gestione errori | `client/src/services/error-presenter.ts`<br>`client/src/components/common/NotificationBanner.tsx` | `client/react-frontend.test.ts` | **Soddisfatto** |
 | **RNF-UX-003** | Compatibilità Google Chrome senza plugin aggiuntivi | `client/index.html`<br>`client/src/App.tsx` | `client/react-frontend.test.ts` | **Soddisfatto** |
 | **RNF-UX-004** | Terminale Linux interattivo nel browser (xterm.js su WSS) | `client/src/components/terminal/TerminalModal.tsx`<br>`backend/terminal/terminal-service.ts` | `client/react-frontend.test.ts`<br>`backend/terminal/terminal.test.ts` | **Soddisfatto** |
+| **RF-UI-NAV** | Navbar sticky-top con logo Moliris come pulsante Home alla Flotta | `client/src/components/common/AppNavbar.tsx`<br>`client/src/App.tsx`<br>`backend/server.ts` | `client/react-frontend.test.ts`<br>`backend/server.test.ts` | **Soddisfatto** |
+| **RF-UI-FILTER** | Ricerca e filtri client-side con debounce ~250ms, rimozione accenti e contatore | `client/src/components/fleet/FleetFilterBar.tsx`<br>`client/src/utils/filterRobots.ts` | `client/react-frontend.test.ts` | **Soddisfatto** |
+| **RF-UI-FIELDS** | Visualizzazione e modifica campi opzionali Cliente e Impianto nella flotta | `client/src/components/fleet/FleetTable.tsx`<br>`client/src/components/fleet/RobotRegisterModal.tsx`<br>`client/src/components/fleet/RobotEditModal.tsx` | `client/react-frontend.test.ts`<br>`backend/fleet/fleet.test.ts` | **Soddisfatto** |
 
 ### 2.6 Manutenibilità e Tracciabilità (RNF-MNT-001..003)
 | ID Requisito | Descrizione Sintetica | Modulo Implementazione | Suite di Test Automatizzati | Stato |

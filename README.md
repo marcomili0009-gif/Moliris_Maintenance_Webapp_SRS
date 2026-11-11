@@ -37,6 +37,12 @@ Web Application centralizzata per la gestione operativa, il monitoraggio dello s
   - **Streaming a memoria RAM costante (Heap delta < 3 MB) su file superiori a 1 GB** con contropressione nativa dei flussi Node.js.
   - Avanzamento in tempo reale, verifica integrità opzionale (SHA-256/MD5) e file temporanei protetti.
 
+- **Interfaccia Utente Moderna Bootstrap 5 e Ricerca Flotta (§5.1, RNF-UX-001..004)**:
+  - Single Page Application in **React 19.3.1** e Vite con palette Bootstrap 5 e status badge semantici.
+  - Navbar superiore `sticky-top` con logo Moliris che funge da pulsante di ritorno alla Home (vista Flotta) senza reload.
+  - Barra di ricerca e filtri lato client (`FleetFilterBar`) su Cliente, Impianto, Nome Robot e ID Robot con debounce ~250ms e normalizzazione accenti.
+  - Campi opzionali Cliente e Impianto integrati nella flotta, nella registrazione e nella modifica robot.
+
 ---
 
 ## 2. Architettura e Struttura della Codebase
