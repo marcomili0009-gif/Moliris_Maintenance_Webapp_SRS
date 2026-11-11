@@ -78,6 +78,7 @@ const openHandles = new Map<string, {
   bytesTransferred: number;
   syntheticLarge: boolean;
 }>();
+const writtenFileSizes = new Map<string, number>();
 let handleCounter = 0;
 
 const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) => {
@@ -116,7 +117,18 @@ const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) =>
         });
 
         sftp.on("STAT", (reqid, p) => {
-          if (p.includes("synthetic_large_1gb")) {
+          const normP = path.posix.normalize(p || "");
+          if (writtenFileSizes.has(normP)) {
+            return sftp.attrs(reqid, {
+              mode: 0o100644,
+              size: writtenFileSizes.get(normP)!,
+              uid: 1000,
+              gid: 1000,
+              atime: Math.floor(Date.now() / 1000),
+              mtime: Math.floor(Date.now() / 1000),
+            } as any);
+          }
+          if (normP.includes("synthetic_large_1gb")) {
             sftp.attrs(reqid, {
               mode: 0o100644,
               size: ONE_GIB_PLUS,
@@ -125,7 +137,7 @@ const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) =>
               atime: Math.floor(Date.now() / 1000),
               mtime: Math.floor(Date.now() / 1000),
             } as any);
-          } else {
+          } else if (normP.includes("synthetic_file.bin") || normP.includes("status.txt")) {
             sftp.attrs(reqid, {
               mode: 0o100644,
               size: 1024 * 1024,
@@ -134,6 +146,8 @@ const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) =>
               atime: Math.floor(Date.now() / 1000),
               mtime: Math.floor(Date.now() / 1000),
             } as any);
+          } else {
+            sftp.status(reqid, 2 /* SSH_FX_NO_SUCH_FILE */);
           }
         });
 
@@ -155,44 +169,48 @@ const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) =>
           const h = openHandles.get(handle.toString());
           if (!h) return sftp.status(reqid, 4);
 
-          if (h.syntheticLarge) {
-            if (h.bytesTransferred >= ONE_GIB_PLUS) {
-              return sftp.status(reqid, 1 /* EOF */);
-            }
-            const toSend = Math.min(len, ONE_GIB_PLUS - h.bytesTransferred, CHUNK_SIZE);
-            h.bytesTransferred += toSend;
-            sftp.data(reqid, syntheticZeroChunk.subarray(0, toSend));
-          } else {
-            const TARGET_SIZE = 1024 * 1024;
-            if (h.bytesTransferred >= TARGET_SIZE) {
-              return sftp.status(reqid, 1 /* EOF */);
-            }
-            const toSend = Math.min(len, TARGET_SIZE - h.bytesTransferred, CHUNK_SIZE);
-            h.bytesTransferred += toSend;
-            sftp.data(reqid, syntheticZeroChunk.subarray(0, toSend));
+          const targetSize = h.syntheticLarge ? ONE_GIB_PLUS : 1024 * 1024;
+          if (offset >= targetSize) {
+            return sftp.status(reqid, 1 /* EOF */);
           }
+
+          const toSend = Math.min(len, targetSize - offset, CHUNK_SIZE);
+          sftp.data(reqid, syntheticZeroChunk.subarray(0, toSend));
         });
 
         sftp.on("WRITE", (reqid, handle, offset, data) => {
           const h = openHandles.get(handle.toString());
           if (!h) return sftp.status(reqid, 4);
           // Tracciamo il conteggio senza accumulare i dati in RAM (RNF-PERF-001)
-          h.bytesTransferred += data.length;
+          h.bytesTransferred = Math.max(h.bytesTransferred, offset + data.length);
           sftp.status(reqid, 0 /* OK */);
         });
 
         sftp.on("CLOSE", (reqid, handle) => {
-          openHandles.delete(handle.toString());
+          const h = openHandles.get(handle.toString());
+          if (h) {
+            if (h.isWrite) {
+              writtenFileSizes.set(path.posix.normalize(h.filePath), h.bytesTransferred);
+            }
+            openHandles.delete(handle.toString());
+          }
           sftp.status(reqid, 0 /* OK */);
         });
 
         sftp.on("FSETSTAT", (reqid) => sftp.status(reqid, 0 /* OK */));
         sftp.on("SETSTAT", (reqid) => sftp.status(reqid, 0 /* OK */));
-        sftp.on("RENAME", (reqid) => {
+        sftp.on("RENAME", (reqid, oldp, newp) => {
+          const normOld = path.posix.normalize(oldp);
+          const normNew = path.posix.normalize(newp);
+          if (writtenFileSizes.has(normOld)) {
+            writtenFileSizes.set(normNew, writtenFileSizes.get(normOld)!);
+            writtenFileSizes.delete(normOld);
+          }
           sftp.status(reqid, 0 /* OK */);
         });
 
-        sftp.on("REMOVE", (reqid) => {
+        sftp.on("REMOVE", (reqid, p) => {
+          writtenFileSizes.delete(path.posix.normalize(p));
           sftp.status(reqid, 0 /* OK */);
         });
       });
@@ -226,6 +244,7 @@ const perfConfig: SystemConfiguration = {
   transferChunkSizeBytes: 64 * 1024,
   transferChecksumAlgorithm: "sha256",
   transferOverwritePolicy: "sovrascrivi",
+  robotNonAtomicReplace: true,
 };
 
 const logger = new MolirisLogger();
@@ -398,9 +417,9 @@ function createVirtualOneGiBStream(): Readable {
 
 // Direzione 3: Server -> Robot (TransferServerToRobot)
 {
-  const ONE_MB = 1024 * 1024;
   const srvFilePath = path.join(robotDir, "dir3_server_to_robot.bin");
-  fs.writeFileSync(srvFilePath, Buffer.alloc(ONE_MB, 0x41));
+  fs.writeFileSync(srvFilePath, Buffer.alloc(0));
+  fs.truncateSync(srvFilePath, ONE_GIB_PLUS);
 
   const heapBefore = process.memoryUsage().heapUsed;
   const trf = await transferService.executeServerRobotTransfer(
@@ -417,7 +436,7 @@ function createVirtualOneGiBStream(): Readable {
   const deltaMb = Math.round((heapAfter - heapBefore) / (1024 * 1024));
 
   assert.strictEqual(trf.status, TransferStatus.COMPLETED);
-  assert.strictEqual(trf.transferredBytes, ONE_MB);
+  assert.strictEqual(trf.transferredBytes, ONE_GIB_PLUS);
   assert.ok(deltaMb < 45, `Direzione 3 (Server->Robot): Delta heap deve essere < 45 MB (misurato: ${deltaMb} MB)`);
   console.log(`    PASS: Direzione 3 (Server -> Robot): Streaming SFTP gestito a memoria costante, delta heap: ${deltaMb} MB`);
 
@@ -426,7 +445,6 @@ function createVirtualOneGiBStream(): Readable {
 
 // Direzione 4: Robot -> Server (TransferRobotToServer)
 {
-  const ONE_MB = 1024 * 1024;
   const heapBefore = process.memoryUsage().heapUsed;
   const trf = await transferService.executeServerRobotTransfer(
     contextAuth,
@@ -434,7 +452,7 @@ function createVirtualOneGiBStream(): Readable {
     {
       direction: "ROBOT_TO_SERVER",
       serverRelativePath: "dir4_robot_to_server.bin",
-      remotePath: "/remote/synthetic_file.bin",
+      remotePath: "/remote/synthetic_large_1gb.bin",
       overwrite: true,
     }
   );
@@ -442,7 +460,7 @@ function createVirtualOneGiBStream(): Readable {
   const deltaMb = Math.round((heapAfter - heapBefore) / (1024 * 1024));
 
   assert.strictEqual(trf.status, TransferStatus.COMPLETED);
-  assert.strictEqual(trf.transferredBytes, ONE_MB);
+  assert.strictEqual(trf.transferredBytes, ONE_GIB_PLUS);
   assert.ok(deltaMb < 45, `Direzione 4 (Robot->Server): Delta heap deve essere < 45 MB (misurato: ${deltaMb} MB)`);
   console.log(`    PASS: Direzione 4 (Robot -> Server): Streaming SFTP ricevuto a memoria costante, delta heap: ${deltaMb} MB`);
 
@@ -452,9 +470,8 @@ function createVirtualOneGiBStream(): Readable {
 
 // Direzione 5: Computer -> Robot (UploadClientToRobot)
 {
-  const ONE_MB = 1024 * 1024;
   const heapBefore = process.memoryUsage().heapUsed;
-  const stream = Readable.from(Buffer.alloc(ONE_MB, 0x43));
+  const stream = createVirtualOneGiBStream();
   const trf = await transferService.uploadClientToRobot(
     contextAuth,
     testRobot,
@@ -462,25 +479,24 @@ function createVirtualOneGiBStream(): Readable {
     "dir5_client_to_robot.bin",
     stream,
     { overwrite: true },
-    ONE_MB
+    ONE_GIB_PLUS
   );
   const heapAfter = process.memoryUsage().heapUsed;
   const deltaMb = Math.round((heapAfter - heapBefore) / (1024 * 1024));
 
   assert.strictEqual(trf.status, TransferStatus.COMPLETED);
-  assert.strictEqual(trf.transferredBytes, ONE_MB);
+  assert.strictEqual(trf.transferredBytes, ONE_GIB_PLUS);
   assert.ok(deltaMb < 45, `Direzione 5 (Computer->Robot): Delta heap deve essere < 45 MB (misurato: ${deltaMb} MB)`);
   console.log(`    PASS: Direzione 5 (Computer -> Robot): Streaming intermediato a memoria costante, delta heap: ${deltaMb} MB`);
 }
 
 // Direzione 6: Robot -> Computer (DownloadRobotToClient)
 {
-  const ONE_MB = 1024 * 1024;
   const heapBefore = process.memoryUsage().heapUsed;
   const { stream } = await transferService.openDownloadRobotToClient(
     contextAuth,
     testRobot,
-    "/remote/synthetic_file.bin"
+    "/remote/synthetic_large_1gb.bin"
   );
 
   let consumedBytes = 0;
@@ -495,7 +511,7 @@ function createVirtualOneGiBStream(): Readable {
   const heapAfter = process.memoryUsage().heapUsed;
   const deltaMb = Math.round((heapAfter - heapBefore) / (1024 * 1024));
 
-  assert.strictEqual(consumedBytes, ONE_MB);
+  assert.strictEqual(consumedBytes, ONE_GIB_PLUS);
   assert.ok(deltaMb < 45, `Direzione 6 (Robot->Computer): Delta heap deve essere < 45 MB (misurato: ${deltaMb} MB)`);
   console.log(`    PASS: Direzione 6 (Robot -> Computer): Streaming verso client intermediato a memoria costante, delta heap: ${deltaMb} MB`);
 }
@@ -508,7 +524,7 @@ console.log("  -> Test RNF-PERF-005 / §12 punto 18: Registrazione multi-device 
 
 const diverseDevices = [
   {
-    id: "device_agv_indoor",
+    id: "device-agv-indoor",
     displayName: "AGV Navigatore Magazzino v2",
     host: "127.0.0.1",
     sshPort: sftpPort,
@@ -521,7 +537,7 @@ const diverseDevices = [
     customParameters: { chassisModel: "AGV-M400", batteryType: "LiFePO4-48V", sensorsCount: 16 },
   },
   {
-    id: "device_drone_inspector",
+    id: "device-drone-inspector",
     displayName: "Drone Ispettore Aereo ARM64",
     host: "127.0.0.1",
     sshPort: sftpPort,
@@ -534,7 +550,7 @@ const diverseDevices = [
     customParameters: { arch: "aarch64", rotorCount: 6, maxPayloadKg: 2.5 },
   },
   {
-    id: "device_arm_6dof",
+    id: "device-arm-6dof",
     displayName: "Braccio Robotico Industriale 6-DOF RTOS",
     host: "127.0.0.1",
     sshPort: sftpPort,

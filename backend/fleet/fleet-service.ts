@@ -3,6 +3,7 @@
 // SRS §6.2, §6.3, §8.1..8.4, §9, §10.1, §10.2, §11.2, §11.3,
 // CA-ROB-001..012, CA-AUTH-003, CA-SSH-005
 
+import fs from "fs";
 import path from "path";
 import {
   type RobotEntity,
@@ -43,6 +44,7 @@ import {
   InMemoryClientRepository,
   InMemoryPlantRepository,
 } from "../../storage/client-plant-repository.ts";
+import { type TerminalService } from "../terminal/terminal-service.ts";
 
 export class FleetService {
   private config: SystemConfiguration;
@@ -58,7 +60,7 @@ export class FleetService {
   private logger: MolirisLogger;
   private roleMapping: RolePermissionMapping;
   private directoryNamingPolicy: StandardRobotDirectoryNamingPolicy;
-  private terminalService?: any;
+  private terminalService?: TerminalService;
 
   constructor(
     config: SystemConfiguration,
@@ -70,7 +72,7 @@ export class FleetService {
     connectionManager: RobotConnectionManager,
     logger: MolirisLogger,
     roleMapping: RolePermissionMapping = DEFAULT_ROLE_PERMISSIONS,
-    terminalService?: any,
+    terminalService?: TerminalService,
     clientRepository?: ClientRepository,
     plantRepository?: PlantRepository
   ) {
@@ -202,11 +204,11 @@ export class FleetService {
    * I robot disabilitati compaiono con stato "disabilitato".
    * I robot non raggiungibili compaiono con stato appropriato (mai nascosti o eliminati).
    */
-  public async listFleet(user: UserEntity): Promise<RobotSummaryDto[]> {
+  public async listFleet(user: UserEntity, pagination?: { limit?: number; offset?: number }): Promise<RobotSummaryDto[]> {
     // Verifica autorizzazione generale FLEET_VIEW
     const allRobots = await this.robotRepository.list();
 
-    const visibleRobots: RobotSummaryDto[] = [];
+    let visibleRobots: RobotSummaryDto[] = [];
     for (const robot of allRobots) {
       // Esclusione robot rimossi dalla lista attiva (RF-ROB-014, CA-ROB-012)
       if (robot.anagraphicState === "rimosso") {
@@ -216,6 +218,17 @@ export class FleetService {
       // Filtro per robot visibili secondo i permessi specifici dell'utente (Prompt 3)
       if (hasPermission(user, AppPermission.FLEET_VIEW, robot.id, this.roleMapping)) {
         visibleRobots.push(toRobotSummaryDto(robot, this.config.staleDataThresholdSeconds));
+      }
+    }
+
+    // Paginazione e limite configurabile (RNF-PERF-002, RNF-PERF-005)
+    if (pagination) {
+      const offset = pagination.offset && pagination.offset > 0 ? pagination.offset : 0;
+      const limit = pagination.limit && pagination.limit > 0 ? pagination.limit : undefined;
+      if (limit !== undefined) {
+        visibleRobots = visibleRobots.slice(offset, offset + limit);
+      } else if (offset > 0) {
+        visibleRobots = visibleRobots.slice(offset);
       }
     }
 
@@ -265,11 +278,16 @@ export class FleetService {
   }> {
     const errors: Record<string, string> = {};
 
-    // 1. Identificativo univoco del robot
-    if (!input.id || input.id.trim() === "") {
+    // 1. Identificativo univoco del robot (Problema 1e: solo [a-z0-9-], NO underscore, max 32 caratteri)
+    const trimmedId = input.id ? input.id.trim() : "";
+    if (!trimmedId) {
       errors["id"] = "L'identificativo interno del robot è obbligatorio.";
-    } else if (!/^[a-zA-Z0-9_-]{1,64}$/.test(input.id.trim())) {
-      errors["id"] = "L'identificativo contiene caratteri non ammessi (consentiti solo alfanumerici, trattino e underscore).";
+    } else if (trimmedId.includes("\0") || /[\\/]/.test(trimmedId) || /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(trimmedId)) {
+      errors["id"] = "L'identificativo contiene caratteri o sequenze di percorso non consentite.";
+    } else if (trimmedId.length > 32) {
+      errors["id"] = "L'identificativo supera la lunghezza massima consentita di 32 caratteri.";
+    } else if (!/^[a-z0-9-]+$/.test(trimmedId)) {
+      errors["id"] = "L'identificativo contiene caratteri non ammessi (consentiti solo caratteri minuscoli 'a-z', cifre '0-9' e trattino '-'; l'underscore non è consentito).";
     }
 
     // 2. Nome visualizzato
@@ -277,11 +295,14 @@ export class FleetService {
       errors["displayName"] = "Il nome visualizzato è obbligatorio.";
     }
 
-    // 3. Username remoto
-    if (!input.remoteUsername || input.remoteUsername.trim() === "") {
+    // 3. Username remoto (Problema 1e: whitelist ^[a-z_][a-z0-9_-]{1,31}$ applicata ESATTAMENTE, conseguenza min 2 caratteri)
+    const trimmedUsername = input.remoteUsername ? input.remoteUsername.trim() : "";
+    if (!trimmedUsername) {
       errors["remoteUsername"] = "Lo username remoto è obbligatorio.";
-    } else if (input.remoteUsername.includes("\0") || /[\\/]/.test(input.remoteUsername)) {
+    } else if (trimmedUsername.includes("\0") || /[\\/]/.test(trimmedUsername) || /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(trimmedUsername)) {
       errors["remoteUsername"] = "Lo username remoto contiene caratteri o separatori non validi.";
+    } else if (!/^[a-z_][a-z0-9_-]{1,31}$/.test(trimmedUsername)) {
+      errors["remoteUsername"] = "Lo username remoto non rispetta i criteri di formato previsti (deve iniziare con 'a-z' o '_' seguito da 1 a 31 caratteri tra 'a-z0-9_-', per una lunghezza totale minima di 2 e massima di 32 caratteri).";
     }
 
     // 4. Hostname o IP e Porta SSH (default 22, RF-ROB-005)
@@ -333,6 +354,11 @@ export class FleetService {
       const hasKnownHosts = !!(input.hostKeyVerification.knownHostsPath && input.hostKeyVerification.knownHostsPath.trim() !== "");
       if (!hasFingerprint && !hasKnownHosts) {
         errors["hostKeyVerification"] = "Specificare l'impronta (fingerprint) attesa o il percorso di un file known_hosts.";
+      } else if (!hasFingerprint && hasKnownHosts) {
+        const trimmedPath = input.hostKeyVerification.knownHostsPath!.trim();
+        if (!fs.existsSync(trimmedPath)) {
+          errors["hostKeyVerification"] = `Il file known_hosts specificato ('${trimmedPath}') non esiste sul filesystem del server.`;
+        }
       }
     }
 
@@ -356,18 +382,39 @@ export class FleetService {
       }
     }
 
-    // 9. Verifica unicità identificativo, username e directory (RF-ROB-006, §8.2)
-    if (input.id && !errors["id"]) {
-      const existingId = await this.robotRepository.findById(input.id.trim());
+    // 9. Verifica unicità identificativo, directory derivata e combinazione host/porta/username (RF-ROB-006, §8.2, Problema 1)
+    if (trimmedId && !errors["id"]) {
+      const existingId = await this.robotRepository.findById(trimmedId);
       if (existingId) {
-        errors["id"] = `Violazione unicità: l'identificativo '${input.id.trim()}' è già utilizzato da un altro robot.`;
+        errors["id"] = `Violazione unicità: l'identificativo '${trimmedId}' è già utilizzato da un altro robot.`;
       }
     }
 
-    if (input.remoteUsername && !errors["remoteUsername"]) {
-      const existingUsername = await this.robotRepository.findByUsername(input.remoteUsername.trim());
+    // Unicità directory server derivata (<username>_<id>) su tutti i record (compresi rimossi: Problema 1d)
+    if (trimmedId && trimmedUsername && !errors["id"] && !errors["remoteUsername"]) {
+      const derivedDir = this.directoryNamingPolicy.resolveDirectoryPath(
+        this.config.serverFilesystemRoot,
+        { id: trimmedId, remoteUsername: trimmedUsername }
+      );
+      const existingDir = await this.robotRepository.findByServerDirectory(derivedDir);
+      if (existingDir) {
+        errors["serverDirectoryPath"] = `Violazione unicità directory server (§8.2): la directory '${derivedDir}' è già assegnata al robot '${existingDir.id}'.`;
+      }
+    }
+
+    // Unicità account sullo stesso dispositivo (host, porta, username) tra robot NON rimossi (Problema 1b, 1d)
+    if (normHost && normPort && trimmedUsername && !errors["host"] && !errors["remoteUsername"]) {
+      const existingAccount = await this.robotRepository.findByHostPortUsername(normHost, normPort, trimmedUsername);
+      if (existingAccount) {
+        errors["remoteUsername"] = `Violazione unicità: un robot attivo con lo stesso account remoto sullo stesso dispositivo (${trimmedUsername}@${normHost}:${normPort}) è già presente nell'anagrafica (robot '${existingAccount.id}').`;
+      }
+    }
+
+    // Se configurata unicità globale (§11.3, RF-ROB-006)
+    if (this.config.robotUsernameUniqueness === "globale" && trimmedUsername && !errors["remoteUsername"]) {
+      const existingUsername = await this.robotRepository.findByUsername(trimmedUsername);
       if (existingUsername) {
-        errors["remoteUsername"] = `Violazione unicità (RF-ROB-006): lo username remoto '${input.remoteUsername.trim()}' è già assegnato a un altro robot.`;
+        errors["remoteUsername"] = `Violazione unicità (MOLIRIS_ROBOT_USERNAME_UNIQUENESS=globale): lo username remoto '${trimmedUsername}' è già assegnato a un altro robot.`;
       }
     }
 
@@ -444,41 +491,51 @@ export class FleetService {
     const host = validation.normalizedHost!;
     const sshPort = validation.normalizedPort!;
 
-    // Risoluzione credenziali: memorizzazione sicura nel CredentialProvider
-    const credentialRef = input.credentialReference || `vault://robots/${input.id.trim()}`;
+    // Risoluzione credenziali: memorizzazione sicura nel CredentialProvider (RF-ROB-005, RNF-SEC-002)
+    let storedCredentialRef: string | undefined;
     if (input.sshAuthMethod === "password" && input.password) {
-      if (typeof this.credentialProvider.store === "function") {
-        await this.credentialProvider.store(input.id.trim(), {
-          method: "password",
-          password: input.password,
-        });
-      } else if ("registerSecret" in this.credentialProvider) {
-        (this.credentialProvider as any).registerSecret(credentialRef, {
-          method: "password",
-          password: input.password,
-        });
-      }
+      storedCredentialRef = await this.credentialProvider.store(input.id.trim(), {
+        method: "password",
+        password: input.password,
+      });
     } else if (input.sshAuthMethod === "key" && input.privateKey) {
-      if (typeof this.credentialProvider.store === "function") {
-        await this.credentialProvider.store(input.id.trim(), {
-          method: "key",
-          privateKey: input.privateKey,
-          passphrase: input.passphrase,
-        });
-      } else if ("registerSecret" in this.credentialProvider) {
-        (this.credentialProvider as any).registerSecret(credentialRef, {
-          method: "key",
-          privateKey: input.privateKey,
-          passphrase: input.passphrase,
-        });
-      }
+      storedCredentialRef = await this.credentialProvider.store(input.id.trim(), {
+        method: "key",
+        privateKey: input.privateKey,
+        passphrase: input.passphrase,
+      });
     }
+
+    const credentialRef = storedCredentialRef || input.credentialReference || `vault://robots/${input.id.trim()}`;
 
     // Risoluzione del percorso della directory server del robot (RF-ROB-008, §8.2)
     const serverDirectoryPath = this.directoryNamingPolicy.resolveDirectoryPath(
       this.config.serverFilesystemRoot,
       { id: input.id.trim(), remoteUsername: input.remoteUsername.trim(), host }
     );
+
+    // Calcolo preventivo flag directoryPreexisting PRIMA di qualsiasi mutazione (Problema 3a)
+    const directoryPreexisting = fs.existsSync(serverDirectoryPath);
+
+    if (this.config.existingDirectoryPolicy === "rifiuta" && directoryPreexisting) {
+      if (storedCredentialRef) {
+        await this.credentialProvider.remove(input.id.trim()).catch(() => {});
+      }
+      skippedActions.push("fase1_persistenza_transitoria_database", "fase2_creazione_directory", "verifica_connessione_ssh");
+      await this.recordAudit(user.username, AuditOperation.ROBOT_REGISTRATION, input.id.trim(), "FAILURE", {
+        reason: "EXISTING_DIRECTORY_REJECTED",
+        path: serverDirectoryPath,
+      });
+
+      return {
+        outcome: "creazione_directory_fallita",
+        performedActions,
+        skippedActions,
+        message: "Registrazione non riuscita: la directory del robot esiste già sul server e la politica configurata ne vieta l'associazione.",
+        diagnosticDetail: `Directory già esistente: ${serverDirectoryPath}`,
+        recoveryPath: "Configurare uno username diverso o abilitare la politica di riutilizzo directory.",
+      };
+    }
 
     // Risoluzione entità collegate Cliente e Impianto (RF-05)
     let clientId = input.clientId;
@@ -504,7 +561,7 @@ export class FleetService {
       plantName = plant.name;
     }
 
-    // Costruzione bozza entità robot per i controlli di connessione
+    // Costruzione bozza entità robot per i controlli di connessione e persistenza
     const candidateRobot: RobotEntity = {
       id: input.id.trim(),
       displayName: input.displayName.trim(),
@@ -522,12 +579,13 @@ export class FleetService {
       customerName,
       plantId,
       plantName,
+      directoryPreexisting,
       anagraphicState: "attivo",
       connectionState: "non_verificato",
       operationalState: null,
       lastValidUpdateAt: null,
       lastAttemptOutcome: null,
-      registrationState: "ssh_non_verificata",
+      registrationState: "registrazione_incompleta",
       lastConnectionVerification: null,
       remoteMonitoringPath: input.remoteMonitoringPath,
       sftpParameters: input.sftpParameters ? { ...input.sftpParameters } : undefined,
@@ -537,7 +595,6 @@ export class FleetService {
     };
 
     // 3. Verifica connessione SSH secondo la politica di registrazione (§8.1, §6.2 passo 6)
-    performedActions.push("verifica_connessione_ssh");
     let sshVerificationSucceeded = false;
     let connCheckResult: any = null;
 
@@ -559,14 +616,29 @@ export class FleetService {
           success: false,
           message: verifErr.message || "Errore imprevisto durante la verifica SSH.",
         },
-        steps: [],
+        steps: [
+          {
+            step: "ssh_connection",
+            status: "FAILED",
+            message: "Errore imprevisto durante la verifica SSH.",
+            diagnosticDetail: verifErr.message,
+          },
+        ],
       };
     }
 
+    // Seleziona il dettaglio diagnostico più specifico dal passaggio fallito (senza mascherarlo con il messaggio generico)
+    const failedStep = connCheckResult?.steps?.find((s: any) => s.status === "FAILED");
     const failureReason =
+      failedStep?.diagnosticDetail ||
+      failedStep?.message ||
       connCheckResult?.lastConnectionVerificationInfo?.message ||
-      connCheckResult?.steps?.find((s: any) => s.status === "FAILED")?.diagnosticDetail ||
-      connCheckResult?.steps?.find((s: any) => s.status === "FAILED")?.message;
+      "Tentativo di connessione iniziale fallito.";
+
+    // Solo se la verifica ha successo l'azione viene marcata tra quelle eseguite con successo
+    if (sshVerificationSucceeded) {
+      performedActions.push("verifica_connessione_ssh");
+    }
 
     // Aggiornamento informazioni di verifica
     candidateRobot.lastConnectionVerification = {
@@ -584,19 +656,21 @@ export class FleetService {
       };
     } else {
       candidateRobot.connectionState = "non_raggiungibile";
-      const failedStep = connCheckResult?.steps?.find((s: any) => s.status === "FAILED");
       candidateRobot.lastAttemptOutcome = {
         timestamp: new Date(),
         success: false,
         stage: "connection",
         errorCode: failedStep?.errorCode || ErrorCode.HOST_UNREACHABLE,
-        diagnosticMessage: failureReason || "Tentativo di connessione iniziale fallito.",
+        diagnosticMessage: failureReason,
       };
     }
 
     // Gestione modalità di registrazione (§8.1, CA-ROB-003):
     // Se "rigorosa", la registrazione DEVE fallire se i controlli SSH non hanno esito positivo
     if (this.config.registrationMode === "rigorosa" && !sshVerificationSucceeded) {
+      if (storedCredentialRef) {
+        await this.credentialProvider.remove(candidateRobot.id).catch(() => {});
+      }
       skippedActions.push("creazione_directory", "persistenza_database");
       await this.recordAudit(user.username, AuditOperation.ROBOT_REGISTRATION, candidateRobot.id, "FAILURE", {
         mode: "rigorosa",
@@ -608,6 +682,8 @@ export class FleetService {
         outcome: "ssh_non_verificata",
         performedActions,
         skippedActions,
+        failedAction: "verifica_connessione_ssh",
+        verificationSteps: connCheckResult?.steps,
         message: "Registrazione rifiutata: connessione SSH verso il robot non verificata con successo in modalità rigorosa (CA-ROB-003).",
         diagnosticDetail: failureReason,
         recoveryPath: "Verificare che il robot sia online, che la porta SSH sia raggiungibile e che credenziali e chiave host siano corrette.",
@@ -624,40 +700,40 @@ export class FleetService {
     // 4. Verifica della configurazione necessaria a monitoraggio e trasferimenti
     performedActions.push("verifica_configurazione_monitoraggio_trasferimenti");
 
-    // 5. Creazione o verifica della directory del robot (RF-ROB-008, RF-ROB-009, CA-ROB-004, CA-ROB-005, CA-ROB-007)
-    performedActions.push("creazione_directory_server");
+    // 5. Fase 1 Protocollo a due fasi: salvataggio transitorio a database con flag persistito (Problema 3)
+    candidateRobot.registrationState = "registrazione_incompleta";
+    performedActions.push("fase1_persistenza_transitoria_database");
+    let candidateSaved: RobotEntity;
+    try {
+      candidateSaved = await this.robotRepository.create(candidateRobot);
+    } catch (dbErr: any) {
+      if (storedCredentialRef) {
+        await this.credentialProvider.remove(candidateRobot.id).catch(() => {});
+      }
+      this.logger.error("Errore salvataggio transitorio database in registrazione", dbErr.message, { robotId: candidateRobot.id });
+      throw new MolirisAppError(
+        ErrorCode.DB_PERSISTENCE_ERROR,
+        `Errore durante il salvataggio iniziale dei dati applicativi: ${dbErr.message}`
+      );
+    }
+
+    // 6. Fase 2 Protocollo a due fasi: creazione directory sul server (RF-ROB-008, RF-ROB-009, CA-ROB-004, CA-ROB-005, CA-ROB-007)
+    performedActions.push("fase2_creazione_directory_server");
     let dirResult: any = null;
 
     try {
-      // Verifica politica in caso di directory già esistente (§11.3)
-      if (this.config.existingDirectoryPolicy === "rifiuta") {
-        // Se la politica impone di rifiutare directory preesistenti
-        const preCheck = await this.serverFsService.resolveRobotPath(candidateRobot);
-        const fs = await import("fs");
-        if (fs.existsSync(preCheck)) {
-          skippedActions.push("persistenza_database");
-          await this.recordAudit(user.username, AuditOperation.ROBOT_REGISTRATION, candidateRobot.id, "FAILURE", {
-            reason: "EXISTING_DIRECTORY_REJECTED",
-            path: preCheck,
-          });
-
-          return {
-            outcome: "creazione_directory_fallita",
-            performedActions,
-            skippedActions,
-            message: "Registrazione non riuscita: la directory del robot esiste già sul server e la politica configurata ne vieta l'associazione.",
-            diagnosticDetail: `Directory già esistente: ${preCheck}`,
-            recoveryPath: "Configurare uno username diverso o abilitare la politica di riutilizzo directory.",
-          };
-        }
-      }
-
       dirResult = await this.serverFsService.ensureRobotDirectory(candidateRobot, {
-        standardSubdirectories: this.config.standardSubdirectories,
-        directoryPermissions: this.config.serverDirectoryPermissions,
+        standardSubdirectories: this.config.standardSubdirectories ?? ["logs", "configs", "backups"],
+        directoryPermissions: this.config.serverDirectoryPermissions ?? "0750",
       });
     } catch (dirErr: any) {
-      skippedActions.push("persistenza_database");
+      // Rollback controllato: non tocca mai directory preesistenti o non vuote
+      if (candidateRobot.directoryPreexisting !== true && dirResult) {
+        await this.serverFsService.rollbackRobotDirectory(dirResult);
+      }
+
+      await this.robotRepository.updateRegistrationState(candidateRobot.id, "creazione_directory_fallita");
+
       await this.recordAudit(user.username, AuditOperation.ROBOT_REGISTRATION, candidateRobot.id, "FAILURE", {
         reason: "DIRECTORY_CREATION_FAILED",
         error: dirErr.message,
@@ -666,52 +742,24 @@ export class FleetService {
       return {
         outcome: "creazione_directory_fallita",
         performedActions,
-        skippedActions,
+        skippedActions: ["fase3_completamento_registrazione"],
         message: "Creazione della directory del robot sul server non riuscita (CA-ROB-007).",
         diagnosticDetail: dirErr.diagnosticDetail || dirErr.message,
         recoveryPath: "Verificare i permessi di scrittura e lo spazio disponibile sulla root del filesystem server.",
       };
     }
 
-    // 6. Registrazione nel database e gestione non-atomicità (RF-ROB-010, RNF-REL-003, CA-ROB-008)
-    performedActions.push("persistenza_database");
-    let savedRobot: RobotEntity;
+    // 7. Fase 3 Protocollo a due fasi: finalizzazione stato registrazione
+    performedActions.push("fase3_completamento_registrazione");
+    finalRegState = sshVerificationSucceeded
+      ? "registrazione_completata"
+      : "ssh_non_verificata";
 
-    try {
-      savedRobot = await this.robotRepository.create(candidateRobot);
-    } catch (dbErr: any) {
-      this.logger.error("Errore salvataggio database post-creazione directory", dbErr.message, { robotId: candidateRobot.id });
-
-      // Tentativo di rollback delle sole operazioni reversibili (CA-ROB-008)
-      let rolledBack = false;
-      if (dirResult) {
-        const rollbackRes = await this.serverFsService.rollbackRobotDirectory(dirResult);
-        rolledBack = rollbackRes.rolledBack;
-      }
-
-      await this.recordAudit(user.username, AuditOperation.ROBOT_REGISTRATION, candidateRobot.id, "FAILURE", {
-        reason: "DB_PERSISTENCE_FAILED",
-        directoryRolledBack: rolledBack,
-        error: dbErr.message,
-      });
-
-      if (rolledBack) {
-        throw new MolirisAppError(
-          ErrorCode.DB_PERSISTENCE_ERROR,
-          `Errore durante il salvataggio dei dati applicativi. Le risorse create su filesystem sono state annullate.`
-        );
-      } else {
-        // Rollback non possibile (directory preesistente o non vuota) -> stato incompleto che richiede intervento
-        return {
-          outcome: "registrazione_incompleta",
-          performedActions,
-          skippedActions: [],
-          message: "Registrazione incompleta che richiede un intervento: directory creata sul server ma salvataggio a database fallito (CA-ROB-008).",
-          diagnosticDetail: "Incoerenza tra database e filesystem rilevata (DB_FS_SYNC_ERROR).",
-          recoveryPath: "Utilizzare la funzione di ripristino/riparazione della registrazione.",
-        };
-      }
-    }
+    const savedRobot = await this.robotRepository.updateRegistrationState(
+      candidateRobot.id,
+      finalRegState,
+      candidateRobot.lastConnectionVerification || undefined
+    );
 
     // 7. Registrazione evento di audit con esito (RNF-SEC-009, §10.4)
     await this.recordAudit(user.username, AuditOperation.ROBOT_REGISTRATION, savedRobot.id, "SUCCESS", {
@@ -736,6 +784,7 @@ export class FleetService {
       availableFeatures,
       performedActions,
       skippedActions,
+      verificationSteps: connCheckResult?.steps,
       message: userMsg,
       recoveryPath: savedRobot.registrationState === "ssh_non_verificata"
         ? "Eseguire 'Ripeti verifica connessione' quando il robot sarà online."
@@ -878,8 +927,8 @@ export class FleetService {
     performedActions.push("ripristino_directory_server");
     try {
       await this.serverFsService.ensureRobotDirectory(robot, {
-        standardSubdirectories: this.config.standardSubdirectories,
-        directoryPermissions: this.config.serverDirectoryPermissions,
+        standardSubdirectories: this.config.standardSubdirectories ?? ["logs", "configs", "backups"],
+        directoryPermissions: this.config.serverDirectoryPermissions ?? "0750",
       });
     } catch (dirErr: any) {
       return {
@@ -936,6 +985,14 @@ export class FleetService {
       throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${robotId}' non trovato.`);
     }
 
+    // Immutabilità di ID e remoteUsername dopo la registrazione (Problema 6a)
+    if ((update as any).id && (update as any).id !== robot.id) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "L'identificativo del robot è immutabile dopo la registrazione.");
+    }
+    if ((update as any).remoteUsername && (update as any).remoteUsername !== robot.remoteUsername) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Lo username remoto del robot è immutabile dopo la registrazione.");
+    }
+
     // Verifica validità e sicurezza dei percorsi modificati (CA-ROB-009)
     if (update.remoteMonitoringPath) {
       if (update.remoteMonitoringPath.includes("\0") || /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(update.remoteMonitoringPath)) {
@@ -966,41 +1023,34 @@ export class FleetService {
 
       if (normHost !== robot.host || normPort !== robot.sshPort) {
         connectionInvalidated = true;
+        // Ricontrolla l'unicità (host, porta, username) tra i robot non rimossi (Problema 6b)
+        const duplicateHostAccount = await this.robotRepository.findByHostPortUsername(normHost, normPort, robot.remoteUsername);
+        if (duplicateHostAccount && duplicateHostAccount.id !== robot.id) {
+          throw new MolirisAppError(
+            ErrorCode.MISSING_ROBOT_PARAMS,
+            `Violazione unicità: un altro robot attivo (${duplicateHostAccount.id}) utilizza già lo stesso account remoto su ${normHost}:${normPort}.`
+          );
+        }
       }
     }
 
-    // Aggiornamento credenziali nel CredentialProvider se fornite
+    // Aggiornamento credenziali nel CredentialProvider se fornite (RNF-SEC-002, RF-ROB-005)
     let credentialRef = robot.credentialReference;
     if (update.password) {
       connectionInvalidated = true;
       credentialRef = update.credentialReference || `vault://robots/${robot.id}`;
-      if (typeof this.credentialProvider.replace === "function") {
-        await this.credentialProvider.replace(robot.id, {
-          method: "password",
-          password: update.password,
-        });
-      } else if ("registerSecret" in this.credentialProvider) {
-        (this.credentialProvider as any).registerSecret(credentialRef, {
-          method: "password",
-          password: update.password,
-        });
-      }
+      await this.credentialProvider.replace(robot.id, {
+        method: "password",
+        password: update.password,
+      });
     } else if (update.privateKey) {
       connectionInvalidated = true;
       credentialRef = update.credentialReference || `vault://robots/${robot.id}`;
-      if (typeof this.credentialProvider.replace === "function") {
-        await this.credentialProvider.replace(robot.id, {
-          method: "key",
-          privateKey: update.privateKey,
-          passphrase: update.passphrase,
-        });
-      } else if ("registerSecret" in this.credentialProvider) {
-        (this.credentialProvider as any).registerSecret(credentialRef, {
-          method: "key",
-          privateKey: update.privateKey,
-          passphrase: update.passphrase,
-        });
-      }
+      await this.credentialProvider.replace(robot.id, {
+        method: "key",
+        privateKey: update.privateKey,
+        passphrase: update.passphrase,
+      });
     }
 
     // Aggiornamento impronta chiave host SSH (RNF-SEC-003, §8.3)

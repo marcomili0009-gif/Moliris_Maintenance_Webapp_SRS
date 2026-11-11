@@ -293,6 +293,21 @@ const cssRes = await makeHttpsRequest("GET", "/styles.css");
 assert.strictEqual(cssRes.status, 200);
 console.log("  PASS: Frontend client statico servito in HTTPS.");
 
+for (let i = 0; i < 10; i++) {
+  const limited = await makeHttpsRequest("POST", "/api/auth/login", {
+    username: "admin_test",
+    password: `bad-${i}`,
+  });
+  assert.strictEqual(limited.status, 401);
+}
+const rateLimitedRes = await makeHttpsRequest("POST", "/api/auth/login", {
+  username: "admin_test",
+  password: "Admin123!",
+});
+assert.strictEqual(rateLimitedRes.status, 429);
+assert(Number(rateLimitedRes.headers["retry-after"]) > 0);
+console.log("  PASS: Limitazione tentativi di login e intestazione Retry-After.");
+
 // =========================================================================
 // TEST RF-02: Timeout di inattività della sessione (30 minuti), avviso 5m, countdown 5..1 e invalidazione backend
 // =========================================================================

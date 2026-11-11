@@ -3,7 +3,7 @@
 // SRS §1.2, §5.5, §9, §10.3, §11.5, §11.6, §11.7, CA-FS-001
 
 import path from "path";
-import { type Readable, type Writable } from "stream";
+import { Readable, Writable } from "stream";
 import { type SFTPWrapper } from "ssh2";
 import { type SystemConfiguration } from "../../config/configuration.ts";
 import { type RobotEntity } from "../../storage/robot-models.ts";
@@ -22,6 +22,283 @@ import {
   type RemoteReadStreamHandle,
   type RemoteWriteStreamHandle,
 } from "./remote-fs-models.ts";
+
+export interface PipelinedStreamOptions {
+  concurrency?: number;
+  chunkSize?: number;
+  highWaterMark?: number;
+  start?: number;
+}
+
+/**
+ * Flusso in scrittura SFTP ad alte prestazioni basato su sliding-window (RNF-PERF-001, §6.7).
+ * Mantiene fino a N richieste in volo simultaneamente, eliminando il collo di bottiglia stop-and-wait.
+ */
+export class PipelinedSftpWriteStream extends Writable {
+  private sftp: SFTPWrapper;
+  private remotePath: string;
+  private flags: string;
+  private mode: number;
+  private concurrency: number;
+  private chunkSize: number;
+  private handle: Buffer | null = null;
+  private pos: number;
+  private inFlight = 0;
+  private drainCb: (() => void) | null = null;
+  private openError: Error | null = null;
+  private isClosing = false;
+
+  constructor(sftp: SFTPWrapper, remotePath: string, options?: PipelinedStreamOptions & { flags?: string; mode?: number }) {
+    super({ highWaterMark: options?.highWaterMark || 2 * 1024 * 1024 });
+    this.sftp = sftp;
+    this.remotePath = remotePath;
+    this.flags = options?.flags || "w";
+    this.mode = options?.mode || 0o644;
+    this.concurrency = options?.concurrency || 32;
+    this.chunkSize = options?.chunkSize || 32768;
+    this.pos = options?.start || 0;
+  }
+
+  _construct(callback: (error?: Error | null) => void): void {
+    this.sftp.open(this.remotePath, this.flags as any, this.mode, (err, handle) => {
+      if (err) {
+        this.openError = err;
+        return callback(err);
+      }
+      this.handle = handle;
+      callback();
+    });
+  }
+
+  _write(chunk: any, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    if (!this.handle) {
+      if (this.openError) return callback(this.openError);
+      return callback(new Error("SFTP handle non pronto"));
+    }
+
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
+    let offset = 0;
+    const total = buf.length;
+
+    const dispatch = () => {
+      while (offset < total && this.inFlight < this.concurrency) {
+        const len = Math.min(this.chunkSize, total - offset);
+        const sub = buf.subarray(offset, offset + len);
+        const writePos = this.pos;
+        this.pos += len;
+        offset += len;
+        this.inFlight++;
+
+        this.sftp.write(this.handle!, sub, 0, len, writePos, (err) => {
+          this.inFlight--;
+          if (err) {
+            this.destroy(err);
+            return;
+          }
+          if (this.drainCb && this.inFlight < this.concurrency) {
+            const cb = this.drainCb;
+            this.drainCb = null;
+            cb();
+          }
+        });
+      }
+
+      if (offset < total) {
+        this.drainCb = dispatch;
+      } else {
+        callback();
+      }
+    };
+
+    dispatch();
+  }
+
+  _final(callback: (error?: Error | null) => void): void {
+    if (this.isClosing) return callback();
+    this.isClosing = true;
+
+    const finalize = () => {
+      if (this.inFlight > 0) {
+        setTimeout(finalize, 2);
+        return;
+      }
+      if (this.handle) {
+        const h = this.handle;
+        this.handle = null;
+        this.sftp.close(h, callback);
+      } else {
+        callback();
+      }
+    };
+    finalize();
+  }
+
+  _destroy(error: Error | null, callback: (error: Error | null) => void): void {
+    if (this.handle) {
+      const h = this.handle;
+      this.handle = null;
+      this.sftp.close(h, () => callback(error));
+    } else {
+      callback(error);
+    }
+  }
+}
+
+/**
+ * Flusso in lettura SFTP ad alte prestazioni basato su prefetching sliding-window (RNF-PERF-001, §6.7).
+ * Prefetch ordinato di blocchi consecutivi in parallelo con memoria costante.
+ */
+export class PipelinedSftpReadStream extends Readable {
+  private sftp: SFTPWrapper;
+  private remotePath: string;
+  private fileSize?: number | null;
+  private concurrency: number;
+  private chunkSize: number;
+  private handle: Buffer | null = null;
+  private requestPos: number;
+  private emitPos: number;
+  private inFlight = 0;
+  private pendingChunks = new Map<number, Buffer>();
+  private eofReached = false;
+  private isReading = false;
+  private isClosing = false;
+  private openError: Error | null = null;
+
+  constructor(
+    sftp: SFTPWrapper,
+    remotePath: string,
+    fileSizeOrOptions?: number | null | PipelinedStreamOptions,
+    options?: PipelinedStreamOptions
+  ) {
+    let actualSize: number | null | undefined = null;
+    let actualOpts: PipelinedStreamOptions | undefined = options;
+    if (typeof fileSizeOrOptions === "number") {
+      actualSize = fileSizeOrOptions;
+    } else if (fileSizeOrOptions && typeof fileSizeOrOptions === "object") {
+      actualOpts = fileSizeOrOptions as PipelinedStreamOptions;
+    }
+    super({ highWaterMark: actualOpts?.highWaterMark || 2 * 1024 * 1024 });
+    this.sftp = sftp;
+    this.remotePath = remotePath;
+    this.fileSize = actualSize;
+    this.concurrency = actualOpts?.concurrency || 32;
+    this.chunkSize = actualOpts?.chunkSize || 32768;
+    this.requestPos = actualOpts?.start || 0;
+    this.emitPos = this.requestPos;
+  }
+
+  _construct(callback: (error?: Error | null) => void): void {
+    this.sftp.open(this.remotePath, "r" as any, 0o644, (err, handle) => {
+      if (err) {
+        this.openError = err;
+        return callback(err);
+      }
+      this.handle = handle;
+      callback();
+    });
+  }
+
+  _read(size: number): void {
+    if (!this.handle) {
+      if (this.openError) {
+        this.destroy(this.openError);
+        return;
+      }
+      return;
+    }
+    this.isReading = true;
+    this._drainAndPrefetch();
+  }
+
+  private _drainAndPrefetch(): void {
+    while (this.pendingChunks.has(this.emitPos)) {
+      const chunk = this.pendingChunks.get(this.emitPos)!;
+      this.pendingChunks.delete(this.emitPos);
+      this.emitPos += chunk.length;
+      const canContinue = this.push(chunk);
+      if (!canContinue) {
+        this.isReading = false;
+        break;
+      }
+    }
+
+    if (this.eofReached && this.pendingChunks.size === 0) {
+      this.push(null);
+      this._closeHandle();
+      return;
+    }
+    if (this.fileSize !== undefined && this.fileSize !== null && this.emitPos >= this.fileSize) {
+      this.push(null);
+      this._closeHandle();
+      return;
+    }
+
+    if (!this.isReading || this.eofReached) {
+      return;
+    }
+
+    while (this.inFlight < this.concurrency && !this.eofReached) {
+      if (this.fileSize !== undefined && this.fileSize !== null && this.requestPos >= this.fileSize) {
+        break;
+      }
+
+      const readPos = this.requestPos;
+      let len = this.chunkSize;
+      if (this.fileSize !== undefined && this.fileSize !== null) {
+        len = Math.min(len, this.fileSize - readPos);
+        if (len <= 0) break;
+      }
+
+      this.requestPos += len;
+      this.inFlight++;
+
+      const buf = Buffer.allocUnsafe(len);
+      this.sftp.read(this.handle!, buf, 0, len, readPos, (err, bytesRead) => {
+        this.inFlight--;
+        if (err) {
+          if ((err as any).code === 1 || (err as any).message?.toLowerCase().includes("eof")) {
+            this.eofReached = true;
+            this._drainAndPrefetch();
+            return;
+          }
+          this.destroy(err);
+          return;
+        }
+
+        if (bytesRead === 0) {
+          this.eofReached = true;
+        } else {
+          const finalChunk = bytesRead < len ? buf.subarray(0, bytesRead) : buf;
+          this.pendingChunks.set(readPos, finalChunk);
+          if (bytesRead < len) {
+            this.eofReached = true;
+          }
+        }
+
+        this._drainAndPrefetch();
+      });
+    }
+  }
+
+  private _closeHandle(): void {
+    if (this.handle && !this.isClosing) {
+      this.isClosing = true;
+      const h = this.handle;
+      this.handle = null;
+      this.sftp.close(h, () => {});
+    }
+  }
+
+  _destroy(error: Error | null, callback: (error: Error | null) => void): void {
+    if (this.handle) {
+      const h = this.handle;
+      this.handle = null;
+      this.sftp.close(h, () => callback(error));
+    } else {
+      callback(error);
+    }
+  }
+}
 
 export class RemoteFilesystemService {
   private config: SystemConfiguration;
@@ -42,6 +319,14 @@ export class RemoteFilesystemService {
     this.auditRepository = auditRepository;
     this.roleMapping = roleMapping;
     this.logger = logger;
+  }
+
+  public getConnectionManager(): RobotConnectionManager {
+    return this.connectionManager;
+  }
+
+  private getTransferBufferSize(): number {
+    return this.config.transferChunkSizeBytes || 2 * 1024 * 1024;
   }
 
   /**
@@ -108,29 +393,73 @@ export class RemoteFilesystemService {
     // 3. Normalizzazione POSIX standard
     const normalized = path.posix.normalize(targetPath);
 
-    // 4. Applicazione restrizioni configurate se presenti (Step 3)
-    // Se non configurate, l'accesso reale è determinato esclusivamente dai permessi dell'account Linux (RF-FS-007)
-    if (this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0) {
-      const isAllowed = this.config.remoteFsAllowedPaths.some((allowed) => {
-        const normAllowed = path.posix.normalize(allowed.trim());
-        return (
-          normalized === normAllowed ||
-          normalized.startsWith(normAllowed.endsWith("/") ? normAllowed : `${normAllowed}/`)
-        );
-      });
+    // 4. Applicazione restrizioni configurate e Jail RBAC Operatore vs Admin (RF-AUTH-005, RNF-SEC-004, RNF-SEC-005)
+    const roles = context.roles || [];
+    const isAdmin = roles.some((r) => {
+      const lower = r.toLowerCase();
+      return lower === "amministratore" || lower === "admin";
+    });
 
-      if (!isAllowed) {
-        await this.recordSecurityViolation(
-          context.username,
-          robot.id,
-          "PATH_OUTSIDE_ALLOWED_RESTRICTIONS",
-          { requestedPath: normalized, allowedPaths: this.config.remoteFsAllowedPaths }
-        );
-        throw new MolirisAppError(
-          ErrorCode.INSUFFICIENT_PERMISSIONS,
-          `Accesso negato: il percorso '${normalized}' è esterno ai percorsi configurati consentiti`,
-          `Accesso al percorso non consentito dalle restrizioni di sistema configurate.`
-        );
+    if (!isAdmin) {
+      // Ruolo Operatore: limitato rigorosamente alle sole cartelle consentite (jail)
+      const allowedPaths =
+        this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0
+          ? this.config.remoteFsAllowedPaths
+          : this.config.defaultOperatorAllowedPaths;
+
+      if (allowedPaths && allowedPaths.length > 0) {
+        const isAllowed = allowedPaths.some((allowed) => {
+          let normAllowed = path.posix.normalize(allowed.trim());
+          if (!normAllowed.startsWith("/")) {
+            normAllowed = "/" + normAllowed;
+          }
+          return (
+            normalized === normAllowed ||
+            normalized.startsWith(normAllowed.endsWith("/") ? normAllowed : `${normAllowed}/`)
+          );
+        });
+
+        if (!isAllowed) {
+          await this.recordSecurityViolation(
+            context.username,
+            robot.id,
+            "PATH_OUTSIDE_ALLOWED_RESTRICTIONS",
+            { requestedPath: normalized, allowedPaths }
+          );
+          throw new MolirisAppError(
+            ErrorCode.INSUFFICIENT_PERMISSIONS,
+            `Accesso negato: il percorso '${normalized}' è esterno ai percorsi configurati consentiti per l'operatore`,
+            `Accesso al percorso non consentito dalle restrizioni di sistema configurate per il ruolo operatore.`
+          );
+        }
+      }
+    } else {
+      // Ruolo Amministratore: se configurata remoteFsAllowedPaths a livello perimetrale di sistema, verifica solo quella
+      if (this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0) {
+        const isAllowed = this.config.remoteFsAllowedPaths.some((allowed) => {
+          let normAllowed = path.posix.normalize(allowed.trim());
+          if (!normAllowed.startsWith("/")) {
+            normAllowed = "/" + normAllowed;
+          }
+          return (
+            normalized === normAllowed ||
+            normalized.startsWith(normAllowed.endsWith("/") ? normAllowed : `${normAllowed}/`)
+          );
+        });
+
+        if (!isAllowed) {
+          await this.recordSecurityViolation(
+            context.username,
+            robot.id,
+            "PATH_OUTSIDE_ALLOWED_RESTRICTIONS",
+            { requestedPath: normalized, allowedPaths: this.config.remoteFsAllowedPaths }
+          );
+          throw new MolirisAppError(
+            ErrorCode.INSUFFICIENT_PERMISSIONS,
+            `Accesso negato: il percorso '${normalized}' è esterno ai percorsi configurati consentiti`,
+            `Accesso al percorso non consentito dalle restrizioni di sistema configurate.`
+          );
+        }
       }
     }
 
@@ -262,6 +591,7 @@ export class RemoteFilesystemService {
         items,
         totalCount,
         truncated,
+        isTruncated: truncated,
       };
     } finally {
       // Rilascio garantito della connessione (RNF-REL-005)
@@ -277,7 +607,8 @@ export class RemoteFilesystemService {
   public async openRemoteReadStream(
     context: AuthorizedContext,
     robot: RobotEntity,
-    remotePath: string
+    remotePath: string,
+    options?: { start?: number }
   ): Promise<RemoteReadStreamHandle> {
     // 1. Verifica autorizzazione specifica di download (RF-FS-007, RF-FS-004)
     if (context.targetRobotId && context.targetRobotId !== robot.id) {
@@ -314,11 +645,11 @@ export class RemoteFilesystemService {
       const sftp = await managedConn.getSftpClient();
       const targetPath = await this.resolveAndValidatePath(remotePath, context, robot, sftp);
 
-      // Verifica che il percorso esista e sia un file
+      // Verifica che il percorso esista e gestione symlink / file speciali (Problema C1, RF-FS-002, RF-FS-007)
       await new Promise<void>((resolve, reject) => {
-        sftp.stat(targetPath, (err, stats) => {
-          if (err) return reject(this.mapSftpError(err, targetPath, robot.id));
-          if (stats.isDirectory()) {
+        const processStats = async (stats: any, isLstat: boolean) => {
+          // 1. Rifiuto directory
+          if (typeof stats.isDirectory === "function" && stats.isDirectory()) {
             return reject(
               new MolirisAppError(
                 ErrorCode.REMOTE_FS_ERROR,
@@ -327,12 +658,146 @@ export class RemoteFilesystemService {
               )
             );
           }
+
+          // 2. Rifiuto categorico di file speciali: device, socket, FIFO (Problema C1 punto c)
+          const isSpecial =
+            (typeof stats.isCharacterDevice === "function" && stats.isCharacterDevice()) ||
+            (typeof stats.isBlockDevice === "function" && stats.isBlockDevice()) ||
+            (typeof stats.isFIFO === "function" && stats.isFIFO()) ||
+            (typeof stats.isSocket === "function" && stats.isSocket());
+          if (isSpecial) {
+            return reject(
+              new MolirisAppError(
+                ErrorCode.REMOTE_FS_ERROR,
+                `Tentativo di download su file speciale (device, socket, FIFO): ${targetPath}`,
+                "Download non consentito: i file speciali di sistema non sono scaricabili."
+              )
+            );
+          }
+
+          // 3. Gestione Symlink (Problema C1 punto b): consentito solo se target è file regolare e ricade nei percorsi ammessi
+          if (isLstat && typeof stats.isSymbolicLink === "function" && stats.isSymbolicLink()) {
+            sftp.stat(targetPath, async (stErr, targetStats) => {
+              if (stErr) return reject(this.mapSftpError(stErr, targetPath, robot.id));
+
+              if (typeof targetStats.isDirectory === "function" && targetStats.isDirectory()) {
+                return reject(
+                  new MolirisAppError(
+                    ErrorCode.REMOTE_FS_ERROR,
+                    `Symlink punta a una directory: ${targetPath}`,
+                    "Impossibile scaricare: il link simbolico punta a una directory."
+                  )
+                );
+              }
+
+              if (typeof targetStats.isFile === "function" && !targetStats.isFile()) {
+                return reject(
+                  new MolirisAppError(
+                    ErrorCode.REMOTE_FS_ERROR,
+                    `Symlink non punta a un file regolare: ${targetPath}`,
+                    "Download non consentito: il link simbolico non punta a un file regolare."
+                  )
+                );
+              }
+
+              // Se sono configurati i percorsi consentiti, verifica che il target ricada nei percorsi autorizzati
+              if (this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0) {
+                try {
+                  const resolvedTarget = await new Promise<string>((res, rej) => {
+                    sftp.realpath(targetPath, (rpErr, rpath) => {
+                      if (rpErr) return rej(rpErr);
+                      res(rpath || "/");
+                    });
+                  });
+
+                  const normResolved = path.posix.normalize(resolvedTarget);
+                  const isAllowed = this.config.remoteFsAllowedPaths.some((allowed) => {
+                    const normAllowed = path.posix.normalize(allowed.trim());
+                    return (
+                      normResolved === normAllowed ||
+                      normResolved.startsWith(normAllowed.endsWith("/") ? normAllowed : `${normAllowed}/`)
+                    );
+                  });
+
+                  if (!isAllowed) {
+                    await this.recordSecurityViolation(
+                      context.username,
+                      robot.id,
+                      "SYMLINK_TARGET_OUTSIDE_ALLOWED_RESTRICTIONS",
+                      { targetPath: normResolved, allowedPaths: this.config.remoteFsAllowedPaths }
+                    );
+                    return reject(
+                      new MolirisAppError(
+                        ErrorCode.INSUFFICIENT_PERMISSIONS,
+                        `Accesso negato: il link simbolico punta a un percorso esterno a quelli autorizzati ('${normResolved}')`,
+                        "Accesso al file non consentito dalle restrizioni di sistema configurate."
+                      )
+                    );
+                  }
+                } catch (rpErr: any) {
+                  return reject(this.mapSftpError(rpErr, targetPath, robot.id));
+                }
+              }
+
+              resolve();
+            });
+            return;
+          }
+
+          // 4. File normale
+          if (typeof stats.isFile === "function" && !stats.isFile()) {
+            return reject(
+              new MolirisAppError(
+                ErrorCode.REMOTE_FS_ERROR,
+                `Il percorso non è un file regolare: ${targetPath}`,
+                "Impossibile scaricare: il percorso indicato non è un file regolare."
+              )
+            );
+          }
+
           resolve();
+        };
+
+        sftp.lstat(targetPath, async (lerr, lstats) => {
+          if (lerr) {
+            // Se lstat non è supportato dall'SFTP server (code 8 / OP_UNSUPPORTED), fallback trasparente su stat
+            if ((lerr as any).code === 8 || (lerr as any).message?.toLowerCase().includes("unsupported")) {
+              sftp.stat(targetPath, async (serr, sstats) => {
+                if (serr) return reject(this.mapSftpError(serr, targetPath, robot.id));
+                await processStats(sstats, false);
+              });
+              return;
+            }
+            return reject(this.mapSftpError(lerr, targetPath, robot.id));
+          }
+          await processStats(lstats, true);
         });
       });
 
-      // Apertura flusso di lettura (senza buffer in RAM, RNF-PERF-001)
-      const stream = sftp.createReadStream(targetPath, { autoClose: true });
+      // Apertura flusso di lettura ad alte prestazioni con sliding window pipelined (RNF-PERF-001)
+      let stream: Readable;
+      if (typeof (sftp as any).open === "function") {
+        let fileSize: number | null = null;
+        try {
+          const statRes: any = await new Promise((resolve) => sftp.stat(targetPath, (err, st) => resolve(err ? null : st)));
+          if (statRes && typeof statRes.size === "number") {
+            fileSize = statRes.size;
+          }
+        } catch {}
+
+        stream = new PipelinedSftpReadStream(sftp, targetPath, fileSize, {
+          concurrency: 32,
+          chunkSize: 32768,
+          highWaterMark: this.getTransferBufferSize(),
+          ...(options?.start !== undefined ? { start: options.start } : {}),
+        });
+      } else {
+        stream = sftp.createReadStream(targetPath, {
+          autoClose: true,
+          highWaterMark: this.getTransferBufferSize(),
+          ...(options?.start !== undefined ? { start: options.start } : {}),
+        });
+      }
 
       let closed = false;
       const cleanup = async () => {
@@ -422,8 +887,13 @@ export class RemoteFilesystemService {
         );
       }
 
-      // Apertura flusso di scrittura (senza caricare in RAM l'intero file, RNF-PERF-001)
-      const stream = sftp.createWriteStream(targetPath, { flags: "w", autoClose: true });
+      // Apertura flusso di scrittura ad alte prestazioni con sliding window pipelined (RNF-PERF-001)
+      const stream = new PipelinedSftpWriteStream(sftp, targetPath, {
+        flags: "w",
+        concurrency: 32,
+        chunkSize: 32768,
+        highWaterMark: this.getTransferBufferSize(),
+      });
 
       let closed = false;
       const cleanup = async () => {
@@ -502,6 +972,80 @@ export class RemoteFilesystemService {
   }
 
   /**
+   * Eliminazione controllata di un file sul filesystem remoto del robot via SFTP (RF-FS-007, RNF-FS-003, RF-ROB-013).
+   * Verifica permessi (FS_REMOTE_DELETE), isolamento robot, validazione percorso ed esclusione directory.
+   */
+  public async deleteRemoteFile(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    remotePath: string
+  ): Promise<void> {
+    if (context.targetRobotId && context.targetRobotId !== robot.id) {
+      await this.recordSecurityViolation(
+        context.username,
+        robot.id,
+        "CROSS_ROBOT_ACCESS_ATTEMPT",
+        { contextRobotId: context.targetRobotId, targetRobotId: robot.id }
+      );
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Operazione non consentita: contesto autorizzato per un robot differente.`
+      );
+    }
+
+    if (!context.permissions.has(AppPermission.FS_REMOTE_DELETE)) {
+      await this.recordSecurityViolation(
+        context.username,
+        robot.id,
+        "PERMISSION_DENIED_FS_REMOTE_DELETE"
+      );
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Utente '${context.username}' non autorizzato all'eliminazione di file sul robot '${robot.id}'.`
+      );
+    }
+
+    this.assertRobotAccessible(robot);
+
+    const managedConn = await this.connectionManager.acquireConnection(context.username, robot);
+    try {
+      const sftp = await managedConn.getSftpClient();
+      const targetPath = await this.resolveAndValidatePath(remotePath, context, robot, sftp);
+
+      const stats = await new Promise<any>((resolve, reject) => {
+        sftp.stat(targetPath, (err, res) => {
+          if (err) return reject(this.mapSftpError(err, targetPath, robot.id));
+          resolve(res);
+        });
+      });
+
+      if (stats.isDirectory()) {
+        throw new MolirisAppError(
+          ErrorCode.REMOTE_FS_ERROR,
+          `Impossibile eliminare una directory: ${targetPath}`,
+          "Impossibile eliminare: il percorso selezionato sul robot è una directory."
+        );
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        sftp.unlink(targetPath, (err) => {
+          if (err) return reject(this.mapSftpError(err, targetPath, robot.id));
+          resolve();
+        });
+      });
+
+      this.logger.info("File eliminato con successo dal filesystem remoto del robot", {
+        robotId: robot.id,
+        file: path.posix.basename(targetPath),
+        path: redactSensitiveData(targetPath),
+        user: context.username,
+      });
+    } finally {
+      await managedConn.close();
+    }
+  }
+
+  /**
    * Verifica preventiva accessibilità del robot (Step 1, RF-FS-001, §6.3, §8.4).
    */
   private assertRobotAccessible(robot: RobotEntity): void {
@@ -532,7 +1076,7 @@ export class RemoteFilesystemService {
    * Distingue file inesistente, permessi insufficienti, connessione interrotta, timeout e operazioni non consentite.
    * Restituisce messaggi chiari e sicuri all'utente, riservando i dettagli tecnici ai log (RNF-SEC-002).
    */
-  private mapSftpError(err: any, remotePath: string, robotId: string): MolirisAppError {
+  public mapSftpError(err: any, remotePath: string, robotId: string): MolirisAppError {
     const msg = (err?.message || "").toLowerCase();
     const code = err?.code;
 

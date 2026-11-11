@@ -31,6 +31,15 @@ export interface ConnectionLimits {
 
 export class RobotConnectionManager {
   private activeConnections: Map<string, { client: Client; robotId: string; userId: string }> = new Map();
+  private pendingConnections = new Map<string, {
+    robotId: string;
+    userId: string;
+    robotGeneration: number;
+    serverGeneration: number;
+    client?: Client;
+  }>();
+  private robotGenerations = new Map<string, number>();
+  private serverGeneration = 0;
   private userConnectionCounts: Map<string, number> = new Map();
   private robotConnectionCounts: Map<string, number> = new Map();
 
@@ -66,6 +75,31 @@ export class RobotConnectionManager {
     return this.robotConnectionCounts.get(robotId) || 0;
   }
 
+  private releaseConnectionCounts(userId: string, robotId: string): void {
+    const userCount = this.getUserConnectionCount(userId);
+    if (userCount <= 1) this.userConnectionCounts.delete(userId);
+    else this.userConnectionCounts.set(userId, userCount - 1);
+
+    const robotCount = this.getRobotConnectionCount(robotId);
+    if (robotCount <= 1) this.robotConnectionCounts.delete(robotId);
+    else this.robotConnectionCounts.set(robotId, robotCount - 1);
+  }
+
+  private assertPendingConnectionValid(connectionId: string): void {
+    const pending = this.pendingConnections.get(connectionId);
+
+    if (
+      !pending ||
+      pending.serverGeneration !== this.serverGeneration ||
+      pending.robotGeneration !== (this.robotGenerations.get(pending.robotId) || 0)
+    ) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Apertura della connessione annullata perché il robot o il server è stato chiuso o modificato."
+      );
+    }
+  }
+
   /**
    * Apre una connessione SSH verso un robot registrato e abilitato (§6.3 punto 2).
    * Applica limiti di concorrenza, credenziali server-side, verifica della chiave host e timeout.
@@ -83,7 +117,7 @@ export class RobotConnectionManager {
     }
 
     // 2. Controllo e applicazione limiti di concorrenza (RNF-PERF-003, RF-TRF-012)
-    if (this.activeConnections.size >= this.limits.maxConcurrentServer) {
+    if (this.activeConnections.size + this.pendingConnections.size >= this.limits.maxConcurrentServer) {
       throw new MolirisAppError(
         ErrorCode.INSUFFICIENT_STORAGE,
         "Limite massimo di connessioni contemporanee sul server raggiunto. Riprovare a breve."
@@ -106,24 +140,50 @@ export class RobotConnectionManager {
       );
     }
 
+    // Prenotazione sincrona: impedisce ad aperture contemporanee di superare i limiti.
+    const connectionId = `conn_${Date.now()}_${crypto.randomBytes(8).toString("hex")}`;
+    this.pendingConnections.set(connectionId, {
+      robotId: robot.id,
+      userId,
+      robotGeneration: this.robotGenerations.get(robot.id) || 0,
+      serverGeneration: this.serverGeneration,
+    });
+    this.userConnectionCounts.set(userId, currentForUser + 1);
+    this.robotConnectionCounts.set(robot.id, currentForRobot + 1);
+
+    try {
     // 3. Recupero materiale di autenticazione protetto (Vincoli 2.4 punti 1-2, RNF-SEC-002)
     const authMaterial = await this.credentialProvider.getCredentials(
       robot.credentialReference,
       robot.sshAuthMethod
     );
 
-    const connectionId = `conn_${Date.now()}_${crypto.randomBytes(8).toString("hex")}`;
+    this.assertPendingConnectionValid(connectionId);
     const client = new ssh2.Client();
+    const pending = this.pendingConnections.get(connectionId);
+    if (pending) pending.client = client;
 
     let hostKeyVerified = false;
     let hostKeyError: Error | null = null;
 
-    // Configurazione di connessione SSH2
+    // Configurazione di connessione SSH2 con preferenza per cifrari veloci hardware-accelerati
     const sshConfig: ssh2.ConnectConfig = {
       host: robot.host,
       port: robot.sshPort,
       username: robot.remoteUsername,
       readyTimeout: this.limits.connectionTimeoutMs,
+      keepaliveInterval: 15000,
+      keepaliveCountMax: 3,
+      algorithms: {
+        cipher: [
+          "aes128-gcm@openssh.com",
+          "chacha20-poly1305@openssh.com",
+          "aes256-gcm@openssh.com",
+          "aes128-ctr",
+          "aes192-ctr",
+          "aes256-ctr",
+        ],
+      },
       // Verifica della chiave host rigorosa (RNF-SEC-003): MAI disabilitata o bypassata
       hostVerifier: (serverHostKey: Buffer) => {
         try {
@@ -131,7 +191,7 @@ export class RobotConnectionManager {
             robot.host,
             robot.sshPort,
             serverHostKey,
-            robot.hostKeyVerification
+            robot.hostKeyVerification ?? {}
           );
           const matched = typeof res === "boolean" ? res : res.matched;
           hostKeyVerified = matched;
@@ -193,6 +253,9 @@ export class RobotConnectionManager {
         const onReady = () => {
           if (finished) return;
           finished = true;
+          try {
+            client.setNoDelay(true);
+          } catch {}
           cleanupListeners();
           resolve();
         };
@@ -254,22 +317,21 @@ export class RobotConnectionManager {
       throw connErr;
     }
 
-    // Registrazione della connessione attiva
-    this.activeConnections.set(connectionId, { client, robotId: robot.id, userId });
-    this.userConnectionCounts.set(userId, currentForUser + 1);
-    this.robotConnectionCounts.set(robot.id, currentForRobot + 1);
+    // Verifica che la prenotazione non sia stata annullata durante l'handshake.
+    this.assertPendingConnectionValid(connectionId);
 
+    // La prenotazione diventa una connessione attiva senza incrementare nuovamente i contatori.
+    this.activeConnections.set(connectionId, { client, robotId: robot.id, userId });
+    this.pendingConnections.delete(connectionId);
+
+    let released = false;
     const releaseConnection = async () => {
+      if (released) return;
+      released = true;
       const active = this.activeConnections.get(connectionId);
       if (active) {
         this.activeConnections.delete(connectionId);
-        const uCount = this.getUserConnectionCount(userId);
-        if (uCount <= 1) this.userConnectionCounts.delete(userId);
-        else this.userConnectionCounts.set(userId, uCount - 1);
-
-        const rCount = this.getRobotConnectionCount(robot.id);
-        if (rCount <= 1) this.robotConnectionCounts.delete(robot.id);
-        else this.robotConnectionCounts.set(robot.id, rCount - 1);
+        this.releaseConnectionCounts(userId, robot.id);
 
         try {
           active.client.end();
@@ -345,35 +407,68 @@ export class RobotConnectionManager {
     };
 
     return managed;
+    } catch (err) {
+      if (this.pendingConnections.delete(connectionId)) {
+        this.releaseConnectionCounts(userId, robot.id);
+      }
+      throw err;
+    }
   }
 
   public async closeConnectionsForRobot(robotId: string): Promise<void> {
+    this.robotGenerations.set(
+      robotId,
+      (this.robotGenerations.get(robotId) || 0) + 1
+    );
+
+    // Annulla e rimuove tutte le aperture SSH ancora in corso per questo robot (elimina ghost slots)
+    for (const [connId, pending] of Array.from(this.pendingConnections.entries())) {
+      if (pending.robotId === robotId) {
+        if (pending.client) {
+          try {
+            pending.client.end();
+            pending.client.destroy();
+          } catch {}
+        }
+        this.pendingConnections.delete(connId);
+        this.releaseConnectionCounts(pending.userId, pending.robotId);
+      }
+    }
+
     for (const [connId, entry] of this.activeConnections.entries()) {
       if (entry.robotId === robotId) {
+        this.activeConnections.delete(connId);
+        this.releaseConnectionCounts(entry.userId, entry.robotId);
         try {
           entry.client.end();
           entry.client.destroy();
         } catch {}
-        this.activeConnections.delete(connId);
       }
-    }
-    this.robotConnectionCounts.delete(robotId);
-    this.userConnectionCounts.clear();
-    for (const entry of this.activeConnections.values()) {
-      const current = this.userConnectionCounts.get(entry.userId) || 0;
-      this.userConnectionCounts.set(entry.userId, current + 1);
     }
   }
 
   public async closeAll(): Promise<void> {
+    this.serverGeneration += 1;
+
+    // Annulla e rimuove tutte le aperture in corso sul server (elimina ghost slots)
+    for (const [connId, pending] of Array.from(this.pendingConnections.entries())) {
+      if (pending.client) {
+        try {
+          pending.client.end();
+          pending.client.destroy();
+        } catch {}
+      }
+      this.pendingConnections.delete(connId);
+      this.releaseConnectionCounts(pending.userId, pending.robotId);
+    }
+
     for (const [connId, entry] of this.activeConnections.entries()) {
+      this.activeConnections.delete(connId);
+      this.releaseConnectionCounts(entry.userId, entry.robotId);
       try {
         entry.client.end();
         entry.client.destroy();
       } catch {}
     }
-    this.activeConnections.clear();
-    this.userConnectionCounts.clear();
-    this.robotConnectionCounts.clear();
   }
 }

@@ -1,5 +1,7 @@
 // Requisiti soddisfatti: RNF-MNT-001, RF-ROB-005, RF-TRF-012, RF-AUTH-006, RF-MON-001, RF-ROB-009, RF-SRVFS-007, RNF-SEC-002, RNF-SEC-004, §8.1, §11.1..11.6
 
+import fs from "fs";
+
 export interface SystemConfiguration {
   // 1. Root del filesystem server (RNF-MNT-001, RF-SRVFS-001)
   serverFilesystemRoot: string;
@@ -32,7 +34,7 @@ export interface SystemConfiguration {
   tlsKeyPath: string;  // Riferimento sicuro senza contenere segreti (RNF-SEC-002)
 
   // Parametri del provider di credenziali (§11.2, RNF-SEC-002, RNF-SEC-004)
-  credentialProviderType: "mongo" | "in-memory";
+  credentialProviderType?: "mongo" | "in-memory";
   masterKeyFilePath?: string;
 
   // 9. Sottodirectory standard da creare per robot [opzionali] (RF-ROB-009, RF-SRVFS-007)
@@ -43,6 +45,10 @@ export interface SystemConfiguration {
 
   // 11. Modalità di registrazione: rigorosa o differita (§8.1, §11.3)
   registrationMode: "rigorosa" | "differita";
+
+  // Politica di unicità dello username del robot (§8.2, §11.3, RF-ROB-006)
+  // "per_host": username unico per singolo host/porta; "globale": username unico in tutta la flotta
+  robotUsernameUniqueness?: "per_host" | "globale";
 
   // 12. Politica di conservazione degli eventi di audit (in giorni) (§10.4, RNF-SEC-009, §11.1)
   auditLogRetentionDays: number;
@@ -81,13 +87,33 @@ export interface SystemConfiguration {
   remoteFsOverwritePolicy?: "rifiuta" | "sovrascrivi";
   remoteFsConnectionIdleTimeoutMs?: number;
 
-  // 21. Parametri per il servizio di trasferimento file [opzionali] (§5.5, §6.5..6.7, §11.5, §11.7, RF-TRF-001..014)
+  // 21. Parametri per il servizio di trasferimento file [opzionali] (§5.5, §6.5..6.7, §11.5, §11.6, §11.7)
   transferChunkSizeBytes?: number;
   transferChecksumAlgorithm?: "sha256" | "md5";
   transferOverwritePolicy?: "rifiuta" | "richiedi_conferma" | "sovrascrivi";
   transferResumeEnabled?: boolean;
   transferConcurrencyQueuePolicy?: "rifiuta" | "coda";
   transferIdleTimeoutMs?: number;
+
+  // 22. Parametri per Caricamento Massivo Multi-Target e Jail RBAC Operatore (RNF-MNT-001, RF-AUTH-005, RF-SRVFS-005)
+  maxBulkUploadFiles?: number;
+  defaultOperatorAllowedPaths?: string[];
+
+  // Modalità verifica integrità trasferimenti (Problema A1, default baseline: stream)
+  transferVerifyMode?: "stream" | "readback";
+
+  // Sostituzione non atomica sul robot in assenza di posix-rename (Problema A2, default false)
+  robotNonAtomicReplace?: boolean;
+
+  // Margine di sicurezza spazio su disco in MB (Problema A4, default 0)
+  transferSpaceMarginMb?: number;
+
+  // Formato file di stato (Problema B1, default "auto")
+  stateFileFormat?: "auto" | "json" | "keyvalue";
+
+
+  // Schema JSON opzionale per file di stato (Problema B1, §11.4)
+  stateFileSchemaPath?: string;
 
   // Default unico ammesso: porta SSH 22 (RF-ROB-005)
   defaultSshPort: number;
@@ -116,7 +142,9 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
 
   const serverFilesystemRoot = requireString("MOLIRIS_FS_ROOT");
   const pollingIntervalSeconds = requireNumber("MOLIRIS_POLLING_INTERVAL_SEC");
-  const sshConnectionTimeoutMs = requireNumber("MOLIRIS_SSH_TIMEOUT_MS");
+  const sshConnectionTimeoutMs = env["MOLIRIS_SSH_CONNECTION_TIMEOUT_MS"]
+    ? requireNumber("MOLIRIS_SSH_CONNECTION_TIMEOUT_MS")
+    : requireNumber("MOLIRIS_SSH_TIMEOUT_MS");
   const maxConcurrentTransfersPerUser = requireNumber("MOLIRIS_MAX_TRF_PER_USER");
   const maxConcurrentTransfersPerRobot = requireNumber("MOLIRIS_MAX_TRF_PER_ROBOT");
   const maxConcurrentTransfersServer = requireNumber("MOLIRIS_MAX_TRF_SERVER");
@@ -184,6 +212,13 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     ? Number(env["MOLIRIS_QUOTA_PER_ROBOT_BYTES"])
     : undefined;
 
+  // Unicità dello username del robot (§8.2, §11.3, RF-ROB-006)
+  const rawUsernameUniqueness = env["MOLIRIS_ROBOT_USERNAME_UNIQUENESS"]?.trim().toLowerCase() || "per_host";
+  if (rawUsernameUniqueness !== "per_host" && rawUsernameUniqueness !== "globale") {
+    throw new Error(`Valore non valido per MOLIRIS_ROBOT_USERNAME_UNIQUENESS: '${rawUsernameUniqueness}'. Valori ammessi: 'per_host', 'globale'.`);
+  }
+  const robotUsernameUniqueness: "per_host" | "globale" = rawUsernameUniqueness;
+
   const standardSubdirectories = env["MOLIRIS_STANDARD_SUBDIRS"]
     ? env["MOLIRIS_STANDARD_SUBDIRS"].split(",").map(s => s.trim()).filter(Boolean)
     : undefined;
@@ -191,6 +226,22 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
   const serverDirectoryPermissions = env["MOLIRIS_DIR_PERMISSIONS"]
     ? env["MOLIRIS_DIR_PERMISSIONS"].trim()
     : undefined;
+
+  // Controllo sicurezza permessi root filesystem (§11.1, RNF-FS-001)
+  if (fs.existsSync(serverFilesystemRoot) && process.platform !== "win32") {
+    try {
+      const rootStat = fs.statSync(serverFilesystemRoot);
+      const rootMode = rootStat.mode & 0o777;
+      if ((rootMode & 0o027) !== 0) {
+        const warningMsg = `Permessi sulla root del filesystem server (${serverFilesystemRoot}) sono ${rootMode.toString(8)}, più ampi di 0750 (RNF-FS-001).`;
+        if (env["NODE_ENV"] === "production") {
+          throw new Error(`Configurazione non sicura: ${warningMsg} In produzione sono ammessi permessi massimi 0750.`);
+        }
+      }
+    } catch (permErr: any) {
+      if (permErr.message.includes("Configurazione non sicura")) throw permErr;
+    }
+  }
 
   const allowedSshAuthMethods = env["MOLIRIS_ALLOWED_SSH_AUTH_METHODS"]
     ? (env["MOLIRIS_ALLOWED_SSH_AUTH_METHODS"].split(",").map(m => m.trim().toLowerCase()).filter(m => m === "key" || m === "password") as ("key" | "password")[])
@@ -220,11 +271,21 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
 
   const terminalSessionTimeoutMinutes = env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"] && !isNaN(Number(env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"]))
     ? Number(env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"])
-    : undefined;
+    : 15;
 
   const maxConcurrentTerminalSessionsServer = env["MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"] && !isNaN(Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"]))
     ? Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"])
     : undefined;
+  if (
+    maxConcurrentTerminalSessionsServer !== undefined &&
+    (!Number.isInteger(maxConcurrentTerminalSessionsServer) ||
+      maxConcurrentTerminalSessionsServer < 1 ||
+      maxConcurrentTerminalSessionsServer > 20)
+  ) {
+    throw new Error(
+      "Valore non valido per MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER: deve essere un intero compreso tra 1 e 20."
+    );
+  }
 
   const maxConcurrentTerminalSessionsPerUser = env["MOLIRIS_MAX_TERMINAL_SESSIONS_PER_USER"] && !isNaN(Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_PER_USER"]))
     ? Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_PER_USER"])
@@ -286,17 +347,43 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
   // Parametri opzionali Trasferimento File (§5.5, §11.5, §11.7, RF-TRF-001..014)
   const transferChunkSizeBytes = env["MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES"] && !isNaN(Number(env["MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES"]))
     ? Number(env["MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES"])
-    : undefined;
+    : 2 * 1024 * 1024; // Default ottimizzato a 2MB ad alte prestazioni
 
   const rawChecksumAlgo = env["MOLIRIS_TRANSFER_CHECKSUM_ALGO"]?.trim().toLowerCase();
   const transferChecksumAlgorithm = (rawChecksumAlgo === "sha256" || rawChecksumAlgo === "md5")
     ? (rawChecksumAlgo as "sha256" | "md5")
     : undefined;
 
+  if (transferChecksumAlgorithm === "md5") {
+    console.warn("[AVVISO SICUREZZA] Algoritmo MD5 selezionato per i checksum dei trasferimenti: algoritmo crittograficamente debole e sconsigliato. Si raccomanda sha256.");
+  }
+
+  // Modalità verifica integrità trasferimenti (Problema A1, default baseline: stream; readback è PROPOSTA DA CONFERMARE)
+  const rawVerifyMode = env["MOLIRIS_TRANSFER_VERIFY_MODE"]?.trim().toLowerCase();
+  const transferVerifyMode: "stream" | "readback" = rawVerifyMode === "readback" ? "readback" : "stream";
+
+  // Sostituzione non atomica sul robot in assenza di posix-rename (Problema A2, default false)
+  const rawNonAtomic = env["MOLIRIS_ROBOT_NONATOMIC_REPLACE"]?.trim().toLowerCase();
+  const robotNonAtomicReplace = rawNonAtomic === "true";
+
+  // Margine di spazio trasferimento in MB (Problema A4, default 0; PROPOSTA DA CONFERMARE)
+  const transferSpaceMarginMb = env["MOLIRIS_TRANSFER_SPACE_MARGIN_MB"] && !isNaN(Number(env["MOLIRIS_TRANSFER_SPACE_MARGIN_MB"]))
+    ? Number(env["MOLIRIS_TRANSFER_SPACE_MARGIN_MB"])
+    : 0;
+
+  // Formato file di stato (Problema B1, default "auto", oppure "json", "keyvalue")
+  const rawStateFormat = env["MOLIRIS_STATE_FILE_FORMAT"]?.trim().toLowerCase();
+  const stateFileFormat: "auto" | "json" | "keyvalue" =
+    rawStateFormat === "json" || rawStateFormat === "keyvalue" ? rawStateFormat : "auto";
+
+  // Schema file di stato opzionale (Problema B1)
+  const stateFileSchemaPath = env["MOLIRIS_STATE_FILE_SCHEMA"]?.trim() || undefined;
+
   const rawTrfOverwritePolicy = env["MOLIRIS_TRANSFER_OVERWRITE_POLICY"]?.trim().toLowerCase();
-  const transferOverwritePolicy = (rawTrfOverwritePolicy === "rifiuta" || rawTrfOverwritePolicy === "richiedi_conferma" || rawTrfOverwritePolicy === "sovrascrivi")
-    ? (rawTrfOverwritePolicy as "rifiuta" | "richiedi_conferma" | "sovrascrivi")
-    : undefined;
+  const transferOverwritePolicy: "rifiuta" | "richiedi_conferma" | "sovrascrivi" =
+    (rawTrfOverwritePolicy === "rifiuta" || rawTrfOverwritePolicy === "sovrascrivi")
+      ? rawTrfOverwritePolicy
+      : "richiedi_conferma";
 
   const rawResume = env["MOLIRIS_TRANSFER_RESUME_ENABLED"]?.trim().toLowerCase();
   const transferResumeEnabled = rawResume === "true" ? true : rawResume === "false" ? false : undefined;
@@ -313,6 +400,20 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
   const defaultSshPort = env["MOLIRIS_DEFAULT_SSH_PORT"] && !isNaN(Number(env["MOLIRIS_DEFAULT_SSH_PORT"]))
     ? Number(env["MOLIRIS_DEFAULT_SSH_PORT"])
     : 22;
+
+  // Parametri Caricamento Massivo Multi-Target e Jail RBAC Operatore (RNF-MNT-001, RF-AUTH-005, RF-SRVFS-005)
+  const rawMaxBulk = env["MOLIRIS_MAX_BULK_UPLOAD_FILES"] ?? env["MAX_BULK_UPLOAD_FILES"];
+  if (rawMaxBulk !== undefined && (isNaN(Number(rawMaxBulk)) || Number(rawMaxBulk) < 1)) {
+    throw new Error("Valore non valido per MOLIRIS_MAX_BULK_UPLOAD_FILES: deve essere un intero positivo >= 1.");
+  }
+  const maxBulkUploadFiles = rawMaxBulk && !isNaN(Number(rawMaxBulk)) && Number(rawMaxBulk) >= 1
+    ? Math.floor(Number(rawMaxBulk))
+    : 20;
+
+  const rawOperatorAllowed = env["MOLIRIS_DEFAULT_OPERATOR_ALLOWED_PATHS"] ?? env["DEFAULT_OPERATOR_ALLOWED_PATHS"];
+  const defaultOperatorAllowedPaths = rawOperatorAllowed
+    ? rawOperatorAllowed.split(",").map(p => p.trim()).filter(Boolean)
+    : ["upload", "shared", "logs", "backups", "configs"];
 
   return {
     serverFilesystemRoot,
@@ -334,6 +435,7 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     standardSubdirectories,
     serverDirectoryPermissions,
     registrationMode,
+    robotUsernameUniqueness,
     auditLogRetentionDays,
     allowedSshAuthMethods,
     allowedDestinations,
@@ -359,6 +461,13 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     transferResumeEnabled,
     transferConcurrencyQueuePolicy,
     transferIdleTimeoutMs,
+    transferVerifyMode,
+    robotNonAtomicReplace,
+    transferSpaceMarginMb,
+    stateFileFormat,
+    stateFileSchemaPath,
     defaultSshPort,
+    maxBulkUploadFiles,
+    defaultOperatorAllowedPaths,
   };
 }

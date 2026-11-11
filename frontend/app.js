@@ -17,6 +17,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnLogin = document.getElementById("btn-login");
   const loginError = document.getElementById("login-error");
   const notificationBanner = document.getElementById("notification-banner");
+  const modalIdleWarning = document.getElementById("modal-idle-warning");
+  const idleWarningMessage = document.getElementById("idle-warning-message");
+  document.getElementById("btn-dismiss-idle-warning")?.addEventListener("click", () => modalIdleWarning.classList.add("hidden"));
 
   const currentUsername = document.getElementById("current-username");
   const currentRoles = document.getElementById("current-roles");
@@ -24,6 +27,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnRegisterRobot = document.getElementById("btn-register-robot");
   const btnRefreshFleet = document.getElementById("btn-refresh-fleet");
   const fleetTableBody = document.getElementById("fleet-table-body");
+  const fleetCount = document.getElementById("fleet-count");
 
   // Modali
   const modalDetail = document.getElementById("modal-robot-detail");
@@ -74,6 +78,43 @@ document.addEventListener("DOMContentLoaded", () => {
   let activeXterm = null;
   let activeFitAddon = null;
   let terminalWebSocket = null;
+  let terminalIdleWarningTimer = null;
+  let terminalIdleExpiryTimer = null;
+  let terminalIdleCountdownTimer = null;
+  let idleWarningKind = null;
+
+  function showIdleWarning(message, kind) {
+    idleWarningKind = kind;
+    idleWarningMessage.textContent = message;
+    modalIdleWarning.classList.remove("hidden");
+  }
+
+  function hideIdleWarning(kind) {
+    if (idleWarningKind === kind) {
+      modalIdleWarning.classList.add("hidden");
+      idleWarningKind = null;
+    }
+  }
+
+  function resetTerminalIdleWarning() {
+    clearTimeout(terminalIdleWarningTimer);
+    clearTimeout(terminalIdleExpiryTimer);
+    clearInterval(terminalIdleCountdownTimer);
+    terminalIdleWarningTimer = terminalIdleExpiryTimer = terminalIdleCountdownTimer = null;
+    hideIdleWarning("terminal");
+    if (!activeTerminalSessionId) return;
+    terminalIdleWarningTimer = setTimeout(() => {
+      let minutesLeft = 5;
+      showIdleWarning(`Il terminale SSH verrà chiuso per inattività tra ${minutesLeft} minuti.`, "terminal");
+      terminalIdleCountdownTimer = setInterval(() => {
+        minutesLeft -= 1;
+        if (minutesLeft > 0) showIdleWarning(`Il terminale SSH verrà chiuso per inattività tra ${minutesLeft} minuti.`, "terminal");
+      }, 60_000);
+    }, 10 * 60_000);
+    terminalIdleExpiryTimer = setTimeout(() => {
+      showIdleWarning("Il terminale SSH è stato chiuso per inattività.", "terminal");
+    }, 15 * 60_000);
+  }
 
   // RF-01: Modal Avviso Inattività Terminale
   const modalTerminalIdle = document.getElementById("modal-terminal-idle-warning");
@@ -131,6 +172,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const fsRemoteError = document.getElementById("fs-remote-error");
   const fsRemoteFileInput = document.getElementById("fs-remote-file-input");
   const btnFsRemoteUpload = document.getElementById("btn-fs-remote-upload");
+  const btnFsRemotePurge = document.getElementById("btn-fs-remote-purge");
   let currentRemoteFsPath = "";
   let currentRemoteParentPath = null;
 
@@ -147,6 +189,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const transfersEmptyMsg = document.getElementById("transfers-empty-msg");
   const transfersActiveCount = document.getElementById("transfers-active-count");
   const btnRefreshTransfers = document.getElementById("btn-refresh-transfers");
+  const btnPurgeTransfersTemp = document.getElementById("btn-purge-transfers-temp");
   let transfersPollingInterval = null;
 
   // Modal Conferma Sovrascrittura
@@ -157,7 +200,42 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnConfirmOverwrite = document.getElementById("btn-confirm-overwrite");
   let pendingOverwriteCallback = null;
 
+  // Modal Conferma Eliminazione File (RNF-FS-003, RF-ROB-013)
+  const modalConfirmDelete = document.getElementById("modal-confirm-delete");
+  const deleteFileTarget = document.getElementById("delete-file-target");
+  const btnCloseDelete = document.getElementById("btn-close-delete");
+  const btnCancelDelete = document.getElementById("btn-cancel-delete");
+  const btnConfirmDelete = document.getElementById("btn-confirm-delete");
+  let pendingDeleteCallback = null;
+
   let currentUser = null;
+  let sessionWarningTimer = null;
+  let sessionExpiryTimer = null;
+  let sessionCountdownTimer = null;
+
+  function stopSessionCountdown() {
+    clearTimeout(sessionWarningTimer);
+    clearTimeout(sessionExpiryTimer);
+    clearInterval(sessionCountdownTimer);
+    sessionWarningTimer = sessionExpiryTimer = sessionCountdownTimer = null;
+  }
+
+  function startSessionCountdown() {
+    stopSessionCountdown();
+    if (!currentUser) return;
+    hideIdleWarning("session");
+    sessionWarningTimer = setTimeout(() => {
+      let minutesLeft = 5;
+      showIdleWarning(`La sessione scadrà per inattività tra ${minutesLeft} minuti.`, "session");
+      sessionCountdownTimer = setInterval(() => {
+        minutesLeft -= 1;
+        if (minutesLeft > 0) showIdleWarning(`La sessione scadrà per inattività tra ${minutesLeft} minuti.`, "session");
+      }, 60_000);
+    }, 25 * 60_000);
+    sessionExpiryTimer = setTimeout(() => {
+      showLoginView("La sessione è scaduta per inattività. Effettuare nuovamente il login.");
+    }, 30 * 60_000);
+  }
 
   // =========================================================================
   // GESTIONE NOTIFICHE ED ERRORI GLOBALI
@@ -247,8 +325,10 @@ document.addEventListener("DOMContentLoaded", () => {
     modalEdit?.classList.add("hidden");
     modalRemoveConfirm?.classList.add("hidden");
     modalConfirmOverwrite?.classList.add("hidden");
+    modalConfirmDelete?.classList.add("hidden");
     modalTerminalIdle?.classList.add("hidden");
     modalSessionIdle?.classList.add("hidden");
+    modalIdleWarning?.classList.add("hidden");
     closeTerminal();
   }
 
@@ -257,6 +337,8 @@ document.addEventListener("DOMContentLoaded", () => {
       clearInterval(sessionInactivityTimer);
       sessionInactivityTimer = null;
     }
+    stopSessionCountdown();
+    modalIdleWarning?.classList.add("hidden");
     closeAllModals();
     dashboardSection.classList.add("hidden");
     loginSection.classList.remove("hidden");
@@ -271,6 +353,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function showDashboardView(user) {
     currentUser = user;
+    startSessionCountdown();
     loginSection.classList.add("hidden");
     dashboardSection.classList.remove("hidden");
     hideNotification();
@@ -296,6 +379,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // Registrazione hook scadenza sessione centralizzato (Step 5)
   apiClient.onSessionExpired(() => {
     showLoginView("La sessione è scaduta o non valida. Effettuare nuovamente il login.");
+  });
+  apiClient.onQualifiedActivity(() => {
+    if (currentUser) startSessionCountdown();
   });
 
   // Verifica sessione attiva all'avvio
@@ -368,11 +454,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // STEP 1 & 2 – LISTA DELLA FLOTTA E STATI DISTINTI (RF-ROB-001, RF-ROB-014, CA-ROB-012)
   // =========================================================================
   async function loadFleetData() {
+    if (fleetCount) fleetCount.textContent = "Caricamento flotta...";
     fleetTableBody.innerHTML = '<tr><td colspan="12" class="empty-cell">Caricamento flotta in corso...</td></tr>';
     try {
       const res = await apiClient.get("/api/robots");
       if (!res.ok) {
         const data = await res.json().catch(() => null);
+        fleetCount.textContent = "Conteggio non disponibile";
         const errObj = ErrorPresenter.formatError(data);
         fleetTableBody.innerHTML = `<tr><td colspan="12" class="empty-cell" style="color: #c5221f;">${StateFormatter.escapeHtml(errObj.userMessage)}</td></tr>`;
         return;
@@ -380,6 +468,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const data = await res.json();
       const robots = data.robots || [];
+      fleetCount.textContent = `Robot registrati: ${robots.length}`;
 
       if (robots.length === 0) {
         fleetTableBody.innerHTML = '<tr><td colspan="12" class="empty-cell">Nessun robot registrato o visibile per questo account.</td></tr>';
@@ -446,7 +535,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const tdWarnings = document.createElement("td");
         if (robot.hasWarningsOrErrors && robot.lastAttemptOutcome) {
           const diagMsg = robot.lastAttemptOutcome.diagnosticMessage || "Errore ultimo tentativo";
-          tdWarnings.innerHTML = `<span style="color: #c5221f; font-size: 0.82rem;">⚠️ ${StateFormatter.escapeHtml(diagMsg)}</span>`;
+          tdWarnings.innerHTML = `<span style="color: #c5221f; font-size: 0.82rem;">Avviso: ${StateFormatter.escapeHtml(diagMsg)}</span>`;
         } else {
           tdWarnings.textContent = "Nessuno";
         }
@@ -464,6 +553,7 @@ document.addEventListener("DOMContentLoaded", () => {
         fleetTableBody.appendChild(tr);
       }
     } catch (err) {
+      fleetCount.textContent = "Conteggio non disponibile";
       const formatted = ErrorPresenter.formatError(err);
       fleetTableBody.innerHTML = `<tr><td colspan="10" class="empty-cell" style="color: #c5221f;">${StateFormatter.escapeHtml(formatted.userMessage)}</td></tr>`;
     }
@@ -563,21 +653,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
         <!-- Barra Pulsanti Azione Robot (con guardie di doppio invio) -->
         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid #e0e0e0;">
-          <button class="btn btn-primary btn-sm" id="btn-detail-refresh-status">🔄 Aggiorna Stato (Refresh)</button>
-          ${feat.terminal ? '<button class="btn btn-primary btn-sm" id="btn-detail-open-terminal">💻 Apri Terminale</button>' : ''}
-          <button class="btn btn-secondary btn-sm" id="btn-detail-reverify">🔍 Ripeti Verifica Connessione</button>
-          ${hasUpdatePerm ? '<button class="btn btn-secondary btn-sm" id="btn-detail-edit">✏️ Modifica Configurazione</button>' : ''}
+          <button class="btn btn-primary btn-sm" id="btn-detail-refresh-status">Aggiorna Stato (Refresh)</button>
+          ${feat.terminal ? '<button class="btn btn-primary btn-sm" id="btn-detail-open-terminal">Apri Terminale</button>' : ''}
+          <button class="btn btn-secondary btn-sm" id="btn-detail-reverify">Ripeti Verifica Connessione</button>
+          ${hasUpdatePerm ? '<button class="btn btn-secondary btn-sm" id="btn-detail-edit">Modifica Configurazione</button>' : ''}
           ${hasDisablePerm ? (robot.anagraphicState === "attivo"
               ? '<button class="btn btn-warning btn-sm" id="btn-detail-disable">⏸ Disabilita Robot</button>'
               : '<button class="btn btn-accent btn-sm" id="btn-detail-enable">▶ Riabilita Robot</button>')
             : ''}
-          ${hasRemovePerm ? '<button class="btn btn-danger btn-sm" id="btn-detail-remove">🗑 Rimuovi Robot</button>' : ''}
+          ${hasRemovePerm ? '<button class="btn btn-danger btn-sm" id="btn-detail-remove">Rimuovi Robot</button>' : ''}
           ${robot.registrationState === "registrazione_incompleta" || robot.registrationState === "creazione_directory_fallita"
-              ? '<button class="btn btn-accent btn-sm" id="btn-detail-repair">🛠 Ripara Registrazione</button>'
+              ? '<button class="btn btn-accent btn-sm" id="btn-detail-repair">Ripara Registrazione</button>'
               : ''}
-          <button class="btn btn-secondary btn-sm" id="btn-detail-open-fs">📁 Esplora Server FS</button>
-          ${feat.remoteFs ? '<button class="btn btn-primary btn-sm" id="btn-detail-open-remote-fs">🌐 Esplora Remoto</button>' : ''}
-          <button class="btn btn-secondary btn-sm" id="btn-detail-open-transfers">🔄 Gestione Trasferimenti</button>
+          <button class="btn btn-secondary btn-sm" id="btn-detail-open-fs">Esplora Server FS</button>
+          ${feat.remoteFs ? '<button class="btn btn-primary btn-sm" id="btn-detail-open-remote-fs">Esplora Remoto</button>' : ''}
+          <button class="btn btn-secondary btn-sm" id="btn-detail-open-transfers">Gestione Trasferimenti</button>
         </div>
 
         <!-- Funzionalità Autorizzate per Utente/Robot (RF-ROB-011, CA-ROB-010) con MOTIVAZIONI TRASPARENTI -->
@@ -589,43 +679,43 @@ document.addEventListener("DOMContentLoaded", () => {
             <div class="feature-card ${feat.monitoring ? 'feature-enabled' : 'feature-disabled'}">
               <div>
                 <div class="feature-title">
-                  <span>📊 Monitoraggio Flotta</span>
+                  <span>Monitoraggio Flotta</span>
                   <span class="feature-status ${feat.monitoring ? 'badge-attivo' : 'badge-disabilitato'}">${feat.monitoring ? 'Disponibile' : 'Disabilitato'}</span>
                 </div>
                 <div class="feature-reason">${feat.monitoring ? 'Servizio di monitoraggio remoto attivo.' : StateFormatter.escapeHtml(feat.reasons.monitoring || 'Non disponibile')}</div>
               </div>
-              <button class="btn btn-primary btn-sm" id="btn-feature-refresh-status" style="margin-top: 0.5rem;" ${feat.monitoring ? '' : 'disabled'}>🔄 Aggiorna Stato Remoto</button>
+              <button class="btn btn-primary btn-sm" id="btn-feature-refresh-status" style="margin-top: 0.5rem;" ${feat.monitoring ? '' : 'disabled'}>Aggiorna Stato Remoto</button>
             </div>
 
             <!-- Terminale Remoto -->
             <div class="feature-card ${feat.terminal ? 'feature-enabled' : 'feature-disabled'}">
               <div>
                 <div class="feature-title">
-                  <span>💻 Terminale Remoto</span>
+                  <span>Terminale Remoto</span>
                   <span class="feature-status ${feat.terminal ? 'badge-attivo' : 'badge-disabilitato'}">${feat.terminal ? 'Disponibile' : 'Disabilitato'}</span>
                 </div>
                 <div class="feature-reason">${feat.terminal ? 'Sessione PTY interattiva bidirezionale pronta (RF-SSH-001..004).' : StateFormatter.escapeHtml(feat.reasons.terminal || 'Non disponibile')}</div>
               </div>
-              <button class="btn btn-primary btn-sm" id="btn-feature-open-terminal" style="margin-top: 0.5rem;" ${feat.terminal ? '' : 'disabled'}>💻 Apri Terminale Remoto</button>
+              <button class="btn btn-primary btn-sm" id="btn-feature-open-terminal" style="margin-top: 0.5rem;" ${feat.terminal ? '' : 'disabled'}>Apri Terminale Remoto</button>
             </div>
 
             <!-- Filesystem Remoto -->
             <div class="feature-card ${feat.remoteFs ? 'feature-enabled' : 'feature-disabled'}">
               <div>
                 <div class="feature-title">
-                  <span>🌐 Filesystem Remoto</span>
+                  <span>Filesystem Remoto</span>
                   <span class="feature-status ${feat.remoteFs ? 'badge-attivo' : 'badge-disabilitato'}">${feat.remoteFs ? 'Disponibile' : 'Disabilitato'}</span>
                 </div>
                 <div class="feature-reason">${feat.remoteFs ? 'Navigazione SFTP attiva nel filesystem del robot.' : StateFormatter.escapeHtml(feat.reasons.remoteFs || 'Non disponibile')}</div>
               </div>
-              <button class="btn btn-primary btn-sm" id="btn-card-remote-fs" style="margin-top: 0.5rem;" ${feat.remoteFs ? '' : 'disabled'}>🌐 Esplora Filesystem Remoto</button>
+              <button class="btn btn-primary btn-sm" id="btn-card-remote-fs" style="margin-top: 0.5rem;" ${feat.remoteFs ? '' : 'disabled'}>Esplora Filesystem Remoto</button>
             </div>
 
             <!-- Filesystem Server -->
             <div class="feature-card ${feat.serverFs ? 'feature-enabled' : 'feature-disabled'}">
               <div>
                 <div class="feature-title">
-                  <span>🗄️ Filesystem Server</span>
+                  <span>Filesystem Server</span>
                   <span class="feature-status ${feat.serverFs ? 'badge-attivo' : 'badge-disabilitato'}">${feat.serverFs ? 'Disponibile' : 'Disabilitato'}</span>
                 </div>
                 <div class="feature-reason">${feat.serverFs ? 'Accesso attivo alla directory dedicata sul server.' : StateFormatter.escapeHtml(feat.reasons.serverFs || 'Non disponibile')}</div>
@@ -706,7 +796,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const loadFsAction = () => {
         modalDetail.classList.add("hidden");
-        btnTabFsServer?.click();
+        navigateDashboardPage("server");
         fsRobotIdInput.value = robot.id;
         loadServerFilesystem(robot.id, "");
         document.getElementById("fs-browser-section")?.scrollIntoView({ behavior: "smooth" });
@@ -716,7 +806,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const loadRemoteFsAction = () => {
         modalDetail.classList.add("hidden");
-        btnTabFsRemote?.click();
+        navigateDashboardPage("remote");
         if (fsRemoteRobotIdInput) fsRemoteRobotIdInput.value = robot.id;
         loadRemoteFilesystem(robot.id, "");
         document.getElementById("fs-browser-section")?.scrollIntoView({ behavior: "smooth" });
@@ -726,7 +816,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const openTransfersAction = () => {
         modalDetail.classList.add("hidden");
-        btnTabTransfers?.click();
+        navigateDashboardPage("transfers");
         if (fsRobotIdInput) fsRobotIdInput.value = robot.id;
         if (fsRemoteRobotIdInput) fsRemoteRobotIdInput.value = robot.id;
         loadTransfersList();
@@ -850,26 +940,59 @@ document.addEventListener("DOMContentLoaded", () => {
     let outcomeClass = "alert-info";
     if (data.outcome === "registrazione_completata") outcomeClass = "alert-success";
     else if (data.outcome === "registrazione_rifiutata" || data.outcome === "creazione_directory_fallita") outcomeClass = "alert-danger";
-    else if (data.outcome === "ssh_non_verificata" || data.outcome === "registrazione_incompleta") outcomeClass = "alert-warning";
+    else if (data.outcome === "ssh_non_verificata" || data.outcome === "registrazione_incompleta" || data.outcome === "completata_con_funzionalita_non_verificate") outcomeClass = "alert-warning";
 
     let html = `
       <div class="alert-box ${outcomeClass}">
         <strong>Esito ottenuto:</strong> <code>${StateFormatter.escapeHtml(data.outcome)}</code><br>
         <p style="margin-top: 0.5rem;">${StateFormatter.escapeHtml(data.message)}</p>
+        ${data.diagnosticDetail ? `
+          <div style="margin-top: 0.6rem; padding: 0.5rem 0.75rem; background: rgba(0, 0, 0, 0.05); border-left: 3px solid var(--error-text, #c5221f); border-radius: 4px; font-size: 0.9rem;">
+            <strong>Dettaglio Diagnostico:</strong> ${StateFormatter.escapeHtml(data.diagnosticDetail)}
+          </div>
+        ` : ''}
       </div>
 
       <div style="margin-top: 1rem;">
         <h5>Azioni eseguite con successo:</h5>
         <ul>
-          ${(data.performedActions || []).map((a) => `<li>✔️ ${StateFormatter.escapeHtml(a)}</li>`).join("")}
+          ${(data.performedActions || []).length > 0
+            ? (data.performedActions || []).map((a) => `<li>OK ${StateFormatter.escapeHtml(a)}</li>`).join("")
+            : '<li style="color: var(--text-muted); font-style: italic;">Nessuna azione completata</li>'}
         </ul>
       </div>
+
+      ${data.failedAction ? `
+        <div style="margin-top: 0.75rem;">
+          <h5>Azione fallita:</h5>
+          <ul>
+            <li style="color: var(--error-text, #c5221f); font-weight: 500;">Errore ${StateFormatter.escapeHtml(data.failedAction)}</li>
+          </ul>
+        </div>
+      ` : ''}
+
+      ${data.verificationSteps && data.verificationSteps.length > 0 ? `
+        <div style="margin-top: 0.75rem;">
+          <h5>Dettaglio Controlli di Verifica SSH:</h5>
+          <ul style="font-size: 0.88rem; list-style: none; padding-left: 0;">
+            ${data.verificationSteps.map((s) => {
+              const icon = s.status === "SUCCESS" ? "OK" : s.status === "FAILED" ? "Errore" : "Saltato";
+              const color = s.status === "SUCCESS" ? "var(--success-text, #137333)" : s.status === "FAILED" ? "var(--error-text, #c5221f)" : "var(--text-muted, #575757)";
+              const detail = s.diagnosticDetail || s.message || s.status;
+              return `<li style="margin-bottom: 0.25rem;">
+                ${icon} <strong style="color: ${color};">${StateFormatter.escapeHtml(s.step)}:</strong>
+                ${StateFormatter.escapeHtml(detail)}
+              </li>`;
+            }).join("")}
+          </ul>
+        </div>
+      ` : ''}
 
       ${data.skippedActions && data.skippedActions.length > 0 ? `
         <div style="margin-top: 0.75rem;">
           <h5>Azioni non eseguite o interrotte:</h5>
           <ul>
-            ${data.skippedActions.map((a) => `<li>⏭️ ${StateFormatter.escapeHtml(a)}</li>`).join("")}
+            ${data.skippedActions.map((a) => `<li>Saltato ${StateFormatter.escapeHtml(a)}</li>`).join("")}
           </ul>
         </div>
       ` : ''}
@@ -901,7 +1024,10 @@ document.addEventListener("DOMContentLoaded", () => {
         showNotification("Stato operativo aggiornato con successo!", "success");
       } else {
         const formatted = ErrorPresenter.formatError(data);
-        showNotification(`Aggiornamento stato non riuscito: ${formatted.userMessage}`, "danger");
+        const msg = formatted.userMessage && formatted.userMessage.toLowerCase().startsWith("aggiornamento")
+          ? formatted.userMessage
+          : `Aggiornamento stato non riuscito: ${formatted.userMessage}`;
+        showNotification(msg, "danger");
       }
       openRobotDetail(robotId);
       loadFleetData();
@@ -919,7 +1045,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     modalTerminal.classList.remove("hidden");
-    terminalRobotTitle.textContent = `💻 Terminale Remoto: ${StateFormatter.escapeHtml(displayName)} (${StateFormatter.escapeHtml(robotId)})`;
+    terminalRobotTitle.textContent = `Terminale Remoto: ${StateFormatter.escapeHtml(displayName)} (${StateFormatter.escapeHtml(robotId)})`;
     terminalSessionStatus.className = "badge-status badge-non_verificato";
     terminalSessionStatus.textContent = "Allocazione PTY in corso...";
     terminalContainer.innerHTML = "";
@@ -940,6 +1066,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       activeTerminalSessionId = data.sessionId;
+      resetTerminalIdleWarning();
       terminalSessionStatus.className = "badge-status badge-non_verificato";
       terminalSessionStatus.textContent = "Connessione WebSocket...";
 
@@ -953,7 +1080,9 @@ document.addEventListener("DOMContentLoaded", () => {
         cursorBlink: true,
         cursorStyle: "block",
         fontSize: 14,
-        fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+        fontFamily: '"DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", Menlo, Monaco, Consolas, "Courier New", monospace',
+        letterSpacing: 0,
+        lineHeight: 1.1,
         theme: {
           background: "#1e1e1e",
           foreground: "#f1f1f1",
@@ -969,6 +1098,11 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       activeXterm.open(terminalContainer);
+      const helperTa = terminalContainer.querySelector(".xterm-helper-textarea");
+      if (helperTa) {
+        helperTa.id = "terminal-input-textarea";
+        helperTa.name = "terminal-input-textarea";
+      }
 
       if (activeFitAddon) {
         try {
@@ -978,6 +1112,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // Canale WebSocket WSS/WS (RF-SSH-004)
       terminalWebSocket = apiClient.createTerminalWebSocket(data.sessionId);
+      terminalWebSocket.binaryType = "arraybuffer";
 
       terminalWebSocket.onopen = () => {
         terminalSessionStatus.className = "badge-status badge-attivo";
@@ -993,38 +1128,51 @@ document.addEventListener("DOMContentLoaded", () => {
         activeXterm.focus();
       };
 
-      terminalWebSocket.onmessage = (event) => {
-        const msg = event.data;
-        if (typeof msg === "string" && msg.startsWith("{") && msg.endsWith("}")) {
-          try {
-            const parsed = JSON.parse(msg);
-            if (parsed.type === "terminal_idle_warning") {
-              modalTerminalIdle?.classList.remove("hidden");
-              if (terminalIdleCountdown) {
-                terminalIdleCountdown.textContent = String(parsed.remainingMinutes);
-              }
-              return;
-            }
-            if (parsed.type === "terminal_idle_reset") {
-              modalTerminalIdle?.classList.add("hidden");
-              return;
-            }
-            if (parsed.type === "session_closed") {
-              modalTerminalIdle?.classList.add("hidden");
-              terminalSessionStatus.className = "badge-status badge-disabilitato";
-              terminalSessionStatus.textContent = `Chiuso (${parsed.reason || "terminato"})`;
-              activeXterm.writeln(`\r\n\x1b[33m[Connessione terminale chiusa dal server: ${StateFormatter.escapeHtml(parsed.message || parsed.reason)}]\x1b[0m\r\n`);
-              return;
-            }
-            if (parsed.type === "error") {
-              terminalSessionStatus.className = "badge-status badge-errore";
-              terminalSessionStatus.textContent = "Errore";
-              activeXterm.writeln(`\r\n\x1b[31m[Errore: ${StateFormatter.escapeHtml(parsed.message)}]\x1b[0m\r\n`);
-              return;
-            }
-          } catch {}
+      terminalContainer.onclick = () => {
+        if (activeXterm) activeXterm.focus();
+      };
+
+      terminalWebSocket.onmessage = async (event) => {
+        let msg = event.data;
+        if (msg instanceof Blob) {
+          msg = await msg.arrayBuffer();
         }
-        activeXterm.write(msg);
+        if (msg instanceof ArrayBuffer) {
+          activeXterm.write(new Uint8Array(msg));
+          return;
+        }
+        if (typeof msg === "string") {
+          if (msg.startsWith("{") && msg.endsWith("}")) {
+            try {
+              const parsed = JSON.parse(msg);
+              if (parsed.type === "terminal_idle_warning") {
+                modalTerminalIdle?.classList.remove("hidden");
+                if (terminalIdleCountdown) {
+                  terminalIdleCountdown.textContent = String(parsed.remainingMinutes);
+                }
+                return;
+              }
+              if (parsed.type === "terminal_idle_reset") {
+                modalTerminalIdle?.classList.add("hidden");
+                return;
+              }
+              if (parsed.type === "session_closed") {
+                modalTerminalIdle?.classList.add("hidden");
+                terminalSessionStatus.className = "badge-status badge-disabilitato";
+                terminalSessionStatus.textContent = `Chiuso (${parsed.reason || "terminato"})`;
+                activeXterm.writeln(`\r\n\x1b[33m[Connessione terminale chiusa dal server: ${StateFormatter.escapeHtml(parsed.message || parsed.reason)}]\x1b[0m\r\n`);
+                return;
+              }
+              if (parsed.type === "error") {
+                terminalSessionStatus.className = "badge-status badge-errore";
+                terminalSessionStatus.textContent = "Errore";
+                activeXterm.writeln(`\r\n\x1b[31m[Errore: ${StateFormatter.escapeHtml(parsed.message)}]\x1b[0m\r\n`);
+                return;
+              }
+            } catch {}
+          }
+          activeXterm.write(msg);
+        }
       };
 
       terminalWebSocket.onclose = () => {
@@ -1044,12 +1192,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
       activeXterm.onData((inputData) => {
         modalTerminalIdle?.classList.add("hidden");
+        resetTerminalIdleWarning();
+        apiClient.notifyQualifiedActivity();
         if (terminalWebSocket && terminalWebSocket.readyState === WebSocket.OPEN) {
           terminalWebSocket.send(inputData);
         }
       });
 
       activeXterm.onResize(({ cols, rows }) => {
+        resetTerminalIdleWarning();
+        apiClient.notifyQualifiedActivity();
         terminalFooterDims.textContent = `${cols} x ${rows}`;
         if (terminalWebSocket && terminalWebSocket.readyState === WebSocket.OPEN) {
           terminalWebSocket.send(JSON.stringify({ type: "resize", cols, rows }));
@@ -1064,6 +1216,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function closeTerminal() {
+    clearTimeout(terminalIdleWarningTimer);
+    clearTimeout(terminalIdleExpiryTimer);
+    clearInterval(terminalIdleCountdownTimer);
+    terminalIdleWarningTimer = terminalIdleExpiryTimer = terminalIdleCountdownTimer = null;
     if (activeTerminalSessionId && terminalWebSocket && terminalWebSocket.readyState === WebSocket.OPEN) {
       try {
         terminalWebSocket.send(JSON.stringify({ type: "close" }));
@@ -1314,7 +1470,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const tr = document.createElement("tr");
 
         const typeTd = document.createElement("td");
-        typeTd.textContent = item.type === "directory" ? "📁 [DIR]" : "📄 [FILE]";
+        typeTd.textContent = item.type === "directory" ? "[DIR]" : "[FILE]";
         tr.appendChild(typeTd);
 
         const nameTd = document.createElement("td");
@@ -1359,13 +1515,23 @@ document.addEventListener("DOMContentLoaded", () => {
 
           const btnSendToRobot = document.createElement("button");
           btnSendToRobot.className = "btn btn-secondary btn-sm transfer-action-btn";
-          btnSendToRobot.textContent = "➡️ Invia al Robot";
+          btnSendToRobot.textContent = "Invia al Robot";
           btnSendToRobot.title = "Trasferisci file dal server al filesystem remoto del robot (RF-TRF-002)";
-          btnSendToRobot.addEventListener("click", () => {
+          btnSendToRobot.addEventListener("click", async () => {
             const relPath = currentFsPath ? `${currentFsPath}/${item.name}` : item.name;
-            transferServerToRobot(robotId, relPath, item.name);
+            await DoubleSubmitGuard.execute(btnSendToRobot, "Avvio...", () => transferServerToRobot(robotId, relPath, item.name));
           });
           btnGroup.appendChild(btnSendToRobot);
+
+          const btnDelete = document.createElement("button");
+          btnDelete.className = "btn btn-danger btn-sm transfer-action-btn";
+          btnDelete.textContent = "Elimina";
+          btnDelete.title = "Elimina file definitivamente dal server (RNF-FS-003, RF-ROB-013)";
+          btnDelete.addEventListener("click", () => {
+            const relPath = currentFsPath ? `${currentFsPath}/${item.name}` : item.name;
+            requestDeleteServerFile(robotId, relPath, item.name);
+          });
+          btnGroup.appendChild(btnDelete);
 
           actionsTd.appendChild(btnGroup);
         }
@@ -1444,6 +1610,35 @@ document.addEventListener("DOMContentLoaded", () => {
     loadTransfersList();
   });
 
+  const dashboardNavButtons = document.querySelectorAll(".main-nav-btn");
+  const fleetActionsBar = document.querySelector(".actions-bar");
+  const fleetSection = document.querySelector(".fleet-section");
+  const fsBrowserSection = document.getElementById("fs-browser-section");
+
+  function navigateDashboardPage(view) {
+    dashboardNavButtons.forEach((button) => {
+      button.classList.toggle("active", button.dataset.view === view);
+    });
+
+    const showFleet = view === "fleet";
+    fleetActionsBar?.classList.toggle("hidden", !showFleet);
+    fleetSection?.classList.toggle("hidden", !showFleet);
+    fsBrowserSection?.classList.toggle("hidden", showFleet);
+
+    if (!showFleet) {
+      const tabs = {
+        server: btnTabFsServer,
+        remote: btnTabFsRemote,
+        transfers: btnTabTransfers,
+      };
+      tabs[view]?.click();
+    }
+  }
+
+  dashboardNavButtons.forEach((button) => {
+    button.addEventListener("click", () => navigateDashboardPage(button.dataset.view));
+  });
+
   // =========================================================================
   // NAVIGAZIONE FILESYSTEM REMOTO ROBOT VIA SFTP (RF-FS-001..007, CA-FS-001)
   // =========================================================================
@@ -1480,13 +1675,13 @@ document.addEventListener("DOMContentLoaded", () => {
         // Tipo (RF-FS-002)
         const typeTd = document.createElement("td");
         if (item.type === "directory") {
-          typeTd.innerHTML = '<span class="badge-status badge-attivo">📁 [DIR]</span>';
+          typeTd.innerHTML = '<span class="badge-status badge-attivo">[DIR]</span>';
         } else if (item.type === "link") {
-          typeTd.innerHTML = '<span class="badge-status badge-avviso fs-item-link">🔗 [LINK]</span>';
+          typeTd.innerHTML = '<span class="badge-status badge-avviso fs-item-link">[LINK]</span>';
         } else if (item.type === "special") {
-          typeTd.innerHTML = '<span class="badge-status badge-avviso fs-item-special">⚙️ [SPECIAL]</span>';
+          typeTd.innerHTML = '<span class="badge-status badge-avviso fs-item-special">[SPECIAL]</span>';
         } else {
-          typeTd.innerHTML = '<span class="badge-status badge-raggiungibile">📄 [FILE]</span>';
+          typeTd.innerHTML = '<span class="badge-status badge-raggiungibile">[FILE]</span>';
         }
         tr.appendChild(typeTd);
 
@@ -1542,13 +1737,25 @@ document.addEventListener("DOMContentLoaded", () => {
           btnCopyToSrv.className = "btn btn-secondary btn-sm transfer-action-btn";
           btnCopyToSrv.textContent = "⬅️ Copia su Server";
           btnCopyToSrv.title = "Trasferisci file dal robot al filesystem locale del server (RF-TRF-002)";
-          btnCopyToSrv.addEventListener("click", () => {
+          btnCopyToSrv.addEventListener("click", async () => {
             const remotePath = currentRemoteFsPath.endsWith("/")
               ? `${currentRemoteFsPath}${item.name}`
               : `${currentRemoteFsPath}/${item.name}`;
-            transferRobotToServer(robotId, remotePath, item.name);
+            await DoubleSubmitGuard.execute(btnCopyToSrv, "Avvio...", () => transferRobotToServer(robotId, remotePath, item.name));
           });
           btnGroup.appendChild(btnCopyToSrv);
+
+          const btnDelete = document.createElement("button");
+          btnDelete.className = "btn btn-danger btn-sm transfer-action-btn";
+          btnDelete.textContent = "Elimina";
+          btnDelete.title = "Elimina file definitivamente dal robot (RF-FS-007, RNF-FS-003, RF-ROB-013)";
+          btnDelete.addEventListener("click", () => {
+            const remotePath = currentRemoteFsPath.endsWith("/")
+              ? `${currentRemoteFsPath}${item.name}`
+              : `${currentRemoteFsPath}/${item.name}`;
+            requestDeleteRemoteFile(robotId, remotePath, item.name);
+          });
+          btnGroup.appendChild(btnDelete);
 
           actionsTd.appendChild(btnGroup);
         }
@@ -1557,9 +1764,10 @@ document.addEventListener("DOMContentLoaded", () => {
         fsRemoteTableBody.appendChild(tr);
       }
 
-      if (data.truncated) {
+      if (data.truncated || data.isTruncated) {
+        const count = data.items ? data.items.length : 0;
         const truncTr = document.createElement("tr");
-        truncTr.innerHTML = '<td colspan="5" style="text-align: center; color: #b06000; font-size: 0.85rem; font-style: italic; background-color: #fff9e6;">⚠️ Elenco parziale: superato il limite massimo di elementi configurato per singola directory (RNF-PERF-002).</td>';
+        truncTr.innerHTML = `<td colspan="5" style="text-align: center; color: #b06000; font-size: 0.85rem; font-weight: bold; background-color: #fff9e6;">Avviso: elenco incompleto: ${count} elementi mostrati</td>`;
         fsRemoteTableBody.appendChild(truncTr);
       }
     } catch (err) {
@@ -1595,8 +1803,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const file = e.target.files?.[0];
     if (!file) return;
     const robotId = fsRemoteRobotIdInput.value.trim();
-    uploadClientToRobot(robotId, currentRemoteFsPath, file);
     fsRemoteFileInput.value = "";
+    uploadClientToRobot(robotId, currentRemoteFsPath, file);
   });
 
   // =========================================================================
@@ -1623,19 +1831,92 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // Eliminazione File dal Server (RNF-FS-003, RF-ROB-013)
+  function requestDeleteServerFile(robotId, relPath, filename) {
+    deleteFileTarget.textContent = `${filename} (${relPath})`;
+    pendingDeleteCallback = async () => {
+      showNotification(`Eliminazione di '${filename}' in corso...`, "info");
+      try {
+        const res = await apiClient.delete(
+          `/api/robots/${encodeURIComponent(robotId)}/fs/server/file?path=${encodeURIComponent(relPath)}`
+        );
+        const data = await res.json();
+        if (!res.ok) {
+          showNotification(data, "danger");
+        } else {
+          showNotification(data.message || `File '${filename}' eliminato con successo.`, "success");
+          loadServerFilesystem(robotId, currentFsPath);
+        }
+      } catch (err) {
+        showNotification(err, "danger");
+      }
+    };
+    modalConfirmDelete.classList.remove("hidden");
+  }
+
+  // Eliminazione File dal Robot (RF-FS-007, RNF-FS-003, RF-ROB-013)
+  function requestDeleteRemoteFile(robotId, remotePath, filename) {
+    deleteFileTarget.textContent = `${filename} (${remotePath}) [ROBOT: ${robotId}]`;
+    pendingDeleteCallback = async () => {
+      showNotification(`Eliminazione di '${filename}' dal robot in corso...`, "info");
+      try {
+        const res = await apiClient.delete(
+          `/api/robots/${encodeURIComponent(robotId)}/fs/remote/file?path=${encodeURIComponent(remotePath)}`
+        );
+        const data = await res.json();
+        if (!res.ok) {
+          showNotification(data, "danger");
+        } else {
+          showNotification(data.message || `File '${filename}' eliminato con successo dal robot.`, "success");
+          loadRemoteFilesystem(robotId, currentRemoteFsPath);
+        }
+      } catch (err) {
+        showNotification(err, "danger");
+      }
+    };
+    modalConfirmDelete.classList.remove("hidden");
+  }
+
+  function closeDeleteModal() {
+    modalConfirmDelete.classList.add("hidden");
+    pendingDeleteCallback = null;
+  }
+
+  btnCloseDelete?.addEventListener("click", closeDeleteModal);
+  btnCancelDelete?.addEventListener("click", closeDeleteModal);
+  btnConfirmDelete?.addEventListener("click", () => {
+    if (pendingDeleteCallback) {
+      const cb = pendingDeleteCallback;
+      closeDeleteModal();
+      cb();
+    }
+  });
+
   // Download Server -> Client (RF-TRF-001)
   function downloadServerFile(robotId, relativePath) {
-    const url = `/api/robots/${encodeURIComponent(robotId)}/transfers/client-server/download?path=${encodeURIComponent(relativePath)}`;
-    window.location.href = url;
-    showNotification(`Download avviato per '${relativePath}'`, "info");
+    const filename = relativePath.split("/").pop() || "download";
+    showNotification(`Avvio download di '${filename}' in streaming...`, "info");
+    const downloadUrl = `/api/robots/${encodeURIComponent(robotId)}/transfers/client-server/download?path=${encodeURIComponent(relativePath)}`;
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
     setTimeout(loadTransfersList, 1000);
   }
 
   // Download Robot -> Client (RF-TRF-003)
   function downloadRobotFile(robotId, remotePath) {
-    const url = `/api/robots/${encodeURIComponent(robotId)}/transfers/client-robot/download?path=${encodeURIComponent(remotePath)}`;
-    window.location.href = url;
-    showNotification(`Download dal robot avviato per '${remotePath}'`, "info");
+    const filename = remotePath.split("/").pop() || "download";
+    showNotification(`Avvio download dal robot per '${filename}' in streaming...`, "info");
+    const downloadUrl = `/api/robots/${encodeURIComponent(robotId)}/transfers/client-robot/download?path=${encodeURIComponent(remotePath)}`;
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
     setTimeout(loadTransfersList, 1000);
   }
 
@@ -1658,7 +1939,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const data = await res.json();
       if (!res.ok) {
-        if (data.message && data.message.includes("già esistente")) {
+        if (!overwrite && data.message && (data.message.includes("conferma esplicita") || (data.message.includes("già esistente") && !data.message.includes("categoricamente")))) {
           promptOverwriteConfirmation(`Server: ${subPath ? subPath + '/' : ''}${file.name}`, () => {
             uploadClientToServer(robotId, subPath, file, true);
           });
@@ -1676,14 +1957,42 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  let activeUploadController = null;
+  let activeUploadCancelled = false;
+  let activeUploadRetryTimeout = null;
+  const cancelledTransferIds = new Set();
+
+  function cancelActiveUpload() {
+    activeUploadCancelled = true;
+    if (activeUploadRetryTimeout) {
+      clearTimeout(activeUploadRetryTimeout);
+      activeUploadRetryTimeout = null;
+    }
+    if (activeUploadController) {
+      try { activeUploadController.abort(); } catch {}
+      activeUploadController = null;
+    }
+  }
+
+  window.addEventListener("beforeunload", () => {
+    cancelActiveUpload();
+  });
+
   // Upload Client -> Robot (RF-TRF-003)
-  async function uploadClientToRobot(robotId, remoteDir, file, overwrite = false) {
+  async function uploadClientToRobot(robotId, remoteDir, file, overwrite = false, retryCount = 0) {
+    if (activeUploadRetryTimeout) {
+      clearTimeout(activeUploadRetryTimeout);
+      activeUploadRetryTimeout = null;
+    }
+    activeUploadCancelled = false;
+    activeUploadController = new AbortController();
     showNotification(`Caricamento verso il robot di '${file.name}' in corso...`, "info");
     try {
       const res = await apiClient.post(
         `/api/robots/${encodeURIComponent(robotId)}/transfers/client-robot/upload`,
         file,
         {
+          signal: activeUploadController.signal,
           headers: {
             "Content-Type": "application/octet-stream",
             "X-Filename": file.name,
@@ -1695,7 +2004,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const data = await res.json();
       if (!res.ok) {
-        if (data.message && data.message.includes("già esistente")) {
+        if (!overwrite && data.message && (data.message.includes("conferma esplicita") || (data.message.includes("già esistente") && !data.message.includes("categoricamente")))) {
           promptOverwriteConfirmation(`Robot: ${remoteDir ? remoteDir + '/' : ''}${file.name}`, () => {
             uploadClientToRobot(robotId, remoteDir, file, true);
           });
@@ -1709,7 +2018,30 @@ document.addEventListener("DOMContentLoaded", () => {
       loadRemoteFilesystem(robotId, remoteDir);
       loadTransfersList();
     } catch (err) {
+      if (activeUploadCancelled || err.name === "AbortError" || String(err.message || "").toLowerCase().includes("annullato")) {
+        showNotification(`Trasferimento di '${file.name}' annullato dall'utente.`, "warning");
+        loadTransfersList();
+        loadRemoteFilesystem(robotId, remoteDir);
+        return;
+      }
+
+      // Riscaricamento / ritentativo automatico SOLO su fallimento non intenzionale (MAI se annullato!)
+      if (!activeUploadCancelled && retryCount < 1) {
+        showNotification(`Trasferimento non riuscito per errore di connessione. Tentativo di riscaricamento automatico in corso (tentativo 1 di 1)...`, "warning");
+        activeUploadRetryTimeout = setTimeout(() => {
+          activeUploadRetryTimeout = null;
+          if (!activeUploadCancelled) {
+            uploadClientToRobot(robotId, remoteDir, file, overwrite, retryCount + 1);
+          }
+        }, 2000);
+        return;
+      }
+
       showNotification(err, "danger");
+      loadTransfersList();
+      loadRemoteFilesystem(robotId, remoteDir);
+    } finally {
+      activeUploadController = null;
     }
   }
 
@@ -1729,7 +2061,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const data = await res.json();
       if (!res.ok) {
-        if (data.message && data.message.includes("già esistente")) {
+        if (!overwrite && data.message && (data.message.includes("conferma esplicita") || (data.message.includes("già esistente") && !data.message.includes("categoricamente")))) {
           promptOverwriteConfirmation(`Robot: ${filename}`, () => {
             transferServerToRobot(robotId, serverRelativePath, filename, true);
           });
@@ -1762,7 +2094,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const data = await res.json();
       if (!res.ok) {
-        if (data.message && data.message.includes("già esistente")) {
+        if (!overwrite && data.message && (data.message.includes("conferma esplicita") || (data.message.includes("già esistente") && !data.message.includes("categoricamente")))) {
           promptOverwriteConfirmation(`Server: ${filename}`, () => {
             transferRobotToServer(robotId, remotePath, filename, true);
           });
@@ -1806,12 +2138,12 @@ document.addEventListener("DOMContentLoaded", () => {
           card.className = "transfer-card";
 
           const dirLabels = {
-            CLIENT_TO_SERVER: "💻 Computer ➔ 🗄️ Server",
-            SERVER_TO_CLIENT: "🗄️ Server ➔ 💻 Computer",
-            SERVER_TO_ROBOT: "🗄️ Server ➔ 🌐 Robot",
-            ROBOT_TO_SERVER: "🌐 Robot ➔ 🗄️ Server",
-            CLIENT_TO_ROBOT: "💻 Computer ➔ 🌐 Robot",
-            ROBOT_TO_CLIENT: "🌐 Robot ➔ 💻 Computer",
+            CLIENT_TO_SERVER: "Computer ➔ Server",
+            SERVER_TO_CLIENT: "Server ➔ Computer",
+            SERVER_TO_ROBOT: "Server ➔ Robot",
+            ROBOT_TO_SERVER: "Robot ➔ Server",
+            CLIENT_TO_ROBOT: "Computer ➔ Robot",
+            ROBOT_TO_CLIENT: "Robot ➔ Computer",
           };
 
           const statusLabels = {
@@ -1845,6 +2177,7 @@ document.addEventListener("DOMContentLoaded", () => {
             <div class="transfer-card-stats">
               <span>${StateFormatter.formatBytes(trf.transferredBytes)} / ${trf.totalBytes ? StateFormatter.formatBytes(trf.totalBytes) : 'dim. sconosciuta'} (${percent})</span>
               <span>${speed} ${eta ? '| ' + eta : ''}</span>
+              ${trf.integrityLabel ? `<span class="transfer-integrity-badge" style="font-weight: 500; color: #1e40af;">${StateFormatter.escapeHtml(trf.integrityLabel)}</span>` : ''}
               ${trf.checksum ? `<span title="Checksum ${trf.checksumAlgorithm || ''}">Digest: ${trf.checksum.substring(0, 10)}...</span>` : ''}
               ${trf.error ? `<span style="color: #dc2626; width: 100%; margin-top: 0.25rem;">Errore: ${StateFormatter.escapeHtml(trf.error)}</span>` : ''}
             </div>
@@ -1855,8 +2188,14 @@ document.addEventListener("DOMContentLoaded", () => {
             cancelBtn.addEventListener("click", async () => {
               if (confirm("Vuoi davvero annullare questo trasferimento?")) {
                 await DoubleSubmitGuard.execute(cancelBtn, "Annullamento...", async () => {
+                  cancelledTransferIds.add(trf.transferId);
+                  cancelActiveUpload();
                   await apiClient.post(`/api/transfers/${encodeURIComponent(trf.transferId)}/cancel`, {});
                   loadTransfersList();
+                  const currentRobotId = fsRobotIdInput.value.trim() || fsRemoteRobotIdInput.value.trim();
+                  if (currentRobotId) {
+                    loadRemoteFilesystem(currentRobotId, currentRemoteFsPath);
+                  }
                 });
               }
             });
@@ -1868,9 +2207,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
       transfersActiveCount.textContent = activeCount;
 
-      // Gestione dinamica dell'intervallo di polling
+      // Gestione dinamica dell'intervallo di polling configurabile (PROPOSTA DA CONFERMARE, default 1000ms)
+      const pollMs = window.MOLIRIS_TRANSFER_POLL_INTERVAL_MS || 1000;
       if (activeCount > 0 && !transfersPollingInterval) {
-        transfersPollingInterval = setInterval(loadTransfersList, 1500);
+        transfersPollingInterval = setInterval(loadTransfersList, pollMs);
       } else if (activeCount === 0 && transfersPollingInterval) {
         clearInterval(transfersPollingInterval);
         transfersPollingInterval = null;
@@ -1881,6 +2221,386 @@ document.addEventListener("DOMContentLoaded", () => {
   btnRefreshTransfers?.addEventListener("click", async () => {
     await DoubleSubmitGuard.execute(btnRefreshTransfers, "Aggiornamento...", loadTransfersList);
   });
+
+  // Bonifica file temporanei dal robot e server selezionato (RF-TRF-009, CA-TRF-005)
+  btnFsRemotePurge?.addEventListener("click", async () => {
+    const robotId = fsRemoteRobotIdInput.value.trim();
+    if (!robotId) {
+      showNotification("Specificare prima l'ID del robot per la bonifica.", "warning");
+      return;
+    }
+    if (confirm(`Confermi l'eliminazione definitiva di tutti i file temporanei orfani (.tmp_moliris_*) dal robot '${robotId}' e dal server?`)) {
+      await DoubleSubmitGuard.execute(btnFsRemotePurge, "Bonifica in corso...", async () => {
+        try {
+          const res = await apiClient.post(`/api/robots/${encodeURIComponent(robotId)}/fs/cleanup-temp`, {});
+          const data = await res.json();
+          if (res.ok) {
+            showNotification(data.message || `Bonifica completata: eliminati ${data.purgedCount} file temporanei (${StateFormatter.formatBytes(data.freedBytes)} liberati).`, "success");
+            loadRemoteFilesystem(robotId, currentRemoteFsPath);
+            loadServerFilesystem(robotId, currentFsPath);
+          } else {
+            showNotification(data, "danger");
+          }
+        } catch (err) {
+          showNotification(err, "danger");
+        }
+      });
+    }
+  });
+
+  // Bonifica file temporanei globale da TUTTI i robot e server (Amministratore)
+  btnPurgeTransfersTemp?.addEventListener("click", async () => {
+    if (confirm("Confermi l'eliminazione definitiva di tutti i file temporanei (.tmp_moliris_*) da TUTTI i robot della flotta e dal server?")) {
+      await DoubleSubmitGuard.execute(btnPurgeTransfersTemp, "Bonifica in corso...", async () => {
+        try {
+          const res = await apiClient.post("/api/fs/cleanup-temp-all", {});
+          const data = await res.json();
+          if (res.ok) {
+            showNotification(data.message || `Bonifica globale completata: eliminati ${data.totalPurged} file temporanei (${StateFormatter.formatBytes(data.totalFreedBytes)} liberati).`, "success");
+            const currentRobotId = fsRobotIdInput.value.trim() || fsRemoteRobotIdInput.value.trim();
+            if (currentRobotId) {
+              loadRemoteFilesystem(currentRobotId, currentRemoteFsPath);
+              loadServerFilesystem(currentRobotId, currentFsPath);
+            }
+            loadTransfersList();
+          } else {
+            showNotification(data, "danger");
+          }
+        } catch (err) {
+          showNotification(err, "danger");
+        }
+      });
+    }
+  });
+
+  // =========================================================================
+  // GESTIONE CARICAMENTO MASSIVO MULTI-TARGET (RF-TRF-001..005, RF-TRF-009, RF-TRF-011)
+  // =========================================================================
+  const btnBulkUploadOpen = document.getElementById("btn-bulk-upload-open");
+  const modalBulkUpload = document.getElementById("modal-bulk-upload");
+  const btnCloseBulkUpload = document.getElementById("btn-close-bulk-upload");
+  const btnCancelBulkUpload = document.getElementById("btn-cancel-bulk-upload");
+  const btnStartBulkUpload = document.getElementById("btn-start-bulk-upload");
+  const bulkFilesInput = document.getElementById("bulk-files-input");
+  const bulkFilesCount = document.getElementById("bulk-files-count");
+  const bulkFilesPreviewList = document.getElementById("bulk-files-preview-list");
+  const bulkTargetServerCheck = document.getElementById("bulk-target-server-check");
+  const bulkServerConfig = document.getElementById("bulk-server-config");
+  const bulkServerRobotSelect = document.getElementById("bulk-server-robot-select");
+  const bulkServerSubpath = document.getElementById("bulk-server-subpath");
+  const bulkRobotsCheckboxes = document.getElementById("bulk-robots-checkboxes");
+  const bulkRobotRemotepath = document.getElementById("bulk-robot-remotepath");
+  const bulkProgressContainer = document.getElementById("bulk-progress-container");
+  const bulkProgressBar = document.getElementById("bulk-progress-bar");
+  const bulkProgressStatus = document.getElementById("bulk-progress-status");
+  const bulkProgressText = document.getElementById("bulk-progress-text");
+  const bulkResultsContainer = document.getElementById("bulk-results-container");
+  const bulkUploadError = document.getElementById("bulk-upload-error");
+
+  const modalBulkConflicts = document.getElementById("modal-bulk-conflicts");
+  const btnCloseBulkConflicts = document.getElementById("btn-close-bulk-conflicts");
+  const btnBulkCancelConflicts = document.getElementById("btn-bulk-cancel-conflicts");
+  const btnBulkConfirmOverwrite = document.getElementById("btn-bulk-confirm-overwrite");
+  const bulkConflictsList = document.getElementById("bulk-conflicts-list");
+
+  let pendingBulkUpload = null;
+
+  async function openBulkUploadModal() {
+    modalBulkUpload?.classList.remove("hidden");
+    bulkUploadError?.classList.add("hidden");
+    if (bulkResultsContainer) {
+      bulkResultsContainer.innerHTML = "";
+      bulkResultsContainer.classList.add("hidden");
+    }
+    if (bulkProgressContainer) {
+      bulkProgressContainer.classList.add("hidden");
+      if (bulkProgressBar) bulkProgressBar.value = 0;
+    }
+    if (bulkFilesInput) bulkFilesInput.value = "";
+    if (bulkFilesCount) bulkFilesCount.textContent = "Nessun file selezionato (massimo configurato: 20 file).";
+    if (bulkFilesPreviewList) bulkFilesPreviewList.innerHTML = "";
+
+    try {
+      const res = await apiClient.get("/api/robots");
+      if (res.ok) {
+        const data = await res.json();
+        const robots = data.robots || [];
+
+        if (bulkServerRobotSelect) {
+          bulkServerRobotSelect.innerHTML = "";
+          for (const r of robots) {
+            const opt = document.createElement("option");
+            opt.value = r.id;
+            opt.textContent = `${r.displayName} (${r.id})`;
+            bulkServerRobotSelect.appendChild(opt);
+          }
+        }
+
+        if (bulkRobotsCheckboxes) {
+          bulkRobotsCheckboxes.innerHTML = "";
+          if (robots.length === 0) {
+            bulkRobotsCheckboxes.innerHTML = '<div style="color: #64748b; font-size: 0.85rem;">Nessun robot registrato disponibile.</div>';
+          } else {
+            for (const r of robots) {
+              const div = document.createElement("div");
+              div.style.marginBottom = "0.25rem";
+              const isConn = r.connectionState === "connesso" || r.connectionState === "raggiungibile";
+              div.innerHTML = `
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; cursor: pointer;">
+                  <input type="checkbox" class="bulk-robot-target-item" data-robot-id="${StateFormatter.escapeHtml(r.id)}">
+                  <span>${StateFormatter.escapeHtml(r.displayName)} (<code>${StateFormatter.escapeHtml(r.id)}</code>) - <small style="color: ${isConn ? '#16a34a' : '#d97706'}">${StateFormatter.escapeHtml(r.connectionState || 'non_verificato')}</small></span>
+                </label>
+              `;
+              bulkRobotsCheckboxes.appendChild(div);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Impossibile caricare robot per upload massivo:", e);
+    }
+  }
+
+  function closeBulkUploadModal() {
+    modalBulkUpload?.classList.add("hidden");
+    pendingBulkUpload = null;
+  }
+
+  btnBulkUploadOpen?.addEventListener("click", openBulkUploadModal);
+  btnCloseBulkUpload?.addEventListener("click", closeBulkUploadModal);
+  btnCancelBulkUpload?.addEventListener("click", closeBulkUploadModal);
+
+  bulkTargetServerCheck?.addEventListener("change", () => {
+    if (bulkTargetServerCheck.checked) {
+      bulkServerConfig?.classList.remove("hidden");
+    } else {
+      bulkServerConfig?.classList.add("hidden");
+    }
+  });
+
+  bulkFilesInput?.addEventListener("change", () => {
+    const files = bulkFilesInput.files ? Array.from(bulkFilesInput.files) : [];
+    if (files.length === 0) {
+      if (bulkFilesCount) bulkFilesCount.textContent = "Nessun file selezionato.";
+      if (bulkFilesPreviewList) bulkFilesPreviewList.innerHTML = "";
+      return;
+    }
+    const totalSize = files.reduce((acc, f) => acc + f.size, 0);
+    if (bulkFilesCount) {
+      bulkFilesCount.textContent = `${files.length} file selezionati (${StateFormatter.formatBytes(totalSize)} totali).`;
+    }
+    if (bulkFilesPreviewList) {
+      bulkFilesPreviewList.innerHTML = "";
+      for (const f of files) {
+        const li = document.createElement("li");
+        li.textContent = `${f.name} (${StateFormatter.formatBytes(f.size)})`;
+        bulkFilesPreviewList.appendChild(li);
+      }
+    }
+  });
+
+  btnStartBulkUpload?.addEventListener("click", async () => {
+    const files = bulkFilesInput.files ? Array.from(bulkFilesInput.files) : [];
+    if (files.length === 0) {
+      showBulkError("Selezionare almeno un file da caricare.");
+      return;
+    }
+
+    const targets = [];
+    if (bulkTargetServerCheck?.checked) {
+      const robotId = bulkServerRobotSelect?.value;
+      if (!robotId) {
+        showBulkError("Selezionare un robot per il caricamento sul server.");
+        return;
+      }
+      targets.push({
+        type: "server",
+        robotId,
+        directory: bulkServerSubpath?.value.trim() || undefined,
+      });
+    }
+
+    const checkedRobots = document.querySelectorAll(".bulk-robot-target-item:checked");
+    for (const chk of checkedRobots) {
+      const robotId = chk.getAttribute("data-robot-id");
+      if (robotId) {
+        targets.push({
+          type: "robot",
+          robotId,
+          directory: bulkRobotRemotepath?.value.trim() || undefined,
+        });
+      }
+    }
+
+    if (targets.length === 0) {
+      showBulkError("Selezionare almeno una destinazione (Server o Robot).");
+      return;
+    }
+
+    bulkUploadError?.classList.add("hidden");
+
+    try {
+      btnStartBulkUpload.disabled = true;
+      btnStartBulkUpload.textContent = "Verifica conflitti in corso...";
+
+      const preCheckRes = await apiClient.post("/api/transfers/bulk/pre-check", {
+        filenames: files.map((f) => f.name),
+        targets,
+      });
+
+      if (!preCheckRes.ok) {
+        const errData = await preCheckRes.json().catch(() => null);
+        const errObj = ErrorPresenter.formatError(errData);
+        showBulkError(errObj.userMessage);
+        btnStartBulkUpload.disabled = false;
+        btnStartBulkUpload.textContent = "🚀 Avvia Caricamento Massivo";
+        return;
+      }
+
+      const preCheck = await preCheckRes.json();
+      if (preCheck.hasConflicts) {
+        pendingBulkUpload = { files, targets };
+        showBulkConflictsModal(preCheck.conflicts);
+        btnStartBulkUpload.disabled = false;
+        btnStartBulkUpload.textContent = "🚀 Avvia Caricamento Massivo";
+        return;
+      }
+
+      await performBulkUpload(files, targets, false);
+    } catch (err) {
+      showBulkError(err.message || "Errore durante la verifica preventiva dei conflitti.");
+    } finally {
+      btnStartBulkUpload.disabled = false;
+      btnStartBulkUpload.textContent = "🚀 Avvia Caricamento Massivo";
+    }
+  });
+
+  function showBulkError(msg) {
+    if (bulkUploadError) {
+      bulkUploadError.textContent = msg;
+      bulkUploadError.classList.remove("hidden");
+    }
+  }
+
+  function showBulkConflictsModal(conflicts) {
+    if (!bulkConflictsList || !modalBulkConflicts) return;
+    bulkConflictsList.innerHTML = "";
+    for (const c of conflicts) {
+      const div = document.createElement("div");
+      div.style.marginBottom = "0.5rem";
+      div.innerHTML = `
+        <strong>${StateFormatter.escapeHtml(c.filename)}</strong> su 
+        <em>${c.target.type.toUpperCase()}:${StateFormatter.escapeHtml(c.target.robotId)}</em>
+        <br><small style="color: #64748b;">Percorso: ${StateFormatter.escapeHtml(c.destinationPath)}${c.existingSizeBytes ? ` (${StateFormatter.formatBytes(c.existingSizeBytes)})` : ''}</small>
+      `;
+      bulkConflictsList.appendChild(div);
+    }
+    modalBulkConflicts.classList.remove("hidden");
+  }
+
+  btnCloseBulkConflicts?.addEventListener("click", () => {
+    modalBulkConflicts?.classList.add("hidden");
+    pendingBulkUpload = null;
+    showNotification("Caricamento massivo annullato: i file esistenti sono stati preservati intatti.", "info");
+  });
+
+  btnBulkCancelConflicts?.addEventListener("click", () => {
+    modalBulkConflicts?.classList.add("hidden");
+    pendingBulkUpload = null;
+    showNotification("Caricamento massivo annullato: i file esistenti sono stati preservati intatti.", "info");
+  });
+
+  btnBulkConfirmOverwrite?.addEventListener("click", async () => {
+    modalBulkConflicts?.classList.add("hidden");
+    if (!pendingBulkUpload) return;
+    const { files, targets } = pendingBulkUpload;
+    pendingBulkUpload = null;
+    await performBulkUpload(files, targets, true);
+  });
+
+  async function performBulkUpload(files, targets, overwrite) {
+    if (bulkProgressContainer) bulkProgressContainer.classList.remove("hidden");
+    if (bulkProgressBar) bulkProgressBar.value = 0;
+    if (bulkProgressText) bulkProgressText.textContent = "0%";
+    if (bulkProgressStatus) bulkProgressStatus.textContent = "Invio in streaming verso il server...";
+
+    const formData = new FormData();
+    formData.append("targets", JSON.stringify(targets));
+    formData.append("overwrite", String(overwrite));
+    for (const file of files) {
+      formData.append("files", file, file.name);
+    }
+
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/transfers/bulk/upload", true);
+      xhr.withCredentials = true;
+
+      xhr.upload.onprogress = (evt) => {
+        if (evt.lengthComputable) {
+          const percent = Math.round((evt.loaded / evt.total) * 100);
+          if (bulkProgressBar) bulkProgressBar.value = percent;
+          if (bulkProgressText) bulkProgressText.textContent = `${percent}%`;
+          if (bulkProgressStatus) {
+            bulkProgressStatus.textContent = percent < 100
+              ? `Caricamento stream client -> server: ${percent}%`
+              : "Scrittura atomica e verifica checksum sulle destinazioni...";
+          }
+        }
+      };
+
+      const resultPromise = new Promise((resolve, reject) => {
+        xhr.onload = () => {
+          let data = null;
+          try { data = JSON.parse(xhr.responseText); } catch {}
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(data);
+          } else {
+            reject({ status: xhr.status, data });
+          }
+        };
+        xhr.onerror = () => reject({ status: 0, message: "Errore di rete durante il caricamento massivo." });
+      });
+
+      xhr.send(formData);
+      const resData = await resultPromise;
+
+      if (bulkProgressBar) bulkProgressBar.value = 100;
+      if (bulkProgressText) bulkProgressText.textContent = "100%";
+      if (bulkProgressStatus) bulkProgressStatus.textContent = "Caricamento completato con successo!";
+
+      showNotification(`Caricamento massivo completato: ${resData.summary?.completed || 0} completati, ${resData.summary?.failed || 0} falliti, ${resData.summary?.skipped || 0} saltati.`, "success");
+
+      if (bulkResultsContainer && resData.results) {
+        bulkResultsContainer.classList.remove("hidden");
+        let html = '<div style="font-weight: 600; margin-bottom: 0.5rem;">Esito per Destinazione:</div><ul style="padding-left: 1rem; font-size: 0.85rem;">';
+        for (const fileRes of resData.results) {
+          html += `<li><strong>${StateFormatter.escapeHtml(fileRes.filename)}</strong>:`;
+          html += '<ul style="margin: 0.25rem 0;">';
+          for (const t of fileRes.targets) {
+            const ok = t.success;
+            html += `<li style="color: ${ok ? '#16a34a' : '#dc2626'}">${t.target.type.toUpperCase()}:${StateFormatter.escapeHtml(t.target.robotId)} - ${ok ? 'Successo' : StateFormatter.escapeHtml(t.error || 'Fallito')}</li>`;
+          }
+          html += '</ul></li>';
+        }
+        html += '</ul>';
+        bulkResultsContainer.innerHTML = html;
+      }
+
+      const currentRobotId = fsRobotIdInput?.value.trim() || fsRemoteRobotIdInput?.value.trim();
+      if (currentRobotId) {
+        loadServerFilesystem(currentRobotId, currentFsPath);
+      }
+    } catch (err) {
+      if (err.status === 409 && err.data?.conflicts) {
+        pendingBulkUpload = { files, targets };
+        showBulkConflictsModal(err.data.conflicts);
+      } else {
+        const errObj = ErrorPresenter.formatError(err.data || err);
+        showBulkError(errObj.userMessage);
+      }
+    }
+  }
 
   // Avvio controllo sessione iniziale
   initSession();

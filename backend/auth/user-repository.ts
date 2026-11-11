@@ -82,7 +82,7 @@ export class MongoUserRepository implements UserRepository {
     try {
       await this.collection.createIndex(
         { username: 1 },
-        { unique: true, collation: { locale: "en", strength: 2 }, name: "unique_username_case_insensitive" }
+        { unique: true, name: "username_unique_case_insensitive", collation: { locale: "en", strength: 2 } }
       );
       await this.collection.createIndex({ id: 1 }, { unique: true });
     } catch (err: any) {

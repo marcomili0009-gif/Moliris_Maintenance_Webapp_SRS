@@ -408,6 +408,21 @@ assert.strictEqual(allowedDetail.statusCode, 200, "Operatore deve poter accedere
 const forbiddenDetail = await sendHttpsRequest("GET", "/api/robots/robot_forbidden", opAuthHeader);
 assert.strictEqual(forbiddenDetail.statusCode, 403, "Operatore non autorizzato su robot_forbidden deve ricevere 403");
 assert.strictEqual(forbiddenDetail.body?.code, "AUTH_INSUFFICIENT_PERMISSIONS");
+// 2-bis. L'operatore non deve vedere i trasferimenti di un robot non autorizzato
+const forbiddenTransfers = await sendHttpsRequest(
+  "GET",
+  "/api/robots/robot_forbidden/transfers",
+  opAuthHeader
+);
+assert.strictEqual(
+  forbiddenTransfers.statusCode,
+  403,
+  "Operatore non autorizzato non deve poter consultare i trasferimenti di robot_forbidden"
+);
+assert.strictEqual(
+  forbiddenTransfers.body?.code,
+  "AUTH_INSUFFICIENT_PERMISSIONS"
+);
 
 // 3. Tentativo di navigare il server filesystem di robot_forbidden
 const forbiddenFs = await sendHttpsRequest("GET", "/api/robots/robot_forbidden/fs/server/list", opAuthHeader);

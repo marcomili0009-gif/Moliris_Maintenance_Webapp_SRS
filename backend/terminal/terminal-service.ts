@@ -8,7 +8,7 @@ import { type RobotRepository } from "../../storage/robot-repository.ts";
 import { type AuditRepository } from "../../storage/audit-repository.ts";
 import { AuditOperation } from "../../storage/audit-models.ts";
 import { type RobotConnectionManager } from "../connection/robot-connection-manager.ts";
-import { type SessionManager } from "../auth/session-manager.ts";
+import { type SessionManager, type SessionData } from "../auth/session-manager.ts";
 import { type UserEntity } from "../auth/user-models.ts";
 import { AppPermission, hasPermission, type RolePermissionMapping } from "../auth/permissions.ts";
 import { MolirisAppError, ErrorCode } from "../../errors/app-errors.ts";
@@ -36,6 +36,15 @@ export class TerminalService {
   private activeSessions: Map<string, TerminalSession> = new Map();
   private userSessionCounts: Map<string, number> = new Map();
   private robotSessionCounts: Map<string, number> = new Map();
+  private pendingOpens = new Map<string, {
+    userId: string;
+    userSessionId: string;
+    robotId: string;
+    robotGeneration: number;
+    serverGeneration: number;
+  }>();
+  private robotGenerations = new Map<string, number>();
+  private serverGeneration = 0;
   private idleCheckTimer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -73,10 +82,16 @@ export class TerminalService {
     // STEP 5 – Hook di notifica chiusura/scadenza sessione utente (RF-SSH-005, Prompt 3)
     // Il logout/scadenza chiude SOLO i terminali della specifica sessione terminata (non tutti i terminali dell'utente)
     this.sessionManager.onSessionTerminated((userSessionId, userId, reason) => {
+      for (const [reservationId, reservation] of this.pendingOpens) {
+        if (reservation.userSessionId === userSessionId && reservation.userId === userId) {
+          this.releasePendingOpen(reservationId);
+        }
+      }
+
       const termReason: TerminalCloseReason = "USER_SESSION_TERMINATED";
       for (const session of Array.from(this.activeSessions.values())) {
         if (session.authorizedContext.sessionId === userSessionId) {
-          this.closeSession(session.sessionId, termReason, `Sessione utente terminata (${reason})`);
+          this.closeSessionSafely(session.sessionId, termReason, `Sessione utente terminata (${reason})`);
         }
       }
     });
@@ -94,7 +109,7 @@ export class TerminalService {
       const remainingMs = timeoutMs - idleMs;
 
       if (remainingMs <= 0) {
-        this.closeSession(session.sessionId, "IDLE_TIMEOUT", "Timeout inattività terminale superato (15 minuti).");
+        this.closeSessionSafely(session.sessionId, "IDLE_TIMEOUT", "Timeout inattività terminale superato (15 minuti).");
       } else if (remainingMs <= warningWindowMs) {
         // RF-01: Notifica pop-up con countdown aggiornato a ogni minuto (5, 4, 3, 2, 1)
         const remainingMinutes = Math.max(1, Math.ceil(remainingMs / 60000));
@@ -146,6 +161,60 @@ export class TerminalService {
     return this.activeSessions.get(sessionId);
   }
 
+  private releasePendingOpen(reservationId: string): void {
+    const reservation = this.pendingOpens.get(reservationId);
+    if (!reservation) return;
+
+    this.pendingOpens.delete(reservationId);
+
+    const userCount = this.userSessionCounts.get(reservation.userId) || 0;
+    if (userCount <= 1) this.userSessionCounts.delete(reservation.userId);
+    else this.userSessionCounts.set(reservation.userId, userCount - 1);
+
+    const robotCount = this.robotSessionCounts.get(reservation.robotId) || 0;
+    if (robotCount <= 1) this.robotSessionCounts.delete(reservation.robotId);
+    else this.robotSessionCounts.set(reservation.robotId, robotCount - 1);
+  }
+
+  private assertPendingOpenValid(
+    reservationId: string,
+    user: UserEntity,
+    userSessionId: string,
+    robotId: string
+  ): SessionData {
+    const reservation = this.pendingOpens.get(reservationId);
+
+    if (
+      !reservation ||
+      reservation.userId !== user.id ||
+      reservation.userSessionId !== userSessionId ||
+      reservation.robotId !== robotId ||
+      reservation.serverGeneration !== this.serverGeneration ||
+      reservation.robotGeneration !== (this.robotGenerations.get(robotId) || 0)
+    ) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Apertura del terminale annullata perché la sessione utente, il robot o il servizio non sono più validi."
+      );
+    }
+
+    const userSession = this.sessionManager.validate(userSessionId);
+
+    // validate() può notificare la scadenza e rimuovere la prenotazione.
+    if (
+      !userSession ||
+      userSession.userId !== user.id ||
+      !this.pendingOpens.has(reservationId)
+    ) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Apertura del terminale annullata: sessione utente non più valida."
+      );
+    }
+
+    return userSession;
+  }
+
   /**
    * STEP 1 – Apertura della sessione di terminale (RF-SSH-001, RF-SSH-004, §6.4 passi 1-5).
    * Verifica permessi, stato del robot, limiti di concorrenza e alloca il canale PTY.
@@ -175,7 +244,20 @@ export class TerminalService {
       );
     }
 
-    // 2. Verifica stato del robot (§6.4 passo 2, §8.1, §8.4, RF-SSH-007)
+    const initialSession = this.sessionManager.validate(userSessionId);
+    if (!initialSession || initialSession.userId !== user.id) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Sessione utente non valida o scaduta."
+      );
+    }
+
+    // Snapshot delle generation PRIMA di leggere lo stato del robot: se il robot viene
+    // disabilitato durante l'await, la prenotazione risulta invalidata invece di usare
+    // la generation già incrementata con uno stato letto ormai obsoleto.
+    const openRobotGeneration = this.robotGenerations.get(robotId) || 0;
+    const openServerGeneration = this.serverGeneration;
+
     const robot = await this.robotRepository.findById(robotId);
     if (!robot) {
       throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${robotId}' non trovato.`);
@@ -202,8 +284,8 @@ export class TerminalService {
       );
     }
 
-    // 3. Verifica limiti di concorrenza (RNF-PERF-003, §11.7)
-    if (this.activeSessions.size >= this.limits.maxConcurrentServer) {
+    // Prenotazione sincrona: include anche le aperture SSH ancora in corso.
+    if (this.activeSessions.size + this.pendingOpens.size >= this.limits.maxConcurrentServer) {
       throw new MolirisAppError(
         ErrorCode.INSUFFICIENT_STORAGE,
         "Numero massimo di sessioni terminale contemporanee sul server raggiunto. Riprovare a breve."
@@ -226,84 +308,120 @@ export class TerminalService {
       );
     }
 
-    // 4. Apertura connessione gestita e canale PTY remoto (Prompt 5, vincoli 2.4, RF-SSH-004)
-    // Nessuna elevazione automatica dei privilegi (RF-SSH-008)
-    const managedConn = await this.connectionManager.acquireConnection(user.username, robot);
-
-    const cols = Math.max(10, Math.min(300, initialDimensions.cols || 80));
-    const rows = Math.max(5, Math.min(100, initialDimensions.rows || 24));
-
-    let ptyChannel;
-    try {
-      ptyChannel = await managedConn.openPtyStream({ cols, rows, term: "xterm-256color" });
-    } catch (ptyErr: any) {
-      await managedConn.close();
-      throw ptyErr;
-    }
-
-    // 5. Creazione sessione isolata (RF-SSH-006, RNF-SEC-007)
-    const sessionId = `term_${crypto.randomBytes(24).toString("hex")}`;
-    const authorizedContext = this.sessionManager.createAuthorizedContext(
-      {
-        sessionId: userSessionId,
-        userId: user.id,
-        username: user.username,
-        roles: user.roles,
-        createdAt: new Date(),
-        lastActivityAt: new Date(),
-      },
-      user,
-      robot.id,
-      this.roleMapping
-    );
-
-    const session: TerminalSession = {
-      sessionId,
+    const reservationId = crypto.randomBytes(24).toString("hex");
+    this.pendingOpens.set(reservationId, {
       userId: user.id,
-      username: user.username,
+      userSessionId,
       robotId: robot.id,
-      authorizedContext,
-      state: "active",
-      cols,
-      rows,
-      createdAt: new Date(),
-      lastActivityAt: new Date(),
-      managedConnection: managedConn,
-      ptyChannel,
-    };
-
-    this.activeSessions.set(sessionId, session);
+      robotGeneration: openRobotGeneration,
+      serverGeneration: openServerGeneration,
+    });
     this.userSessionCounts.set(user.id, userCount + 1);
     this.robotSessionCounts.set(robot.id, robotCount + 1);
 
-    // Distinzione tra disconnessione robot ed exit shell (§6.4 passo 7, RF-SSH-005)
-    ptyChannel.on("exit", () => {
-      this.closeSession(sessionId, "SHELL_EXIT", "Processo shell terminato dall'utente (exit).");
-    });
+    let managedConn: Awaited<ReturnType<RobotConnectionManager["acquireConnection"]>> | undefined;
+    let ptyChannel: Awaited<ReturnType<NonNullable<typeof managedConn>["openPtyStream"]>> | undefined;
+    let registeredSession: TerminalSession | undefined;
 
-    ptyChannel.on("close", () => {
-      this.closeSession(sessionId, "SHELL_EXIT", "Canale PTY remoto chiuso.");
-    });
+    try {
+      const validSession = this.assertPendingOpenValid(reservationId, user, userSessionId, robot.id);
 
-    ptyChannel.on("end", () => {
-      this.closeSession(sessionId, "SHELL_EXIT", "Stream PTY terminato.");
-    });
+      managedConn = await this.connectionManager.acquireConnection(user.username, robot);
+      this.assertPendingOpenValid(reservationId, user, userSessionId, robot.id);
 
-    ptyChannel.on("error", (err: any) => {
-      this.closeSession(sessionId, "ROBOT_DISCONNECT", `Errore PTY robot: ${err?.message}`);
-    });
+      const cols = Math.max(10, Math.min(300, initialDimensions.cols || 80));
+      const rows = Math.max(5, Math.min(100, initialDimensions.rows || 24));
 
-    // STEP 8 – Registrazione Audit di apertura sessione (RNF-SEC-009, §10.4)
-    await this.auditRepository.record({
-      userId: user.username,
-      operation: AuditOperation.TERMINAL_OPEN,
-      robotId: robot.id,
-      outcome: "SUCCESS",
-      timestamp: new Date(),
-      details: { sessionId, cols, rows },
-    });
+      ptyChannel = await managedConn.openPtyStream({ cols, rows, term: "xterm-256color" });
+      this.assertPendingOpenValid(reservationId, user, userSessionId, robot.id);
 
-    return session;
+      const sessionId = `term_${crypto.randomBytes(24).toString("hex")}`;
+      const authorizedContext = this.sessionManager.createAuthorizedContext(
+        validSession,
+        user,
+        robot.id,
+        this.roleMapping
+      );
+
+      const session: TerminalSession = {
+        sessionId,
+        userId: user.id,
+        username: user.username,
+        robotId: robot.id,
+        authorizedContext,
+        state: "active",
+        cols,
+        rows,
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        managedConnection: managedConn,
+        ptyChannel,
+      };
+
+      // Nessun await tra l'ultima validazione e la conversione della prenotazione.
+      this.assertPendingOpenValid(reservationId, user, userSessionId, robot.id);
+      this.pendingOpens.delete(reservationId);
+      this.activeSessions.set(sessionId, session);
+      registeredSession = session;
+
+      ptyChannel.on("exit", () => {
+        this.closeSessionSafely(sessionId, "SHELL_EXIT", "Processo shell terminato dall'utente (exit).");
+      });
+
+      ptyChannel.on("close", () => {
+        this.closeSessionSafely(sessionId, "SHELL_EXIT", "Canale PTY remoto chiuso.");
+      });
+
+      ptyChannel.on("end", () => {
+        this.closeSessionSafely(sessionId, "SHELL_EXIT", "Stream PTY terminato.");
+      });
+
+      ptyChannel.on("error", (err: any) => {
+        this.closeSessionSafely(sessionId, "ROBOT_DISCONNECT", `Errore PTY robot: ${err?.message}`);
+      });
+
+      await this.auditRepository.record({
+        userId: user.username,
+        operation: AuditOperation.TERMINAL_OPEN,
+        robotId: robot.id,
+        outcome: "SUCCESS",
+        timestamp: new Date(),
+        details: { sessionId, cols, rows },
+      });
+
+      return session;
+    } catch (err) {
+      if (registeredSession) {
+        try {
+          await this.closeSession(
+            registeredSession.sessionId,
+            "ROBOT_DISCONNECT",
+            "Apertura terminale fallita durante la registrazione audit."
+          );
+        } catch (closeErr) {
+          this.logger.warn("Errore durante la pulizia della sessione dopo apertura terminale fallita.", {
+            error: redactSensitiveData(String(closeErr)),
+          });
+        }
+      } else {
+        this.releasePendingOpen(reservationId);
+
+        if (ptyChannel) {
+          try { ptyChannel.end(); } catch {}
+          try { ptyChannel.destroy(); } catch {}
+        }
+
+        if (managedConn) {
+          try { await managedConn.close(); } catch (closeErr) {
+            this.logger.warn("Errore durante il rilascio della connessione SSH dopo apertura terminale fallita.", {
+              error: redactSensitiveData(String(closeErr)),
+            });
+          }
+        }
+      }
+
+      throw err;
+    }
   }
 
   /**
@@ -380,7 +498,18 @@ export class TerminalService {
       return;
     }
 
+    // 3. Rifiuto atomico di un secondo aggancio (RF-SSH-006, check-and-set)
+    if (session.hasHadSocket) {
+      try {
+        socket.send(JSON.stringify({ type: "error", message: "Riconnessione non consentita: la sessione terminale ha già avuto un collegamento WebSocket." }));
+        socket.close(4409, "Second Attach Forbidden");
+      } catch {}
+      return;
+    }
+
+    session.hasHadSocket = true;
     session.webSocket = socket;
+    session.drainIntervals = new Set();
 
     // STEP 2 – Streaming PROGRESSIVO dell'output dal PTY verso il WebSocket (CA-SSH-003, RNF-PERF-002)
     const onPtyData = (chunk: Buffer | string) => {
@@ -393,19 +522,22 @@ export class TerminalService {
           } catch {}
 
           const drainInterval = setInterval(() => {
-            if (socket.bufferedAmount === 0 || socket.readyState !== 1) {
+            if (socket.bufferedAmount === 0 || socket.readyState !== 1 || session.state !== "active") {
               clearInterval(drainInterval);
+              session.drainIntervals?.delete(drainInterval);
               try {
                 session.ptyChannel.resume();
               } catch {}
             }
           }, 30);
+          session.drainIntervals?.add(drainInterval);
         }
 
         socket.send(chunk);
       }
     };
 
+    session.onPtyData = onPtyData;
     session.ptyChannel.on("data", onPtyData);
 
     // STEP 2 – Input dal WebSocket verso il PTY (comandi, caratteri di controllo, resize)
@@ -439,7 +571,7 @@ export class TerminalService {
             return;
           }
           if (parsed.type === "close") {
-            this.closeSession(sessionId, "USER_EXPLICIT");
+            this.closeSessionSafely(sessionId, "USER_EXPLICIT");
             return;
           }
           if (parsed.type === "input" && typeof parsed.data === "string") {
@@ -480,7 +612,7 @@ export class TerminalService {
           try {
             socket.terminate();
           } catch {}
-          this.closeSession(sessionId, "CLIENT_DISCONNECT", "Perdita heartbeat WebSocket");
+          this.closeSessionSafely(sessionId, "CLIENT_DISCONNECT", "Perdita heartbeat WebSocket");
           return;
         }
 
@@ -492,7 +624,7 @@ export class TerminalService {
         } catch {
           clearInterval(pingTimer);
           session.pingTimer = undefined;
-          this.closeSession(sessionId, "CLIENT_DISCONNECT", "Errore invio ping heartbeat");
+          this.closeSessionSafely(sessionId, "CLIENT_DISCONNECT", "Errore invio ping heartbeat");
         }
       }, pingIntervalMs);
 
@@ -510,7 +642,7 @@ export class TerminalService {
         session.pingTimer = undefined;
       }
       session.ptyChannel.removeListener("data", onPtyData);
-      this.closeSession(sessionId, "CLIENT_DISCONNECT");
+      this.closeSessionSafely(sessionId, "CLIENT_DISCONNECT");
     });
 
     socket.on("error", (err: any) => {
@@ -519,7 +651,7 @@ export class TerminalService {
         session.pingTimer = undefined;
       }
       session.ptyChannel.removeListener("data", onPtyData);
-      this.closeSession(sessionId, "CLIENT_DISCONNECT", err?.message);
+      this.closeSessionSafely(sessionId, "CLIENT_DISCONNECT", err?.message);
     });
   }
 
@@ -540,6 +672,20 @@ export class TerminalService {
     if (session.pingTimer) {
       clearInterval(session.pingTimer);
       session.pingTimer = undefined;
+    }
+
+    if (session.drainIntervals) {
+      for (const t of session.drainIntervals) {
+        clearInterval(t);
+      }
+      session.drainIntervals.clear();
+    }
+
+    if (session.onPtyData) {
+      try {
+        session.ptyChannel.removeListener("data", session.onPtyData);
+      } catch {}
+      session.onPtyData = undefined;
     }
 
     session.state = "closing";
@@ -605,28 +751,76 @@ export class TerminalService {
    * Chiude tutte le sessioni terminale aperte per un robot (es. disabilitazione con chiusura immediata).
    */
   public async closeSessionsForRobot(robotId: string, reason: TerminalCloseReason = "ADMIN_DISABLED"): Promise<void> {
-    const toClose = Array.from(this.activeSessions.values()).filter((s) => s.robotId === robotId);
-    for (const session of toClose) {
-      await this.closeSession(session.sessionId, reason, `Robot '${robotId}' disabilitato o rimosso.`);
+    this.robotGenerations.set(robotId, (this.robotGenerations.get(robotId) || 0) + 1);
+
+    for (const [reservationId, reservation] of Array.from(this.pendingOpens)) {
+      if (reservation.robotId === robotId) {
+        this.releasePendingOpen(reservationId);
+      }
     }
+
+    const message = this.closeMessageForRobot(robotId, reason);
+    const toClose = Array.from(this.activeSessions.values()).filter((s) => s.robotId === robotId);
+
+    for (const session of toClose) {
+      try {
+        await this.closeSession(session.sessionId, reason, message);
+      } catch (err) {
+        // Un errore su una sessione non deve lasciare aperte le altre (nessun dato sensibile nei log, RNF-SEC-002)
+        console.error("closeSession fallita", { sessionId: session.sessionId, robotId, error: (err as Error).name });
+      }
+    }
+  }
+
+  /**
+   * Chiusura "fire-and-forget" sicura per listener ed eventi in cui nessuno può gestire l'errore:
+   * evita unhandled rejection (che in Node terminano il processo). Nessun dato sensibile nei log (RNF-SEC-002).
+   */
+  private closeSessionSafely(sessionId: string, reason: TerminalCloseReason, diagnosticMessage?: string): void {
+    this.closeSession(sessionId, reason, diagnosticMessage).catch((err) => {
+      this.logger.warn("Errore durante la chiusura asincrona della sessione terminale.", {
+        sessionId,
+        reason,
+        error: redactSensitiveData(String(err)),
+      });
+    });
+  }
+
+  private closeMessageForRobot(robotId: string, reason: TerminalCloseReason): string {
+    const messages: Partial<Record<TerminalCloseReason, string>> = {
+      ADMIN_DISABLED: `Robot '${robotId}' disabilitato o rimosso.`,
+    };
+    return messages[reason] ?? `Sessioni del robot '${robotId}' chiuse (motivo: ${reason}).`;
   }
 
   /**
    * Rilascio globale delle risorse all'arresto del servizio backend (RNF-REL-005).
    */
   public async closeAll(reason: TerminalCloseReason = "SERVICE_SHUTDOWN"): Promise<void> {
-    if (this.idleCheckTimer) {
-      clearInterval(this.idleCheckTimer);
-      this.idleCheckTimer = null;
-    }
+    this.serverGeneration++;
 
-    const sessions = Array.from(this.activeSessions.values());
-    for (const session of sessions) {
-      await this.closeSession(session.sessionId, reason, "Arresto ordinato del servizio.");
-    }
+    try {
+      if (this.idleCheckTimer) {
+        clearInterval(this.idleCheckTimer);
+        this.idleCheckTimer = null;
+      }
 
-    this.activeSessions.clear();
-    this.userSessionCounts.clear();
-    this.robotSessionCounts.clear();
+      for (const reservationId of Array.from(this.pendingOpens.keys())) {
+        this.releasePendingOpen(reservationId);
+      }
+
+      const sessions = Array.from(this.activeSessions.values());
+      for (const session of sessions) {
+        try {
+          await this.closeSession(session.sessionId, reason, "Arresto ordinato del servizio.");
+        } catch (err) {
+          console.error("closeSession fallita in closeAll", { sessionId: session.sessionId, error: (err as Error).name });
+        }
+      }
+    } finally {
+      this.activeSessions.clear();
+      this.userSessionCounts.clear();
+      this.robotSessionCounts.clear();
+    }
   }
 }

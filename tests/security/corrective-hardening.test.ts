@@ -303,7 +303,7 @@ try {
   // =========================================================================
   console.log("  [7/9] Test Attività Qualificata Sessione e Tetto Assoluto...");
   const sManager = new SessionManager(10, 20); // 10 min inattività, 20 min assoluto
-  const userEntity = { id: "u_session_test", username: "session_user", passwordHash: "test-hash", roles: ["operatore"], enabled: true, createdAt: new Date(), updatedAt: new Date() };
+  const userEntity = { id: "u_session_test", username: "session_user", passwordHash: "dummy_hash", roles: ["operatore"], enabled: true, createdAt: new Date(), updatedAt: new Date() };
   const sData = sManager.createSession(userEntity);
 
   // validate() non rinnova lastActivityAt
@@ -334,6 +334,7 @@ try {
   const termAuditRepo = new InMemoryAuditRepository();
   const termRobotRepo = new InMemoryRobotRepository();
   const termSessionManager = new SessionManager(30);
+  const termUserSession = termSessionManager.createSession(userEntity);
 
   const mockClient: any = {
     on: () => {},
@@ -394,7 +395,7 @@ try {
   });
 
   const adminTermUser = { ...userEntity, roles: ["amministratore"] };
-  const termSession = await termService.openTerminalSession(adminTermUser, "robot_term_test", { cols: 80, rows: 24 }, "session_term_123");
+  const termSession = await termService.openTerminalSession(adminTermUser, "robot_term_test", { cols: 80, rows: 24 }, termUserSession?.sessionId || "session_term_123");
   assert.strictEqual(termService.getActiveSessionCount(), 1);
 
   // Primo aggancio WebSocket -> consentito

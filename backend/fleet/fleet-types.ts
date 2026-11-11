@@ -110,6 +110,14 @@ export interface RegistrationResult {
   validationErrors?: Record<string, string>;
   performedActions: string[];
   skippedActions: string[];
+  failedAction?: string;
+  verificationSteps?: Array<{
+    step: string;
+    status: string;
+    message?: string;
+    diagnosticDetail?: string;
+    errorCode?: string;
+  }>;
   availableFeatures?: AvailableFeatures;
   recoveryPath?: string;
   message: string;

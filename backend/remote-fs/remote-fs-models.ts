@@ -31,6 +31,7 @@ export interface RemoteDirectoryListingDto {
   items: RemoteFileItemDto[];
   totalCount: number;
   truncated: boolean; // true se il numero di elementi ha superato il limite di sicurezza configurato (RNF-PERF-002)
+  isTruncated: boolean; // Flag semantico esplicito di troncamento per il frontend (Problema C2)
 }
 
 /**

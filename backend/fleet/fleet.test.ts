@@ -87,7 +87,7 @@ const testConfig: SystemConfiguration = {
   inactiveSessionTimeoutMinutes: 30,
   tlsCertPath: "dummy-cert.pem",
   tlsKeyPath: "dummy-key.pem",
-  standardSubdirectories: ["telemetria", "configurazioni"],
+  standardSubdirectories: ["logs", "configs", "backups"],
   registrationMode: "rigorosa",
   auditLogRetentionDays: 90,
   defaultSshPort: 22,
@@ -126,7 +126,7 @@ const opRestrictedUser: UserEntity = {
   roles: [],
   permissions: [],
   robotPermissions: {
-    "robot_ammesso": [AppPermission.FLEET_VIEW, AppPermission.STATUS_VIEW],
+    "robot-ammesso": [AppPermission.FLEET_VIEW, AppPermission.STATUS_VIEW],
   },
   enabled: true,
     updatedAt: new Date(),
@@ -183,7 +183,7 @@ try {
   {
     const { service, repo, audit } = createService();
     const result = await service.registerRobot(adminUser, {
-      id: "robot_01",
+      id: "robot-01",
       displayName: "Moliris Rover 1",
       remoteUsername: "moliris_op",
       host: "127.0.0.1",
@@ -198,7 +198,7 @@ try {
 
     assert.strictEqual(result.outcome, "registrazione_completata", "Esito deve essere registrazione_completata");
     assert(result.robot, "Deve restituire il dettaglio del robot registrato");
-    assert.strictEqual(result.robot.id, "robot_01");
+    assert.strictEqual(result.robot.id, "robot-01");
     assert.strictEqual(result.robot.displayName, "Moliris Rover 1");
     assert.strictEqual(result.robot.connectionState, "raggiungibile");
     assert.strictEqual(result.robot.anagraphicState, "attivo");
@@ -207,12 +207,12 @@ try {
     assert.strictEqual((result.robot as any).credentialReference, undefined);
 
     // Verifica persistenza a DB
-    const persisted = await repo.findById("robot_01");
+    const persisted = await repo.findById("robot-01");
     assert(persisted, "Robot deve essere memorizzato a DB");
-    assert.strictEqual(persisted.serverDirectoryPath, path.join(testFsRoot, "moliris_op"));
+    assert.strictEqual(persisted.serverDirectoryPath, path.join(testFsRoot, "moliris_op_robot-01"));
 
     // Verifica audit
-    const events = await audit.query({ robotId: "robot_01" });
+    const events = await audit.query({ robotId: "robot-01" });
     assert(events.some(e => e.operation === "ROBOT_REGISTRATION" && e.outcome === "SUCCESS"));
 
     console.log("  PASS: CA-ROB-001 - Registrazione valida con parametri obbligatori completata con successo.");
@@ -255,7 +255,7 @@ try {
     // Caso 3a: Modalità rigorosa -> fallimento SSH respinge la registrazione
     const { service: strictService, repo: strictRepo } = createService({ registrationMode: "rigorosa" });
     const strictResult = await strictService.registerRobot(adminUser, {
-      id: "robot_strict_fail",
+      id: "robot-strict-fail",
       displayName: "Robot Strict Test",
       remoteUsername: "moliris_op",
       host: "127.0.0.1",
@@ -270,13 +270,13 @@ try {
 
     assert.strictEqual(strictResult.outcome, "ssh_non_verificata");
     assert.strictEqual(strictResult.robot, undefined, "In modalità rigorosa non deve registrare il robot");
-    const strictCheck = await strictRepo.findById("robot_strict_fail");
+    const strictCheck = await strictRepo.findById("robot-strict-fail");
     assert.strictEqual(strictCheck, null, "Robot non registrato a DB in modalità rigorosa con SSH fallito");
 
     // Caso 3b: Modalità differita -> registra il robot con stato esplicito 'ssh_non_verificata'
     const { service: deferredService, repo: deferredRepo } = createService({ registrationMode: "differita" });
     const deferredResult = await deferredService.registerRobot(adminUser, {
-      id: "robot_deferred_ok",
+      id: "robot-deferred-ok",
       displayName: "Robot Deferred Test",
       remoteUsername: "moliris_op_def",
       host: "127.0.0.1",
@@ -305,12 +305,12 @@ try {
   }
 
   // =========================================================================
-  // CA-ROB-004: Directory creata con nome = username dentro la root configurata
+  // CA-ROB-004: Directory creata con nome = <username>_<id> dentro la root configurata
   // =========================================================================
   {
     const { service } = createService();
     const result = await service.registerRobot(adminUser, {
-      id: "robot_dir_01",
+      id: "robot-dir-01",
       displayName: "Robot Dir Test",
       remoteUsername: "robot_dir_user",
       host: "127.0.0.1",
@@ -324,13 +324,14 @@ try {
     });
 
     assert.strictEqual(result.outcome, "registrazione_completata");
-    const expectedDir = path.join(testFsRoot, "robot_dir_user");
+    const expectedDir = path.join(testFsRoot, "robot_dir_user_robot-dir-01");
     assert(fs.existsSync(expectedDir), `Directory ${expectedDir} deve essere stata creata sul filesystem`);
 
-    // Sottodirectory standard create
-    assert(fs.existsSync(path.join(expectedDir, "telemetria")));
-    assert(fs.existsSync(path.join(expectedDir, "configurazioni")));
-    console.log("  PASS: CA-ROB-004 - Directory creata con nome = username e sottodirectory standard (RF-ROB-008).");
+    // Sottodirectory standard create (logs, configs, backups)
+    assert(fs.existsSync(path.join(expectedDir, "logs")));
+    assert(fs.existsSync(path.join(expectedDir, "configs")));
+    assert(fs.existsSync(path.join(expectedDir, "backups")));
+    console.log("  PASS: CA-ROB-004 - Directory creata con nome = <username>_<id> e sottodirectory standard (RF-ROB-008).");
   }
 
   // =========================================================================
@@ -338,14 +339,14 @@ try {
   // =========================================================================
   {
     // Creiamo una directory esistente con file preesistente
-    const existingDir = path.join(testFsRoot, "existing_user");
+    const existingDir = path.join(testFsRoot, "existing_user_robot-existing-01");
     fs.mkdirSync(existingDir, { recursive: true });
     fs.writeFileSync(path.join(existingDir, "precious_data.txt"), "IMMUTABLE DATA");
 
     // Modalità accetta directory esistente
     const { service } = createService({ existingDirectoryPolicy: "accetta" });
     const result = await service.registerRobot(adminUser, {
-      id: "robot_existing_01",
+      id: "robot-existing-01",
       displayName: "Robot Existing Dir",
       remoteUsername: "existing_user",
       host: "127.0.0.1",
@@ -371,7 +372,7 @@ try {
     const { service } = createService();
     // Primo robot ok
     await service.registerRobot(adminUser, {
-      id: "robot_dup_01",
+      id: "robot-dup-01",
       displayName: "Robot Dup 1",
       remoteUsername: "dup_user",
       host: "127.0.0.1",
@@ -386,7 +387,7 @@ try {
 
     // Tentativo con stesso ID
     const resDupId = await service.registerRobot(adminUser, {
-      id: "robot_dup_01",
+      id: "robot-dup-01",
       displayName: "Robot Dup 2",
       remoteUsername: "other_user",
       host: "127.0.0.1",
@@ -401,9 +402,9 @@ try {
     assert.strictEqual(resDupId.outcome, "registrazione_rifiutata");
     assert(resDupId.validationErrors?.id, "ID duplicato deve essere rifiutato");
 
-    // Tentativo con stesso Username
+    // Tentativo con stesso Username sullo stesso host e porta
     const resDupUser = await service.registerRobot(adminUser, {
-      id: "robot_dup_02",
+      id: "robot-dup-02",
       displayName: "Robot Dup 3",
       remoteUsername: "dup_user",
       host: "127.0.0.1",
@@ -416,7 +417,7 @@ try {
       },
     });
     assert.strictEqual(resDupUser.outcome, "registrazione_rifiutata");
-    assert(resDupUser.validationErrors?.remoteUsername, "Username duplicato deve essere rifiutato");
+    assert(resDupUser.validationErrors?.remoteUsername, "Username duplicato sullo stesso host deve essere rifiutato");
 
     console.log("  PASS: CA-ROB-006 - Unicità di identificativo e username remoto garantita (RF-ROB-006).");
   }
@@ -430,7 +431,7 @@ try {
 
     const { service } = createService({ serverFilesystemRoot: unwritableRoot });
     const res = await service.registerRobot(adminUser, {
-      id: "robot_fail_dir",
+      id: "robot-fail-dir",
       displayName: "Robot Unwritable Dir",
       remoteUsername: "unwritable_user",
       host: "127.0.0.1",
@@ -459,12 +460,12 @@ try {
     };
 
     const { service } = createService({}, repoFaulty);
-    const targetDir = path.join(testFsRoot, "rollback_test_user");
+    const targetDir = path.join(testFsRoot, "rollback_test_user_robot-rollback-01");
 
     // Il salvataggio deve lanciare DB_PERSISTENCE_ERROR e la cartella creata deve essere stata rimossa
     await assert.rejects(
       async () => await service.registerRobot(adminUser, {
-        id: "robot_rollback_01",
+        id: "robot-rollback-01",
         displayName: "Robot Rollback Test",
         remoteUsername: "rollback_test_user",
         host: "127.0.0.1",
@@ -494,7 +495,7 @@ try {
   {
     const { service } = createService();
     const resTraversal = await service.registerRobot(adminUser, {
-      id: "robot_traversal",
+      id: "robot-traversal",
       displayName: "Robot Traversal",
       remoteUsername: "traversal_user",
       host: "127.0.0.1",
@@ -519,7 +520,7 @@ try {
   {
     const { service } = createService();
     await service.registerRobot(adminUser, {
-      id: "robot_feat_01",
+      id: "robot-feat-01",
       displayName: "Robot Features Test",
       remoteUsername: "feat_user",
       host: "127.0.0.1",
@@ -533,12 +534,12 @@ try {
     });
 
     const fleet = await service.listFleet(adminUser);
-    const found = fleet.find(r => r.id === "robot_feat_01");
+    const found = fleet.find(r => r.id === "robot-feat-01");
     assert(found, "Il robot deve comparire nella lista flotta");
     assert.strictEqual(found.connectionState, "raggiungibile");
     assert.strictEqual(found.operationalState, null, "Stato operativo non ancora disponibile = null (RF-MON-005)");
 
-    const detail = await service.getRobotDetail(adminUser, "robot_feat_01");
+    const detail = await service.getRobotDetail(adminUser, "robot-feat-01");
     assert.strictEqual(detail.availableFeatures.monitoring, true);
     assert.strictEqual(detail.availableFeatures.terminal, true);
     assert.strictEqual(detail.availableFeatures.remoteFs, true);
@@ -553,7 +554,7 @@ try {
   {
     const { service, repo, connMgr } = createService();
     await service.registerRobot(adminUser, {
-      id: "robot_remove_01",
+      id: "robot-remove-01",
       displayName: "Robot To Remove",
       remoteUsername: "remove_user",
       host: "127.0.0.1",
@@ -566,15 +567,15 @@ try {
       },
     });
 
-    const robotDir = path.join(testFsRoot, "remove_user");
-    fs.writeFileSync(path.join(robotDir, "telemetria", "session_log.txt"), "DO NOT DELETE ME");
+    const robotDir = path.join(testFsRoot, "remove_user_robot-remove-01");
+    fs.writeFileSync(path.join(robotDir, "logs", "session_log.txt"), "DO NOT DELETE ME");
 
     // 1. Disabilitazione
-    const disabled = await service.disableRobot(adminUser, "robot_remove_01");
+    const disabled = await service.disableRobot(adminUser, "robot-remove-01");
     assert.strictEqual(disabled.anagraphicState, "disabilitato");
 
     // Verifica blocco connessioni su robot disabilitato
-    const robotEntity = (await repo.findById("robot_remove_01"))!;
+    const robotEntity = (await repo.findById("robot-remove-01"))!;
     await assert.rejects(
       async () => await connMgr.acquireConnection("admin_01", robotEntity),
       (err: any) => err instanceof MolirisAppError && err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
@@ -582,25 +583,25 @@ try {
 
     // Nella lista flotta, il robot compare con stato 'disabilitato'
     const listWithDisabled = await service.listFleet(adminUser);
-    const disabledInList = listWithDisabled.find(r => r.id === "robot_remove_01");
+    const disabledInList = listWithDisabled.find(r => r.id === "robot-remove-01");
     assert(disabledInList, "Robot disabilitato deve comparire nella lista flotta");
     assert.strictEqual(disabledInList.anagraphicState, "disabilitato");
 
     // 2. Rimozione dall'anagrafica attiva (richiede conferma)
     await assert.rejects(
-      async () => await service.removeRobot(adminUser, "robot_remove_01", false),
+      async () => await service.removeRobot(adminUser, "robot-remove-01", false),
       (err: any) => err instanceof MolirisAppError && err.code === ErrorCode.MISSING_ROBOT_PARAMS
     );
 
-    await service.removeRobot(adminUser, "robot_remove_01", true);
+    await service.removeRobot(adminUser, "robot-remove-01", true);
 
     // Robot rimosso NON compare nella lista attiva (RF-ROB-014, CA-ROB-012)
     const listAfterRemoval = await service.listFleet(adminUser);
-    assert.strictEqual(listAfterRemoval.some(r => r.id === "robot_remove_01"), false);
+    assert.strictEqual(listAfterRemoval.some(r => r.id === "robot-remove-01"), false);
 
     // Directory e file rimangono intatti sul server (RF-ROB-013, CA-ROB-011)
     assert(fs.existsSync(robotDir), "La directory server del robot rimosso non deve essere cancellata");
-    assert(fs.existsSync(path.join(robotDir, "telemetria", "session_log.txt")), "I file server devono essere preservati");
+    assert(fs.existsSync(path.join(robotDir, "logs", "session_log.txt")), "I file server devono essere preservati");
 
     console.log("  PASS: CA-ROB-011 - Disabilitazione blocca connessioni; rimozione preserva intatti file e cartelle.");
   }
@@ -611,7 +612,7 @@ try {
   {
     const { service } = createService({ registrationMode: "differita" });
     await service.registerRobot(adminUser, {
-      id: "robot_unreach_01",
+      id: "robot-unreach-01",
       displayName: "Robot Irraggiungibile",
       remoteUsername: "unreach_user",
       host: "192.0.2.1", // Non instradabile
@@ -625,7 +626,7 @@ try {
     });
 
     const fleet = await service.listFleet(adminUser);
-    const unreach = fleet.find(r => r.id === "robot_unreach_01");
+    const unreach = fleet.find(r => r.id === "robot-unreach-01");
     assert(unreach, "Robot irraggiungibile deve comparire nella lista (RF-ROB-014, CA-ROB-012)");
     assert.strictEqual(unreach.connectionState, "non_raggiungibile");
     assert.strictEqual(unreach.anagraphicState, "attivo");
@@ -638,7 +639,7 @@ try {
   {
     const { service } = createService();
     await service.registerRobot(adminUser, {
-      id: "robot_ammesso",
+      id: "robot-ammesso",
       displayName: "Robot Ammesso",
       remoteUsername: "ammesso_user",
       host: "127.0.0.1",
@@ -652,7 +653,7 @@ try {
     });
 
     await service.registerRobot(adminUser, {
-      id: "robot_negato",
+      id: "robot-negato",
       displayName: "Robot Negato",
       remoteUsername: "negato_user",
       host: "127.0.0.1",
@@ -665,19 +666,19 @@ try {
       },
     });
 
-    // L'utente operatore_limitato ha permesso FLEET_VIEW solo su 'robot_ammesso'
+    // L'utente operatore_limitato ha permesso FLEET_VIEW solo su 'robot-ammesso'
     const restrictedList = await service.listFleet(opRestrictedUser);
     assert.strictEqual(restrictedList.length, 1);
-    assert.strictEqual(restrictedList[0].id, "robot_ammesso");
+    assert.strictEqual(restrictedList[0].id, "robot-ammesso");
 
-    // Tentativo di visualizzare robot_negato negato
+    // Tentativo di visualizzare robot-negato negato
     await assert.rejects(
-      async () => await service.getRobotDetail(opRestrictedUser, "robot_negato"),
+      async () => await service.getRobotDetail(opRestrictedUser, "robot-negato"),
       (err: any) => err instanceof MolirisAppError && err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
     );
 
     // Modifica configurazione (Step 9): cambio porta o credenziali riporta lo stato a 'non_verificato' (§8.3)
-    const updated = await service.updateConfiguration(adminUser, "robot_ammesso", {
+    const updated = await service.updateConfiguration(adminUser, "robot-ammesso", {
       sshPort: 2222, // Porta cambiata
     });
     assert.strictEqual(updated.sshPort, 2222);
@@ -692,7 +693,7 @@ try {
   {
     const { service } = createService({ registrationMode: "differita" });
     await service.registerRobot(adminUser, {
-      id: "robot_reverify_01",
+      id: "robot-reverify-01",
       displayName: "Robot Re-Verify",
       remoteUsername: "reverif_user",
       host: "127.0.0.1",
@@ -706,21 +707,21 @@ try {
     });
 
     // Inizialmente 'ssh_non_verificata'
-    let detail = await service.getRobotDetail(adminUser, "robot_reverify_01");
+    let detail = await service.getRobotDetail(adminUser, "robot-reverify-01");
     assert.strictEqual(detail.robot.registrationState, "ssh_non_verificata");
 
     // Aggiorniamo con la password corretta
-    await service.updateConfiguration(adminUser, "robot_reverify_01", {
+    await service.updateConfiguration(adminUser, "robot-reverify-01", {
       password: "ValidPass123!",
     });
 
     // Eseguiamo 'verifyConnection'
-    const reverifResult = await service.verifyConnection(adminUser, "robot_reverify_01");
+    const reverifResult = await service.verifyConnection(adminUser, "robot-reverify-01");
     assert.strictEqual(reverifResult.success, true);
     assert.strictEqual(reverifResult.connectionState, "raggiungibile");
     assert.strictEqual(reverifResult.registrationState, "registrazione_completata");
 
-    detail = await service.getRobotDetail(adminUser, "robot_reverify_01");
+    detail = await service.getRobotDetail(adminUser, "robot-reverify-01");
     assert.strictEqual(detail.robot.registrationState, "registrazione_completata");
     assert.strictEqual(detail.availableFeatures.terminal, true);
 

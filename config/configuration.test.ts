@@ -141,4 +141,59 @@ const configAbsMax = loadAndValidateConfig({
 });
 assert.strictEqual(configAbsMax.sessionAbsoluteMaxMinutes, 480);
 
+// Test 9: Validazione MOLIRIS_ROBOT_USERNAME_UNIQUENESS
+const configDefaultUniq = loadAndValidateConfig(validEnv);
+assert.strictEqual(configDefaultUniq.robotUsernameUniqueness, "per_host", "Default di produzione deve essere 'per_host'");
+
+const configGlobUniq = loadAndValidateConfig({
+  ...validEnv,
+  MOLIRIS_ROBOT_USERNAME_UNIQUENESS: "globale",
+});
+assert.strictEqual(configGlobUniq.robotUsernameUniqueness, "globale");
+
+try {
+  loadAndValidateConfig({
+    ...validEnv,
+    MOLIRIS_ROBOT_USERNAME_UNIQUENESS: "invalido",
+  });
+  assert.fail("Avrebbe dovuto fallire per valore unicità invalido");
+} catch (err: any) {
+  assert(err.message.includes("Valore non valido per MOLIRIS_ROBOT_USERNAME_UNIQUENESS"));
+}
+// Test 10: Limite massimo sessioni terminale server (max 20)
+const configTerminal20 = loadAndValidateConfig({
+  ...validEnv,
+  MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER: "20",
+});
+assert.strictEqual(configTerminal20.maxConcurrentTerminalSessionsServer, 20);
+
+try {
+  loadAndValidateConfig({
+    ...validEnv,
+    MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER: "21",
+  });
+  assert.fail("Avrebbe dovuto rifiutare più di 20 sessioni terminale");
+} catch (err: any) {
+  assert(err.message.includes("Valore non valido per MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"));
+}
+
+// Test 11: Parametri caricamento massivo e percorsi consentiti operatore (RNF-MNT-001)
+const configBulk = loadAndValidateConfig({
+  ...validEnv,
+  MOLIRIS_MAX_BULK_UPLOAD_FILES: "15",
+  MOLIRIS_DEFAULT_OPERATOR_ALLOWED_PATHS: "/upload, /shared, /custom",
+});
+assert.strictEqual(configBulk.maxBulkUploadFiles, 15);
+assert.deepStrictEqual(configBulk.defaultOperatorAllowedPaths, ["/upload", "/shared", "/custom"]);
+
+try {
+  loadAndValidateConfig({
+    ...validEnv,
+    MOLIRIS_MAX_BULK_UPLOAD_FILES: "0",
+  });
+  assert.fail("Avrebbe dovuto rifiutare maxBulkUploadFiles < 1");
+} catch (err: any) {
+  assert(err.message.includes("MOLIRIS_MAX_BULK_UPLOAD_FILES"));
+}
+
 console.log("PASS: Test configurazione completato con successo.");

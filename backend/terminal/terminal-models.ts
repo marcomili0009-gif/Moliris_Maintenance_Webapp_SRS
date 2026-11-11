@@ -47,6 +47,8 @@ export interface TerminalSession {
   ptyChannel: ClientChannel;
   webSocket?: any; // Instanza WebSocket (@fastify/websocket o ws)
   hasHadSocket?: boolean;
+  onPtyData?: (chunk: Buffer | string) => void;
+  drainIntervals?: Set<NodeJS.Timeout>;
   pingTimer?: NodeJS.Timeout;
   closeReason?: TerminalCloseReason;
   diagnosticError?: string;

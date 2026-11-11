@@ -24,14 +24,14 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 | **RF-ROB-003** | Registrazione nuovo robot da utenti autorizzati | `backend/fleet/fleet-service.ts`<br>`backend/fleet/fleet-routes.ts` | `backend/fleet/fleet.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-ROB-004** | Parametri descrittivi obbligatori (ID, display name) | `backend/fleet/fleet-service.ts`<br>`storage/robot-models.ts` | `backend/fleet/fleet.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-ROB-005** | Parametri di connessione e verifica host key | `backend/fleet/fleet-service.ts`<br>`backend/connection/connection-validator.ts`<br>`backend/connection/mongo-credential-provider.ts` | `backend/connection/connection.test.ts`<br>`tests/security/security-hardening.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
-| **RF-ROB-006** | Validazione cumulativa dati e vincoli unicità | `backend/fleet/fleet-service.ts`<br>`storage/robot-repository.ts` | `backend/fleet/fleet.test.ts`<br>`storage/storage.test.ts` | **Soddisfatto** |
+| **RF-ROB-006** | Validazione cumulativa dati e vincoli unicità | `backend/fleet/fleet-service.ts`<br>`storage/robot-repository.ts`<br>`storage/robot-models.ts` | `backend/fleet/fleet.test.ts`<br>`storage/storage.test.ts`<br>`tests/security/fleet-uniqueness-fs.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-ROB-007** | Verifica SSH durante la registrazione (5 passi) | `backend/fleet/fleet-service.ts`<br>`backend/connection/robot-connection-manager.ts` | `backend/connection/connection.test.ts`<br>`backend/fleet/fleet.test.ts` | **Soddisfatto** |
-| **RF-ROB-008** | Creazione directory associata allo username | `backend/fleet/fleet-service.ts`<br>`storage/server-fs.ts` | `storage/server-fs.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RF-ROB-009** | Sottodirectory standard configurabili e non cancellazione | `backend/fleet/fleet-service.ts`<br>`storage/server-fs.ts` | `storage/server-fs.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RF-ROB-010** | Tracciamento atomico o recovery coerente | `backend/fleet/fleet-service.ts`<br>`storage/server-fs.ts` | `backend/fleet/fleet.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RF-ROB-011** | Esito registrazione e disponibilità funzionalità | `backend/fleet/fleet-service.ts`<br>`storage/dto/robot-dto.ts` | `backend/fleet/fleet.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RF-ROB-012** | Distinzione esiti registrazione (6 stati formali) | `backend/fleet/fleet-service.ts`<br>`storage/robot-models.ts` | `backend/fleet/fleet.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RF-ROB-013** | Disabilitazione e rimozione con salvaguardia dati | `backend/fleet/fleet-service.ts`<br>`backend/fleet/fleet-routes.ts` | `backend/fleet/fleet.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+| **RF-ROB-008** | Creazione directory associata allo username (<username>_<id>) | `backend/fleet/fleet-service.ts`<br>`storage/server-fs.ts`<br>`storage/robot-models.ts` | `storage/server-fs.test.ts`<br>`tests/security/fleet-uniqueness-fs.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+| **RF-ROB-009** | Sottodirectory standard configurabili e non cancellazione | `backend/fleet/fleet-service.ts`<br>`storage/server-fs.ts` | `storage/server-fs.test.ts`<br>`tests/security/fleet-uniqueness-fs.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+| **RF-ROB-010** | Tracciamento atomico o recovery coerente (protocollo 2 fasi) | `backend/fleet/fleet-service.ts`<br>`storage/server-fs.ts`<br>`storage/robot-repository.ts` | `backend/fleet/fleet.test.ts`<br>`tests/security/fleet-uniqueness-fs.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+| **RF-ROB-011** | Esito registrazione e disponibilità funzionalità | `backend/fleet/fleet-service.ts`<br>`storage/dto/robot-dto.ts` | `backend/fleet/fleet.test.ts`<br>`tests/security/fleet-uniqueness-fs.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+| **RF-ROB-012** | Distinzione esiti registrazione (6 stati formali) | `backend/fleet/fleet-service.ts`<br>`storage/robot-models.ts` | `backend/fleet/fleet.test.ts`<br>`tests/security/fleet-uniqueness-fs.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+| **RF-ROB-013** | Disabilitazione e rimozione con salvaguardia dati | `backend/fleet/fleet-service.ts`<br>`backend/fleet/fleet-routes.ts` | `backend/fleet/fleet.test.ts`<br>`tests/security/fleet-uniqueness-fs.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-ROB-014** | Tracciamento separato stato anagrafico e connessione | `storage/robot-models.ts`<br>`storage/dto/robot-dto.ts` | `storage/storage.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 
 ### 1.3 Monitoraggio dello Stato dei Robot (§3.3, §10.2)
@@ -74,10 +74,10 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 | **RF-SRVFS-002** | Navigazione directory server del robot | `storage/server-fs.ts`<br>`backend/server-fs-routes.ts` | `storage/server-fs.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-SRVFS-003** | Caricamento file dal client del manutentore al server | `storage/server-fs.ts`<br>`backend/transfer/transfer-service.ts` | `storage/server-fs.test.ts`<br>`backend/transfer/transfer.test.ts` | **Soddisfatto** |
 | **RF-SRVFS-004** | Download file dal server al client del manutentore | `storage/server-fs.ts`<br>`backend/transfer/transfer-service.ts` | `storage/server-fs.test.ts`<br>`backend/transfer/transfer.test.ts` | **Soddisfatto** |
-| **RF-SRVFS-005** | Isolamento directory server per robot e blocco traversal | `storage/server-fs.ts` | `storage/server-fs.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
+| **RF-SRVFS-005** | Isolamento directory server per robot e blocco traversal | `storage/server-fs.ts` | `storage/server-fs.test.ts`<br>`tests/security/security-hardening.test.ts`<br>`tests/security/fleet-uniqueness-fs.test.ts` | **Soddisfatto** |
 | **RF-SRVFS-006** | Preservazione dei file su directory già esistente | `storage/server-fs.ts` | `storage/server-fs.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 
-### 1.7 Trasferimento File (§3.7, §5.7, §§6.5-6.7)
+### 1.7 Trasferimento File (§3.7, §5.5, §§6.5-6.7)
 | ID Requisito | Descrizione Sintetica | Modulo Implementazione | Suite di Test Automatizzati | Stato |
 | :--- | :--- | :--- | :--- | :--- |
 | **RF-TRF-001** | Trasferimento tra client e server locale in entrambe le direzioni | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
@@ -87,13 +87,13 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 | **RF-TRF-005** | Trasferimento a blocchi (chunk size configurabile) | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-TRF-006** | Avanzamento in tempo reale (byte, %, velocità, ETA) | `backend/transfer/transfer-service.ts`<br>`frontend/app.js` | `backend/transfer/transfer.test.ts`<br>`frontend/frontend.test.ts` | **Soddisfatto** |
 | **RF-TRF-007** | Segnalazione interruzione e non falso completamento | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RF-TRF-008** | Verifica integrità opzionale tramite checksum | `backend/transfer/transfer-service.ts`<br>`backend/transfer/transfer-models.ts` | `backend/transfer/transfer.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RF-TRF-009** | Utilizzo file temporanei e pulizia immediata su guasto | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
+| **RF-TRF-008** | Verifica integrità opzionale tramite checksum | `backend/transfer/transfer-service.ts`<br>`backend/transfer/transfer-models.ts` | `backend/transfer/transfer.test.ts`<br>`tests/security/transfers-monitoring-hardening.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+| **RF-TRF-009** | Utilizzo file temporanei e pulizia immediata su guasto | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/security/security-hardening.test.ts`<br>`tests/security/transfers-monitoring-hardening.test.ts` | **Soddisfatto** |
 | **RF-TRF-010** | Ripresa dei trasferimenti (opzionale configurabile) | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`DECISIONS.md` | **Soddisfatto** |
-| **RF-TRF-011** | Politica di sovrascrittura prudente configurabile | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+| **RF-TRF-011** | Politica di sovrascrittura prudente configurabile | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/security/transfers-monitoring-hardening.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RF-TRF-012** | Limiti di concorrenza simultanea per utente/robot/server | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/reliability-performance/reliability-perf.test.ts` | **Soddisfatto** |
 | **RF-TRF-013** | Gestione timeout di trasferimento e inattività | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RF-TRF-014** | Controllo preventivo spazio su disco | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+| **RF-TRF-014** | Controllo preventivo spazio su disco | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/security/transfers-monitoring-hardening.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 
 ---
 
@@ -103,22 +103,22 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 | ID Requisito | Descrizione Sintetica | Modulo Implementazione | Suite di Test Automatizzati | Stato |
 | :--- | :--- | :--- | :--- | :--- |
 | **RNF-SEC-001** | Comunicazioni protette: HTTPS/TLS obbligatorio, blocco HTTP | `backend/server.ts`<br>`config/configuration.ts` | `backend/server.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
-| **RNF-SEC-002** | Protezione credenziali e zero chiavi/segreti esposti | `backend/connection/credential-provider.ts`<br>`backend/connection/mongo-credential-provider.ts`<br>`backend/connection/master-key.ts`<br>`scripts/reencrypt-credentials.ts`<br>`scripts/seed-users.ts`<br>`logging/logger.ts`<br>`storage/dto/robot-dto.ts` | `backend/connection/connection.test.ts`<br>`tests/security/security-hardening.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
+| **RNF-SEC-002** | Protezione credenziali e zero chiavi/segreti esposti | `backend/connection/credential-provider.ts`<br>`backend/connection/mongo-credential-provider.ts`<br>`backend/connection/master-key.ts`<br>`scripts/reencrypt-credentials.ts`<br>`scripts/seed-users.ts`<br>`logging/logger.ts`<br>`storage/dto/robot-dto.ts` | `backend/connection/connection.test.ts`<br>`tests/security/security-hardening.test.ts`<br>`tests/security/corrective-hardening.test.ts`<br>`tests/security/fleet-uniqueness-fs.test.ts` | **Soddisfatto** |
 | **RNF-SEC-003** | Verifica chiavi host SSH e blocco man-in-the-middle | `backend/connection/host-key-verifier.ts` | `backend/connection/connection.test.ts`<br>`tests/security/security-hardening.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
 | **RNF-SEC-004** | Autorizzazione centrale lato server (guardia su 18 endpoint) | `backend/auth/auth-middleware.ts`<br>`backend/auth/permissions.ts`<br>`backend/auth/session-manager.ts` | `backend/auth/auth.test.ts`<br>`tests/security/security-hardening.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
 | **RNF-SEC-005** | Protezione categorica da Path Traversal e null-byte | `storage/server-fs.ts`<br>`backend/monitoring/robot-reader.ts` | `storage/server-fs.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
 | **RNF-SEC-006** | Validazione sintattica host/porte e whitelist anti-abuso | `backend/connection/connection-validator.ts` | `backend/connection/connection.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
 | **RNF-SEC-007** | Isolamento sessioni e divieto accessi cross-robot | `backend/terminal/terminal-service.ts`<br>`backend/auth/permissions.ts` | `backend/terminal/terminal.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
-| **RNF-SEC-008** | Protezione e isolamento directory/file temporanei | `storage/server-fs.ts`<br>`backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
+| **RNF-SEC-008** | Protezione e isolamento directory/file temporanei (.tmp 0700) | `storage/server-fs.ts`<br>`backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/security/security-hardening.test.ts`<br>`tests/security/fleet-uniqueness-fs.test.ts` | **Soddisfatto** |
 | **RNF-SEC-009** | Audit log immutabile con redazione e conservazione | `storage/audit-repository.ts`<br>`logging/logger.ts` | `storage/storage.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
 
 ### 2.2 Filesystem e Persistenza (RNF-FS-001..004)
 | ID Requisito | Descrizione Sintetica | Modulo Implementazione | Suite di Test Automatizzati | Stato |
 | :--- | :--- | :--- | :--- | :--- |
-| **RNF-FS-001** | Permessi restrittivi directory server (0750) | `storage/server-fs.ts`<br>`config/configuration.ts` | `storage/server-fs.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
-| **RNF-FS-002** | Separazione fisica dei dati per ciascun robot | `storage/server-fs.ts` | `storage/server-fs.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
-| **RNF-FS-003** | Divieto operazioni distruttive non confermate | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RNF-FS-004** | Idempotenza creazione directory e non sovrascrittura | `storage/server-fs.ts` | `storage/server-fs.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+| **RNF-FS-001** | Permessi restrittivi directory server (0750) | `storage/server-fs.ts`<br>`config/configuration.ts` | `storage/server-fs.test.ts`<br>`tests/security/security-hardening.test.ts`<br>`tests/security/fleet-uniqueness-fs.test.ts` | **Soddisfatto** |
+| **RNF-FS-002** | Separazione fisica dei dati per ciascun robot | `storage/server-fs.ts` | `storage/server-fs.test.ts`<br>`tests/security/security-hardening.test.ts`<br>`tests/security/fleet-uniqueness-fs.test.ts` | **Soddisfatto** |
+| **RNF-FS-003** | Divieto operazioni distruttive non confermate | `backend/fleet/fleet-service.ts`<br>`backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/security/transfers-monitoring-hardening.test.ts`<br>`tests/security/fleet-uniqueness-fs.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+| **RNF-FS-004** | Idempotenza creazione directory e non sovrascrittura | `storage/server-fs.ts`<br>`backend/fleet/fleet-service.ts` | `storage/server-fs.test.ts`<br>`tests/security/fleet-uniqueness-fs.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 
 ### 2.3 Prestazioni e Scalabilità (RNF-PERF-001..005)
 | ID Requisito | Descrizione Sintetica | Modulo Implementazione | Suite di Test Automatizzati | Stato |
@@ -135,7 +135,7 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 | **RNF-REL-001** | Gestione disconnessioni e isolamento guasti tra robot | `backend/connection/robot-connection-manager.ts`<br>`backend/monitoring/monitoring-service.ts` | `backend/connection/connection.test.ts`<br>`backend/monitoring/monitoring.test.ts` | **Soddisfatto** |
 | **RNF-REL-002** | Stato aggiornato e marcatura stale (badge [Non più verificato]) | `backend/monitoring/monitoring-service.ts`<br>`storage/dto/robot-dto.ts` | `backend/monitoring/monitoring.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RNF-REL-003** | Recupero da errori parziali e rollback sicuro | `backend/fleet/fleet-service.ts`<br>`storage/server-fs.ts` | `backend/fleet/fleet.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
-| **RNF-REL-004** | Integrità dei file esistenti su trasferimenti falliti | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
+| **RNF-REL-004** | Integrità dei file esistenti su trasferimenti falliti | `backend/transfer/transfer-service.ts` | `backend/transfer/transfer.test.ts`<br>`tests/security/transfers-monitoring-hardening.test.ts`<br>`tests/acceptance/acceptance.test.ts` | **Soddisfatto** |
 | **RNF-REL-005** | Pulizia delle risorse e riavvio pulito senza lock | `backend/server.ts`<br>`backend/terminal/terminal-service.ts` | `backend/terminal/terminal.test.ts`<br>`tests/reliability-performance/reliability-perf.test.ts`<br>`tests/security/corrective-hardening.test.ts` | **Soddisfatto** |
 
 ### 2.5 Usabilità e Frontend (RNF-UX-001..004)
@@ -149,7 +149,7 @@ La presente matrice collega ciascun requisito formale (funzionale, non funzional
 ### 2.6 Manutenibilità e Tracciabilità (RNF-MNT-001..003)
 | ID Requisito | Descrizione Sintetica | Modulo Implementazione | Suite di Test Automatizzati | Stato |
 | :--- | :--- | :--- | :--- | :--- |
-| **RNF-MNT-001** | Parametri di configurazione all'avvio fail-closed | `config/configuration.ts` | `config/configuration.test.ts` | **Soddisfatto** |
+| **RNF-MNT-001** | Parametri di configurazione all'avvio fail-closed | `config/configuration.ts` | `config/configuration.test.ts`<br>`tests/security/configuration-coherence.test.ts` | **Soddisfatto** |
 | **RNF-MNT-002** | Disaccoppiamento e separazione dei componenti | `backend/server.ts`<br>`frontend/app.js` | `backend/server.test.ts`<br>`frontend/frontend.test.ts` | **Soddisfatto** |
 | **RNF-MNT-003** | Tracciabilità completa errori secondo catalogo §9 | `errors/app-errors.ts`<br>`logging/logger.ts` | `errors/app-errors.test.ts`<br>`tests/security/security-hardening.test.ts` | **Soddisfatto** |
 

@@ -149,61 +149,65 @@ export class MonitoringService {
         return robot;
       }
 
-      // 1. Lettura remota del file di testo sul robot via SSH (RF-MON-001)
+      // 1. Lettura remota e interpretazione del primo file valido (Problema B2, RF-MON-001, §10.1)
       const readResult: RemoteReadResult = await this.remoteReader.readStateFile(
         actorUserId,
         robot,
-        this.config.stateFilePaths
+        this.config.stateFilePaths,
+        this.parser
       );
 
       const now = new Date();
 
       if (readResult.success) {
-        // 2. Interpretazione tramite parser sostituibile (RF-MON-002, §11.4)
-        const parseResult = this.parser.parse(readResult.content, readResult.filePath);
-
-        if (parseResult.success) {
-          // Successo lettura e parsing: aggiorna sia stato valido che esito ultimo tentativo (CA-MON-001)
-          const outcome: LastAttemptOutcome = {
-            timestamp: now,
-            success: true,
-            stage: "monitoring",
-            diagnosticMessage: `Stato operativo acquisito con successo dal file '${readResult.filePath}'.`,
-          };
-
-          await this.robotRepository.updateOperationalState(robot.id, parseResult.data, now);
-          return await this.robotRepository.updateConnectionState(robot.id, "raggiungibile", outcome);
-        } else {
-          // Errore parsing (empty, incomplete, malformed) (CA-MON-004):
-          // RF-MON-005: preserva intatto l'ultimo dato valido precedente; registra l'errore in lastAttemptOutcome
-          const outcome: LastAttemptOutcome = {
-            timestamp: now,
-            success: false,
-            stage: "monitoring",
-            errorCode: ErrorCode.STATE_FILE_UNREADABLE,
-            subType: parseResult.subType,
-            diagnosticMessage: parseResult.errorMessage,
-          };
-
-          return await this.robotRepository.updateConnectionState(robot.id, "avviso", outcome);
+        // Se parsedData è già presente da readStateFile, usalo; altrimenti invoca il parser
+        let finalData: Record<string, unknown> | null = readResult.parsedData || null;
+        if (!finalData && readResult.content && readResult.filePath) {
+          const parseResult = this.parser.parse(readResult.content, readResult.filePath);
+          if (parseResult.success) {
+            finalData = parseResult.data;
+          } else {
+            const outcome: LastAttemptOutcome = {
+              timestamp: now,
+              success: false,
+              stage: "monitoring",
+              errorCode: ErrorCode.STATE_FILE_UNREADABLE,
+              subType: parseResult.subType,
+              diagnosticMessage: parseResult.errorMessage,
+              attempts: readResult.attempts,
+            };
+            return await this.robotRepository.updateConnectionState(robot.id, "avviso", outcome);
+          }
         }
+
+        const outcome: LastAttemptOutcome = {
+          timestamp: now,
+          success: true,
+          stage: "monitoring",
+          diagnosticMessage: `Stato operativo acquisito con successo dal file '${readResult.filePath}'.`,
+          attempts: readResult.attempts,
+        };
+
+        if (finalData) {
+          await this.robotRepository.updateOperationalState(robot.id, finalData, now);
+        }
+        return await this.robotRepository.updateConnectionState(robot.id, "raggiungibile", outcome);
       } else {
-        // Errore lettura remota o connessione (missing, timeout, connection_error, read_error) (CA-MON-004):
-        // RF-MON-005: preserva intatto l'ultimo dato valido precedente; aggiorna connectionState e lastAttemptOutcome
-        let connectionState: ConnectionState = "errore";
+        // Errore lettura remota, file assente o non interpretabile (Problema B2 punto c, RF-MON-005):
+        // Preserva intatto l'ultimo dato valido precedente; aggiorna connectionState e lastAttemptOutcome
+        let connectionState: ConnectionState = "avviso";
         if (readResult.subType === "connection_error" || readResult.subType === "timeout") {
           connectionState = "non_raggiungibile";
-        } else if (readResult.subType === "missing") {
-          connectionState = "avviso";
         }
 
         const outcome: LastAttemptOutcome = {
           timestamp: now,
           success: false,
           stage: "monitoring",
-          errorCode: readResult.errorCode,
-          subType: readResult.subType,
-          diagnosticMessage: readResult.errorMessage,
+          errorCode: readResult.errorCode || ErrorCode.STATE_FILE_UNREADABLE,
+          subType: readResult.subType as any,
+          diagnosticMessage: readResult.errorMessage || "file di stato assente o non interpretabile",
+          attempts: readResult.attempts,
         };
 
         return await this.robotRepository.updateConnectionState(robot.id, connectionState, outcome);

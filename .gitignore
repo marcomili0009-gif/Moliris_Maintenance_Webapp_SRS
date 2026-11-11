@@ -1,14 +1,27 @@
 node_modules/
 dist/
 *.log
+logs/
+
 # Configurazione locale e segreti
 .env
 .env.*
 !.env.example
+*.key
+*.pem
+master.key
+
+# File di backup e temporanei
+*.bak
+*.tmp
+*.pre-audit-fix
 
 # Certificati e chiavi private locali
 certs/
 dev-certs/
-*.pem
-*.key
 
+# Storage locale di sviluppo
+server-fs/
+robots-storage/
+backup-imports/
+.DS_Store

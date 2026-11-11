@@ -89,4 +89,82 @@ export function registerRemoteFsRoutes(
       }
     }
   );
+
+  /**
+   * Eliminazione controllata di un file sul filesystem remoto del robot (RF-FS-007, RNF-FS-003, RF-ROB-013)
+   */
+  app.delete(
+    "/api/robots/:robotId/fs/remote/file",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.FS_REMOTE_DELETE,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { robotId } = req.params as { robotId: string };
+      const query = (req.query as any) || {};
+      const filePath = typeof query.path === "string" ? query.path : "";
+
+      if (!filePath || filePath.trim() === "") {
+        return reply.status(400).send({
+          code: ErrorCode.REMOTE_FS_ERROR,
+          message: "Percorso del file remoto da eliminare mancante o non specificato.",
+          classification: "recuperabile",
+        });
+      }
+
+      const robot = await robotRepository.findById(robotId);
+      if (!robot) {
+        return reply.status(404).send({
+          code: ErrorCode.MISSING_ROBOT_PARAMS,
+          message: `Robot con identificativo '${robotId}' non trovato nell'anagrafica.`,
+          classification: "richiede_intervento_amministrativo",
+        });
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        robot.id,
+        roleMapping
+      );
+
+      try {
+        await remoteFsService.deleteRemoteFile(context, robot, filePath);
+        const filename = filePath.split("/").filter(Boolean).pop() || filePath;
+        return reply.status(200).send({
+          success: true,
+          message: `File '${filename}' eliminato con successo dal robot.`,
+        });
+      } catch (err: any) {
+        if (err instanceof MolirisAppError) {
+          let statusCode = 400;
+          if (err.code === ErrorCode.INSUFFICIENT_PERMISSIONS) {
+            statusCode = 403;
+          } else if (err.code === ErrorCode.HOST_UNREACHABLE) {
+            statusCode = 503;
+          } else if (err.code === ErrorCode.TIMEOUT_ERROR) {
+            statusCode = 504;
+          } else if (err.userMessage.includes("non presente") || err.userMessage.includes("non trovato")) {
+            statusCode = 404;
+          }
+
+          return reply.status(statusCode).send({
+            code: err.code,
+            message: err.userMessage,
+            classification: err.classification,
+          });
+        }
+
+        return reply.status(500).send({
+          code: ErrorCode.REMOTE_FS_ERROR,
+          message: "Errore durante l'eliminazione del file dal robot.",
+          classification: "recuperabile",
+        });
+      }
+    }
+  );
 }

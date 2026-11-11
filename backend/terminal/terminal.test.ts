@@ -15,6 +15,7 @@ import { type SystemConfiguration } from "../../config/configuration.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
 import { InMemoryRobotRepository } from "../../storage/robot-repository.ts";
 import { InMemoryAuditRepository } from "../../storage/audit-repository.ts";
+import { AuditOperation } from "../../storage/audit-models.ts";
 import { InMemoryUserRepository } from "../auth/user-repository.ts";
 import { SessionManager } from "../auth/session-manager.ts";
 import { type RobotEntity } from "../../storage/robot-models.ts";
@@ -336,6 +337,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   const ws = new WebSocket(`wss://127.0.0.1:${serverPort}/api/terminal/ws/${allocBody.sessionId}`, {
     rejectUnauthorized: false,
     headers: {
+      Origin: `https://127.0.0.1:${serverPort}`,
       cookie: `moliris_session=${userSession.sessionId}`,
     },
   });
@@ -413,7 +415,10 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
 
   const ws = new WebSocket(`wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`, {
     rejectUnauthorized: false,
-    headers: { cookie: `moliris_session=${userSession.sessionId}` },
+    headers: {
+      Origin: `https://127.0.0.1:${serverPort}`,
+      cookie: `moliris_session=${userSession.sessionId}`,
+    },
   });
 
   await new Promise<void>((resolve) => ws.on("open", resolve));
@@ -538,9 +543,50 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
     const term = await terminalService.openTerminalSession(opUserAuthorized, "robot_ssh_04", { cols: 80, rows: 24 }, ephemeralUserSession.sessionId);
     assert.strictEqual(terminalService.getActiveSessionCount(), 1);
 
+    let socketMessage: any = null;
+    let socketCloseCode = 0;
+    let socketCloseReason = "";
+    let resolveSocketClosed!: () => void;
+    const socketClosed = new Promise<void>((resolve) => {
+      resolveSocketClosed = resolve;
+    });
+
+    const mockSocket: any = {
+      readyState: 1,
+      on: () => {},
+      send: (raw: string) => {
+        socketMessage = JSON.parse(raw);
+      },
+      close: (code: number, reason: string) => {
+        socketCloseCode = code;
+        socketCloseReason = reason;
+        resolveSocketClosed();
+      },
+      terminate: () => {},
+      ping: () => {},
+    };
+
+    terminalService.attachWebSocket(term.sessionId, opUserAuthorized, mockSocket);
+
     // Logout utente distrugge la sessione e scatena l'hook di pulizia
     sessionManager.destroySession(ephemeralUserSession.sessionId);
-    await new Promise((r) => setTimeout(r, 50));
+
+    let closeTimeout!: ReturnType<typeof setTimeout>;
+    await Promise.race([
+      socketClosed,
+      new Promise<void>((_, reject) => {
+        closeTimeout = setTimeout(
+          () => reject(new Error("Timeout: WebSocket non chiuso dopo il logout")),
+          1000
+        );
+      }),
+    ]);
+    clearTimeout(closeTimeout);
+
+    assert.strictEqual(socketMessage?.type, "session_closed", "Il WebSocket deve ricevere la notifica di chiusura");
+    assert.strictEqual(socketMessage?.reason, "USER_SESSION_TERMINATED", "La notifica deve indicare il logout");
+    assert.strictEqual(socketCloseCode, 1000, "Il WebSocket deve essere chiuso con codice 1000");
+    assert.strictEqual(socketCloseReason, "USER_SESSION_TERMINATED", "La chiusura deve indicare il motivo corretto");
     assert.strictEqual(terminalService.getActiveSessionCount(), 0, "La sessione terminale deve essere chiusa al logout");
     assert.strictEqual(connectionManager.getActiveConnectionCount(), 0, "Nessuna connessione SSH residua");
   }
@@ -622,10 +668,69 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   assert.strictEqual(legitimateRes.statusCode, 201);
   const { sessionId } = JSON.parse(legitimateRes.body);
 
-  // 3. Tentativo di hijacking sessione altrui da parte di opUserAttacker (RF-SSH-006, CA-SSH-005)
+  // 3. Rifiuto WebSocket con Origin esterno o assente
+  const externalOriginStatus = await new Promise<number>((resolve, reject) => {
+    const ws = new WebSocket(
+      `wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`,
+      {
+        rejectUnauthorized: false,
+        headers: {
+          Origin: "https://attacker.example",
+          cookie: `moliris_session=${validSession.sessionId}`,
+        },
+      }
+    );
+
+    ws.on("unexpected-response", (_request, response) => {
+      response.resume();
+      resolve(response.statusCode ?? 0);
+    });
+    ws.on("error", () => {});
+  });
+
+  assert.strictEqual(externalOriginStatus, 403, "Un Origin esterno deve ricevere HTTP 403");
+
+  const missingOriginStatus = await new Promise<number>((resolve, reject) => {
+    const ws = new WebSocket(
+      `wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`,
+      {
+        rejectUnauthorized: false,
+        headers: {
+          cookie: `moliris_session=${validSession.sessionId}`,
+        },
+      }
+    );
+
+    ws.on("unexpected-response", (_request, response) => {
+      response.resume();
+      resolve(response.statusCode ?? 0);
+    });
+    ws.on("error", () => {});
+  });
+
+  assert.strictEqual(missingOriginStatus, 403, "Un Origin assente deve ricevere HTTP 403");
+
+  const originAudits = await auditRepo.query({
+    userId: "anonymous",
+    operation: AuditOperation.SECURITY_AUTHORIZATION_ERROR,
+  });
+
+  assert.ok(
+    originAudits.some((event) => event.details?.reason === "WS_ORIGIN_INVALID_OR_MISMATCH"),
+    "L'Origin esterno deve essere registrato nell'audit"
+  );
+  assert.ok(
+    originAudits.some((event) => event.details?.reason === "WS_ORIGIN_MISSING"),
+    "L'Origin assente deve essere registrato nell'audit"
+  );
+
+  // 4. Tentativo di hijacking sessione altrui da parte di opUserAttacker (RF-SSH-006, CA-SSH-005)
   const attackerWs = new WebSocket(`wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`, {
     rejectUnauthorized: false,
-    headers: { cookie: `moliris_session=${attackerSession.sessionId}` },
+    headers: {
+      Origin: `https://127.0.0.1:${serverPort}`,
+      cookie: `moliris_session=${attackerSession.sessionId}`,
+    },
   });
 
   let attackerClosedCode = 0;
@@ -639,16 +744,19 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
 
   assert.strictEqual(attackerClosedCode, 4403, "L'accesso a sessione altrui deve essere chiuso con codice 4403");
 
-  // Verifica audit di violazione sicurezza per tentativo di accesso non autorizzato
-  const securityAudits = await auditRepo.query({ robotId: "robot_ssh_05" });
+  const securityAudits = await auditRepo.query({
+    robotId: "robot_ssh_05",
+    operation: AuditOperation.SECURITY_AUTHORIZATION_ERROR,
+  });
   assert.ok(
-    securityAudits.some((e) => e.operation === "SECURITY_AUTHORIZATION_ERROR"),
-    "Deve essere registrato un evento SECURITY_AUTHORIZATION_ERROR"
+    securityAudits.some((event) => event.details?.reason === "UNAUTHORIZED_SESSION_ACCESS_ATTEMPT"),
+    "Il tentativo di accesso alla sessione altrui deve essere registrato nell'audit"
   );
 
-  // 4. Connessione senza cookie di sessione -> 4401
+  // 4. Tentativo di collegamento anonimo senza cookie di sessione (RNF-SEC-004)
   const anonWs = new WebSocket(`wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`, {
     rejectUnauthorized: false,
+    headers: { Origin: `https://127.0.0.1:${serverPort}` },
   });
 
   let anonClosedCode = 0;
@@ -659,7 +767,44 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
     });
     anonWs.on("error", () => {});
   });
-  assert.strictEqual(anonClosedCode, 4401, "Chiamata WS senza sessione deve essere chiusa con codice 4401");
+
+  assert.strictEqual(anonClosedCode, 4401, "Un collegamento senza cookie deve essere chiuso con codice 4401");
+
+  const anonymousAudits = await auditRepo.query({
+    userId: "anonymous",
+    operation: AuditOperation.SECURITY_AUTHORIZATION_ERROR,
+  });
+  assert.ok(
+    anonymousAudits.some((event) => event.details?.reason === "WS_SESSION_COOKIE_MISSING"),
+    "Il tentativo anonimo deve essere registrato nell'audit"
+  );
+
+  // 5. Il tentativo non autorizzato non deve bloccare il collegamento del proprietario
+  const ownerWs = new WebSocket(`wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`, {
+    rejectUnauthorized: false,
+    headers: {
+      Origin: `https://127.0.0.1:${serverPort}`,
+      cookie: `moliris_session=${validSession.sessionId}`,
+    },
+  });
+
+  let ownerOpened = false;
+
+  await new Promise<void>((resolve, reject) => {
+    ownerWs.on("open", () => {
+      ownerOpened = true;
+      setTimeout(() => ownerWs.close(), 100);
+    });
+
+    ownerWs.on("close", () => resolve());
+    ownerWs.on("error", reject);
+  });
+
+  assert.strictEqual(
+    ownerOpened,
+    true,
+    "Il proprietario deve poter aprire il WebSocket dopo i tentativi non autorizzati"
+  );
 
   await terminalService.closeSession(sessionId, "USER_EXPLICIT");
   await server.close();
@@ -739,7 +884,82 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   assert.strictEqual(limitReached, true, "Superamento limite per robot deve generare errore INSUFFICIENT_STORAGE");
 
   await limitedService.closeSession(term1.sessionId, "USER_EXPLICIT");
-  console.log("  PASS: RNF-PERF-003 - Rispetto dei limiti di concorrenza e blocco al raggiungimento del massimo.");
+
+  // Verifica aperture SSH simultanee: il limite deve considerare anche le aperture in corso.
+  const simultaneousResults = await Promise.allSettled([
+    limitedService.openTerminalSession(opUserAuthorized, "robot_limited", {}, userSession.sessionId),
+    limitedService.openTerminalSession(opUserAuthorized, "robot_limited", {}, userSession.sessionId),
+  ]);
+
+  const successfulResult = simultaneousResults.find((result) => result.status === "fulfilled");
+  const rejectedResult = simultaneousResults.find((result) => result.status === "rejected");
+
+  assert.ok(successfulResult && successfulResult.status === "fulfilled",
+    "Una delle due aperture simultanee deve riuscire");
+  assert.ok(rejectedResult && rejectedResult.status === "rejected",
+    "Una delle due aperture simultanee deve essere bloccata");
+  if (rejectedResult?.status === "rejected") {
+    assert.strictEqual((rejectedResult.reason as any).code, ErrorCode.INSUFFICIENT_STORAGE,
+      "La richiesta concorrente eccedente il limite deve essere rifiutata");
+  }
+  if (successfulResult?.status === "fulfilled") {
+    await limitedService.closeSession(successfulResult.value.sessionId, "USER_EXPLICIT");
+  }
+
+  console.log("  PASS: RNF-PERF-003 - Limiti di concorrenza, incluse aperture SSH simultanee.");
+}
+
+// TEST 8: Disabilitazione robot durante la lettura dello stato in apertura (race su findById)
+{
+  const robotRepo = new InMemoryRobotRepository();
+  const auditRepo = new InMemoryAuditRepository();
+  const userRepo = new InMemoryUserRepository();
+  await userRepo.create({ ...opUserAuthorized, passwordHash: "h" });
+
+  const sessionManager = new SessionManager(30);
+  const terminalService = new TerminalService(
+    testConfig,
+    robotRepo,
+    auditRepo,
+    connectionManager,
+    sessionManager,
+    roleMapping,
+    logger
+  );
+
+  await robotRepo.create(createRobot("robot_ssh_race"));
+  const userSession = sessionManager.createSession(opUserAuthorized);
+
+  // Simula la disabilitazione mentre l'apertura sta leggendo il robot: la lettura restituisce
+  // lo stato vecchio (attivo) ma la generation del robot è già stata incrementata.
+  const originalFindById = robotRepo.findById.bind(robotRepo);
+  (robotRepo as any).findById = async (id: string) => {
+    const stale = await originalFindById(id);
+    await terminalService.closeSessionsForRobot(id, "ADMIN_DISABLED");
+    return stale ? { ...stale } : stale;
+  };
+
+  // Deve fallire proprio per l'invalidazione della prenotazione, non per un errore qualsiasi (es. rete).
+  await assert.rejects(
+    terminalService.openTerminalSession(opUserAuthorized, "robot_ssh_race", { cols: 80, rows: 24 }, userSession.sessionId),
+    (err: any) => {
+      assert.strictEqual(err.code, ErrorCode.INSUFFICIENT_PERMISSIONS);
+      assert.match(String(err.diagnosticDetail), /Apertura del terminale annullata/);
+      return true;
+    }
+  );
+  assert.strictEqual(terminalService.getActiveSessionCount(), 0, "Nessuna sessione orfana dopo l'apertura annullata");
+  assert.strictEqual(connectionManager.getActiveConnectionCount(), 0, "Nessuna connessione SSH residua");
+
+  // I contatori devono essere stati rilasciati: una nuova apertura (senza race) deve riuscire.
+  (robotRepo as any).findById = originalFindById;
+  const term = await terminalService.openTerminalSession(opUserAuthorized, "robot_ssh_race", { cols: 80, rows: 24 }, userSession.sessionId);
+  assert.strictEqual(terminalService.getActiveSessionCount(), 1);
+  await terminalService.closeSession(term.sessionId, "USER_EXPLICIT");
+  assert.strictEqual(terminalService.getActiveSessionCount(), 0);
+  assert.strictEqual(connectionManager.getActiveConnectionCount(), 0);
+
+  console.log("  PASS: Race - Disabilitazione robot durante l'apertura: apertura annullata e risorse rilasciate.");
 }
 
 // =========================================================================

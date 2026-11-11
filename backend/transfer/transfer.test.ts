@@ -285,7 +285,7 @@ const testConfig: SystemConfiguration = {
   defaultSshPort: 22,
   transferChunkSizeBytes: 32 * 1024,
   transferChecksumAlgorithm: "sha256",
-  transferOverwritePolicy: "rifiuta",
+  transferOverwritePolicy: "richiedi_conferma",
 };
 
 const logger = new MolirisLogger();
@@ -827,6 +827,52 @@ fs.writeFileSync(validPreexistingServerPath, "VALID_SERVER_PREEXISTING_DATA_ORIG
 }
 
 // =========================================================================
+// TEST 11bis: RF-TRF-010 - Ripresa dei trasferimenti interrotti
+// =========================================================================
+{
+  const resumeConfig: SystemConfiguration = {
+    ...testConfig,
+    transferResumeEnabled: true,
+  };
+  const resumeTransferService = new TransferService(
+    resumeConfig,
+    robotRepo,
+    serverFsService,
+    remoteFsService,
+    sessionManager,
+    auditRepo,
+    logger,
+    DEFAULT_ROLE_PERMISSIONS,
+    undefined,
+    connectionManager
+  );
+
+  const fullData = Buffer.from("DATI_COMPLETI_DI_PROVA_PER_RIPRESA_TRASFERIMENTO_RF_TRF_010");
+  const sourceFile = "resume_test_source.bin";
+  const sourcePath = path.join(testRobot.serverDirectoryPath, sourceFile);
+  fs.writeFileSync(sourcePath, fullData);
+
+  // Esecuzione trasferimento con ripresa abilitata
+  const resDto = await resumeTransferService.executeServerRobotTransfer(
+    contextAuth,
+    testRobot,
+    {
+      direction: "SERVER_TO_ROBOT",
+      serverRelativePath: sourceFile,
+      remotePath: "resume_test_dest.bin",
+      overwrite: true,
+    }
+  );
+
+  assert.strictEqual(resDto.status, TransferStatus.COMPLETED);
+  assert.strictEqual(resDto.transferredBytes, fullData.length);
+  assert.strictEqual(resDto.totalBytes, fullData.length);
+
+  fs.unlinkSync(sourcePath);
+  console.log("  PASS: RF-TRF-010 - Ripresa trasferimenti interrotti verificata con successo.");
+}
+
+// =========================================================================
 // TEST 12: Endpoint REST Backend e Fastify Integration (RF-TRF-001..003)
 // =========================================================================
 {
@@ -882,6 +928,20 @@ for (const c of activeSshClients) {
 await new Promise<void>((resolve) => testSshServer.close(() => resolve()));
 try { fs.rmSync(tmpTlsDir, { recursive: true, force: true }); } catch {}
 try { fs.rmSync(tmpServerRoot, { recursive: true, force: true }); } catch {}
+
+// =========================================================================
+// TEST: Eviction dei record conclusi dalla mappa in memoria
+// =========================================================================
+{
+  const map = (transferService as any).transfers as Map<string, any>;
+  assert.ok(map.size > 0);
+  const evicted = transferService.evictFinishedTransfers(Date.now() + 2 * 60 * 60 * 1000);
+  assert.ok(evicted > 0);
+  for (const r of map.values()) {
+    assert.ok(!["COMPLETED", "FAILED", "CANCELLED", "INTEGRITY_FAILED"].includes(r.status));
+  }
+  console.log("  PASS: record conclusi rimossi dopo la retention.");
+}
 
 console.log("PASS: Tutti i test del Servizio di Trasferimento File completati con successo.");
 process.exit(0);

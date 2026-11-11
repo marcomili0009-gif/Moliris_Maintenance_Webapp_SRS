@@ -101,8 +101,10 @@ export class AuthMiddleware {
       return;
     }
 
-    // Rinnovo attività qualificata: richieste API autenticate (escluso polling automatico di monitoraggio)
-    const isMonitoringPolling = req.method === "GET" && req.url.includes("/status");
+    // Rinnovo attività qualificata: richieste API autenticate (escluso polling automatico di monitoraggio RF-MON-003)
+    const isMonitoringPolling =
+      req.method === "GET" &&
+      /^\/api\/robots\/[^/]+\/status(?:\?.*)?$/.test(req.url);
     if (!isMonitoringPolling) {
       this.sessionManager.touchSession(sessionId);
     }

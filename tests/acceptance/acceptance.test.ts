@@ -69,6 +69,7 @@ const serverFingerprintInfo = computeHostKeyFingerprint(serverHostKeyWireBuffer)
 const hostKeyFp = serverFingerprintInfo.openSshFormat;
 
 // Mock SSH/SFTP server
+const writtenFiles = new Map<string, Buffer>();
 const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) => {
   if ((client as any)._sock) {
     (client as any)._sock.setNoDelay(true);
@@ -112,24 +113,79 @@ const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) =>
       session.on("sftp", (acceptSftp) => {
         const sftp = acceptSftp();
         const dirHandles = new Map<string, boolean>();
+        const openHandles = new Map<string, { filename: string; buffer: Buffer }>();
+        let handleCounter = 0;
+
         sftp.on("REALPATH", (reqid, p) => sftp.name(reqid, [{ filename: p || "/" }]));
         sftp.on("STAT", (reqid, p) => {
+          const normP = path.posix.normalize(p || "");
+          if (writtenFiles.has(normP)) {
+            const buf = writtenFiles.get(normP)!;
+            return sftp.attrs(reqid, { mode: 0o100644, size: buf.length, atime: 100, mtime: 100 } as any);
+          }
+          if (normP === "/remote/collaudo_dest.txt" || normP === "/remote/client_to_robot.bin" || normP.includes(".tmp_moliris_")) {
+            return sftp.status(reqid, 2 /* SSH_FX_NO_SUCH_FILE */);
+          }
+          sftp.attrs(reqid, { mode: 0o100644, size: 1024 * 1024, atime: 100, mtime: 100 } as any);
+        });
+        sftp.on("LSTAT", (reqid, p) => {
+          const normP = path.posix.normalize(p || "");
+          if (writtenFiles.has(normP)) {
+            const buf = writtenFiles.get(normP)!;
+            return sftp.attrs(reqid, { mode: 0o100644, size: buf.length, atime: 100, mtime: 100 } as any);
+          }
+          if (normP === "/remote/collaudo_dest.txt" || normP === "/remote/client_to_robot.bin" || normP.includes(".tmp_moliris_")) {
+            return sftp.status(reqid, 2 /* SSH_FX_NO_SUCH_FILE */);
+          }
           sftp.attrs(reqid, { mode: 0o100644, size: 1024 * 1024, atime: 100, mtime: 100 } as any);
         });
         sftp.on("OPEN", (reqid, filename, flags) => {
-          sftp.handle(reqid, Buffer.from("mock_h_1"));
+          const hId = `mock_h_${++handleCounter}`;
+          const norm = path.posix.normalize(filename);
+          openHandles.set(hId, { filename: norm, buffer: Buffer.alloc(0) });
+          sftp.handle(reqid, Buffer.from(hId));
         });
         sftp.on("READ", (reqid, handle, offset, len) => {
+          const h = openHandles.get(handle.toString());
+          if (h && writtenFiles.has(h.filename)) {
+            const buf = writtenFiles.get(h.filename)!;
+            if (offset >= buf.length) return sftp.status(reqid, 1 /* EOF */);
+            const chunk = buf.subarray(offset, Math.min(offset + len, buf.length));
+            return sftp.data(reqid, chunk);
+          }
           if (offset >= 1024 * 1024) return sftp.status(reqid, 1 /* EOF */);
           const chunk = Buffer.alloc(Math.min(len, 64 * 1024), 0x58);
           sftp.data(reqid, chunk);
         });
-        sftp.on("WRITE", (reqid) => sftp.status(reqid, 0));
-        sftp.on("CLOSE", (reqid) => sftp.status(reqid, 0));
+        sftp.on("WRITE", (reqid, handle, offset, data) => {
+          const h = openHandles.get(handle.toString());
+          if (h && data) {
+            h.buffer = Buffer.concat([h.buffer.subarray(0, offset), data]);
+          }
+          sftp.status(reqid, 0);
+        });
+        sftp.on("CLOSE", (reqid, handle) => {
+          const h = openHandles.get(handle.toString());
+          if (h) {
+            writtenFiles.set(h.filename, h.buffer);
+          }
+          sftp.status(reqid, 0);
+        });
         sftp.on("FSETSTAT", (reqid) => sftp.status(reqid, 0));
         sftp.on("SETSTAT", (reqid) => sftp.status(reqid, 0));
-        sftp.on("REMOVE", (reqid) => sftp.status(reqid, 0));
-        sftp.on("RENAME", (reqid) => sftp.status(reqid, 0));
+        sftp.on("REMOVE", (reqid, p) => {
+          writtenFiles.delete(path.posix.normalize(p));
+          sftp.status(reqid, 0);
+        });
+        sftp.on("RENAME", (reqid, oldp, newp) => {
+          const normOld = path.posix.normalize(oldp);
+          const normNew = path.posix.normalize(newp);
+          if (writtenFiles.has(normOld)) {
+            writtenFiles.set(normNew, writtenFiles.get(normOld)!);
+            writtenFiles.delete(normOld);
+          }
+          sftp.status(reqid, 0);
+        });
         sftp.on("OPENDIR", (reqid, p) => {
           const handle = Buffer.from(`dir_h_${Date.now()}_${Math.random()}`);
           dirHandles.set(handle.toString(), false);
@@ -337,7 +393,7 @@ console.log("  [2/6] Collaudo Sezione CA-ROB (Anagrafica e Registrazione Flotta)
 // CA-ROB-003: Verifica SSH in modalità rigorosa
 // CA-ROB-004: Creazione directory server dedicata
 const reg1 = await fleetService.registerRobot(adminUser, {
-  id: "robot_collaudo_01",
+  id: "robot-collaudo-01",
   displayName: "Robot Collaudo Alfa",
   remoteUsername: "operator_alfa",
   host: "127.0.0.1",
@@ -350,7 +406,7 @@ const reg1 = await fleetService.registerRobot(adminUser, {
 assert.strictEqual(reg1.outcome, "registrazione_completata", "CA-ROB-001 & CA-ROB-003: Registrazione completata in modalità rigorosa");
 assert.ok(fs.existsSync(reg1.robot!.serverDirectoryPath), "CA-ROB-004: Creazione cartella server dedicata");
 console.log("    PASS: CA-ROB-001, CA-ROB-003, CA-ROB-004 - Registrazione valida, verifica SSH rigorosa e creazione cartella.");
-const robotCollaudo01 = (await robotRepo.findById("robot_collaudo_01"))!;
+const robotCollaudo01 = (await robotRepo.findById("robot-collaudo-01"))!;
 
 // CA-ROB-005: Preservazione dei dati e idempotenza directory
 const dirCheck = await serverFsService.ensureRobotDirectory(robotCollaudo01);
@@ -358,9 +414,9 @@ assert.strictEqual(dirCheck.created, false);
 assert.strictEqual(dirCheck.alreadyExisted, true, "CA-ROB-005: Idempotenza su cartella preesistente");
 console.log("    PASS: CA-ROB-005 - Preservazione dei dati e idempotenza.");
 
-// CA-ROB-006: Rifiuto duplicati su ID e username (RF-ROB-006, §8.2)
+// CA-ROB-006: Rifiuto duplicati su ID e username (RF-ROB-006, §8.2, Problema 1)
 const dupId = await fleetService.registerRobot(adminUser, {
-  id: "robot_collaudo_01", // Duplicato
+  id: "robot-collaudo-01", // Duplicato
   displayName: "Robot Duplicato ID",
   remoteUsername: "operator_beta",
   host: "127.0.0.1",
@@ -373,24 +429,38 @@ assert.strictEqual(dupId.outcome, "registrazione_rifiutata", "CA-ROB-006: Rifiut
 assert.ok(dupId.validationErrors?.id, "Errore su ID duplicato segnalato");
 
 const dupUsername = await fleetService.registerRobot(adminUser, {
-  id: "robot_collaudo_dup_user",
+  id: "robot-collaudo-dup-user",
   displayName: "Robot Duplicato Username",
-  remoteUsername: "operator_alfa", // Duplicato
+  remoteUsername: "operator_alfa", // Duplicato sullo stesso dispositivo (host e porta)
   host: "127.0.0.1",
   sshPort: sftpPort,
   sshAuthMethod: "password",
   password: "test_password",
   hostKeyVerification: { fingerprint: hostKeyFp },
 });
-assert.strictEqual(dupUsername.outcome, "registrazione_rifiutata", "CA-ROB-006: Rifiuto duplicazione username");
+assert.strictEqual(dupUsername.outcome, "registrazione_rifiutata", "CA-ROB-006: Rifiuto duplicazione username sullo stesso dispositivo");
 assert.ok(dupUsername.validationErrors?.remoteUsername, "Errore su username duplicato segnalato");
-console.log("    PASS: CA-ROB-006 - Rifiuto duplicati su identificativo e username.");
+
+// Verifica rifiuto underscore nell'ID (Problema 1e)
+const underscoreIdReg = await fleetService.registerRobot(adminUser, {
+  id: "robot_underscore_id",
+  displayName: "Robot Underscore ID",
+  remoteUsername: "operator_gamma",
+  host: "127.0.0.1",
+  sshPort: sftpPort,
+  sshAuthMethod: "password",
+  password: "test_password",
+  hostKeyVerification: { fingerprint: hostKeyFp },
+});
+assert.strictEqual(underscoreIdReg.outcome, "registrazione_rifiutata", "CA-ROB-006: ID con underscore rifiutato");
+assert.ok(underscoreIdReg.validationErrors?.id, "Errore su underscore in ID segnalato");
+console.log("    PASS: CA-ROB-006 - Rifiuto duplicati su identificativo e username sullo stesso host e rifiuto underscore.");
 
 // CA-ROB-007: Fallimento creazione directory gestito esplicitamente
 // CA-ROB-008: Rollback sicuro post-creazione directory a zero perdite
 // CA-ROB-009: Rifiuto categorico di Path Traversal in registrazione
 const badPathReg = await fleetService.registerRobot(adminUser, {
-  id: "robot_bad_path",
+  id: "robot-bad-path",
   displayName: "Robot Bad Path",
   remoteUsername: "../../etc",
   host: "127.0.0.1",
@@ -405,23 +475,23 @@ console.log("    PASS: CA-ROB-007..009 - Gestione fallimenti, rollback sicuro e 
 
 // CA-ROB-010: Robot registrato visibile in lista flotta
 const fleetList = await fleetService.listFleet(adminUser);
-assert.ok(fleetList.some(r => r.id === "robot_collaudo_01"), "CA-ROB-010: Robot presente in flotta");
+assert.ok(fleetList.some(r => r.id === "robot-collaudo-01"), "CA-ROB-010: Robot presente in flotta");
 console.log("    PASS: CA-ROB-010 - Robot registrato visibile in flotta con azioni autorizzate.");
 
 // CA-ROB-011: Disabilitazione e rimozione con preservazione cartelle
-await fleetService.disableRobot(adminUser, "robot_collaudo_01");
-const disabledDetail = await fleetService.getRobotDetail(adminUser, "robot_collaudo_01");
+await fleetService.disableRobot(adminUser, "robot-collaudo-01");
+const disabledDetail = await fleetService.getRobotDetail(adminUser, "robot-collaudo-01");
 assert.strictEqual(disabledDetail.robot.anagraphicState, "disabilitato");
 assert.strictEqual(disabledDetail.availableFeatures.terminal, false, "Funzione terminale disabilitata");
-await fleetService.enableRobot(adminUser, "robot_collaudo_01");
+await fleetService.enableRobot(adminUser, "robot-collaudo-01");
 console.log("    PASS: CA-ROB-011 - Disabilitazione blocca sessioni; rimozione preserva intatti i dati.");
 
 // CA-ROB-012: Robot non raggiungibile compare con stato distinto
 await robotRepo.create({
-  id: "robot_unreachable",
+  id: "robot-unreachable",
   displayName: "Robot Offline",
   remoteUsername: "offline_op",
-  serverDirectoryPath: path.join(tmpServerFs, "offline_op"),
+  serverDirectoryPath: path.join(tmpServerFs, "offline_op_robot-unreachable"),
   host: "192.0.2.1",
   sshPort: 22,
   sshAuthMethod: "password",
@@ -442,7 +512,7 @@ await robotRepo.create({
   updatedAt: new Date(),
 });
 const listWithUnreachable = await fleetService.listFleet(adminUser);
-const offlineRobot = listWithUnreachable.find(r => r.id === "robot_unreachable");
+const offlineRobot = listWithUnreachable.find(r => r.id === "robot-unreachable");
 assert.ok(offlineRobot);
 assert.strictEqual(offlineRobot.connectionState, "non_raggiungibile");
 assert.strictEqual(offlineRobot.operationalState, null, "Assenza di dati operativi non inventata");
@@ -454,7 +524,7 @@ console.log("    PASS: CA-ROB-012 - Robot non raggiungibile visualizzato con sta
 console.log("  [3/6] Collaudo Sezione CA-MON (Monitoraggio Remoto e Stati)...");
 
 // CA-MON-001: Lettura e interpretazione con separazione dei 3 stati
-const monDetail = await monitoringService.getRobotStatus(adminUser, "robot_collaudo_01");
+const monDetail = await monitoringService.getRobotStatus(adminUser, "robot-collaudo-01");
 assert.ok(monDetail.anagraphicState);
 assert.ok(monDetail.connectionState);
 console.log("    PASS: CA-MON-001 - Lettura e interpretazione corretta con separazione dei 3 stati.");
@@ -464,25 +534,25 @@ assert.strictEqual(collaudoConfig.pollingIntervalSeconds, 0);
 console.log("    PASS: CA-MON-002 - Polling periodico disabilitabile e configurabile.");
 
 // CA-MON-003: Refresh manuale su richiesta
-const refreshRes = await monitoringService.refreshRobotStatus(adminUser, "robot_collaudo_01");
+const refreshRes = await monitoringService.refreshRobotStatus(adminUser, "robot-collaudo-01");
 assert.ok(refreshRes);
 console.log("    PASS: CA-MON-003 - Refresh manuale funzionante e tracciato in audit.");
 
 // CA-MON-004: Preservazione ultimo stato valido (stale)
-await robotRepo.updateOperationalState("robot_collaudo_01", { status: "operativo_stale" });
-await robotRepo.updateConnectionState("robot_collaudo_01", "non_raggiungibile", {
+await robotRepo.updateOperationalState("robot-collaudo-01", { status: "operativo_stale" });
+await robotRepo.updateConnectionState("robot-collaudo-01", "non_raggiungibile", {
   timestamp: new Date(),
   success: false,
   stage: "monitoring",
   errorCode: ErrorCode.HOST_UNREACHABLE,
   diagnosticMessage: "Robot offline temporaneo",
 });
-const staleDetail = await fleetService.getRobotDetail(adminUser, "robot_collaudo_01");
+const staleDetail = await fleetService.getRobotDetail(adminUser, "robot-collaudo-01");
 assert.strictEqual(staleDetail.robot.isStale, true, "Dato preservato e marcato non più verificato");
 console.log("    PASS: CA-MON-004 - Preservazione totale ultimo stato valido (isStale) su caduta connessione.");
 
 // Ripristino stato operativo
-await robotRepo.updateConnectionState("robot_collaudo_01", "raggiungibile");
+await robotRepo.updateConnectionState("robot-collaudo-01", "raggiungibile");
 
 // =========================================================================
 // SEZIONE 4: TERMINALE REMOTO PTY (CA-SSH-001..005)
@@ -492,7 +562,7 @@ console.log("  [4/6] Collaudo Sezione CA-SSH (Terminale Remoto PTY)...");
 // CA-SSH-001 & CA-SSH-002: Apertura sessione shell e interattività
 const ptySession = await terminalService.openTerminalSession(
   adminUser,
-  "robot_collaudo_01",
+  "robot-collaudo-01",
   { cols: 80, rows: 24 },
   adminSession.sessionId
 );
@@ -524,7 +594,7 @@ let termDenied = false;
 try {
   await terminalService.openTerminalSession(
     unauthorizedUser,
-    "robot_collaudo_01",
+    "robot-collaudo-01",
     { cols: 80, rows: 24 },
     "ephemeral_session"
   );
@@ -542,7 +612,7 @@ console.log("    PASS: CA-SSH-005 - Isolamento sessioni e RBAC per robot verific
 console.log("  [5/6] Collaudo Sezione CA-FS (Navigazione Filesystem Server e Remoto)...");
 
 // CA-FS-001: Navigazione filesystem remoto in sola lettura
-const remContext = sessionManager.createAuthorizedContext(adminSession, adminUser, "robot_collaudo_01", DEFAULT_ROLE_PERMISSIONS);
+const remContext = sessionManager.createAuthorizedContext(adminSession, adminUser, "robot-collaudo-01", DEFAULT_ROLE_PERMISSIONS);
 const remoteEntries = await remoteFsService.listDirectory(remContext, robotCollaudo01, "/home/operator");
 assert.ok(Array.isArray(remoteEntries.items));
 console.log("    PASS: CA-FS-001 - Utente autorizzato elenca le directory remote in sola lettura.");
@@ -620,7 +690,7 @@ console.log("  [6/6] Collaudo Sezione CA-TRF (Trasferimento File Avanzato e Inte
 
 // CA-TRF-002: Dati di avanzamento mostrati quando disponibili
 {
-  const activeTrfs = transferService.listTransfers(remContext, "robot_collaudo_01");
+  const activeTrfs = transferService.listTransfers(remContext, "robot-collaudo-01");
   assert.ok(Array.isArray(activeTrfs));
   console.log("    PASS: CA-TRF-002 - Metadati di avanzamento (byte, %, velocità, ETA) calcolati.");
 }
@@ -691,7 +761,7 @@ console.log("  [6/6] Collaudo Sezione CA-TRF (Trasferimento File Avanzato e Inte
 
 // CA-TRF-006: Rispetto autorizzazioni per-robot e isolamento cartelle
 {
-  const opRestrictedContext = sessionManager.createAuthorizedContext(opSession, operatorUser, "robot_collaudo_01", {
+  const opRestrictedContext = sessionManager.createAuthorizedContext(opSession, operatorUser, "robot-collaudo-01", {
     operatore: [AppPermission.FLEET_VIEW], // Nessun permesso di download
   });
   let downloadDenied = false;

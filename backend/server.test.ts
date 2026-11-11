@@ -58,6 +58,11 @@ const validConfig: SystemConfiguration = {
 };
 
 const server = createServer(validConfig, logger);
+assert(server.hasDecorator("appConfig"), "Il server Fastify deve avere il decoratore 'appConfig'");
+assert.strictEqual(server.appConfig.sessionInactivityTimeoutMinutes, 30);
+assert.strictEqual(server.appConfig.maxFileUploadBytes, 3 * 1024 * 1024 * 1024);
+assert.strictEqual(server.appConfig.bulkUploadConfig.chunkSizeBytes, 2 * 1024 * 1024);
+
 const address = await server.listen({ port: 0, host: "127.0.0.1" });
 const port = (server.server.address() as any).port;
 
@@ -70,6 +75,10 @@ await new Promise<void>((resolve, reject) => {
     { rejectUnauthorized: false }, // Certificato autofirmato locale per il test
     (res) => {
       assert.strictEqual(res.statusCode, 200, "L'endpoint /healthz deve restituire status 200");
+      assert.strictEqual(res.headers["x-content-type-options"], "nosniff");
+      assert.strictEqual(res.headers["x-frame-options"], "DENY");
+      assert.strictEqual(res.headers["referrer-policy"], "no-referrer");
+      assert(String(res.headers["content-security-policy"]).includes("frame-ancestors 'none'"));
       let data = "";
       res.on("data", (chunk) => (data += chunk));
       res.on("end", () => {

@@ -18,6 +18,9 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+body, button, input, select, textarea {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
@@ -707,6 +710,17 @@ input:focus {
   position: relative;
 }
 
+.terminal-body,
+.terminal-body *,
+.xterm,
+.xterm *,
+.xterm-rows,
+.xterm-rows * {
+  font-family: "DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", Menlo, Monaco, Consolas, "Courier New", monospace !important;
+  letter-spacing: normal !important;
+  line-height: normal !important;
+}
+
 .terminal-body .xterm {
   height: 100%;
 }
@@ -942,3 +956,545 @@ input:focus {
 }
 
 
+
+
+/* Navigazione a pagine separate */
+:root {
+  --primary-color: #17365d;
+  --primary-hover: #102746;
+}
+
+.btn-accent {
+  background: #17365d;
+  color: #fff;
+}
+
+.btn-accent:hover {
+  background: #102746;
+}
+
+#dashboard-section {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
+  max-width: 1440px;
+  padding: 0;
+  overflow: hidden;
+}
+
+#dashboard-section > .dashboard-header {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 1.4rem 1.75rem;
+  background: #17365d;
+  border: 0;
+  color: #fff;
+}
+
+#dashboard-section .dashboard-header h2 {
+  color: #fff;
+}
+
+#dashboard-section .dashboard-header .user-info {
+  color: #dce6f1;
+}
+
+#dashboard-section .dashboard-header .badge {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+#dashboard-section #btn-logout {
+  background: #fff;
+  color: #17365d;
+}
+
+#dashboard-section > .main-nav {
+  grid-column: 1;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.4rem;
+  min-height: calc(100vh - 2rem);
+  padding: 1rem 0.75rem;
+  background: #edf2f8;
+  border-right: 1px solid #d5dfeb;
+}
+
+#dashboard-section .main-nav-btn {
+  width: 100%;
+  padding: 0.85rem 1rem;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #233b58;
+  text-align: left;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#dashboard-section .main-nav-btn:hover {
+  background: #dce7f3;
+}
+
+#dashboard-section .main-nav-btn.active {
+  background: #17365d;
+  color: #fff;
+}
+
+#dashboard-section > .dashboard-content {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  padding: 1.5rem;
+}
+
+#dashboard-section .fleet-section,
+#dashboard-section .fs-browser-card {
+  border: 1px solid #dce3eb;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 5px 18px rgba(23, 54, 93, 0.07);
+}
+
+#fs-browser-section > .fs-tab-bar {
+  display: none;
+}
+
+@media (max-width: 850px) {
+  #dashboard-section {
+    display: flex;
+    flex-direction: column;
+  }
+
+  #dashboard-section > .dashboard-header,
+  #dashboard-section > .main-nav,
+  #dashboard-section > .dashboard-content {
+    width: 100%;
+  }
+
+  #dashboard-section > .main-nav {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    min-height: 0;
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid #d5dfeb;
+  }
+
+  #dashboard-section .main-nav-btn {
+    width: auto;
+    white-space: nowrap;
+    text-align: center;
+  }
+
+  #dashboard-section > .dashboard-content {
+    padding: 1rem;
+  }
+}
+
+/* Flotta: righe distinte e stati facili da leggere */
+#dashboard-section .fleet-section {
+  padding: 1.4rem;
+  border-top: 4px solid #17365d;
+}
+
+#fleet-table {
+  border-collapse: separate;
+  border-spacing: 0 0.65rem;
+}
+
+#fleet-table thead th {
+  position: sticky;
+  top: 0;
+  padding: 0.9rem 0.75rem;
+  background: #17365d;
+  color: #fff;
+}
+
+#fleet-table thead th:first-child {
+  border-radius: 8px 0 0 8px;
+}
+
+#fleet-table thead th:last-child {
+  border-radius: 0 8px 8px 0;
+}
+
+#fleet-table tbody tr {
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(23, 54, 93, 0.08);
+}
+
+#fleet-table tbody td {
+  padding: 1rem 0.75rem;
+  border-top: 1px solid #e0e6ed;
+  border-bottom: 1px solid #e0e6ed;
+}
+
+#fleet-table tbody td:first-child {
+  border-left: 1px solid #e0e6ed;
+  border-radius: 9px 0 0 9px;
+}
+
+#fleet-table tbody td:last-child {
+  border-right: 1px solid #e0e6ed;
+  border-radius: 0 9px 9px 0;
+}
+
+#fleet-table tbody tr:hover td {
+  background: #f1f5fa;
+}
+
+#fleet-table tbody td:first-child strong {
+  color: #17365d;
+  font-size: 1rem;
+}
+
+#fleet-table .badge-status {
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+}
+
+#fleet-table .btn {
+  background: #17365d;
+  color: #fff;
+}
+
+#fleet-table .btn:hover {
+  background: #102746;
+}
+
+@media (max-width: 850px) {
+  #dashboard-section .fleet-section {
+    padding: 0.85rem;
+  }
+
+  #fleet-table {
+    min-width: 1050px;
+  }
+}
+
+
+/* Pagina file: selezione e percorso in evidenza */
+#fs-browser-section {
+  padding: 1.25rem;
+  border-top: 4px solid #17365d;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 5px 18px rgba(23, 54, 93, 0.07);
+}
+
+#fs-browser-section .fs-header {
+  padding: 1rem;
+  border: 1px solid #e0e6ed;
+  border-radius: 10px;
+  background: #f7f9fc;
+}
+
+#fs-browser-section .fs-header h3 {
+  color: #17365d;
+}
+
+#fs-browser-section .fs-robot-selector {
+  padding: 0.7rem;
+  border: 1px solid #d8e1eb;
+  border-radius: 9px;
+  background: #fff;
+}
+
+#fs-browser-section .fs-robot-selector label {
+  color: #17365d;
+  font-weight: 700;
+}
+
+#fs-browser-section .fs-robot-selector input {
+  border-color: #cbd6e2;
+}
+
+#fs-browser-section .fs-navigation-bar {
+  flex-wrap: wrap;
+  border: 1px solid #d8e1eb;
+  border-left: 4px solid #17365d;
+  border-radius: 9px;
+  background: #f2f5f9;
+}
+
+#fs-browser-section .fs-breadcrumb strong {
+  color: #17365d;
+  overflow-wrap: anywhere;
+}
+
+#fs-browser-section .fs-table-container {
+  overflow-x: auto;
+  border: 1px solid #dce3eb;
+  border-radius: 9px;
+}
+
+#fs-browser-section .fs-table th {
+  background: #17365d;
+  color: #fff;
+}
+
+#fs-browser-section .fs-table tbody tr:hover {
+  background: #f1f5fa;
+}
+
+#fs-browser-section .fs-empty-msg {
+  padding: 2rem;
+  text-align: center;
+}
+
+@media (max-width: 760px) {
+  #fs-browser-section {
+    padding: 0.75rem;
+  }
+
+  #fs-browser-section .fs-header,
+  #fs-browser-section .fs-robot-selector,
+  #fs-browser-section .fs-navigation-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  #fs-browser-section .fs-robot-selector input {
+    width: 100%;
+  }
+
+  #fs-browser-section .fs-actions {
+    margin-left: 0 !important;
+    flex-wrap: wrap;
+  }
+}
+
+
+/* Flotta robot: schede verticali */
+#dashboard-section #fleet-table {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+#dashboard-section #fleet-table thead {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+#dashboard-section #fleet-table tbody {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+
+#dashboard-section #fleet-table tbody tr {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0.5rem 1rem;
+  border: 1px solid #d8e0ea;
+  border-left: 4px solid #17365d;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 3px 12px rgba(23, 54, 93, 0.08);
+}
+
+#dashboard-section #fleet-table tbody td {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+  padding: 0.65rem 0;
+  overflow-wrap: anywhere;
+  border: 0;
+  border-bottom: 1px solid #e8edf3;
+  border-radius: 0;
+  background: transparent;
+}
+
+#dashboard-section #fleet-table tbody td:last-child {
+  border-bottom: 0;
+}
+
+#dashboard-section #fleet-table tbody td::before {
+  color: #52647a;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+#dashboard-section #fleet-table tbody td:nth-child(1)::before { content: "Nome visualizzato"; }
+#dashboard-section #fleet-table tbody td:nth-child(2)::before { content: "ID"; }
+#dashboard-section #fleet-table tbody td:nth-child(3)::before { content: "Host : Porta"; }
+#dashboard-section #fleet-table tbody td:nth-child(4)::before { content: "Username remoto"; }
+#dashboard-section #fleet-table tbody td:nth-child(5)::before { content: "Stato anagrafico"; }
+#dashboard-section #fleet-table tbody td:nth-child(6)::before { content: "Stato connessione"; }
+#dashboard-section #fleet-table tbody td:nth-child(7)::before { content: "Stato operativo"; }
+#dashboard-section #fleet-table tbody td:nth-child(8)::before { content: "Ultimo aggiornamento"; }
+#dashboard-section #fleet-table tbody td:nth-child(9)::before { content: "Avvisi / Errori"; }
+#dashboard-section #fleet-table tbody td:nth-child(10)::before { content: "Azioni"; }
+
+#dashboard-section #fleet-table tbody td:first-child strong {
+  color: #17365d;
+  font-size: 1.05rem;
+}
+
+#dashboard-section #fleet-table tbody tr:hover td {
+  background: transparent;
+}
+
+#dashboard-section #fleet-table tbody td.empty-cell {
+  display: block;
+  padding: 1rem;
+  border: 0;
+  text-align: center;
+}
+
+#dashboard-section #fleet-table tbody td.empty-cell::before {
+  content: none;
+}
+
+@media (min-width: 900px) {
+  #dashboard-section #fleet-table tbody {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 899px) {
+  #dashboard-section #fleet-table tbody {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* Flotta robot: stato vuoto a tutta larghezza */
+#dashboard-section #fleet-table tbody tr:has(> td.empty-cell) {
+  display: block;
+  grid-column: 1 / -1;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+#dashboard-section #fleet-table tbody td.empty-cell {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: 110px;
+  box-sizing: border-box;
+  padding: 1.25rem;
+  border: 1px solid #d8e0ea;
+  border-left: 4px solid #17365d;
+  border-radius: 10px;
+  background: #fff;
+  color: #52647a;
+  text-align: center;
+}
+
+
+/* Flotta vuota: mostra le intestazioni in verticale */
+#dashboard-section #fleet-table:has(tbody td.empty-cell) thead {
+  position: static;
+  display: block;
+  width: auto;
+  height: auto;
+  margin: 0 0 1rem;
+  overflow: visible;
+  clip: auto;
+  white-space: normal;
+}
+
+#dashboard-section #fleet-table:has(tbody td.empty-cell) thead tr {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid #d8e0ea;
+  border-radius: 8px;
+}
+
+#dashboard-section #fleet-table:has(tbody td.empty-cell) thead th {
+  position: static;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.7rem 1rem;
+  border: 0;
+  border-bottom: 1px solid #d8e0ea;
+  border-radius: 0;
+  background: #f3f6fa;
+  color: #17365d;
+  text-align: left;
+}
+
+#dashboard-section #fleet-table:has(tbody td.empty-cell) thead th:last-child {
+  border-bottom: 0;
+}
+
+
+/* Contatore della flotta */
+#dashboard-section .fleet-count {
+  display: inline-block;
+  margin: -0.35rem 0 1rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  background: #eef3f9;
+  color: #17365d;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+
+/* Pulsante principale della flotta */
+#dashboard-section #btn-register-robot {
+  padding: 0.85rem 1.2rem;
+  border: 2px solid #17365d;
+  border-radius: 8px;
+  background: #17365d;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 700;
+  box-shadow: 0 3px 8px rgba(23, 54, 93, 0.2);
+  transition: background-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+#dashboard-section #btn-register-robot::before {
+  content: "+";
+  display: inline-block;
+  margin-right: 0.55rem;
+  font-size: 1.25rem;
+  line-height: 0.8;
+  vertical-align: -0.05rem;
+}
+
+#dashboard-section #btn-register-robot:hover {
+  background: #102746;
+  box-shadow: 0 5px 12px rgba(23, 54, 93, 0.28);
+  transform: translateY(-1px);
+}
+
+#dashboard-section #btn-register-robot:focus-visible {
+  outline: 3px solid #8db7e8;
+  outline-offset: 3px;
+}
+
+@media (max-width: 550px) {
+  #dashboard-section #btn-register-robot {
+    width: 100%;
+  }
+}

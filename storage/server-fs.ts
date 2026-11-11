@@ -50,14 +50,80 @@ export class ServerFilesystemService {
   private fsRoot: string;
   private auditRepository: AuditRepository;
   private logger: MolirisLogger;
+  private operatorAllowedPaths?: string[];
 
-  constructor(fsRoot: string, auditRepository: AuditRepository, logger: MolirisLogger) {
+  constructor(
+    fsRoot: string,
+    auditRepository: AuditRepository,
+    logger: MolirisLogger,
+    operatorAllowedPaths?: string[]
+  ) {
     if (!fsRoot || fsRoot.trim() === "") {
       throw new Error("La root del filesystem server deve essere definita da configurazione (RNF-MNT-001, RF-SRVFS-001).");
     }
     this.fsRoot = path.resolve(fsRoot.trim());
     this.auditRepository = auditRepository;
     this.logger = logger;
+    this.operatorAllowedPaths = operatorAllowedPaths
+      ? operatorAllowedPaths
+          .map((p) => p.trim().replace(/^\/+|\/+$/g, ""))
+          .filter(Boolean)
+      : undefined;
+  }
+
+  /**
+   * Determina se il contesto appartiene a un ruolo operatore soggetto a jail/sandbox (RF-AUTH-005, RNF-SEC-004).
+   * Gli amministratori non sono soggetti al vincolo di jail.
+   */
+  public isOperator(context: AuthorizedContext): boolean {
+    const roles = context.roles || [];
+    const isAdmin = roles.some((r) => {
+      const lower = r.toLowerCase();
+      return lower === "amministratore" || lower === "admin";
+    });
+    return !isAdmin;
+  }
+
+  /**
+   * Verifica se un percorso relativo ricade all'interno delle cartelle consentite per l'operatore (RNF-SEC-005).
+   */
+  public isPathAllowedForOperator(relativeSubPath?: string): boolean {
+    if (!this.operatorAllowedPaths || this.operatorAllowedPaths.length === 0) {
+      return true;
+    }
+    if (!relativeSubPath || relativeSubPath.trim() === "" || relativeSubPath.trim() === ".") {
+      return false;
+    }
+    const norm = path.normalize(relativeSubPath.trim()).replace(/^\/+|\/+$/g, "");
+    if (norm === "" || norm === ".") {
+      return false;
+    }
+    return this.operatorAllowedPaths.some(
+      (allowed) => norm === allowed || norm.startsWith(allowed + "/") || norm.startsWith(allowed + path.sep)
+    );
+  }
+
+  /**
+   * Guardia di sicurezza per le restrizioni operatore (fail-closed, RNF-SEC-004, RF-SRVFS-005).
+   */
+  public assertOperatorAccess(
+    context: AuthorizedContext,
+    relativeSubPath?: string,
+    operation: string = "Accesso"
+  ): void {
+    if (this.isOperator(context) && this.operatorAllowedPaths && this.operatorAllowedPaths.length > 0) {
+      if (!this.isPathAllowedForOperator(relativeSubPath)) {
+        this.logger.warn(`Accesso negato per ruolo operatore al percorso server: ${relativeSubPath}`, {
+          userId: context.userId,
+          operation,
+        });
+        throw new MolirisAppError(
+          ErrorCode.INSUFFICIENT_PERMISSIONS,
+          `Operazione '${operation}' non consentita: percorso al di fuori delle cartelle consentite per il ruolo operatore.`,
+          "Accesso non consentito: la cartella richiesta è esterna ai percorsi autorizzati per l'operatore."
+        );
+      }
+    }
   }
 
   /**
@@ -95,16 +161,44 @@ export class ServerFilesystemService {
       throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso non consentito: attraversamento directory non autorizzato.");
     }
 
-    // 4. Risoluzione normalizzata rispetto alla directory del robot
+    // 4. Rifiuto di nomi riservati (.tmp, .moliris_tmp o percorsi codificati verso .tmp)
+    let decodedSubPath = subPath;
+    try {
+      decodedSubPath = decodeURIComponent(subPath);
+    } catch {}
+
+    const reservedNames = [".tmp", ".moliris_tmp"];
+    const segments = decodedSubPath.split(/[\\/]+/).filter(Boolean);
+    for (const seg of segments) {
+      const lower = seg.toLowerCase();
+      if (reservedNames.includes(lower) || lower === ".tmp" || lower.startsWith(".tmp")) {
+        await this.recordPathTraversalViolation(robot.id, subPath, "RESERVED_DIRECTORY_ACCESS_DENIED");
+        throw new MolirisAppError(
+          ErrorCode.SERVER_DIR_INACCESSIBLE,
+          "Percorso non consentito: accesso a nomi o directory riservate negato."
+        );
+      }
+    }
+
+    // 5. Risoluzione normalizzata rispetto alla directory del robot
     const resolvedPath = path.resolve(robotDir, subPath);
 
-    // 5. Verifica che il percorso normalizzato inizi tassativamente con la directory del robot
+    // 6. Verifica che il percorso normalizzato inizi tassativamente con la directory del robot
     if (!resolvedPath.startsWith(robotDir + path.sep) && resolvedPath !== robotDir) {
       await this.recordPathTraversalViolation(robot.id, subPath, "PATH_ESCAPED_ROBOT_DIR");
       throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso non consentito: accesso all'esterno della directory del robot negato.");
     }
 
-    // 6. Verifica link simbolici: se il file/directory esiste, il percorso reale (canonical) deve essere interno
+    // 7. Rifiuto se il percorso normalizzato punta all'interno di .tmp o directory riservata
+    const tempDir = path.join(robotDir, ".tmp");
+    const oldTempDir = path.join(robotDir, ".moliris_tmp");
+    if (resolvedPath === tempDir || resolvedPath.startsWith(tempDir + path.sep) ||
+        resolvedPath === oldTempDir || resolvedPath.startsWith(oldTempDir + path.sep)) {
+      await this.recordPathTraversalViolation(robot.id, subPath, "RESERVED_DIRECTORY_ACCESS_DENIED");
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso non consentito: accesso alla directory temporanea riservata negato.");
+    }
+
+    // 8. Verifica link simbolici: se il file/directory esiste, il percorso reale (canonical) deve essere interno e non puntare a .tmp
     try {
       if (fs.existsSync(resolvedPath)) {
         const realTarget = await fs.promises.realpath(resolvedPath);
@@ -116,10 +210,15 @@ export class ServerFilesystemService {
           await this.recordPathTraversalViolation(robot.id, subPath, "SYMLINK_ESCAPED_ROOT");
           throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso non consentito: collegamento simbolico esterno non autorizzato.");
         }
+        if (realTarget === tempDir || realTarget.startsWith(tempDir + path.sep) ||
+            realTarget === oldTempDir || realTarget.startsWith(oldTempDir + path.sep)) {
+          await this.recordPathTraversalViolation(robot.id, subPath, "RESERVED_DIRECTORY_ACCESS_DENIED");
+          throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso non consentito: collegamento simbolico verso directory riservata negato.");
+        }
       }
     } catch (err: any) {
       if (err instanceof MolirisAppError) throw err;
-      // Se il file non esiste ancora (es. creazione nuovo file), la verifica sintattica del punto 5 è già valida
+      // Se il file non esiste ancora (es. creazione nuovo file), la verifica sintattica del punto 6 è già valida
     }
 
     return resolvedPath;
@@ -150,8 +249,8 @@ export class ServerFilesystemService {
     const standardSubdirectoriesCreated: string[] = [];
     let alreadyExisted = false;
 
-    // Convalida permessi cartella se configurati (§11.1, RNF-FS-001)
-    const mode = options?.directoryPermissions ? parseInt(options.directoryPermissions, 8) : undefined;
+    // Convalida permessi cartella se configurati (§11.1, RNF-FS-001, default produzione 0750)
+    const mode = options?.directoryPermissions ? parseInt(options.directoryPermissions, 8) : 0o750;
 
     try {
       if (fs.existsSync(robotDir)) {
@@ -162,10 +261,12 @@ export class ServerFilesystemService {
         createdDirectories.push(robotDir);
       }
 
-      // Creazione idempotente delle sottodirectory standard opzionali (RF-ROB-009, RF-SRVFS-007)
-      if (options?.standardSubdirectories && options.standardSubdirectories.length > 0) {
-        for (const subName of options.standardSubdirectories) {
-          const subPath = await this.resolveRobotPath(robot, subName);
+      // Creazione idempotente delle sottodirectory standard (RF-ROB-009, RF-SRVFS-007)
+      // Baseline decision: logs, configs, backups (finalità DA DEFINIRE DAL COMMITTENTE in DECISIONS.md)
+      const subdirs = options?.standardSubdirectories ?? ["logs", "configs", "backups"];
+      if (subdirs && subdirs.length > 0) {
+        for (const subName of subdirs) {
+          const subPath = path.join(robotDir, subName);
           if (!fs.existsSync(subPath)) {
             await fs.promises.mkdir(subPath, { recursive: true, mode });
             createdDirectories.push(subPath);
@@ -241,6 +342,13 @@ export class ServerFilesystemService {
   ): Promise<ServerFileItem[]> {
     this.assertAuthorizedContext(context, robot, AppPermission.FS_SERVER_NAVIGATE);
 
+    const isOp = this.isOperator(context);
+    const isRoot = !relativeSubPath || relativeSubPath.trim() === "" || relativeSubPath.trim() === ".";
+
+    if (isOp && !isRoot) {
+      this.assertOperatorAccess(context, relativeSubPath, "LIST");
+    }
+
     const targetDir = await this.resolveRobotPath(robot, relativeSubPath);
 
     try {
@@ -257,6 +365,16 @@ export class ServerFilesystemService {
       const items: ServerFileItem[] = [];
 
       for (const entry of entries) {
+        // La directory nascosta .tmp e nomi riservati non compaiono negli elenchi (RNF-SEC-008, §11.1)
+        if (entry.name === ".tmp" || entry.name === ".moliris_tmp" || entry.name.startsWith(".")) {
+          continue;
+        }
+
+        // Se l'utente è un operatore che visualizza la root e le restrizioni sono attive, filtra mostrando SOLO le cartelle consentite
+        if (isOp && isRoot && this.operatorAllowedPaths && this.operatorAllowedPaths.length > 0 && !this.operatorAllowedPaths.includes(entry.name)) {
+          continue;
+        }
+
         const fullItemPath = path.join(targetDir, entry.name);
         try {
           const itemStat = await fs.promises.stat(fullItemPath);
@@ -295,6 +413,7 @@ export class ServerFilesystemService {
     relativeFilePath: string
   ): Promise<Readable> {
     this.assertAuthorizedContext(context, robot, AppPermission.FS_SERVER_DOWNLOAD);
+    this.assertOperatorAccess(context, relativeFilePath, "DOWNLOAD");
 
     const targetPath = await this.resolveRobotPath(robot, relativeFilePath);
     if (!fs.existsSync(targetPath)) {
@@ -320,6 +439,7 @@ export class ServerFilesystemService {
     options?: { overwrite?: boolean; confirmed?: boolean }
   ): Promise<Writable> {
     this.assertAuthorizedContext(context, robot, AppPermission.FS_SERVER_UPLOAD);
+    this.assertOperatorAccess(context, relativeFilePath, "UPLOAD");
 
     const targetPath = await this.resolveRobotPath(robot, relativeFilePath);
 
@@ -344,13 +464,40 @@ export class ServerFilesystemService {
 
   /**
    * Crea l'area temporanea isolata per il robot con permessi ristretti (RNF-SEC-008, RF-TRF-009).
+   * Utilizza la directory nascosta riservata .tmp con permessi stretti 0700.
    */
   public async ensureTempDirectory(robot: RobotEntity): Promise<string> {
-    const tempDir = path.join(robot.serverDirectoryPath, ".moliris_tmp");
+    const tempDir = path.join(robot.serverDirectoryPath, ".tmp");
     if (!fs.existsSync(tempDir)) {
       await fs.promises.mkdir(tempDir, { recursive: true, mode: 0o700 });
     }
     return tempDir;
+  }
+
+  /**
+   * Eliminazione controllata di un file sul filesystem server (RNF-FS-003, RF-ROB-013).
+   * Verifica permessi, isolamento, prevenzione path traversal ed esclusione directory.
+   */
+  public async deleteFile(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    relativeFilePath: string
+  ): Promise<void> {
+    this.assertAuthorizedContext(context, robot, AppPermission.FS_SERVER_DELETE);
+    this.assertOperatorAccess(context, relativeFilePath, "DELETE");
+
+    const targetPath = await this.resolveRobotPath(robot, relativeFilePath);
+    if (!fs.existsSync(targetPath)) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "File specificato non trovato sul server.");
+    }
+
+    const stat = await fs.promises.stat(targetPath);
+    if (stat.isDirectory()) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Impossibile eliminare: il percorso selezionato è una directory.");
+    }
+
+    await fs.promises.unlink(targetPath);
+    this.logger.info("File eliminato dal filesystem server", { robotId: robot.id, file: path.basename(targetPath) });
   }
 
   private assertAuthorizedContext(

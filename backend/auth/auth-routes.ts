@@ -19,10 +19,38 @@ export function registerAuthRoutes(
   authMiddleware: AuthMiddleware,
   logger: MolirisLogger
 ): void {
+  const loginAttempts = new Map<string, { count: number; windowStartedAt: number; blockedUntil: number }>();
+  const loginWindowMs = 5 * 60 * 1000;
+  const loginMaxAttempts = 10;
+
   /**
    * Endpoint di Login (RF-AUTH-001, RF-AUTH-002, §6.1, CA-AUTH-001, CA-AUTH-002)
    */
   app.post("/api/auth/login", async (req: FastifyRequest, reply: FastifyReply) => {
+    const ip = req.ip || "unknown";
+    const now = Date.now();
+    let attempt = loginAttempts.get(ip);
+    if (!attempt || now - attempt.windowStartedAt >= loginWindowMs) {
+      attempt = { count: 0, windowStartedAt: now, blockedUntil: 0 };
+      loginAttempts.set(ip, attempt);
+    }
+    if (loginAttempts.size > 10_000) {
+      for (const [key, value] of loginAttempts) {
+        if (now - value.windowStartedAt >= loginWindowMs && value.blockedUntil <= now) loginAttempts.delete(key);
+      }
+    }
+    const recordFailure = () => {
+      attempt!.count++;
+      if (attempt!.count >= loginMaxAttempts) attempt!.blockedUntil = now + loginWindowMs;
+    };
+    if (attempt.blockedUntil > now) {
+      reply.header("Retry-After", String(Math.ceil((attempt.blockedUntil - now) / 1000)));
+      return reply.status(429).send({
+        code: "AUTH_RATE_LIMITED",
+        message: "Troppi tentativi di accesso. Riprova più tardi.",
+      });
+    }
+
     const body = (req.body as any) || {};
     const username = typeof body.username === "string" ? body.username.trim() : "";
     const password = typeof body.password === "string" ? body.password : "";
@@ -31,6 +59,7 @@ export function registerAuthRoutes(
 
     // Verifica credenziali con messaggio opaco e uniforme (nessun leak su esistenza utente o password)
     if (!username || !password) {
+      recordFailure();
       await auditRepository.record({
         userId: username || "anonymous",
         operation: AuditOperation.AUTH_LOGIN,
@@ -47,6 +76,7 @@ export function registerAuthRoutes(
 
     const user = await userRepository.findByUsername(username);
     if (!user || !user.enabled) {
+      recordFailure();
       logger.info(`Tentativo di login fallito per username '${username}'`);
       await auditRepository.record({
         userId: username,
@@ -64,6 +94,7 @@ export function registerAuthRoutes(
 
     const passwordMatch = await verifyPassword(password, user.passwordHash);
     if (!passwordMatch) {
+      recordFailure();
       logger.info(`Password non valida per username '${username}'`);
       await auditRepository.record({
         userId: username,
@@ -78,6 +109,8 @@ export function registerAuthRoutes(
         classification: invalidCredsDef.classification,
       });
     }
+
+    loginAttempts.delete(ip);
 
     // Creazione della sessione autenticata (§6.1 punto 4)
     const session = sessionManager.createSession(user);

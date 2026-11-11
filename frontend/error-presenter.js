@@ -160,8 +160,8 @@ export class ErrorPresenter {
     const formatted = this.formatError(errOrPayload);
     const badgeClass = formatted.isRecoverable ? "badge-recuperabile" : "badge-amministrativo";
     const badgeLabel = formatted.isRecoverable
-      ? "🔄 Errore recuperabile (puoi riprovare)"
-      : "⚙️ Richiede intervento dell'amministratore";
+      ? "Errore recuperabile (puoi riprovare)"
+      : "Richiede intervento dell'amministratore";
     const alertBoxClass = formatted.isRecoverable ? "alert-warning" : "alert-danger";
 
     return `

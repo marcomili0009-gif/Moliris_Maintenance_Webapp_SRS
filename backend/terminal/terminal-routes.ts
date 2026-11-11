@@ -92,19 +92,56 @@ export function registerTerminalRoutes(
   // Autenticato e autorizzato lato server prima di connettere il flusso (RF-SSH-006, RNF-SEC-004)
   app.get(
     "/api/terminal/ws/:sessionId",
-    { websocket: true },
+    {
+      websocket: true,
+      preValidation: async (req, reply) => {
+        const origin = req.headers.origin;
+        const host = req.headers.host;
+        const isHttps = Boolean((req.raw.socket as any).encrypted);
+
+        let validOrigin = false;
+
+        if (typeof origin === "string" && typeof host === "string" && isHttps) {
+          try {
+            const parsedOrigin = new URL(origin);
+            const expectedOrigin = new URL(`https://${host}`);
+
+            validOrigin =
+              parsedOrigin.protocol === "https:" &&
+              parsedOrigin.origin === origin &&
+              parsedOrigin.origin === expectedOrigin.origin;
+          } catch {
+            validOrigin = false;
+          }
+        }
+
+        if (!validOrigin) {
+          const reason =
+            !origin ? "WS_ORIGIN_MISSING" : "WS_ORIGIN_INVALID_OR_MISMATCH";
+
+          await auditRepository.record({
+            userId: "anonymous",
+            operation: AuditOperation.SECURITY_AUTHORIZATION_ERROR,
+            outcome: "FAILURE",
+            timestamp: new Date(),
+            details: { reason, sessionId: (req.params as any)?.sessionId },
+          });
+
+          return reply.code(403).send({
+            message: "Origine WebSocket non autorizzata.",
+          });
+        }
+      },
+    },
     async (socket: any, req: FastifyRequest) => {
       const sessionId = (req.params as any)?.sessionId;
 
-      // 1. Estrazione del cookie di sessione o token query param
+      // 1. Estrazione esclusiva del cookie di sessione HttpOnly
       const cookieHeader = req.headers.cookie;
       let userSessionId: string | null = null;
       if (cookieHeader) {
         const match = cookieHeader.match(/moliris_session=([a-f0-9]+)/i);
         if (match) userSessionId = match[1];
-      }
-      if (!userSessionId && (req.query as any)?.token) {
-        userSessionId = String((req.query as any).token);
       }
 
       if (!userSessionId) {

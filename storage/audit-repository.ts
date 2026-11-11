@@ -77,14 +77,54 @@ export class InMemoryAuditRepository implements AuditRepository {
 
 export class MongoAuditRepository implements AuditRepository {
   private collection: Collection<AuditEventDocument>;
+  private db: Db;
 
   constructor(db: Db) {
+    this.db = db;
     this.collection = db.collection<AuditEventDocument>("audit_events");
   }
 
-  async initIndexes(): Promise<void> {
+  /**
+   * Inizializza gli indici di audit su MongoDB, incluso il vero indice TTL per la retention (RNF-SEC-009, §10.4).
+   * Se il periodo di conservazione cambia in configurazione, l'indice viene aggiornato dinamicamente
+   * via collMod senza perdita di dati prematura.
+   */
+  async initIndexes(retentionDays: number = 365): Promise<void> {
     try {
-      await this.collection.createIndex({ timestamp: -1 });
+      const retentionSeconds = Math.max(1, retentionDays * 86400);
+
+      // Ispezione indici esistenti per verificare la presenza del TTL su timestamp
+      const existingIndexes = await this.collection.indexes().catch(() => []);
+      const ttlIndex = existingIndexes.find(
+        (idx: any) => idx.key && idx.key.timestamp !== undefined && idx.expireAfterSeconds !== undefined
+      );
+
+      if (ttlIndex) {
+        if (ttlIndex.expireAfterSeconds !== retentionSeconds) {
+          // Aggiornamento dinamico senza cancellare la collezione né perdere eventi
+          try {
+            await this.db.command({
+              collMod: this.collection.collectionName,
+              index: {
+                keyPattern: ttlIndex.key,
+                expireAfterSeconds: retentionSeconds,
+              },
+            });
+          } catch {
+            // Se collMod non è supportato per differente keyPattern, ricrea l'indice
+            if (ttlIndex.name) {
+              await this.collection.dropIndex(ttlIndex.name);
+            }
+            await this.collection.createIndex({ timestamp: 1 }, { expireAfterSeconds: retentionSeconds, name: "timestamp_ttl" });
+          }
+        }
+      } else {
+        await this.collection.createIndex(
+          { timestamp: 1 },
+          { expireAfterSeconds: retentionSeconds, name: "timestamp_ttl" }
+        );
+      }
+
       await this.collection.createIndex({ userId: 1 });
       await this.collection.createIndex({ robotId: 1 });
       await this.collection.createIndex({ operation: 1 });

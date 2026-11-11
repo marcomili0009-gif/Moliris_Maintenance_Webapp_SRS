@@ -61,7 +61,7 @@ const resCreateA = await serverFsService.ensureRobotDirectory(robotA, {
 assert.strictEqual(resCreateA.created, true);
 assert.strictEqual(resCreateA.alreadyExisted, false);
 assert(fs.existsSync(robotA.serverDirectoryPath), "La directory del robot deve esistere");
-assert.strictEqual(path.basename(robotA.serverDirectoryPath), "operator_a", "Il nome deve corrispondere allo username");
+assert.strictEqual(path.basename(robotA.serverDirectoryPath), "operator_a_robot_A", "Il nome deve corrispondere alla regola baseline <username>_<id>");
 assert(fs.existsSync(path.join(robotA.serverDirectoryPath, "logs")), "Sottodirectory logs deve esistere");
 assert(fs.existsSync(path.join(robotA.serverDirectoryPath, "telemetry")), "Sottodirectory telemetry deve esistere");
 console.log("  PASS: Creazione directory con nome = username e sottodirectory standard (CA-ROB-004).");
@@ -352,6 +352,60 @@ assert.strictEqual(resApiB.status, 403, "Accesso a robotB deve essere rifiutato 
 const resApiTraversal = await apiGet("/api/robots/robot_A/fs/server/list?path=../../etc", sessionA.sessionId);
 assert.strictEqual(resApiTraversal.status, 400, "Tentativo di path traversal deve restituire 400");
 assert(!JSON.stringify(resApiTraversal.body).includes(testFsRoot), "Nessun percorso interno esposto all'utente");
+
+// Test 11. Eliminazione controllata file sul server (RNF-FS-003, RF-ROB-013)
+function apiDelete(pathUrl: string, token?: string): Promise<{ status: number; body: any }> {
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      `https://127.0.0.1:${testPort}${pathUrl}`,
+      {
+        method: "DELETE",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        rejectUnauthorized: false,
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          try {
+            resolve({ status: res.statusCode || 0, body: JSON.parse(data) });
+          } catch {
+            resolve({ status: res.statusCode || 0, body: data });
+          }
+        });
+      }
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+// Crea file di test da eliminare
+const fileToDelete = path.join(robotA.serverDirectoryPath, "delete_me.txt");
+fs.writeFileSync(fileToDelete, "test delete content");
+assert.strictEqual(fs.existsSync(fileToDelete), true);
+
+// Autorizziamo operatore_a per FS_SERVER_DELETE su robot_A
+await userRepo.update(userAuthA.id, {
+  robotPermissions: {
+    robot_A: [AppPermission.FS_SERVER_NAVIGATE, AppPermission.FS_SERVER_DELETE],
+  },
+});
+
+// Eliminazione riuscita
+const resDelete = await apiDelete("/api/robots/robot_A/fs/server/file?path=delete_me.txt", sessionA.sessionId);
+assert.strictEqual(resDelete.status, 200);
+assert.strictEqual(fs.existsSync(fileToDelete), false, "Il file deve essere stato eliminato");
+
+// Eliminazione di file inesistente -> 400 o 404
+const resDelete404 = await apiDelete("/api/robots/robot_A/fs/server/file?path=non_existent.txt", sessionA.sessionId);
+assert.strictEqual(resDelete404.status, 400);
+
+// Eliminazione di directory deve essere respinta (RNF-FS-003)
+const resDeleteDir = await apiDelete("/api/robots/robot_A/fs/server/file?path=subdir", sessionA.sessionId);
+assert.strictEqual(resDeleteDir.status, 400, "Eliminazione di directory deve essere respinta");
+
+console.log("  PASS: Eliminazione controllata file sul server verificata con RBAC e sicurezza (RNF-FS-003).");
 
 await testApp.close();
 fs.rmSync(tlsDir, { recursive: true, force: true });

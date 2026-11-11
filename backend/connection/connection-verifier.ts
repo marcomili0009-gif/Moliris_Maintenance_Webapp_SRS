@@ -136,15 +136,27 @@ export async function verifyRobotConnection(
     );
 
     if (!sshVerification.hostKeyVerified) {
-      steps.push({
-        step: "host_key_verification",
-        status: "FAILED",
-        errorCode: ErrorCode.HOST_KEY_INVALID,
-        message: ERROR_CATALOG[ErrorCode.HOST_KEY_INVALID].userMessage,
-        diagnosticDetail: sshVerification.hostKeyError || "Impronta digitale chiave host non riconosciuta",
-      });
-      skipRemainingSteps(steps, ["ssh_authentication", "resources_accessibility"]);
-      return buildReport(false, timestamp, steps);
+      if (sshVerification.hostVerifierCalled) {
+        steps.push({
+          step: "host_key_verification",
+          status: "FAILED",
+          errorCode: ErrorCode.HOST_KEY_INVALID,
+          message: ERROR_CATALOG[ErrorCode.HOST_KEY_INVALID].userMessage,
+          diagnosticDetail: sshVerification.hostKeyError || "Impronta digitale chiave host non riconosciuta",
+        });
+        skipRemainingSteps(steps, ["ssh_authentication", "resources_accessibility"]);
+        return buildReport(false, timestamp, steps);
+      } else {
+        steps.push({
+          step: "ssh_port_availability",
+          status: "FAILED",
+          errorCode: ErrorCode.SSH_PORT_UNAVAILABLE,
+          message: ERROR_CATALOG[ErrorCode.SSH_PORT_UNAVAILABLE].userMessage,
+          diagnosticDetail: sshVerification.handshakeError || "Connessione interrotta durante l'handshake SSH iniziale",
+        });
+        skipRemainingSteps(steps, ["host_key_verification", "ssh_authentication", "resources_accessibility"]);
+        return buildReport(false, timestamp, steps);
+      }
     }
     steps.push({ step: "host_key_verification", status: "SUCCESS" });
 
@@ -298,10 +310,19 @@ async function executeSshHandshakeAndAuth(
   hostKeyParams: any,
   hostKeyVerifier: HostKeyVerifier,
   timeoutMs: number
-): Promise<{ hostKeyVerified: boolean; authSuccess: boolean; client?: ssh2.Client; hostKeyError?: string; authError?: string }> {
+): Promise<{
+  hostKeyVerified: boolean;
+  authSuccess: boolean;
+  client?: ssh2.Client;
+  hostVerifierCalled: boolean;
+  hostKeyError?: string;
+  handshakeError?: string;
+  authError?: string;
+}> {
   return new Promise((resolve) => {
     const client = new ssh2.Client();
     let finished = false;
+    let hostVerifierCalled = false;
     let hostKeyVerified = false;
     let hostKeyError: string | undefined = undefined;
 
@@ -316,6 +337,7 @@ async function executeSshHandshakeAndAuth(
       username,
       readyTimeout: timeoutMs,
       hostVerifier: (serverHostKey: Buffer) => {
+        hostVerifierCalled = true;
         try {
           const res = hostKeyVerifier.verify(host, port, serverHostKey, hostKeyParams);
           const verified = typeof res === "boolean" ? res : res.matched;
@@ -343,7 +365,7 @@ async function executeSshHandshakeAndAuth(
     client.once("ready", () => {
       if (finished) return;
       finished = true;
-      resolve({ hostKeyVerified: true, authSuccess: true, client });
+      resolve({ hostKeyVerified: true, authSuccess: true, client, hostVerifierCalled: true });
     });
 
     client.once("error", (err: any) => {
@@ -352,13 +374,29 @@ async function executeSshHandshakeAndAuth(
       cleanup();
       client.destroy();
 
+      if (!hostVerifierCalled) {
+        // Errore avvenuto prima che la chiave host fosse inviata/ricevuta
+        return resolve({
+          hostKeyVerified: false,
+          authSuccess: false,
+          hostVerifierCalled: false,
+          handshakeError: redactSensitiveData(err.message),
+        });
+      }
+
       if (!hostKeyVerified) {
-        return resolve({ hostKeyVerified: false, authSuccess: false, hostKeyError });
+        return resolve({
+          hostKeyVerified: false,
+          authSuccess: false,
+          hostVerifierCalled: true,
+          hostKeyError: hostKeyError || "Impronta digitale chiave host non valida o non corrispondente",
+        });
       }
 
       resolve({
         hostKeyVerified: true,
         authSuccess: false,
+        hostVerifierCalled: true,
         authError: redactSensitiveData(err.message),
       });
     });
@@ -371,14 +409,22 @@ async function executeSshHandshakeAndAuth(
       resolve({
         hostKeyVerified,
         authSuccess: false,
-        authError: hostKeyError || "Connessione chiusa durante handshake o autenticazione",
+        hostVerifierCalled,
+        hostKeyError: hostVerifierCalled && !hostKeyVerified ? (hostKeyError || "Impronta chiave host non corrispondente") : undefined,
+        handshakeError: !hostVerifierCalled ? "Connessione chiusa prima o durante l'handshake SSH iniziale" : undefined,
+        authError: hostKeyVerified ? "Connessione chiusa durante l'autenticazione SSH" : undefined,
       });
     });
 
     try {
       client.connect(sshConfig);
     } catch (e: any) {
-      resolve({ hostKeyVerified: false, authSuccess: false, authError: e.message });
+      resolve({
+        hostKeyVerified: false,
+        authSuccess: false,
+        hostVerifierCalled: false,
+        handshakeError: e.message,
+      });
     }
   });
 }
@@ -388,45 +434,71 @@ async function checkResourceAccessibility(
   client: ssh2.Client,
   stateFilePaths?: string[]
 ): Promise<{ success: boolean; error?: string }> {
+  const paths = stateFilePaths && stateFilePaths.length > 0 ? stateFilePaths : [];
+
+  if (paths.length === 0) {
+    return new Promise((resolve) => {
+      const sftpTimeout = setTimeout(() => {
+        client.end();
+        client.destroy();
+        resolve({ success: false, error: "Timeout durante la verifica del sottosistema SFTP" });
+      }, 3000);
+
+      client.sftp((err, sftp) => {
+        clearTimeout(sftpTimeout);
+        if (err) {
+          client.end();
+          client.destroy();
+          return resolve({ success: false, error: `Sottosistema SFTP non disponibile: ${err.message}` });
+        }
+        sftp.end();
+        client.end();
+        client.destroy();
+        resolve({ success: true });
+      });
+    });
+  }
+
   try {
-    // Se sono configurati file di stato, verifichiamo la leggibilità in sola lettura con comando safe
-    if (stateFilePaths && stateFilePaths.length > 0) {
-      const targetPath = stateFilePaths[0];
-      // Comando strettamente NON DISTRUTTIVO: test -r legge solo i permessi senza modificare nulla (RF-ROB-007)
-      const testCmd = `test -r "${targetPath.replace(/"/g, '\\"')}" && echo READABLE || echo UNREADABLE`;
+    let foundReadable = false;
+    const errors: string[] = [];
+
+    for (const targetPath of paths) {
+      // Safe escaping rigoroso con apici singoli: neutralizza shell expansion come $() e backticks (Point 5)
+      const safePath = targetPath.replace(/'/g, "'\\''");
+      const testCmd = `test -r '${safePath}' && echo READABLE || echo UNREADABLE`;
 
       const result = await new Promise<string>((resolve, reject) => {
+        const cmdTimeout = setTimeout(() => resolve("TIMEOUT"), 3000);
         client.exec(testCmd, (err, stream) => {
-          if (err) return reject(err);
+          if (err) {
+            clearTimeout(cmdTimeout);
+            return reject(err);
+          }
           let out = "";
           stream.on("data", (d: Buffer) => (out += d.toString()));
-          stream.on("close", () => resolve(out.trim()));
+          stream.on("close", () => {
+            clearTimeout(cmdTimeout);
+            resolve(out.trim());
+          });
         });
       });
 
-      if (result.includes("READABLE")) {
-        client.end();
-        client.destroy();
-        return { success: true };
+      // CONFRONTO ESATTO: evita che 'UNREADABLE' sia considerato valido (Point 4)
+      if (result.trim() === "READABLE") {
+        foundReadable = true;
+        break;
       } else {
-        client.end();
-        client.destroy();
-        return { success: false, error: `File di stato non accessibile in lettura: ${targetPath}` };
+        errors.push(`${targetPath}: ${result.trim()}`);
       }
     }
 
-    // Se non ci sono file di stato, testiamo la disponibilità del sottosistema SFTP in sola lettura
-    const sftpOk = await new Promise<boolean>((resolve) => {
-      client.sftp((err, sftp) => {
-        if (err) return resolve(false);
-        sftp.end();
-        resolve(true);
-      });
-    });
-
     client.end();
     client.destroy();
-    return sftpOk ? { success: true } : { success: false, error: "Sottosistema SFTP non disponibile" };
+    if (foundReadable) {
+      return { success: true };
+    }
+    return { success: false, error: `Nessun file di stato leggibile tra quelli configurati: ${errors.join("; ")}` };
   } catch (err: any) {
     client.end();
     client.destroy();

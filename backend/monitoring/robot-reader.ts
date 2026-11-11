@@ -4,6 +4,7 @@ import { type RobotEntity } from "../../storage/robot-models.ts";
 import { type RobotConnectionManager, type ManagedRobotConnection } from "../connection/robot-connection-manager.ts";
 import { MolirisAppError, ErrorCode } from "../../errors/app-errors.ts";
 import { redactSensitiveData, MolirisLogger } from "../../logging/logger.ts";
+import { type StateFileParser } from "./state-file-parser.ts";
 
 export type RemoteReadFailureSubType =
   | "missing"
@@ -11,14 +12,28 @@ export type RemoteReadFailureSubType =
   | "connection_error"
   | "read_error";
 
+export interface StateFileAttemptDetail {
+  path: string;
+  success: boolean;
+  subType?: string;
+  errorMessage?: string;
+}
+
 export type RemoteReadResult =
-  | { success: true; content: string; filePath: string }
+  | {
+      success: true;
+      content: string;
+      filePath: string;
+      parsedData?: Record<string, unknown>;
+      attempts?: StateFileAttemptDetail[];
+    }
   | {
       success: false;
-      subType: RemoteReadFailureSubType;
+      subType: RemoteReadFailureSubType | string;
       errorCode: string;
       errorMessage: string;
       filePath?: string;
+      attempts?: StateFileAttemptDetail[];
     };
 
 /**
@@ -76,10 +91,11 @@ export class RemoteRobotReader {
   public async readStateFile(
     userId: string,
     robot: RobotEntity,
-    configuredPaths: string[]
+    configuredPaths: string[],
+    parser?: StateFileParser
   ): Promise<RemoteReadResult> {
     // 1. Risoluzione dei percorsi: priorità ai percorsi configurati nel robot (§10.1, RF-MON-001),
-    // altrimenti usa i percorsi comuni configurati a livello di sistema.
+    // i percorsi specifici del robot SOSTITUISCONO la lista comune (non si fondono).
     const candidatePaths: string[] =
       robot.stateFilePaths && robot.stateFilePaths.length > 0
         ? robot.stateFilePaths
@@ -90,7 +106,8 @@ export class RemoteRobotReader {
         success: false,
         subType: "missing",
         errorCode: ErrorCode.STATE_FILE_UNREADABLE,
-        errorMessage: "Nessun percorso di file di stato configurato per questo robot né a livello di sistema.",
+        errorMessage: "file di stato assente o non interpretabile (nessun percorso configurato)",
+        attempts: [],
       };
     }
 
@@ -114,27 +131,30 @@ export class RemoteRobotReader {
         subType,
         errorCode,
         errorMessage,
+        attempts: [],
       };
     }
 
+    const attempts: StateFileAttemptDetail[] = [];
+
     try {
-      // 3. Iterazione sui percorsi candidati: tenta la lettura del primo file disponibile
+      // 3. Iterazione sui percorsi candidati in ordine (Problema B2):
+      // Si leggono i file in sequenza e si adotta il primo che si legge E si interpreta con successo.
       for (const rawPath of candidatePaths) {
         let safePath: string;
         try {
           safePath = validateRemoteFilePath(rawPath);
         } catch (validationErr: any) {
-          return {
+          attempts.push({
+            path: rawPath,
             success: false,
-            subType: "missing",
-            errorCode: ErrorCode.STATE_FILE_UNREADABLE,
+            subType: "malformed",
             errorMessage: validationErr.message,
-            filePath: rawPath,
-          };
+          });
+          continue;
         }
 
         // RF-SSH-008: Nessuna elevazione di privilegi, comando di sola lettura sicuro
-        // escape rigoroso con apici singoli
         const escapedPath = `'${safePath.replace(/'/g, "'\\''")}'`;
         const readCommand = `if [ -f ${escapedPath} ]; then cat ${escapedPath}; else echo "__MOLIRIS_FILE_NOT_FOUND__" >&2; exit 2; fi`;
 
@@ -155,54 +175,83 @@ export class RemoteRobotReader {
           if (timeoutHandle) clearTimeout(timeoutHandle);
 
           if (result.exitCode === 0) {
-            return {
-              success: true,
-              content: result.stdout,
-              filePath: safePath,
-            };
+            // Se è fornito il parser, interpretiamo il contenuto subito
+            if (parser) {
+              const parseRes = parser.parse(result.stdout, safePath);
+              if (parseRes.success) {
+                attempts.push({ path: safePath, success: true });
+                return {
+                  success: true,
+                  content: result.stdout,
+                  filePath: safePath,
+                  parsedData: parseRes.data,
+                  attempts,
+                };
+              } else {
+                // Errore interpretazione (empty, incomplete, malformed)
+                attempts.push({
+                  path: safePath,
+                  success: false,
+                  subType: parseRes.subType,
+                  errorMessage: parseRes.errorMessage,
+                });
+                // Continua con il percorso successivo!
+                continue;
+              }
+            } else {
+              attempts.push({ path: safePath, success: true });
+              return {
+                success: true,
+                content: result.stdout,
+                filePath: safePath,
+                attempts,
+              };
+            }
           }
 
           if (result.exitCode === 2 || result.stderr.includes("__MOLIRIS_FILE_NOT_FOUND__") || result.stderr.includes("No such file")) {
-            // File assente: continua con il percorso successivo se presente
+            attempts.push({
+              path: safePath,
+              success: false,
+              subType: "missing",
+              errorMessage: "File di stato assente",
+            });
             continue;
           }
 
           // Altro errore di lettura
-          return {
+          attempts.push({
+            path: safePath,
             success: false,
             subType: "read_error",
-            errorCode: ErrorCode.REMOTE_FS_ERROR,
             errorMessage: `Errore durante la lettura del file remoto '${safePath}': ${redactSensitiveData(result.stderr || result.stdout)}`,
-            filePath: safePath,
-          };
+          });
+          continue;
         } catch (execErr: any) {
           if (timeoutHandle) clearTimeout(timeoutHandle);
-          if (execErr instanceof MolirisAppError && execErr.code === ErrorCode.TIMEOUT_ERROR) {
-            return {
-              success: false,
-              subType: "timeout",
-              errorCode: ErrorCode.TIMEOUT_ERROR,
-              errorMessage: execErr.message,
-              filePath: safePath,
-            };
-          }
-          return {
+          const isTimeout = execErr instanceof MolirisAppError && execErr.code === ErrorCode.TIMEOUT_ERROR;
+          attempts.push({
+            path: safePath,
             success: false,
-            subType: "read_error",
-            errorCode: ErrorCode.REMOTE_FS_ERROR,
-            errorMessage: `Eccezione durante la lettura del file remoto '${safePath}': ${redactSensitiveData(execErr?.message || "")}`,
-            filePath: safePath,
-          };
+            subType: isTimeout ? "timeout" : "read_error",
+            errorMessage: redactSensitiveData(execErr?.message || ""),
+          });
+          continue;
         }
       }
 
-      // Se nessun percorso candidato è stato trovato
+      // Se nessun percorso candidato è stato letto E interpretato con successo
+      const lastSubType = attempts.length > 0 && attempts[attempts.length - 1].subType
+        ? (attempts[attempts.length - 1].subType as any)
+        : "missing";
+
       return {
         success: false,
-        subType: "missing",
+        subType: lastSubType,
         errorCode: ErrorCode.STATE_FILE_UNREADABLE,
-        errorMessage: `Nessun file di stato trovato tra i percorsi candidati: ${candidatePaths.join(", ")}`,
+        errorMessage: "file di stato assente o non interpretabile",
         filePath: candidatePaths[0],
+        attempts,
       };
     } finally {
       // 4. Chiusura garantita della connessione per prevenire perdite di risorse (RNF-REL-005)

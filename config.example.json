@@ -1,0 +1,24 @@
+{
+  "_comment_srs": "Moliris Maintenance Webapp - File di Configurazione (SRS v1.0 §2, RNF-MNT-001)",
+  "sessionInactivityTimeoutMinutes": 30,
+  "sshTerminalActiveTimeoutMinutes": 15,
+  "maxConcurrentWebUsers": 10,
+  "maxConcurrentTerminalsPerRobot": 1,
+  "bulkUploadConfig": {
+    "maxConcurrentFiles": 20,
+    "chunkSizeBytes": 2097152,
+    "allowedSubPaths": [
+      "upload",
+      "shared",
+      "logs",
+      "backups",
+      "configs"
+    ]
+  },
+  "maxFileUploadBytes": 3221225472,
+  "futureExtensions": {
+    "maxFleetRobots": 100,
+    "maxSessionsPerAccount": 3,
+    "customSettings": {}
+  }
+}

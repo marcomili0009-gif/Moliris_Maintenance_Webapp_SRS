@@ -14,6 +14,7 @@
 // In caso di interruzione a metà, nessun record è reso illeggibile e lo script può essere rieseguito in sicurezza.
 
 import { MongoClient } from "mongodb";
+import { resolveMongoConfig } from "../config/mongodb.ts";
 import { loadMasterKeyFromFile } from "../backend/connection/master-key.ts";
 import { MongoCredentialProvider, type EncryptedCredentialDocument } from "../backend/connection/mongo-credential-provider.ts";
 
@@ -32,14 +33,16 @@ export async function reencryptAllCredentials(options: ReencryptOptions): Promis
   const oldKey = loadMasterKeyFromFile(options.oldKeyFile);
   const newKey = loadMasterKeyFromFile(options.newKeyFile);
 
-  const mongoUri = options.mongoUri || process.env["MOLIRIS_MONGODB_URI"] || process.env["MOLIRIS_MONGO_URI"] || "mongodb://127.0.0.1:27017";
-  const dbName = options.dbName || process.env["MOLIRIS_DB_NAME"] || "moliris_db";
+  const mongoConfig = resolveMongoConfig(process.env, {
+    uri: options.mongoUri,
+    dbName: options.dbName,
+  });
 
-  const client = new MongoClient(mongoUri);
+  const client = new MongoClient(mongoConfig.uri);
   await client.connect();
 
   try {
-    const db = client.db(dbName);
+    const db = client.db(mongoConfig.dbName);
     const collection = db.collection<EncryptedCredentialDocument>("robot_credentials");
     const providerHelper = new MongoCredentialProvider(db, oldKey);
 

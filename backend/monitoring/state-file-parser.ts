@@ -1,5 +1,7 @@
 // Requisiti soddisfatti: RF-MON-002, RF-MON-005, §11.4, RNF-REL-002, CA-MON-001
 
+import fs from "fs";
+
 export type StateParseFailureSubType = "empty" | "incomplete" | "malformed";
 
 export type ParseResult =
@@ -17,10 +19,20 @@ export interface StateFileParser {
 /**
  * Parser provvisorio di sviluppo (RF-MON-002, §11.4).
  * STATO: DA CONFERMARE (vedi STATUS_FILE_FORMAT.md e DECISIONS.md §11.4).
- * Supporta formati Key-Value (line-oriented) e JSON standard.
+ * Supporta configurazione di formato MOLIRIS_STATE_FILE_FORMAT ("auto", "json", "keyvalue").
+ * Se impostato "json" o "keyvalue", un formato differente viene classificato come "malformed" (non conforme).
  * Riconosce esplicitamente i sottotipi di errore: empty, incomplete, malformed.
+ * Non cabla alcun enum o valore operativo ("operativo", "navigating", ecc.): dati trattati come record opaco.
  */
 export class ProvisionalDevelopmentStateFileParser implements StateFileParser {
+  private format: "auto" | "json" | "keyvalue";
+  private schemaPath?: string;
+
+  constructor(format: "auto" | "json" | "keyvalue" = "auto", schemaPath?: string) {
+    this.format = format;
+    this.schemaPath = schemaPath;
+  }
+
   public parse(content: string, _filePath: string): ParseResult {
     // 1. Controllo file vuoto
     if (content === undefined || content === null || content.length === 0 || content.trim().length === 0) {
@@ -42,7 +54,24 @@ export class ProvisionalDevelopmentStateFileParser implements StateFileParser {
       };
     }
 
-    // 3. Tentativo parsing JSON se inizia con '{'
+    // 3. Verifica formato forzato da configurazione (Problema B1 punto c)
+    if (this.format === "json" && !trimmed.startsWith("{")) {
+      return {
+        success: false,
+        subType: "malformed",
+        errorMessage: "Contenuto non conforme: atteso formato JSON configurato (MOLIRIS_STATE_FILE_FORMAT=json).",
+      };
+    }
+
+    if (this.format === "keyvalue" && trimmed.startsWith("{")) {
+      return {
+        success: false,
+        subType: "malformed",
+        errorMessage: "Contenuto non conforme: atteso formato Key-Value configurato (MOLIRIS_STATE_FILE_FORMAT=keyvalue).",
+      };
+    }
+
+    // 4. Parsing formato JSON
     if (trimmed.startsWith("{")) {
       try {
         const parsed = JSON.parse(trimmed);
@@ -63,13 +92,37 @@ export class ProvisionalDevelopmentStateFileParser implements StateFileParser {
           };
         }
 
+        // Validazione schema facoltativo se configurato (Problema B1)
+        if (this.schemaPath && fs.existsSync(this.schemaPath)) {
+          try {
+            const schemaContent = fs.readFileSync(this.schemaPath, "utf-8");
+            const schema = JSON.parse(schemaContent);
+            if (schema && typeof schema === "object" && schema.required && Array.isArray(schema.required)) {
+              for (const reqField of schema.required) {
+                if (!(reqField in parsed)) {
+                  return {
+                    success: false,
+                    subType: "incomplete",
+                    errorMessage: `Contenuto JSON non conforme allo schema configurato: campo obbligatorio '${reqField}' mancante.`,
+                  };
+                }
+              }
+            }
+          } catch (schemaErr: any) {
+            return {
+              success: false,
+              subType: "malformed",
+              errorMessage: `Errore validazione schema file di stato: ${schemaErr.message}`,
+            };
+          }
+        }
+
         return {
           success: true,
           data: parsed as Record<string, unknown>,
         };
       } catch (jsonErr: any) {
         const msg = jsonErr?.message || "";
-        // Se il JSON è troncato (es. chiusura mancante) -> incomplete
         if (msg.includes("Unexpected end of JSON") || msg.includes("unterminated")) {
           return {
             success: false,
@@ -85,7 +138,7 @@ export class ProvisionalDevelopmentStateFileParser implements StateFileParser {
       }
     }
 
-    // 4. Parsing formato Key-Value (line-oriented)
+    // 5. Parsing formato Key-Value (line-oriented)
     const lines = trimmed.split(/\r?\n/);
     const result: Record<string, unknown> = {};
     let validPairCount = 0;
@@ -93,12 +146,10 @@ export class ProvisionalDevelopmentStateFileParser implements StateFileParser {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
 
-      // Ignora righe vuote e commenti (# o //)
       if (line.length === 0 || line.startsWith("#") || line.startsWith("//")) {
         continue;
       }
 
-      // Separatore '=' o ':'
       const sepIndex = line.search(/[=:]/);
       if (sepIndex === -1) {
         return {
@@ -120,7 +171,6 @@ export class ProvisionalDevelopmentStateFileParser implements StateFileParser {
       }
 
       if (rawVal.length === 0) {
-        // Valore assente su chiave -> incomplete
         return {
           success: false,
           subType: "incomplete",
@@ -128,7 +178,6 @@ export class ProvisionalDevelopmentStateFileParser implements StateFileParser {
         };
       }
 
-      // Conversione automatica tipi primitivi
       let parsedVal: unknown = rawVal;
       if (rawVal.toLowerCase() === "true" || rawVal.toLowerCase() === "yes") {
         parsedVal = true;

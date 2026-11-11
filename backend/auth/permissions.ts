@@ -30,6 +30,9 @@ export const AppPermission = {
   // Caricare file verso il filesystem remoto del robot (RF-FS-005)
   FS_REMOTE_UPLOAD: "FS_REMOTE_UPLOAD",
 
+  // Eliminare file sul filesystem remoto del robot (RF-FS-007, RNF-FS-003, RF-ROB-013)
+  FS_REMOTE_DELETE: "FS_REMOTE_DELETE",
+
   // Navigare il filesystem del server (RF-SRVFS-002)
   FS_SERVER_NAVIGATE: "FS_SERVER_NAVIGATE",
 
@@ -98,9 +101,11 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionMapping = {
     AppPermission.FS_REMOTE_NAVIGATE,
     AppPermission.FS_REMOTE_DOWNLOAD,
     AppPermission.FS_REMOTE_UPLOAD,
+    AppPermission.FS_REMOTE_DELETE,
     AppPermission.FS_SERVER_NAVIGATE,
     AppPermission.FS_SERVER_UPLOAD,
     AppPermission.FS_SERVER_DOWNLOAD,
+    AppPermission.FS_SERVER_DELETE,
     AppPermission.TRANSFER_SERVER_ROBOT,
     AppPermission.TRANSFER_CLIENT_ROBOT,
     AppPermission.ROBOT_REGISTER,
@@ -116,16 +121,17 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionMapping = {
     AppPermission.FS_REMOTE_NAVIGATE,
     AppPermission.FS_REMOTE_DOWNLOAD,
     AppPermission.FS_REMOTE_UPLOAD,
+    AppPermission.FS_REMOTE_DELETE,
     AppPermission.FS_SERVER_NAVIGATE,
     AppPermission.FS_SERVER_UPLOAD,
     AppPermission.FS_SERVER_DOWNLOAD,
+    AppPermission.FS_SERVER_DELETE,
     AppPermission.TRANSFER_SERVER_ROBOT,
     AppPermission.TRANSFER_CLIENT_ROBOT,
     AppPermission.ROBOT_REGISTER,
     AppPermission.ROBOT_CONFIG_UPDATE,
     AppPermission.ROBOT_DISABLE,
     AppPermission.ROBOT_REMOVE,
-    // FS_SERVER_DELETE non viene assegnato di default, è facoltativo e isolato
   ],
 };
 

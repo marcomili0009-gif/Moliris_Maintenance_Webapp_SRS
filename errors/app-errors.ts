@@ -21,6 +21,7 @@ export const ErrorCode = {
   INTEGRITY_CHECK_FAILED: "TRF_INTEGRITY_FAILED",
   DB_PERSISTENCE_ERROR: "DB_PERSISTENCE_ERROR",
   DB_FS_SYNC_ERROR: "DB_FS_SYNC_ERROR",
+  SECURITY_VIOLATION: "SECURITY_VIOLATION",
 } as const;
 
 export type ErrorCode = typeof ErrorCode[keyof typeof ErrorCode];
@@ -115,6 +116,11 @@ export const ERROR_CATALOG: Record<ErrorCode, AppErrorDefinition> = {
   [ErrorCode.DB_FS_SYNC_ERROR]: {
     code: ErrorCode.DB_FS_SYNC_ERROR,
     userMessage: "Incoerenza rilevata tra anagrafica e archivio dati. Richiesto intervento di ripristino.",
+    classification: "richiede_intervento_amministrativo",
+  },
+  [ErrorCode.SECURITY_VIOLATION]: {
+    code: ErrorCode.SECURITY_VIOLATION,
+    userMessage: "Violazione delle regole di sicurezza rilevata: accesso a risorse riservate bloccato.",
     classification: "richiede_intervento_amministrativo",
   },
 };

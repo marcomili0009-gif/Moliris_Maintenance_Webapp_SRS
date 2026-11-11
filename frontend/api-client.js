@@ -13,6 +13,7 @@ export class ApiClient {
   constructor() {
     this.tokenKey = "moliris_token";
     this.sessionExpiredListeners = [];
+    this.activityListeners = [];
   }
 
   getToken() {
@@ -42,6 +43,16 @@ export class ApiClient {
   onSessionExpired(listener) {
     if (typeof listener === "function") {
       this.sessionExpiredListeners.push(listener);
+    }
+  }
+
+  onQualifiedActivity(listener) {
+    if (typeof listener === "function") this.activityListeners.push(listener);
+  }
+
+  notifyQualifiedActivity() {
+    for (const listener of this.activityListeners) {
+      try { listener(); } catch {}
     }
   }
 
@@ -85,7 +96,7 @@ export class ApiClient {
       headers["Authorization"] = `Bearer ${token}`;
     }
 
-    if (!headers["Content-Type"] && !(options.body instanceof FormData) && !(options.body instanceof Blob)) {
+    if (options.body !== undefined && !headers["Content-Type"] && !(options.body instanceof FormData) && !(options.body instanceof Blob)) {
       headers["Content-Type"] = "application/json";
     }
 
@@ -94,6 +105,9 @@ export class ApiClient {
         ...options,
         headers,
       });
+
+      const isAutomaticStatusPolling = options.method === "GET" && /^\/api\/robots\/[^/]+\/status(?:\?.*)?$/.test(endpoint);
+      if (token && !isAutomaticStatusPolling) this.notifyQualifiedActivity();
 
       if (response.status === 401) {
         this.notifySessionExpired();
@@ -134,6 +148,13 @@ export class ApiClient {
     return this.request(endpoint, {
       method: "PUT",
       body: typeof body === "string" ? body : JSON.stringify(body),
+      ...options,
+    });
+  }
+
+  async delete(endpoint, options = {}) {
+    return this.request(endpoint, {
+      method: "DELETE",
       ...options,
     });
   }
