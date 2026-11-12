@@ -635,6 +635,7 @@ function createTestRobot(id: string, statePath: string, host = "127.0.0.1", port
     url: "/api/robots/robot_api/status/refresh",
     headers: {
       cookie: `__Host-moliris_session=${opSessionToken}`,
+      origin: "http://localhost",
     },
   });
   assert.strictEqual(refreshRes.statusCode, 200);
@@ -648,6 +649,7 @@ function createTestRobot(id: string, statePath: string, host = "127.0.0.1", port
     url: "/api/robots/robot_api/status/refresh",
     headers: {
       cookie: `__Host-moliris_session=${roSessionToken}`,
+      origin: "http://localhost",
     },
   });
   assert.strictEqual(forbiddenRes.statusCode, 403);

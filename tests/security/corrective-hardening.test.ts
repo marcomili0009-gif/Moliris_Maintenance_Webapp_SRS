@@ -148,6 +148,8 @@ try {
         MOLIRIS_TEMP_RETENTION_MIN: "60",
         MOLIRIS_STATE_FILE_PATHS: "/tmp/s.txt",
         MOLIRIS_SESSION_TIMEOUT_MIN: "30",
+        MOLIRIS_SESSION_ABSOLUTE_MAX_MIN: "480",
+        MOLIRIS_ALLOWED_DESTINATIONS: "robot1.local",
         MOLIRIS_TLS_CERT_PATH: "/certs/cert.pem",
         MOLIRIS_TLS_KEY_PATH: "/certs/key.pem",
         MOLIRIS_REGISTRATION_MODE: "rigorosa",

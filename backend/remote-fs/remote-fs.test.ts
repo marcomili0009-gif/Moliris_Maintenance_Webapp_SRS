@@ -966,6 +966,7 @@ const userNoNavigate: UserEntity = {
     url: "/api/robots/robot_api_fs/fs/remote/file?path=/home/operator/subfolder/subfile.txt",
     headers: {
       cookie: `__Host-moliris_session=${authSession.sessionId}`,
+      origin: "http://localhost",
     },
   });
   assert.strictEqual(delResOk.statusCode, 200);
@@ -978,6 +979,7 @@ const userNoNavigate: UserEntity = {
     url: "/api/robots/robot_api_fs/fs/remote/file?path=/home/operator/subfolder/subfile.txt",
     headers: {
       cookie: `__Host-moliris_session=${noPermSession.sessionId}`,
+      origin: "http://localhost",
     },
   });
   assert.strictEqual(delNoPermRes.statusCode, 403);
@@ -988,6 +990,7 @@ const userNoNavigate: UserEntity = {
     url: "/api/robots/robot_api_fs/fs/remote/file",
     headers: {
       cookie: `__Host-moliris_session=${authSession.sessionId}`,
+      origin: "http://localhost",
     },
   });
   assert.strictEqual(delMissingPathRes.statusCode, 400);
