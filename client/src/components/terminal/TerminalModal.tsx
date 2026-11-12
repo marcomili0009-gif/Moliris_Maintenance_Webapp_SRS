@@ -2,13 +2,14 @@ import React, { useEffect, useRef } from "react";
 import type { TerminalState } from "../../hooks/useTerminal.ts";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 
 interface TerminalModalProps {
   terminalState: TerminalState;
   onClose: () => void;
   onAttachWebSocket: (
     sessionId: string,
-    onData: (data: string) => void,
+    onData: (data: string | Uint8Array) => void,
     onClose: () => void,
     onError: (err: Event) => void
   ) => void;
@@ -24,48 +25,60 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
   onResize,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const termInstanceRef = useRef<any>(null);
-  const fitAddonRef = useRef<any>(null);
+  const termInstanceRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
 
   const { isOpen, robotName, sessionId, status, error, cols, rows } = terminalState;
 
   useEffect(() => {
     if (!isOpen || !sessionId || !containerRef.current) return;
 
-    // Inizializza xterm
-    const TerminalClass = (window as any).Terminal || Terminal;
-    const FitAddonClass = (window as any).FitAddon?.FitAddon || FitAddon;
-
-    if (!TerminalClass) {
-      console.error("Terminal class not available");
-      return;
-    }
-
-    const term = new TerminalClass({
+    const term = new Terminal({
       cursorBlink: true,
       cols: cols || 80,
       rows: rows || 24,
+      fontFamily: '"DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", Menlo, Monaco, Consolas, "Courier New", monospace',
+      fontSize: 14,
       theme: {
         background: "#1e1e1e",
         foreground: "#f0f0f0",
+        cursor: "#ffffff",
       },
     });
 
-    let fitAddon: any = null;
-    if (FitAddonClass) {
-      fitAddon = new FitAddonClass();
-      term.loadAddon(fitAddon);
-      fitAddonRef.current = fitAddon;
-    }
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    fitAddonRef.current = fitAddon;
+    termInstanceRef.current = term;
 
     containerRef.current.replaceChildren();
     term.open(containerRef.current);
-    if (fitAddon) {
-      try {
-        fitAddon.fit();
-      } catch {}
-    }
-    termInstanceRef.current = term;
+
+    // Adattamento responsive con ResizeObserver e requestAnimationFrame
+    const performFit = () => {
+      if (fitAddonRef.current && termInstanceRef.current && containerRef.current) {
+        try {
+          fitAddonRef.current.fit();
+          const newCols = termInstanceRef.current.cols;
+          const newRows = termInstanceRef.current.rows;
+          if (newCols && newRows) {
+            onResize(newCols, newRows);
+          }
+        } catch {}
+      }
+    };
+
+    // Primo fit immediato e ritardato di un frame per garantire il paint del DOM
+    requestAnimationFrame(() => {
+      performFit();
+    });
+
+    const resizeObserver = new ResizeObserver(() => {
+      requestAnimationFrame(() => {
+        performFit();
+      });
+    });
+    resizeObserver.observe(containerRef.current);
 
     term.onData((data: string) => {
       onSendInput(data);
@@ -73,7 +86,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
 
     onAttachWebSocket(
       sessionId,
-      (data) => {
+      (data: string | Uint8Array) => {
         term.write(data);
       },
       () => {
@@ -84,18 +97,14 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
       }
     );
 
-    const handleResize = () => {
-      if (fitAddonRef.current && termInstanceRef.current) {
-        try {
-          fitAddonRef.current.fit();
-          onResize(termInstanceRef.current.cols, termInstanceRef.current.rows);
-        } catch {}
-      }
+    const handleWindowResize = () => {
+      performFit();
     };
-    window.addEventListener("resize", handleResize);
+    window.addEventListener("resize", handleWindowResize);
 
     return () => {
-      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("resize", handleWindowResize);
+      resizeObserver.disconnect();
       try {
         term.dispose();
       } catch {}
@@ -107,10 +116,10 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
   if (!isOpen) return null;
 
   let statusBadgeClass = "badge-non_verificato";
-  let statusText = "In connessione...";
+  let statusText = "Connessione in corso...";
   if (status === "connected") {
     statusBadgeClass = "badge-attivo";
-    statusText = "Connesso (Attivo)";
+    statusText = "Connesso";
   } else if (status === "disconnected") {
     statusBadgeClass = "badge-disabilitato";
     statusText = "Disconnesso";
@@ -159,14 +168,14 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
           className="terminal-body"
           id="terminal-container"
           ref={containerRef}
-          style={{ minHeight: "340px", backgroundColor: "#1e1e1e", padding: "4px" }}
+          style={{ minHeight: "340px", backgroundColor: "#1e1e1e", padding: "8px" }}
         />
 
-        <div className="terminal-footer flex justify-between items-center text-xs text-gray-500 p-2">
+        <div className="terminal-footer flex justify-between items-center text-xs text-gray-400 p-2">
           <span id="terminal-footer-info">
             Connessione PTY interattiva bidirezionale (RF-SSH-002, RF-SSH-004)
           </span>
-          <span id="terminal-footer-dims" className="badge">
+          <span id="terminal-footer-dims" className="badge bg-secondary">
             {cols} x {rows}
           </span>
         </div>

@@ -74,7 +74,7 @@ export function useTerminal() {
   const attachWebSocket = useCallback(
     (
       sessionId: string,
-      onData: (data: string) => void,
+      onData: (data: string | Uint8Array) => void,
       onClose: () => void,
       onError: (err: Event) => void
     ) => {
@@ -83,14 +83,42 @@ export function useTerminal() {
       }
 
       const ws = apiClient.createTerminalWebSocket(sessionId);
+      ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
       ws.onopen = () => {
         setTerminalState((prev) => ({ ...prev, status: "connected" }));
       };
 
-      ws.onmessage = (event) => {
-        onData(event.data);
+      ws.onmessage = async (event) => {
+        if (typeof event.data === "string") {
+          if (event.data.startsWith("{") && event.data.endsWith("}")) {
+            try {
+              const parsed = JSON.parse(event.data);
+              if (parsed.type === "terminal_idle_warning") {
+                onData(`\r\n\x1b[33m[Avviso: ${parsed.message}]\x1b[0m\r\n`);
+                return;
+              }
+              if (parsed.type === "terminal_idle_reset") {
+                return;
+              }
+              if (parsed.type === "error") {
+                onData(`\r\n\x1b[31m[Errore: ${parsed.message}]\x1b[0m\r\n`);
+                return;
+              }
+            } catch {}
+          }
+          onData(event.data);
+        } else if (event.data instanceof ArrayBuffer) {
+          onData(new Uint8Array(event.data));
+        } else if (event.data instanceof Blob) {
+          try {
+            const buf = await event.data.arrayBuffer();
+            onData(new Uint8Array(buf));
+          } catch {
+            // Se fallisce la lettura blob, ignoriamo
+          }
+        }
       };
 
       ws.onclose = () => {

@@ -273,9 +273,9 @@ body {
 
 /* Stili Finestra Terminale Remoto PTY (RF-SSH-003, RNF-UX-004) */
 .modal-terminal-window {
-  max-width: 1000px;
-  width: 95%;
-  height: 82vh;
+  max-width: 1400px;
+  width: 85vw;
+  height: 70vh;
   background-color: #1e1e1e;
   color: #f1f1f1;
   border-radius: 8px;
