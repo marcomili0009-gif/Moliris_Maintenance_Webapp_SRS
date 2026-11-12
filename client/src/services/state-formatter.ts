@@ -60,13 +60,4 @@ export class StateFormatter {
     return html;
   }
 
-  public static renderLastAttemptOutcome(outcome?: any): string {
-    if (!outcome) return "-";
-    const ts = this.formatDate(outcome.timestamp);
-    if (outcome.success) {
-      return `<span class="badge-status badge-attivo">Riuscito (${ts})</span>`;
-    }
-    const reason = outcome.diagnosticMessage || outcome.errorCode || "Anomalia rilevata";
-    return `<span class="badge-status badge-errore">Fallito (${ts}): ${this.escapeHtml(reason)}</span>`;
-  }
 }

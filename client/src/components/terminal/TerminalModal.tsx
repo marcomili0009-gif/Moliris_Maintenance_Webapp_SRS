@@ -58,7 +58,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
       fitAddonRef.current = fitAddon;
     }
 
-    containerRef.current.innerHTML = "";
+    containerRef.current.replaceChildren();
     term.open(containerRef.current);
     if (fitAddon) {
       try {

@@ -68,11 +68,16 @@ export const RobotDetailModal: React.FC<RobotDetailModalProps> = ({
               </p>
               <p>
                 <strong>Esito Ultimo Tentativo:</strong>{" "}
-                <span
-                  dangerouslySetInnerHTML={{
-                    __html: StateFormatter.renderLastAttemptOutcome(robot.lastAttemptOutcome),
-                  }}
-                />
+                {robot.lastAttemptOutcome ? (
+                  <span className={`badge-status ${robot.lastAttemptOutcome.success ? "badge-attivo" : "badge-errore"}`}>
+                    {robot.lastAttemptOutcome.success ? "Riuscito" : "Fallito"} (
+                    {StateFormatter.formatDate(robot.lastAttemptOutcome.timestamp)})
+                    {!robot.lastAttemptOutcome.success &&
+                      `: ${robot.lastAttemptOutcome.diagnosticMessage || robot.lastAttemptOutcome.errorCode || "Anomalia rilevata"}`}
+                  </span>
+                ) : (
+                  "-"
+                )}
               </p>
             </div>
           </div>
