@@ -355,7 +355,8 @@ console.log("  [1/6] Collaudo Sezione CA-AUTH (Autenticazione e Accesso)...");
 {
   const res = await api("POST", "/api/auth/login", {}, { username: "admin", password: "AdminPass123!" });
   assert.strictEqual(res.status, 200, "CA-AUTH-001: Login riuscito deve restituire 200");
-  assert.ok(res.body.sessionToken, "CA-AUTH-001: Rilascio token di sessione");
+  assert.ok(res.headers["set-cookie"]?.some((cookie: string) => cookie.startsWith("moliris_session=")), "CA-AUTH-001: Sessione rilasciata in cookie");
+  assert.strictEqual(res.body.sessionToken, undefined, "CA-AUTH-001: Token assente dal JSON");
   assert.strictEqual(res.body.user.username, "admin");
   console.log("    PASS: CA-AUTH-001 - Autenticazione con credenziali valide e rilascio sessione.");
 }

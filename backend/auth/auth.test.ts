@@ -152,7 +152,7 @@ async function makeHttpsRequest(
     const postData = body ? JSON.stringify(body) : undefined;
     const reqHeaders: Record<string, string> = {
       ...(postData ? { "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(postData)) } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(token ? { Cookie: `moliris_session=${token}` } : {}),
     };
 
     const req = https.request(
@@ -186,11 +186,12 @@ const validLoginRes = await makeHttpsRequest("POST", "/api/auth/login", {
   password: "Operatore123!",
 });
 assert.strictEqual(validLoginRes.status, 200, "Login valido deve restituire 200 (CA-AUTH-001)");
-assert(validLoginRes.body.sessionToken, "Deve essere presente sessionToken");
+assert.strictEqual(validLoginRes.body.sessionToken, undefined, "Il token non deve essere esposto nel JSON");
 assert.strictEqual(validLoginRes.body.user.username, "operatore_test");
 // Verifica che passwordHash non sia esposto (RNF-SEC-002)
 assert.strictEqual(validLoginRes.body.user.passwordHash, undefined);
-const operatorToken = validLoginRes.body.sessionToken;
+const operatorToken = String(validLoginRes.headers["set-cookie"]).match(/moliris_session=([^;]+)/)?.[1];
+assert(operatorToken, "Deve essere presente il cookie di sessione");
 
 // Verifica Cookie sicuro
 assert(validLoginRes.headers["set-cookie"], "Deve essere impostato il Set-Cookie");
@@ -247,7 +248,7 @@ const adminLoginRes = await makeHttpsRequest("POST", "/api/auth/login", {
   username: "admin_test",
   password: "Admin123!",
 });
-const adminToken = adminLoginRes.body.sessionToken;
+const adminToken = String(adminLoginRes.headers["set-cookie"]).match(/moliris_session=([^;]+)/)?.[1];
 
 const logoutRes = await makeHttpsRequest("POST", "/api/auth/logout", undefined, adminToken);
 assert.strictEqual(logoutRes.status, 200);

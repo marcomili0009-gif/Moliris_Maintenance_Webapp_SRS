@@ -351,8 +351,9 @@ const loginRes = await sendHttpsRequest(
   { username: "sec_admin", password: "AdminSecPass123!" }
 );
 assert.strictEqual(loginRes.statusCode, 200);
-const adminToken = loginRes.body.sessionToken;
-const authHeader = { Authorization: `Bearer ${adminToken}` };
+assert.strictEqual(loginRes.body.sessionToken, undefined, "Il token non deve essere esposto nel JSON");
+const adminCookie = String(loginRes.headers["set-cookie"]).split(";")[0];
+const authHeader = { Cookie: adminCookie };
 
 const maliciousPaths = [
   "../",
@@ -397,8 +398,8 @@ const opLogin = await sendHttpsRequest(
   { username: "sec_operator", password: "OperatorSecPass123!" }
 );
 assert.strictEqual(opLogin.statusCode, 200);
-const opToken = opLogin.body.sessionToken;
-const opAuthHeader = { Authorization: `Bearer ${opToken}` };
+assert.strictEqual(opLogin.body.sessionToken, undefined, "Il token non deve essere esposto nel JSON");
+const opAuthHeader = { Cookie: String(opLogin.headers["set-cookie"]).split(";")[0] };
 
 // 1. Accesso autorizzato a robot_allowed
 const allowedDetail = await sendHttpsRequest("GET", "/api/robots/robot_allowed", opAuthHeader);

@@ -1,33 +1,8 @@
 // Requisiti soddisfatti: SRS §1.2, §2.4 (vincoli 3-5), §2.5, RNF-SEC-001, RNF-SEC-002, RNF-SEC-004, RF-AUTH-003, RF-AUTH-006
 
 export class ApiClient {
-  private readonly tokenKey = "moliris_token";
   private sessionExpiredListeners: Array<() => void> = [];
   private activityListeners: Array<() => void> = [];
-
-  public getToken(): string | null {
-    try {
-      return sessionStorage.getItem(this.tokenKey);
-    } catch {
-      return null;
-    }
-  }
-
-  public setToken(token: string | null): void {
-    try {
-      if (token) {
-        sessionStorage.setItem(this.tokenKey, token);
-      } else {
-        sessionStorage.removeItem(this.tokenKey);
-      }
-    } catch {}
-  }
-
-  public clearToken(): void {
-    try {
-      sessionStorage.removeItem(this.tokenKey);
-    } catch {}
-  }
 
   public onSessionExpired(listener: () => void): void {
     this.sessionExpiredListeners.push(listener);
@@ -46,7 +21,6 @@ export class ApiClient {
   }
 
   public notifySessionExpired(): void {
-    this.clearToken();
     for (const listener of this.sessionExpiredListeners) {
       try {
         listener();
@@ -86,11 +60,6 @@ export class ApiClient {
     const headers: Record<string, string> = {
       ...((options.headers as Record<string, string>) || {}),
     };
-    const token = this.getToken();
-
-    if (token && !headers["Authorization"]) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
 
     if (
       options.body !== undefined &&
@@ -104,12 +73,13 @@ export class ApiClient {
     try {
       const response = await fetch(endpoint, {
         ...options,
+        credentials: "same-origin",
         headers,
       });
 
       const isAutomaticStatusPolling =
         options.method === "GET" && /^\/api\/robots\/[^/]+\/status(?:\?.*)?$/.test(endpoint);
-      if (token && !isAutomaticStatusPolling) {
+      if (!isAutomaticStatusPolling) {
         this.notifyQualifiedActivity();
       }
 

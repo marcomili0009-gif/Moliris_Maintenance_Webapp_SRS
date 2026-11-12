@@ -129,8 +129,9 @@ export function registerAuthRoutes(
       `moliris_session=${session.sessionId}; Path=/; Secure; HttpOnly; SameSite=Strict`
     );
 
+    // Il token resta esclusivamente nel cookie HttpOnly: non esporlo al JavaScript
+    // del browser riduce l'impatto di eventuali vulnerabilità XSS.
     return reply.status(200).send({
-      sessionToken: session.sessionId,
       user: toUserProfileDto(user),
     });
   });

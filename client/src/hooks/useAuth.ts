@@ -14,14 +14,6 @@ export function useAuth() {
   const idleCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const checkCurrentUser = useCallback(async () => {
-    const token = apiClient.getToken();
-    if (!token) {
-      setCurrentUser(null);
-      setIsAuthenticated(false);
-      setLoading(false);
-      return;
-    }
-
     try {
       const res = await apiClient.get("/api/auth/me");
       if (res.ok) {
@@ -29,12 +21,10 @@ export function useAuth() {
         setCurrentUser(data.user);
         setIsAuthenticated(true);
       } else {
-        apiClient.clearToken();
         setCurrentUser(null);
         setIsAuthenticated(false);
       }
     } catch {
-      apiClient.clearToken();
       setCurrentUser(null);
       setIsAuthenticated(false);
     } finally {
@@ -59,7 +49,6 @@ export function useAuth() {
         return false;
       }
 
-      apiClient.setToken(data.sessionToken);
       setCurrentUser(data.user);
       setIsAuthenticated(true);
       lastActivityRef.current = Date.now();
@@ -75,7 +64,6 @@ export function useAuth() {
     try {
       await apiClient.post("/api/auth/logout", {});
     } catch {}
-    apiClient.clearToken();
     setCurrentUser(null);
     setIsAuthenticated(false);
     setIdleWarning(null);
