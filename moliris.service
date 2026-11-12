@@ -43,7 +43,7 @@ RemoveIPC=true
 RestrictSUIDSGID=true
 RestrictNamespaces=true
 LockPersonality=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 SystemCallArchitectures=native
 
 # Limiti risorse (RNF-PERF-003, RNF-REL-005)
