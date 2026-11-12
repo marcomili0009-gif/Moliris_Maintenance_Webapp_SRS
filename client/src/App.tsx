@@ -17,16 +17,23 @@ export const App: React.FC = () => {
     dismissIdleWarning,
   } = useAuth();
 
+  const [activeMainView, setActiveMainView] = useState<"fleet" | "files">("fleet");
   const [goHomeTrigger, setGoHomeTrigger] = useState<number>(0);
 
   const handleGoHome = (): void => {
+    setActiveMainView("fleet");
     setGoHomeTrigger((prev) => prev + 1);
   };
 
   if (loading) {
     return (
       <div id="app">
-        <AppNavbar onGoHome={handleGoHome} />
+        <AppNavbar
+          onGoHome={handleGoHome}
+          user={null}
+          activeView="fleet"
+          onViewChange={setActiveMainView}
+        />
         <main className="container py-5 text-center">
           <div className="card shadow-sm p-4 mx-auto" style={{ maxWidth: 480 }}>
             <div className="spinner-border text-primary mx-auto mb-3" role="status">
@@ -41,7 +48,13 @@ export const App: React.FC = () => {
 
   return (
     <div id="app">
-      <AppNavbar onGoHome={handleGoHome} />
+      <AppNavbar
+        onGoHome={handleGoHome}
+        user={isAuthenticated ? currentUser : null}
+        onLogout={logout}
+        activeView={activeMainView}
+        onViewChange={setActiveMainView}
+      />
       {!isAuthenticated || !currentUser ? (
         <LoginView onLogin={login} error={loginError} />
       ) : (
@@ -51,6 +64,8 @@ export const App: React.FC = () => {
           idleWarning={idleWarning}
           onDismissIdleWarning={dismissIdleWarning}
           goHomeTrigger={goHomeTrigger}
+          activeMainView={activeMainView}
+          onActiveMainViewChange={setActiveMainView}
         />
       )}
     </div>

@@ -5,8 +5,13 @@ import { TransfersPanel } from "./TransfersPanel.tsx";
 import type { DirectoryListing } from "../../types/filesystem.ts";
 import type { TransferProgress } from "../../types/transfer.ts";
 import type { FormattedError } from "../../types/error.ts";
+import type { RobotSummaryDto } from "../../types/fleet.ts";
 
 interface FsBrowserSectionProps {
+  robots?: RobotSummaryDto[];
+  activeSubTab?: "server" | "remote" | "transfers";
+  onSubTabChange?: (tab: "server" | "remote" | "transfers") => void;
+
   // Server
   serverRobotId: string;
   onServerRobotIdChange: (id: string) => void;
@@ -48,6 +53,10 @@ interface FsBrowserSectionProps {
 }
 
 export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
+  robots = [],
+  activeSubTab,
+  onSubTabChange,
+
   serverRobotId,
   onServerRobotIdChange,
   serverPath,
@@ -84,40 +93,101 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
   onPurgeAllTemp,
   onCancelTransfer,
 }) => {
-  const [activeTab, setActiveTab] = useState<"server" | "remote" | "transfers">("server");
+  const [internalTab, setInternalTab] = useState<"server" | "remote" | "transfers">("server");
+  const currentTab = activeSubTab ?? internalTab;
+
+  const handleTabClick = (tab: "server" | "remote" | "transfers") => {
+    setInternalTab(tab);
+    if (onSubTabChange) {
+      onSubTabChange(tab);
+    }
+  };
+
+  const handleSelectRobot = (selectedId: string) => {
+    onServerRobotIdChange(selectedId);
+    onRemoteRobotIdChange(selectedId);
+    if (selectedId) {
+      // Auto-caricamento se il robot è selezionato
+      if (currentTab === "server") {
+        setTimeout(() => onLoadServer(), 50);
+      } else if (currentTab === "remote") {
+        setTimeout(() => onLoadRemote(), 50);
+      }
+    }
+  };
 
   return (
-    <section id="fs-browser-section" className="fs-browser-card">
-      <div className="fs-tab-bar">
+    <section id="fs-browser-section" className="fs-browser-card p-3">
+      {/* Selettore rapido Robot sincronizzato per Server ed SFTP Remoto */}
+      <div className="fs-top-selector-bar p-3 mb-3 d-flex align-items-center justify-content-between flex-wrap gap-3">
+        <div className="d-flex align-items-center gap-2 flex-grow-1" style={{ maxWidth: 540 }}>
+          <label htmlFor="select-fs-robot" className="form-label mb-0 fw-semibold text-secondary text-nowrap">
+            🤖 Robot Selezionato:
+          </label>
+          <select
+            id="select-fs-robot"
+            className="form-select form-select-sm"
+            value={serverRobotId || remoteRobotId || ""}
+            onChange={(e) => handleSelectRobot(e.target.value)}
+          >
+            <option value="">-- Seleziona un robot per visualizzare i file --</option>
+            {robots.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.displayName} ({r.id}) — [{r.connectionState}]
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="d-flex align-items-center gap-2">
+          <button
+            type="button"
+            className="btn btn-sm btn-outline-primary"
+            disabled={!serverRobotId && !remoteRobotId}
+            onClick={() => {
+              if (currentTab === "server") onLoadServer();
+              else if (currentTab === "remote") onLoadRemote();
+              else onRefreshTransfers();
+            }}
+          >
+            🔄 Aggiorna Vista Corrente
+          </button>
+        </div>
+      </div>
+
+      <div className="fs-tab-bar mb-3">
         <button
           type="button"
           id="btn-tab-fs-server"
-          className={`fs-tab-btn ${activeTab === "server" ? "active" : ""}`}
-          onClick={() => setActiveTab("server")}
+          data-view="server"
+          className={`fs-tab-btn ${currentTab === "server" ? "active" : ""}`}
+          onClick={() => handleTabClick("server")}
         >
-          File sul Server (Archivio Locale)
+          📁 File sul Server (Archivio Locale)
         </button>
 
         <button
           type="button"
           id="btn-tab-fs-remote"
-          className={`fs-tab-btn ${activeTab === "remote" ? "active" : ""}`}
-          onClick={() => setActiveTab("remote")}
+          data-view="remote"
+          className={`fs-tab-btn ${currentTab === "remote" ? "active" : ""}`}
+          onClick={() => handleTabClick("remote")}
         >
-          File sul Robot (Filesystem Remoto SFTP)
+          🤖 File sul Robot (Filesystem Remoto SFTP)
         </button>
 
         <button
           type="button"
           id="btn-tab-transfers"
-          className={`fs-tab-btn ${activeTab === "transfers" ? "active" : ""}`}
-          onClick={() => setActiveTab("transfers")}
+          data-view="transfers"
+          className={`fs-tab-btn ${currentTab === "transfers" ? "active" : ""}`}
+          onClick={() => handleTabClick("transfers")}
         >
-          Gestione Trasferimenti (<span id="transfers-active-count">{activeTransfersCount}</span> attivi)
+          ⚡ Gestione Trasferimenti (<span id="transfers-active-count">{activeTransfersCount}</span> attivi)
         </button>
       </div>
 
-      <div style={{ display: activeTab === "server" ? "block" : "none" }}>
+      <div style={{ display: currentTab === "server" ? "block" : "none" }}>
         <ServerFsPanel
           robotId={serverRobotId}
           onRobotIdChange={onServerRobotIdChange}
@@ -135,7 +205,7 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
         />
       </div>
 
-      <div style={{ display: activeTab === "remote" ? "block" : "none" }}>
+      <div style={{ display: currentTab === "remote" ? "block" : "none" }}>
         <RemoteFsPanel
           robotId={remoteRobotId}
           onRobotIdChange={onRemoteRobotIdChange}
@@ -154,7 +224,7 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
         />
       </div>
 
-      <div style={{ display: activeTab === "transfers" ? "block" : "none" }}>
+      <div style={{ display: currentTab === "transfers" ? "block" : "none" }}>
         <TransfersPanel
           transfers={transfers}
           loading={transfersLoading}

@@ -33,6 +33,17 @@ export const FleetTable: React.FC<FleetTableProps> = ({
   onRepairRobot,
   isAdmin,
 }) => {
+  const [openDropdownId, setOpenDropdownId] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest(".action-dropdown-container")) {
+        setOpenDropdownId(null);
+      }
+    };
+    document.addEventListener("click", handleOutsideClick);
+    return () => document.removeEventListener("click", handleOutsideClick);
+  }, []);
   return (
     <section className="fleet-section">
       <h3>Flotta Robot Registrati</h3>
@@ -112,22 +123,14 @@ export const FleetTable: React.FC<FleetTableProps> = ({
                         type="operational"
                         operationalData={robot.operationalState}
                         isStale={robot.isStale}
+                        lastUpdate={robot.lastValidUpdateAt}
                       />
                     </td>
                     <td>
-                      <div className="action-buttons-cell" style={{ display: "flex", gap: "0.25rem", flexWrap: "wrap" }}>
+                      <div className="action-buttons-cell d-flex align-items-center gap-1" style={{ whiteSpace: "nowrap" }}>
                         <button
                           type="button"
-                          className="btn btn-secondary btn-sm"
-                          title="Visualizza scheda dettaglio completa"
-                          onClick={() => onOpenDetail(robot.id)}
-                        >
-                          Dettaglio
-                        </button>
-
-                        <button
-                          type="button"
-                          className="btn btn-primary btn-sm"
+                          className="btn btn-primary btn-sm px-2 py-1"
                           title={
                             isOnline && !isDisabled
                               ? "Apri terminale SSH remoto PTY"
@@ -141,57 +144,102 @@ export const FleetTable: React.FC<FleetTableProps> = ({
 
                         <button
                           type="button"
-                          className="btn btn-secondary btn-sm"
-                          title="Aggiorna stato operativo dal dispositivo"
-                          disabled={isDisabled}
-                          onClick={() => onRefreshStatus(robot.id)}
+                          className="btn btn-outline-secondary btn-sm px-2 py-1"
+                          title="Visualizza scheda dettaglio completa"
+                          onClick={() => onOpenDetail(robot.id)}
                         >
-                          Aggiorna
+                          Dettaglio
                         </button>
 
-                        {isAdmin && (
-                          <>
-                            <button
-                              type="button"
-                              className="btn btn-secondary btn-sm"
-                              title="Modifica parametri di connessione e autenticazione"
-                              onClick={() => onOpenEdit(robot)}
-                            >
-                              Configura
-                            </button>
+                        <div className="position-relative action-dropdown-container">
+                          <button
+                            type="button"
+                            className="btn btn-outline-secondary btn-sm px-2 py-1 dropdown-toggle"
+                            id={`btn-actions-${robot.id}`}
+                            aria-expanded={openDropdownId === robot.id}
+                            title="Altre azioni sul robot"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenDropdownId(openDropdownId === robot.id ? null : robot.id);
+                            }}
+                          >
+                            Altre
+                          </button>
 
-                            <button
-                              type="button"
-                              className="btn btn-secondary btn-sm"
-                              title="Sincronizza e ripara directory server mancanti"
-                              onClick={() => onRepairRobot(robot.id)}
+                          {openDropdownId === robot.id && (
+                            <div
+                              className="dropdown-menu show shadow-sm end-0 position-absolute"
+                              style={{
+                                zIndex: 1050,
+                                minWidth: "160px",
+                                top: "100%",
+                                right: 0,
+                              }}
                             >
-                              Ripara
-                            </button>
+                              <button
+                                type="button"
+                                className="dropdown-item py-1"
+                                disabled={isDisabled}
+                                onClick={() => {
+                                  setOpenDropdownId(null);
+                                  onRefreshStatus(robot.id);
+                                }}
+                              >
+                                🔄 Aggiorna Stato
+                              </button>
 
-                            <button
-                              type="button"
-                              className="btn btn-warning btn-sm"
-                              title={
-                                isDisabled
-                                  ? "Abilita il robot alle operazioni"
-                                  : "Disabilita il robot"
-                              }
-                              onClick={() => onToggleStatus(robot.id, robot.anagraphicState)}
-                            >
-                              {isDisabled ? "Abilita" : "Disabilita"}
-                            </button>
+                              {isAdmin && (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="dropdown-item py-1"
+                                    onClick={() => {
+                                      setOpenDropdownId(null);
+                                      onOpenEdit(robot);
+                                    }}
+                                  >
+                                    ⚙️ Configura
+                                  </button>
 
-                            <button
-                              type="button"
-                              className="btn btn-danger btn-sm"
-                              title="Rimuovi il robot dall'anagrafica attiva (preserva file server)"
-                              onClick={() => onOpenRemove(robot)}
-                            >
-                              Rimuovi
-                            </button>
-                          </>
-                        )}
+                                  <button
+                                    type="button"
+                                    className="dropdown-item py-1"
+                                    onClick={() => {
+                                      setOpenDropdownId(null);
+                                      onRepairRobot(robot.id);
+                                    }}
+                                  >
+                                    🛠️ Ripara Directory
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    className="dropdown-item py-1 text-warning"
+                                    onClick={() => {
+                                      setOpenDropdownId(null);
+                                      onToggleStatus(robot.id, robot.anagraphicState);
+                                    }}
+                                  >
+                                    {isDisabled ? "✅ Abilita Robot" : "⏸️ Disabilita Robot"}
+                                  </button>
+
+                                  <div className="dropdown-divider my-1" />
+
+                                  <button
+                                    type="button"
+                                    className="dropdown-item py-1 text-danger"
+                                    onClick={() => {
+                                      setOpenDropdownId(null);
+                                      onOpenRemove(robot);
+                                    }}
+                                  >
+                                    🗑️ Rimuovi Robot
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </td>
                   </tr>

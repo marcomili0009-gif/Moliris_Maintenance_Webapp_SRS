@@ -565,3 +565,79 @@ body {
 .hidden {
   display: none;
 }
+
+/* ==========================================================================
+   Stili Tabella Flotta Ottimizzata per 1280px+ (SRS §5.1, RNF-UX-001)
+   Eliminazione barra di scorrimento orizzontale su monitor standard
+   ========================================================================== */
+#fleet-table {
+  width: 100%;
+  font-size: 0.85rem;
+  table-layout: auto;
+}
+
+#fleet-table th {
+  font-weight: 600;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 0.6rem 0.5rem;
+  white-space: nowrap;
+  background-color: #f8fafc;
+  border-bottom: 2px solid #e2e8f0;
+}
+
+#fleet-table td {
+  padding: 0.5rem 0.5rem;
+  vertical-align: middle;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.action-dropdown-container .dropdown-menu {
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  font-size: 0.82rem;
+}
+
+.action-dropdown-container .dropdown-item {
+  cursor: pointer;
+  padding: 0.35rem 0.75rem;
+}
+
+.action-dropdown-container .dropdown-item:hover {
+  background-color: #f1f5f9;
+}
+
+/* ==========================================================================
+   Stili Navigazione Superiore Navbar (Barra Scura)
+   ========================================================================== */
+.navbar-nav .nav-link {
+  font-weight: 500;
+  font-size: 0.95rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 4px;
+  color: #cbd5e1;
+  transition: all 0.15s ease-in-out;
+}
+
+.navbar-nav .nav-link:hover {
+  color: #ffffff;
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.navbar-nav .nav-link.active {
+  color: #ffffff !important;
+  background-color: var(--bs-primary) !important;
+  font-weight: 600;
+}
+
+/* ==========================================================================
+   Stili Selettore Robot nella Vista Unificata File/Trasferimenti
+   ========================================================================== */
+.fs-top-selector-bar {
+  background-color: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}

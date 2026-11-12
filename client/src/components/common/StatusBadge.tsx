@@ -5,7 +5,56 @@ export interface StatusBadgeProps {
   state?: string;
   operationalData?: unknown;
   isStale?: boolean;
+  lastUpdate?: string | Date | null;
   className?: string;
+}
+
+function formatOperationalSummary(data: unknown): string {
+  if (data === null || data === undefined) return "";
+  if (typeof data === "string") return data.replace(/^"|"$/g, "");
+  if (typeof data === "number" || typeof data === "boolean") return String(data);
+  if (typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+    if (typeof obj.PRETTY_NAME === "string") {
+      return obj.PRETTY_NAME.replace(/^"|"$/g, "");
+    }
+    if (typeof obj.VERSION === "string") {
+      return obj.VERSION.replace(/^"|"$/g, "");
+    }
+    if (typeof obj.status === "string") {
+      return obj.status;
+    }
+    if (typeof obj.state === "string") {
+      return obj.state;
+    }
+    const entries = Object.entries(obj).filter(([_, v]) => v !== undefined && v !== null);
+    if (entries.length > 0) {
+      return entries
+        .slice(0, 2)
+        .map(([k, v]) => `${k}: ${typeof v === "string" ? v.replace(/^"|"$/g, "") : String(v)}`)
+        .join(", ");
+    }
+    return "Operativo";
+  }
+  return String(data);
+}
+
+function formatLastUpdate(dateVal?: string | Date | null): string {
+  if (!dateVal) return "";
+  try {
+    const d = typeof dateVal === "string" ? new Date(dateVal) : dateVal;
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleString("it-IT", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    return "";
+  }
 }
 
 /**
@@ -21,6 +70,7 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
   state,
   operationalData,
   isStale = false,
+  lastUpdate,
   className = "",
 }) => {
   if (type === "anagraphic") {
@@ -57,18 +107,35 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
       );
     }
 
+    const summary = formatOperationalSummary(operationalData);
+    const lastUpdateFormatted = formatLastUpdate(lastUpdate);
+    const fullJson = typeof operationalData === "object" ? JSON.stringify(operationalData, null, 2) : String(operationalData);
+
     return (
-      <span className="operational-container">
-        <code>{JSON.stringify(operationalData)}</code>
-        {isStale && (
+      <div className={`operational-container ${className}`} style={{ maxWidth: "230px" }}>
+        <div className="d-flex align-items-center flex-wrap gap-1">
           <span
-            className="badge text-bg-warning badge-status badge-avviso ms-2"
-            title="Dato non aggiornato oltre la soglia temporale o ultimo tentativo fallito"
+            className="badge text-bg-light border text-truncate"
+            style={{ maxWidth: "160px" }}
+            title={fullJson}
           >
-            [Non più verificato]
+            {summary}
           </span>
+          {isStale && (
+            <span
+              className="badge text-bg-warning badge-status badge-avviso"
+              title="Dato non aggiornato oltre la soglia temporale o ultimo tentativo fallito"
+            >
+              [Non più verificato]
+            </span>
+          )}
+        </div>
+        {lastUpdateFormatted && (
+          <div className="text-muted small mt-1" style={{ fontSize: "0.72rem", lineHeight: 1.2 }}>
+            Agg: {lastUpdateFormatted}
+          </div>
         )}
-      </span>
+      </div>
     );
   }
 
