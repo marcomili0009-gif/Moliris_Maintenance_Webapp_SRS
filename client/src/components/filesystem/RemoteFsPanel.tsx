@@ -1,11 +1,14 @@
 import React, { useRef } from "react";
 import type { DirectoryListing } from "../../types/filesystem.ts";
 import type { FormattedError } from "../../types/error.ts";
+import type { RobotSummaryDto } from "../../types/fleet.ts";
 import { FsTable } from "./FsTable.tsx";
+import { RobotCombobox } from "../common/RobotCombobox.tsx";
 
 interface RemoteFsPanelProps {
   robotId: string;
   onRobotIdChange: (id: string) => void;
+  robots?: RobotSummaryDto[];
   currentPath: string;
   listing: DirectoryListing | null;
   loading: boolean;
@@ -23,6 +26,7 @@ interface RemoteFsPanelProps {
 export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
   robotId,
   onRobotIdChange,
+  robots = [],
   currentPath,
   listing,
   loading,
@@ -55,15 +59,18 @@ export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
             Navigazione diretta nel filesystem remoto del robot tramite SFTP via backend (§1.2, vincolo 2.4). Nessun file archiviato sul server locale.
           </small>
         </div>
-        <div className="fs-robot-selector">
-          <label htmlFor="fs-remote-robot-id">ID Robot:</label>
-          <input
-            type="text"
+        <div className="fs-robot-selector d-flex align-items-center gap-2 flex-wrap">
+          <label htmlFor="fs-remote-robot-id" className="form-label mb-0 fw-semibold text-secondary">
+            ID Robot:
+          </label>
+          <RobotCombobox
             id="fs-remote-robot-id"
             name="fsRemoteRobotId"
             placeholder="es. robot_01"
             value={robotId}
-            onChange={(e) => onRobotIdChange(e.target.value)}
+            onChange={onRobotIdChange}
+            onSubmit={onLoad}
+            robots={robots}
           />
           <button
             type="button"

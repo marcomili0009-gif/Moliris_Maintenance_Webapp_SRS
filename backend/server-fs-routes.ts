@@ -36,7 +36,10 @@ export function registerServerFsRoutes(
       const rawPath = typeof query.path === "string" ? query.path.trim() : "";
       const subPath = rawPath === "/" || rawPath === "\\" || rawPath === "." ? "" : rawPath.replace(/^[/\\]+/, "");
 
-      const robot = await robotRepository.findById(robotId);
+      let robot = await robotRepository.findById(robotId);
+      if (!robot) {
+        robot = await robotRepository.findByServerDirectory(robotId);
+      }
       if (!robot) {
         const notFoundDef = ERROR_CATALOG[ErrorCode.SERVER_DIR_INACCESSIBLE];
         return reply.status(404).send({
@@ -107,7 +110,10 @@ export function registerServerFsRoutes(
         });
       }
 
-      const robot = await robotRepository.findById(robotId);
+      let robot = await robotRepository.findById(robotId);
+      if (!robot) {
+        robot = await robotRepository.findByServerDirectory(robotId);
+      }
       if (!robot) {
         return reply.status(404).send({
           code: ErrorCode.MISSING_ROBOT_PARAMS,
@@ -173,7 +179,10 @@ export function registerServerFsRoutes(
         });
       }
 
-      const robot = await robotRepository.findById(robotId);
+      let robot = await robotRepository.findById(robotId);
+      if (!robot) {
+        robot = await robotRepository.findByServerDirectory(robotId);
+      }
       if (!robot) {
         return reply.status(404).send({
           code: ErrorCode.SERVER_DIR_INACCESSIBLE,

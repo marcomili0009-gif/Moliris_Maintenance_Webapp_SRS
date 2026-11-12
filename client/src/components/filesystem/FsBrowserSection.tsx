@@ -103,58 +103,8 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
     }
   };
 
-  const handleSelectRobot = (selectedId: string) => {
-    onServerRobotIdChange(selectedId);
-    onRemoteRobotIdChange(selectedId);
-    if (selectedId) {
-      // Auto-caricamento se il robot è selezionato
-      if (currentTab === "server") {
-        setTimeout(() => onLoadServer(), 50);
-      } else if (currentTab === "remote") {
-        setTimeout(() => onLoadRemote(), 50);
-      }
-    }
-  };
-
   return (
     <section id="fs-browser-section" className="fs-browser-card p-3">
-      {/* Selettore rapido Robot sincronizzato per Server ed SFTP Remoto */}
-      <div className="fs-top-selector-bar p-3 mb-3 d-flex align-items-center justify-content-between flex-wrap gap-3">
-        <div className="d-flex align-items-center gap-2 flex-grow-1" style={{ maxWidth: 540 }}>
-          <label htmlFor="select-fs-robot" className="form-label mb-0 fw-semibold text-secondary text-nowrap">
-            🤖 Robot Selezionato:
-          </label>
-          <select
-            id="select-fs-robot"
-            className="form-select form-select-sm"
-            value={serverRobotId || remoteRobotId || ""}
-            onChange={(e) => handleSelectRobot(e.target.value)}
-          >
-            <option value="">-- Seleziona un robot per visualizzare i file --</option>
-            {robots.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.displayName} ({r.id}) — [{r.connectionState}]
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="d-flex align-items-center gap-2">
-          <button
-            type="button"
-            className="btn btn-sm btn-outline-primary"
-            disabled={!serverRobotId && !remoteRobotId}
-            onClick={() => {
-              if (currentTab === "server") onLoadServer();
-              else if (currentTab === "remote") onLoadRemote();
-              else onRefreshTransfers();
-            }}
-          >
-            🔄 Aggiorna Vista Corrente
-          </button>
-        </div>
-      </div>
-
       <div className="fs-tab-bar mb-3">
         <button
           type="button"
@@ -191,6 +141,7 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
         <ServerFsPanel
           robotId={serverRobotId}
           onRobotIdChange={onServerRobotIdChange}
+          robots={robots}
           currentPath={serverPath}
           listing={serverListing}
           loading={serverLoading}
@@ -209,6 +160,7 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
         <RemoteFsPanel
           robotId={remoteRobotId}
           onRobotIdChange={onRemoteRobotIdChange}
+          robots={robots}
           currentPath={remotePath}
           listing={remoteListing}
           loading={remoteLoading}

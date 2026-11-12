@@ -1,11 +1,14 @@
 import React, { useRef } from "react";
 import type { DirectoryListing } from "../../types/filesystem.ts";
 import type { FormattedError } from "../../types/error.ts";
+import type { RobotSummaryDto } from "../../types/fleet.ts";
 import { FsTable } from "./FsTable.tsx";
+import { RobotCombobox } from "../common/RobotCombobox.tsx";
 
 interface ServerFsPanelProps {
   robotId: string;
   onRobotIdChange: (id: string) => void;
+  robots?: RobotSummaryDto[];
   currentPath: string;
   listing: DirectoryListing | null;
   loading: boolean;
@@ -22,6 +25,7 @@ interface ServerFsPanelProps {
 export const ServerFsPanel: React.FC<ServerFsPanelProps> = ({
   robotId,
   onRobotIdChange,
+  robots = [],
   currentPath,
   listing,
   loading,
@@ -53,15 +57,18 @@ export const ServerFsPanel: React.FC<ServerFsPanelProps> = ({
             File e directory archiviati nella root server dedicata al robot selezionato.
           </small>
         </div>
-        <div className="fs-robot-selector">
-          <label htmlFor="fs-robot-id">ID Robot:</label>
-          <input
-            type="text"
+        <div className="fs-robot-selector d-flex align-items-center gap-2 flex-wrap">
+          <label htmlFor="fs-robot-id" className="form-label mb-0 fw-semibold text-secondary">
+            ID Robot:
+          </label>
+          <RobotCombobox
             id="fs-robot-id"
             name="fsRobotId"
             placeholder="es. robot_01"
             value={robotId}
-            onChange={(e) => onRobotIdChange(e.target.value)}
+            onChange={onRobotIdChange}
+            onSubmit={onLoad}
+            robots={robots}
           />
           <button
             type="button"

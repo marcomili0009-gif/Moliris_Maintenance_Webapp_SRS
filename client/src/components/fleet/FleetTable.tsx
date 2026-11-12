@@ -1,4 +1,5 @@
 import React from "react";
+import { createPortal } from "react-dom";
 import type { RobotSummaryDto } from "../../types/fleet.ts";
 import { StatusBadge } from "../common/StatusBadge.tsx";
 
@@ -34,16 +35,92 @@ export const FleetTable: React.FC<FleetTableProps> = ({
   isAdmin,
 }) => {
   const [openDropdownId, setOpenDropdownId] = React.useState<string | null>(null);
+  const [dropdownPosition, setDropdownPosition] = React.useState<{
+    top: number;
+    left: number;
+    placement: "bottom" | "top";
+  } | null>(null);
+  const activeTriggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const dropdownMenuRef = React.useRef<HTMLDivElement | null>(null);
+
+  const closeDropdown = React.useCallback((restoreFocus = false) => {
+    setOpenDropdownId(null);
+    setDropdownPosition(null);
+    if (restoreFocus && activeTriggerRef.current) {
+      activeTriggerRef.current.focus();
+    }
+  }, []);
 
   React.useEffect(() => {
+    if (!openDropdownId) return;
+
     const handleOutsideClick = (e: MouseEvent) => {
-      if (!(e.target as HTMLElement).closest(".action-dropdown-container")) {
-        setOpenDropdownId(null);
+      const target = e.target as Node;
+      if (
+        dropdownMenuRef.current &&
+        !dropdownMenuRef.current.contains(target) &&
+        activeTriggerRef.current &&
+        !activeTriggerRef.current.contains(target)
+      ) {
+        closeDropdown(false);
       }
     };
-    document.addEventListener("click", handleOutsideClick);
-    return () => document.removeEventListener("click", handleOutsideClick);
-  }, []);
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        closeDropdown(true);
+      }
+    };
+
+    const handleScrollOrResize = () => {
+      closeDropdown(false);
+    };
+
+    document.addEventListener("mousedown", handleOutsideClick);
+    document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("scroll", handleScrollOrResize, true);
+    window.addEventListener("resize", handleScrollOrResize);
+
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+      document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("scroll", handleScrollOrResize, true);
+      window.removeEventListener("resize", handleScrollOrResize);
+    };
+  }, [openDropdownId, closeDropdown]);
+
+  const handleToggleDropdown = (robotId: string, buttonEl: HTMLButtonElement) => {
+    if (openDropdownId === robotId) {
+      closeDropdown(false);
+      return;
+    }
+
+    const rect = buttonEl.getBoundingClientRect();
+    const menuWidth = 180;
+    const estimatedMenuHeight = isAdmin ? 220 : 60;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+
+    const shouldFlipTop = spaceBelow < estimatedMenuHeight && spaceAbove > spaceBelow;
+
+    let left = rect.right - menuWidth;
+    if (left < 10) left = 10;
+    if (left + menuWidth > window.innerWidth - 10) {
+      left = window.innerWidth - menuWidth - 10;
+    }
+
+    const top = shouldFlipTop ? rect.top - 4 : rect.bottom + 4;
+
+    activeTriggerRef.current = buttonEl;
+    setOpenDropdownId(robotId);
+    setDropdownPosition({
+      top,
+      left,
+      placement: shouldFlipTop ? "top" : "bottom",
+    });
+  };
+
+  const activeRobot = openDropdownId ? robots.find((r) => r.id === openDropdownId) : null;
   return (
     <section className="fleet-section">
       <h3>Flotta Robot Registrati</h3>
@@ -151,7 +228,7 @@ export const FleetTable: React.FC<FleetTableProps> = ({
                           Dettaglio
                         </button>
 
-                        <div className="position-relative action-dropdown-container">
+                        <div className="action-dropdown-container">
                           <button
                             type="button"
                             className="btn btn-outline-secondary btn-sm px-2 py-1 dropdown-toggle"
@@ -160,85 +237,11 @@ export const FleetTable: React.FC<FleetTableProps> = ({
                             title="Altre azioni sul robot"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setOpenDropdownId(openDropdownId === robot.id ? null : robot.id);
+                              handleToggleDropdown(robot.id, e.currentTarget);
                             }}
                           >
                             Altre
                           </button>
-
-                          {openDropdownId === robot.id && (
-                            <div
-                              className="dropdown-menu show shadow-sm end-0 position-absolute"
-                              style={{
-                                zIndex: 1050,
-                                minWidth: "160px",
-                                top: "100%",
-                                right: 0,
-                              }}
-                            >
-                              <button
-                                type="button"
-                                className="dropdown-item py-1"
-                                disabled={isDisabled}
-                                onClick={() => {
-                                  setOpenDropdownId(null);
-                                  onRefreshStatus(robot.id);
-                                }}
-                              >
-                                🔄 Aggiorna Stato
-                              </button>
-
-                              {isAdmin && (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="dropdown-item py-1"
-                                    onClick={() => {
-                                      setOpenDropdownId(null);
-                                      onOpenEdit(robot);
-                                    }}
-                                  >
-                                    ⚙️ Configura
-                                  </button>
-
-                                  <button
-                                    type="button"
-                                    className="dropdown-item py-1"
-                                    onClick={() => {
-                                      setOpenDropdownId(null);
-                                      onRepairRobot(robot.id);
-                                    }}
-                                  >
-                                    🛠️ Ripara Directory
-                                  </button>
-
-                                  <button
-                                    type="button"
-                                    className="dropdown-item py-1 text-warning"
-                                    onClick={() => {
-                                      setOpenDropdownId(null);
-                                      onToggleStatus(robot.id, robot.anagraphicState);
-                                    }}
-                                  >
-                                    {isDisabled ? "✅ Abilita Robot" : "⏸️ Disabilita Robot"}
-                                  </button>
-
-                                  <div className="dropdown-divider my-1" />
-
-                                  <button
-                                    type="button"
-                                    className="dropdown-item py-1 text-danger"
-                                    onClick={() => {
-                                      setOpenDropdownId(null);
-                                      onOpenRemove(robot);
-                                    }}
-                                  >
-                                    🗑️ Rimuovi Robot
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          )}
                         </div>
                       </div>
                     </td>
@@ -249,6 +252,85 @@ export const FleetTable: React.FC<FleetTableProps> = ({
           </tbody>
         </table>
       </div>
+
+      {openDropdownId && dropdownPosition && activeRobot && createPortal(
+        <div
+          ref={dropdownMenuRef}
+          className="dropdown-menu show shadow-sm"
+          style={{
+            position: "fixed",
+            top: dropdownPosition.top,
+            left: dropdownPosition.left,
+            transform: dropdownPosition.placement === "top" ? "translateY(-100%)" : "none",
+            zIndex: 1040,
+            minWidth: "180px",
+            margin: 0,
+          }}
+        >
+          <button
+            type="button"
+            className="dropdown-item py-1"
+            disabled={activeRobot.anagraphicState === "disabilitato"}
+            onClick={() => {
+              closeDropdown(false);
+              onRefreshStatus(activeRobot.id);
+            }}
+          >
+            🔄 Aggiorna Stato
+          </button>
+
+          {isAdmin && (
+            <>
+              <button
+                type="button"
+                className="dropdown-item py-1"
+                onClick={() => {
+                  closeDropdown(false);
+                  onOpenEdit(activeRobot);
+                }}
+              >
+                ⚙️ Configura
+              </button>
+
+              <button
+                type="button"
+                className="dropdown-item py-1"
+                onClick={() => {
+                  closeDropdown(false);
+                  onRepairRobot(activeRobot.id);
+                }}
+              >
+                🛠️ Ripara Directory
+              </button>
+
+              <button
+                type="button"
+                className="dropdown-item py-1 text-warning"
+                onClick={() => {
+                  closeDropdown(false);
+                  onToggleStatus(activeRobot.id, activeRobot.anagraphicState);
+                }}
+              >
+                {activeRobot.anagraphicState === "disabilitato" ? "✅ Abilita Robot" : "⏸️ Disabilita Robot"}
+              </button>
+
+              <div className="dropdown-divider my-1" />
+
+              <button
+                type="button"
+                className="dropdown-item py-1 text-danger"
+                onClick={() => {
+                  closeDropdown(false);
+                  onOpenRemove(activeRobot);
+                }}
+              >
+                🗑️ Rimuovi Robot
+              </button>
+            </>
+          )}
+        </div>,
+        document.body
+      )}
     </section>
   );
 };

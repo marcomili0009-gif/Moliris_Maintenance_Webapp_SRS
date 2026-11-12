@@ -431,10 +431,88 @@ try {
   );
   assert.strictEqual(isServerPanelMounted, true, "Il pannello filesystem server deve essere montato");
 
+  // Test Filesystem: Rimozione barra 'Robot Selezionato' e integrazione RobotCombobox
+  console.log("  -> Test Filesystem: Rimozione barra 'Robot Selezionato' e integrazione RobotCombobox");
+  const hasTopSelectorBar = await evaluateInBrowser<boolean>(
+    "Boolean(document.querySelector('.fs-top-selector-bar'))"
+  );
+  assert.strictEqual(hasTopSelectorBar, false, "La barra superiore 'fs-top-selector-bar' deve essere stata rimossa");
+
+  // Verifica Combobox Robot
+  const comboboxInfo = await evaluateInBrowser<{ hasInput: boolean; role: string; hasPopupList: boolean }>(`{
+    const inp = document.getElementById('fs-robot-id');
+    ({
+      hasInput: Boolean(inp),
+      role: inp ? inp.getAttribute('role') || '' : '',
+      hasPopupList: Boolean(document.getElementById('fs-robot-id-popup-list')),
+    })
+  }`);
+  assert.strictEqual(comboboxInfo.hasInput, true, "L'input #fs-robot-id deve essere presente");
+  assert.strictEqual(comboboxInfo.role, "combobox", "L'input #fs-robot-id deve avere role='combobox'");
+
+  // Focus sul combobox per aprire la tendina
+  await evaluateInBrowser<void>(`
+    const inp = document.getElementById('fs-robot-id');
+    inp.focus();
+    inp.click();
+  `);
+  await new Promise((r) => setTimeout(r, 100));
+  const isPopupOpen = await evaluateInBrowser<boolean>(
+    "Boolean(document.getElementById('fs-robot-id-popup-list'))"
+  );
+  assert.strictEqual(isPopupOpen, true, "Il click sul combobox deve aprire la tendina con i robot");
+
+  // Selezione del robot dal combobox
+  await evaluateInBrowser<void>(`
+    const opt = document.querySelector('#fs-robot-id-popup-list [role="option"]');
+    if (opt) opt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  `);
+  await new Promise((r) => setTimeout(r, 100));
+  const selectedValue = await evaluateInBrowser<string>(
+    "document.getElementById('fs-robot-id').value"
+  );
+  assert.strictEqual(selectedValue, "robot_react_01", "La selezione dal combobox deve impostare l'ID esatto del robot");
+  console.log("  PASS: Rimozione fs-top-selector-bar e funzionamento RobotCombobox verificati.");
+
   await evaluateInBrowser<void>(`
     document.querySelector('button[data-view="fleet"]').click();
   `);
   await new Promise((r) => setTimeout(r, 200));
+
+  // Test FleetTable: Menu 'Altre' con React Portal in document.body e auto-flip/z-index
+  console.log("  -> Test FleetTable: Menu 'Altre' con React Portal in document.body e auto-flip/z-index");
+  await evaluateInBrowser<void>(`
+    document.getElementById('btn-actions-robot_react_01').click();
+  `);
+  await new Promise((r) => setTimeout(r, 100));
+  const menuInfo = await evaluateInBrowser<{ isDirectChildOfBody: boolean; zIndex: string; position: string; text: string }>(`{
+    const menu = document.body.querySelector('body > .dropdown-menu.show');
+    ({
+      isDirectChildOfBody: Boolean(menu),
+      zIndex: menu ? window.getComputedStyle(menu).zIndex : '',
+      position: menu ? window.getComputedStyle(menu).position : '',
+      text: menu ? menu.textContent || '' : '',
+    })
+  }`);
+  assert.strictEqual(menuInfo.isDirectChildOfBody, true, "Il menu Altre deve essere montato direttamente in document.body via Portal");
+  assert.strictEqual(menuInfo.position, "fixed", "Il menu Altre deve avere position: fixed");
+  assert.strictEqual(menuInfo.zIndex, "1040", "Il menu Altre deve avere zIndex: 1040");
+  assert.ok(menuInfo.text.includes("Aggiorna Stato"), "Il menu Altre deve contenere 'Aggiorna Stato'");
+  assert.ok(menuInfo.text.includes("Configura"), "Il menu Altre deve contenere 'Configura'");
+  assert.ok(menuInfo.text.includes("Ripara Directory"), "Il menu Altre deve contenere 'Ripara Directory'");
+  assert.ok(menuInfo.text.includes("Disabilita Robot"), "Il menu Altre deve contenere 'Disabilita Robot'");
+  assert.ok(menuInfo.text.includes("Rimuovi Robot"), "Il menu Altre deve contenere 'Rimuovi Robot'");
+
+  // Chiusura menu con tasto Escape
+  await evaluateInBrowser<void>(`
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  `);
+  await new Promise((r) => setTimeout(r, 100));
+  const isMenuClosed = await evaluateInBrowser<boolean>(
+    "!Boolean(document.body.querySelector('body > .dropdown-menu.show'))"
+  );
+  assert.strictEqual(isMenuClosed, true, "Il menu Altre deve chiudersi con il tasto Escape");
+  console.log("  PASS: Menu 'Altre' floating in Portal, posizionamento fixed, z-index 1040 e chiusura con Escape verificati.");
 
   // Test AppNavbar: logo con link href="/", aria-label e click che riporta alla Home (SRS §5.1)
   console.log("  -> Test AppNavbar: verifica logo link href='/', aria-label e navigazione Home");

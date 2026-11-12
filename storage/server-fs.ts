@@ -126,6 +126,10 @@ export class ServerFilesystemService {
     }
   }
 
+  public getFsRoot(): string {
+    return this.fsRoot;
+  }
+
   /**
    * Risolve e valida in modo sicuro un percorso relativo all'interno della directory del robot (RNF-SEC-005, CA-ROB-009).
    * Rifiuta percorsi assoluti, path traversal ("..", sequenze codificate), link simbolici che fuoriescono.
@@ -136,12 +140,13 @@ export class ServerFilesystemService {
   ): Promise<string> {
     const robotDir = path.resolve(robot.serverDirectoryPath);
 
-    // Se non è specificato alcun sotto-percorso o è vuoto, restituisce la root del robot
-    if (!relativeSubPath || relativeSubPath.trim() === "" || relativeSubPath.trim() === ".") {
+    // Se non è specificato alcun sotto-percorso o rappresenta la root, restituisce la root del robot
+    const trimmed = (relativeSubPath ?? "").trim();
+    if (!trimmed || trimmed === "." || trimmed === "/" || trimmed === "\\" || trimmed === "./" || trimmed === ".\\") {
       return robotDir;
     }
 
-    const subPath = relativeSubPath.trim();
+    const subPath = trimmed;
 
     // 1. Rifiuto di byte nulli o caratteri di controllo
     if (subPath.includes("\0")) {
@@ -236,6 +241,9 @@ export class ServerFilesystemService {
 
     // CA-ROB-007: Verifica che la root del server esista e sia accessibile in scrittura
     try {
+      if (!fs.existsSync(this.fsRoot)) {
+        await fs.promises.mkdir(this.fsRoot, { recursive: true, mode: 0o750 });
+      }
       await fs.promises.access(this.fsRoot, fs.constants.W_OK | fs.constants.R_OK);
     } catch (err: any) {
       this.logger.error("Root filesystem server non accessibile in scrittura", err.message, { fsRoot: this.fsRoot });
@@ -356,7 +364,7 @@ export class ServerFilesystemService {
       await this.ensureRobotDirectory(robot);
     }
 
-    const targetDir = await this.resolveRobotPath(robot, relativeSubPath);
+    const targetDir = await this.resolveRobotPath(robot, isRoot ? "" : relativeSubPath);
 
     try {
       if (!fs.existsSync(targetDir)) {
