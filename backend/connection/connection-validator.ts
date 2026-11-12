@@ -55,7 +55,7 @@ export class DestinationValidator {
   private maxConcurrentVerifications: number;
 
   constructor(allowedDestinations?: string[], maxConcurrentVerifications = 5) {
-    this.allowedDestinations = allowedDestinations && allowedDestinations.length > 0 ? allowedDestinations : undefined;
+    this.allowedDestinations = allowedDestinations;
     this.maxConcurrentVerifications = maxConcurrentVerifications;
   }
 
@@ -63,7 +63,7 @@ export class DestinationValidator {
    * Verifica se l'host è consentito dalla whitelist di configurazione (se impostata, RNF-SEC-006).
    */
   public isDestinationAllowed(host: string): boolean {
-    if (!this.allowedDestinations) {
+    if (this.allowedDestinations === undefined) {
       // Se non specificata alcuna whitelist, tutte le destinazioni sintatticamente valide sono ammesse
       return true;
     }

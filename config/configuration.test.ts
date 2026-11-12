@@ -101,6 +101,14 @@ const productionConfig = loadAndValidateConfig({
 assert.deepStrictEqual(productionConfig.allowedDestinations, ["robot1.local", "192.168.1.10"]);
 assert.strictEqual(productionConfig.sessionAbsoluteMaxMinutes, 480);
 
+const productionNoRobotsConfig = loadAndValidateConfig({
+  ...validEnv,
+  NODE_ENV: "production",
+  MOLIRIS_ALLOWED_DESTINATIONS: "none",
+  MOLIRIS_SESSION_ABSOLUTE_MAX_MIN: "480",
+});
+assert.deepStrictEqual(productionNoRobotsConfig.allowedDestinations, [], "'none' deve rappresentare una whitelist esplicitamente vuota");
+
 // Test 4: Supporto modalità differita
 const configDifferita = loadAndValidateConfig({
   ...validEnv,

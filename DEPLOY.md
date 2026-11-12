@@ -148,8 +148,9 @@ MOLIRIS_AUDIT_RETENTION_DAYS=90
 MOLIRIS_MONGODB_URI=mongodb://moliris_app:<PASSWORD_URL_ENCODED>@127.0.0.1:27017/moliris_maintenance?authSource=moliris_maintenance
 MOLIRIS_SERVER_PORT=8443
 MOLIRIS_SERVER_HOST=0.0.0.0
-# Elenco esatto degli hostname o IP dei robot autorizzati, separati da virgola (no CIDR)
-MOLIRIS_ALLOWED_DESTINATIONS=192.168.1.10,192.168.1.11,robot1.local
+# Elenco esatto degli hostname o IP dei robot autorizzati, separati da virgola (no CIDR).
+# Se non ci sono ancora robot, usare "none": il servizio parte ma ogni destinazione SSH è negata.
+MOLIRIS_ALLOWED_DESTINATIONS=none
 ```
 
 ---
