@@ -154,6 +154,8 @@ console.log("  PASS: Validazione sintattica host/IP e porta (default 22).");
 const destValidator = new DestinationValidator(["127.0.0.1", "192.168.1.50"], 2);
 assert.strictEqual(destValidator.isDestinationAllowed("127.0.0.1"), true);
 assert.strictEqual(destValidator.isDestinationAllowed("10.0.0.99"), false);
+assert.strictEqual(new DestinationValidator([]).isDestinationAllowed("127.0.0.1"), false, "Whitelist vuota esplicita deve negare ogni destinazione");
+assert.strictEqual(new DestinationValidator().isDestinationAllowed("127.0.0.1"), true, "Whitelist assente mantiene il comportamento non-production esistente");
 
 // Test limite concorrenza verifiche
 destValidator.acquireVerificationSlot();

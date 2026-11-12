@@ -253,11 +253,14 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     ? (env["MOLIRIS_ALLOWED_SSH_AUTH_METHODS"].split(",").map(m => m.trim().toLowerCase()).filter(m => m === "key" || m === "password") as ("key" | "password")[])
     : undefined;
 
-  const allowedDestinations = env["MOLIRIS_ALLOWED_DESTINATIONS"]
-    ? env["MOLIRIS_ALLOWED_DESTINATIONS"].split(",").map(d => d.trim()).filter(Boolean)
+  const rawAllowedDestinations = env["MOLIRIS_ALLOWED_DESTINATIONS"]?.trim();
+  const allowedDestinations = rawAllowedDestinations
+    ? (rawAllowedDestinations.toLowerCase() === "none"
+      ? []
+      : rawAllowedDestinations.split(",").map(d => d.trim()).filter(Boolean))
     : undefined;
-  if (env["NODE_ENV"] === "production" && !allowedDestinations?.length) {
-    throw new Error("Configurazione non sicura: MOLIRIS_ALLOWED_DESTINATIONS deve elencare gli host o gli IP SSH autorizzati in production.");
+  if (env["NODE_ENV"] === "production" && allowedDestinations === undefined) {
+    throw new Error("Configurazione non sicura: MOLIRIS_ALLOWED_DESTINATIONS deve elencare gli host o gli IP SSH autorizzati, oppure essere 'none' per disabilitare SSH in production.");
   }
 
   const maxConcurrentRegistrationVerifications = env["MOLIRIS_MAX_REG_VERIFICATIONS"] && !isNaN(Number(env["MOLIRIS_MAX_REG_VERIFICATIONS"]))

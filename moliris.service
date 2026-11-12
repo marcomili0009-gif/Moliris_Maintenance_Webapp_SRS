@@ -24,15 +24,27 @@ SyslogIdentifier=moliris-webapp
 
 # Hardening di sicurezza Linux/systemd (RNF-SEC-001..009)
 NoNewPrivileges=true
+UMask=0077
+CapabilityBoundingSet=
 ProtectSystem=strict
 ProtectHome=true
+PrivateDevices=true
 ReadWritePaths=/var/lib/moliris/server-fs
 ReadOnlyPaths=/etc/moliris /opt/moliris/Moliris_Maintenance_Webapp_SRS
 PrivateTmp=true
+ProtectClock=true
+ProtectKernelLogs=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+RemoveIPC=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
 
 # Limiti risorse (RNF-PERF-003, RNF-REL-005)
 LimitNOFILE=65536
