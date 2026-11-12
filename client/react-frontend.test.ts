@@ -20,6 +20,7 @@ import { RobotConnectionManager } from "../backend/connection/robot-connection-m
 
 import { ErrorPresenter, ERROR_CATALOG } from "./src/services/error-presenter.ts";
 import { StateFormatter } from "./src/services/state-formatter.ts";
+import { ApiClient } from "./src/services/api-client.ts";
 import { filterRobots } from "./src/utils/filterRobots.ts";
 import type { RobotSummaryDto } from "./src/types/fleet.ts";
 
@@ -220,6 +221,42 @@ await robotRepo.create({
   createdAt: new Date(),
   updatedAt: new Date(),
 });
+
+// TEST SICUREZZA APICLIENT
+console.log("  -> Test ApiClient: verifica blocco degli host esterni");
+
+const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+
+try {
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { location: { origin: "https://moliris.test" } },
+  });
+
+  const apiClient = new ApiClient();
+
+  apiClient.assertLocalBackendEndpoint("/api/robots");
+  apiClient.assertLocalBackendEndpoint("https://moliris.test/api/robots");
+
+  for (const endpoint of [
+    "https://attacker.example/path",
+    "http://attacker.example/path",
+    "//attacker.example/path",
+  ]) {
+    assert.throws(
+      () => apiClient.assertLocalBackendEndpoint(endpoint),
+      `L'endpoint esterno deve essere bloccato: ${endpoint}`
+    );
+  }
+
+  console.log("  PASS: ApiClient accetta endpoint locali e blocca quelli esterni.");
+} finally {
+  if (originalWindow) {
+    Object.defineProperty(globalThis, "window", originalWindow);
+  } else {
+    delete (globalThis as any).window;
+  }
+}
 
 const server = createServer(testConfig, logger, {
   robotRepository: robotRepo,

@@ -62,13 +62,18 @@ export class ApiClient {
     if (typeof endpoint !== "string") {
       throw new Error("Endpoint non valido");
     }
-    if (endpoint.startsWith("http://") || endpoint.startsWith("https://")) {
-      const url = new URL(endpoint);
-      if (url.origin !== window.location.origin) {
-        throw new Error(
-          `Violazione di sicurezza (§2.4 vincolo 4): richiesta diretta bloccata verso host '${url.hostname}'. Tutte le chiamate devono essere intermediate dal server Moliris.`
-        );
-      }
+
+    let url: URL;
+    try {
+      url = new URL(endpoint, window.location.origin);
+    } catch {
+      throw new Error("Endpoint non valido");
+    }
+
+    if (url.origin !== window.location.origin) {
+      throw new Error(
+        `Violazione di sicurezza (§2.4 vincolo 4): richiesta diretta bloccata verso host '${url.hostname}'. Tutte le chiamate devono essere intermediate dal server Moliris.`
+      );
     }
   }
 
