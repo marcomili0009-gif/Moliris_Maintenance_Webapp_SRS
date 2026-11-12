@@ -58,14 +58,14 @@ console.log("  PASS: ErrorPresenter React verifica tutte le categorie §9 con sa
 
 // Test 2: StateFormatter - Tre stati distinti e assenza di dati (RF-MON-005, §10.2)
 console.log("  -> Test StateFormatter React: verifica rappresentazione distinta dei 3 stati");
-const noDataHtml = StateFormatter.renderOperationalState(null);
-assert.ok(noDataHtml.includes("dato non disponibile (RF-MON-005)"), "L'assenza di dati deve mostrare 'dato non disponibile'");
+const noDataText = StateFormatter.formatOperationalState(null);
+assert.ok(noDataText.includes("dato non disponibile (RF-MON-005)"), "L'assenza di dati deve mostrare 'dato non disponibile'");
 
-const staleDataHtml = StateFormatter.renderOperationalState({ battery: 85 }, true);
-assert.ok(staleDataHtml.includes("[Non più verificato]"), "Il dato stale deve mostrare il badge [Non più verificato]");
+const staleDataText = StateFormatter.formatOperationalState({ battery: 85 }, true);
+assert.ok(staleDataText.includes("[Non più verificato]"), "Il dato stale deve mostrare il badge [Non più verificato]");
 
-const connBadge = StateFormatter.renderConnectionBadge("non_raggiungibile");
-assert.ok(connBadge.includes("badge-non_raggiungibile"));
+const connLabel = StateFormatter.formatConnectionState("non_raggiungibile");
+assert.strictEqual(connLabel, "non raggiungibile");
 console.log("  PASS: StateFormatter React garantisce separazione categorica dei 3 stati.");
 
 // Test 3: filterRobots - Ricerca e filtri flotta con accenti e case-insensitivity (SRS §5.1)

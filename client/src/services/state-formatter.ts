@@ -19,45 +19,18 @@ export class StateFormatter {
     return `${gb.toFixed(2)} GB`;
   }
 
-  public static escapeHtml(str: unknown): string {
-    if (!str) return "";
-    return String(str)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
-  }
-
-  public static renderAnagraphicBadge(state?: string): string {
-    const s = state || "attivo";
-    let badgeClass = "badge-disabilitato";
-    if (s === "attivo") badgeClass = "badge-attivo";
-    return `<span class="badge-status ${badgeClass}">${this.escapeHtml(s)}</span>`;
-  }
-
-  public static renderConnectionBadge(state?: string): string {
+  public static formatConnectionState(state?: string): string {
     const s = state || "non_verificato";
-    let badgeClass = "badge-non_verificato";
-    if (s === "raggiungibile") badgeClass = "badge-raggiungibile";
-    else if (s === "non_raggiungibile") badgeClass = "badge-non_raggiungibile";
-    else if (s === "errore") badgeClass = "badge-errore";
-    else if (s === "avviso") badgeClass = "badge-avviso";
-
-    const label = s.replace(/_/g, " ");
-    return `<span class="badge-status ${badgeClass}">${this.escapeHtml(label)}</span>`;
+    return s.replace(/_/g, " ");
   }
 
-  public static renderOperationalState(operationalState?: unknown, isStale = false): string {
+  public static formatOperationalState(operationalState?: unknown, isStale = false): string {
     if (!operationalState) {
-      return `<span class="badge-status badge-nodata">dato non disponibile (RF-MON-005)</span>`;
+      return "dato non disponibile (RF-MON-005)";
     }
 
-    let html = `<code>${this.escapeHtml(JSON.stringify(operationalState))}</code>`;
-    if (isStale) {
-      html += ` <span class="badge-status badge-avviso" title="Dato non aggiornato oltre la soglia temporale o ultimo tentativo fallito">[Non più verificato]</span>`;
-    }
-    return html;
+    const data = JSON.stringify(operationalState);
+    return isStale ? `${data} [Non più verificato]` : data;
   }
 
 }
