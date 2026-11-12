@@ -152,7 +152,7 @@ async function makeHttpsRequest(
     const postData = body ? JSON.stringify(body) : undefined;
     const reqHeaders: Record<string, string> = {
       ...(postData ? { "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(postData)) } : {}),
-      ...(token ? { Cookie: `moliris_session=${token}` } : {}),
+      ...(token ? { Cookie: `__Host-moliris_session=${token}` } : {}),
       ...(token && !["GET", "HEAD", "OPTIONS"].includes(method) ? { Origin: `https://127.0.0.1:${port}` } : {}),
     };
 
@@ -191,14 +191,16 @@ assert.strictEqual(validLoginRes.body.sessionToken, undefined, "Il token non dev
 assert.strictEqual(validLoginRes.body.user.username, "operatore_test");
 // Verifica che passwordHash non sia esposto (RNF-SEC-002)
 assert.strictEqual(validLoginRes.body.user.passwordHash, undefined);
-const operatorToken = String(validLoginRes.headers["set-cookie"]).match(/moliris_session=([^;]+)/)?.[1];
+const operatorToken = String(validLoginRes.headers["set-cookie"]).match(/__Host-moliris_session=([^;]+)/)?.[1];
 assert(operatorToken, "Deve essere presente il cookie di sessione");
 
 // Verifica Cookie sicuro
 assert(validLoginRes.headers["set-cookie"], "Deve essere impostato il Set-Cookie");
-assert(String(validLoginRes.headers["set-cookie"]).includes("moliris_session="));
+assert(String(validLoginRes.headers["set-cookie"]).includes("__Host-moliris_session="));
 assert(String(validLoginRes.headers["set-cookie"]).includes("Secure"));
 assert(String(validLoginRes.headers["set-cookie"]).includes("HttpOnly"));
+assert(String(validLoginRes.headers["set-cookie"]).includes("Path=/"));
+assert(!String(validLoginRes.headers["set-cookie"]).toLowerCase().includes("domain="), "Il cookie __Host- non deve avere Domain");
 console.log("  PASS: Login con credenziali valide e cookie sicuro (CA-AUTH-001) superato.");
 
 // CA-AUTH-002: Credenziali non valide -> nessun accesso
@@ -215,6 +217,13 @@ const badUserRes = await makeHttpsRequest("POST", "/api/auth/login", {
 });
 assert.strictEqual(badUserRes.status, 401, "Utente inesistente deve restituire 401 (CA-AUTH-002)");
 assert.strictEqual(badUserRes.body.code, ErrorCode.INVALID_CREDENTIALS);
+
+const oversizedPasswordRes = await makeHttpsRequest("POST", "/api/auth/login", {
+  username: "operatore_test",
+  password: "x".repeat(1025),
+});
+assert.strictEqual(oversizedPasswordRes.status, 401, "Password eccessivamente lunga deve essere rifiutata prima dello scrypt");
+assert.strictEqual(oversizedPasswordRes.body.code, ErrorCode.INVALID_CREDENTIALS);
 
 // Verifica messaggio identico senza rivelare se è errato username o password (§9)
 assert.strictEqual(badPasswordRes.body.message, badUserRes.body.message, "Il messaggio di errore deve essere identico per utente o password errata");
@@ -249,7 +258,7 @@ const adminLoginRes = await makeHttpsRequest("POST", "/api/auth/login", {
   username: "admin_test",
   password: "Admin123!",
 });
-const adminToken = String(adminLoginRes.headers["set-cookie"]).match(/moliris_session=([^;]+)/)?.[1];
+const adminToken = String(adminLoginRes.headers["set-cookie"]).match(/__Host-moliris_session=([^;]+)/)?.[1];
 
 const logoutRes = await makeHttpsRequest("POST", "/api/auth/logout", undefined, adminToken);
 assert.strictEqual(logoutRes.status, 200);

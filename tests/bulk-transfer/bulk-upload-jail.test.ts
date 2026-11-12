@@ -582,7 +582,7 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
   const resJail = await server.inject({
     method: "POST",
     url: "/api/transfers/bulk/pre-check",
-    cookies: { moliris_session: sessionOp.sessionId },
+    cookies: { "__Host-moliris_session": sessionOp.sessionId },
     payload: {
       filenames: ["file.txt"],
       targets: [{ type: "server", robotId: robot1.id, directory: "configs" }],
@@ -594,7 +594,7 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
   const resPreCheck = await server.inject({
     method: "POST",
     url: "/api/transfers/bulk/pre-check",
-    cookies: { moliris_session: sessionAdmin.sessionId },
+    cookies: { "__Host-moliris_session": sessionAdmin.sessionId },
     payload: {
       filenames: ["existing_server.txt"],
       targets: [{ type: "server", robotId: robot1.id, directory: "upload" }],
@@ -619,7 +619,7 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
     headers: {
       "content-type": `multipart/form-data; boundary=${boundary}`,
     },
-    cookies: { moliris_session: sessionAdmin.sessionId },
+    cookies: { "__Host-moliris_session": sessionAdmin.sessionId },
     payload: multipartConflict,
   });
   assert.strictEqual(resConflict.statusCode, 409, "Conflitto non confermato via REST deve restituire 409 Conflict");
@@ -640,7 +640,7 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
     headers: {
       "content-type": `multipart/form-data; boundary=${boundary2}`,
     },
-    cookies: { moliris_session: sessionAdmin.sessionId },
+    cookies: { "__Host-moliris_session": sessionAdmin.sessionId },
     payload: multipartSuccess,
   });
   assert.strictEqual(resSuccess.statusCode, 200, "Upload multipart valido deve restituire 200 OK");

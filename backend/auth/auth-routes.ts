@@ -1,12 +1,13 @@
 // Requisiti soddisfatti: RF-AUTH-001..006, RNF-SEC-002, RNF-SEC-004, RNF-SEC-009, SRS §6.1 punti 1–5, §9
 
 import { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
+import crypto from "crypto";
 import { type SessionManager } from "./session-manager.ts";
 import { type UserRepository } from "./user-repository.ts";
 import { type AuditRepository } from "../../storage/audit-repository.ts";
 import { AuditOperation } from "../../storage/audit-models.ts";
 import { type AuthMiddleware } from "./auth-middleware.ts";
-import { verifyPassword, toUserProfileDto } from "./user-models.ts";
+import { hashPassword, verifyPassword, toUserProfileDto } from "./user-models.ts";
 import { AppPermission } from "./permissions.ts";
 import { ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
@@ -23,6 +24,7 @@ export function registerAuthRoutes(
   const loginWindowMs = 5 * 60 * 1000;
   const loginMaxAttempts = 10;
   const maxTrackedLoginIps = 10_000;
+  const dummyPasswordHash = hashPassword(crypto.randomBytes(32).toString("hex"));
 
   /**
    * Endpoint di Login (RF-AUTH-001, RF-AUTH-002, §6.1, CA-AUTH-001, CA-AUTH-002)
@@ -58,14 +60,14 @@ export function registerAuthRoutes(
     const invalidCredsDef = ERROR_CATALOG[ErrorCode.INVALID_CREDENTIALS];
 
     // Verifica credenziali con messaggio opaco e uniforme (nessun leak su esistenza utente o password)
-    if (!username || !password) {
+    if (!username || !password || username.length > 128 || Buffer.byteLength(password, "utf8") > 1024) {
       recordFailure();
       await auditRepository.record({
         userId: username || "anonymous",
         operation: AuditOperation.AUTH_LOGIN,
         outcome: "FAILURE",
         timestamp: new Date(),
-        details: { reason: "MISSING_CREDENTIALS_PAYLOAD" },
+        details: { reason: "INVALID_CREDENTIALS_PAYLOAD" },
       });
       return reply.status(401).send({
         code: invalidCredsDef.code,
@@ -76,6 +78,9 @@ export function registerAuthRoutes(
 
     const user = await userRepository.findByUsername(username);
     if (!user || !user.enabled) {
+      // Stesso costo di derivazione della password errata per account esistenti:
+      // evita che il tempo di risposta riveli l'esistenza o lo stato dell'account.
+      await verifyPassword(password, await dummyPasswordHash);
       recordFailure();
       logger.info(`Tentativo di login fallito per username '${username}'`);
       await auditRepository.record({
@@ -126,7 +131,7 @@ export function registerAuthRoutes(
     // Imposta cookie di sessione sicuro (HttpOnly, Secure, SameSite=Strict)
     reply.header(
       "Set-Cookie",
-      `moliris_session=${session.sessionId}; Path=/; Secure; HttpOnly; SameSite=Strict`
+      `__Host-moliris_session=${session.sessionId}; Path=/; Secure; HttpOnly; SameSite=Strict`
     );
 
     // Il token resta esclusivamente nel cookie HttpOnly: non esporlo al JavaScript
@@ -157,7 +162,7 @@ export function registerAuthRoutes(
 
     reply.header(
       "Set-Cookie",
-      "moliris_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+      "__Host-moliris_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
     );
 
     return reply.status(200).send({

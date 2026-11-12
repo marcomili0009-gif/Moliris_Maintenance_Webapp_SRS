@@ -50,6 +50,20 @@ export interface SeedPasswords {
   adminPassword: string;
 }
 
+const MIN_INITIAL_PASSWORD_LENGTH = 15;
+
+function validateInitialPassword(password: string, account: string): void {
+  if (Array.from(password).length < MIN_INITIAL_PASSWORD_LENGTH || Buffer.byteLength(password, "utf8") > 1024) {
+    throw new Error(`La password iniziale per '${account}' deve contenere almeno ${MIN_INITIAL_PASSWORD_LENGTH} caratteri e non superare 1024 byte.`);
+  }
+}
+
+function validateSeedPasswords(passwords: SeedPasswords): SeedPasswords {
+  validateInitialPassword(passwords.operatorPassword, "operatore");
+  validateInitialPassword(passwords.adminPassword, "admin");
+  return passwords;
+}
+
 /**
  * Carica le password per il provisioning da file con permessi 0600 o da variabili d'ambiente.
  */
@@ -111,7 +125,7 @@ export function loadSeedPasswords(options?: {
       );
     }
 
-    return { operatorPassword: operatorPass, adminPassword: adminPass };
+    return validateSeedPasswords({ operatorPassword: operatorPass, adminPassword: adminPass });
   }
 
   // Fallback controllato su variabili d'ambiente con avviso esplicito
@@ -122,7 +136,7 @@ export function loadSeedPasswords(options?: {
     console.warn(
       "[AVVISO DI SICUREZZA]: Password lette da variabili d'ambiente. Le variabili d'ambiente possono essere lette da altri processi dello stesso utente o finire nei log di sistema. Si raccomanda l'uso di un file con permessi 0600 (--password-file o SEED_USERS_PASSWORD_FILE) o systemd LoadCredential=."
     );
-    return { operatorPassword: envOp, adminPassword: envAdm };
+    return validateSeedPasswords({ operatorPassword: envOp, adminPassword: envAdm });
   }
 
   throw new Error(
@@ -145,6 +159,7 @@ export async function seedInitialUsers(
     finalOpPassword = finalOpPassword || loaded.operatorPassword;
     finalAdmPassword = finalAdmPassword || loaded.adminPassword;
   }
+  validateSeedPasswords({ operatorPassword: finalOpPassword, adminPassword: finalAdmPassword });
 
   // 1. Utente Operatore (§2.2: "Utente autorizzato")
   const existingOperator = await repo.findByUsername("operatore");

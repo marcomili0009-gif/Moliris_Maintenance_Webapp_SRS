@@ -967,7 +967,7 @@ fs.writeFileSync(validPreexistingServerPath, "VALID_SERVER_PREEXISTING_DATA_ORIG
     method: "GET",
     url: `/api/robots/${testRobot.id}/transfers`,
     headers: {
-      cookie: `moliris_session=${sessionAuth.sessionId}`,
+      cookie: `__Host-moliris_session=${sessionAuth.sessionId}`,
     },
   });
   assert.strictEqual(listRes.statusCode, 200);

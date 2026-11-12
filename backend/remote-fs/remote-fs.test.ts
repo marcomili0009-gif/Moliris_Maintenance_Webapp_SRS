@@ -917,7 +917,7 @@ const userNoNavigate: UserEntity = {
     method: "GET",
     url: "/api/robots/robot_api_fs/fs/remote/list",
     headers: {
-      cookie: `moliris_session=${authSession.sessionId}`,
+      cookie: `__Host-moliris_session=${authSession.sessionId}`,
     },
   });
   assert.strictEqual(okRes.statusCode, 200);
@@ -931,7 +931,7 @@ const userNoNavigate: UserEntity = {
     method: "GET",
     url: "/api/robots/robot_api_fs/fs/remote/list?path=/home/operator/subfolder",
     headers: {
-      cookie: `moliris_session=${authSession.sessionId}`,
+      cookie: `__Host-moliris_session=${authSession.sessionId}`,
     },
   });
   assert.strictEqual(subRes.statusCode, 200);
@@ -945,7 +945,7 @@ const userNoNavigate: UserEntity = {
     method: "GET",
     url: "/api/robots/robot_api_fs/fs/remote/list",
     headers: {
-      cookie: `moliris_session=${noPermSession.sessionId}`,
+      cookie: `__Host-moliris_session=${noPermSession.sessionId}`,
     },
   });
   assert.strictEqual(noPermRes.statusCode, 403);
@@ -955,7 +955,7 @@ const userNoNavigate: UserEntity = {
     method: "GET",
     url: "/api/robots/robot_ghost/fs/remote/list",
     headers: {
-      cookie: `moliris_session=${authSession.sessionId}`,
+      cookie: `__Host-moliris_session=${authSession.sessionId}`,
     },
   });
   assert.strictEqual(notFoundRes.statusCode, 404);
@@ -965,7 +965,7 @@ const userNoNavigate: UserEntity = {
     method: "DELETE",
     url: "/api/robots/robot_api_fs/fs/remote/file?path=/home/operator/subfolder/subfile.txt",
     headers: {
-      cookie: `moliris_session=${authSession.sessionId}`,
+      cookie: `__Host-moliris_session=${authSession.sessionId}`,
     },
   });
   assert.strictEqual(delResOk.statusCode, 200);
@@ -977,7 +977,7 @@ const userNoNavigate: UserEntity = {
     method: "DELETE",
     url: "/api/robots/robot_api_fs/fs/remote/file?path=/home/operator/subfolder/subfile.txt",
     headers: {
-      cookie: `moliris_session=${noPermSession.sessionId}`,
+      cookie: `__Host-moliris_session=${noPermSession.sessionId}`,
     },
   });
   assert.strictEqual(delNoPermRes.statusCode, 403);
@@ -987,7 +987,7 @@ const userNoNavigate: UserEntity = {
     method: "DELETE",
     url: "/api/robots/robot_api_fs/fs/remote/file",
     headers: {
-      cookie: `moliris_session=${authSession.sessionId}`,
+      cookie: `__Host-moliris_session=${authSession.sessionId}`,
     },
   });
   assert.strictEqual(delMissingPathRes.statusCode, 400);

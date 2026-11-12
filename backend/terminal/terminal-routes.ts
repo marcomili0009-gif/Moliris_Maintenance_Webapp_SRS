@@ -140,7 +140,7 @@ export function registerTerminalRoutes(
       const cookieHeader = req.headers.cookie;
       let userSessionId: string | null = null;
       if (cookieHeader) {
-        const match = cookieHeader.match(/moliris_session=([a-f0-9]+)/i);
+        const match = cookieHeader.match(/__Host-moliris_session=([a-f0-9]+)/i);
         if (match) userSessionId = match[1];
       }
 

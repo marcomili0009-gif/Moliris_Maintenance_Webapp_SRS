@@ -453,15 +453,23 @@ try {
 
   // 9b. Successo da file protetto con permessi 0600
   const seedPassFile = path.join(tmpDir, "seed_passwords_0600.env");
-  fs.writeFileSync(seedPassFile, "OPERATOR_PASSWORD=OpSecure2026!\nADMIN_PASSWORD=AdmSecure2026!\n", { mode: 0o600 });
+  fs.writeFileSync(seedPassFile, "OPERATOR_PASSWORD=OpSecure2026!long\nADMIN_PASSWORD=AdmSecure2026!long\n", { mode: 0o600 });
   const loadedPasswords = loadSeedPasswords({ passwordFile: seedPassFile });
-  assert.strictEqual(loadedPasswords.operatorPassword, "OpSecure2026!");
-  assert.strictEqual(loadedPasswords.adminPassword, "AdmSecure2026!");
+  assert.strictEqual(loadedPasswords.operatorPassword, "OpSecure2026!long");
+  assert.strictEqual(loadedPasswords.adminPassword, "AdmSecure2026!long");
+
+  const weakSeedFile = path.join(tmpDir, "seed_passwords_weak.env");
+  fs.writeFileSync(weakSeedFile, "OPERATOR_PASSWORD=weak\nADMIN_PASSWORD=weak\n", { mode: 0o600 });
+  assert.throws(
+    () => loadSeedPasswords({ passwordFile: weakSeedFile }),
+    /almeno 15 caratteri/,
+    "Il provisioning deve rifiutare password iniziali troppo corte"
+  );
 
   // 9c. File con permessi insicuri (0644) su sistemi POSIX -> Rifiutato
   if (process.platform !== "win32") {
     const insecureSeedFile = path.join(tmpDir, "seed_passwords_0644.env");
-    fs.writeFileSync(insecureSeedFile, "OPERATOR_PASSWORD=Op!\nADMIN_PASSWORD=Adm!\n", { mode: 0o644 });
+    fs.writeFileSync(insecureSeedFile, "OPERATOR_PASSWORD=OpSecure2026!long\nADMIN_PASSWORD=AdmSecure2026!long\n", { mode: 0o644 });
     assert.throws(
       () => loadSeedPasswords({ passwordFile: insecureSeedFile }),
       /Permessi non sicuri sul file password/,
@@ -475,7 +483,7 @@ try {
   const seededOperator = await userTestRepo.findByUsername("operatore");
   assert.ok(seededAdmin && seededAdmin.passwordHash);
   assert.ok(seededOperator && seededOperator.passwordHash);
-  assert(!seededAdmin.passwordHash.includes("AdmSecure2026!"), "Password non deve mai essere memorizzata in chiaro");
+  assert(!seededAdmin.passwordHash.includes("AdmSecure2026!long"), "Password non deve mai essere memorizzata in chiaro");
 
   console.log("    PASS: Provisioning sicuro da file 0600 e hashing scrypt validati.");
 

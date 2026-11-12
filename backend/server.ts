@@ -6,7 +6,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { type SystemConfiguration, loadAndValidateConfig } from "../config/configuration.ts";
 import { loadConfig, registerAppConfig, type AppConfig } from "../src/config/index.ts";
-import { resolveMongoConfig } from "../config/mongodb.ts";
+import { assertMongoCredentialsInProduction, resolveMongoConfig } from "../config/mongodb.ts";
 import { MolirisLogger } from "../logging/logger.ts";
 import { SessionManager } from "./auth/session-manager.ts";
 import { type UserRepository, InMemoryUserRepository, MongoUserRepository } from "./auth/user-repository.ts";
@@ -117,14 +117,16 @@ export function createServer(
   // un controllo Origin esatto, mantenendo bearer token e client non-browser.
   app.addHook("onRequest", async (request, reply) => {
     const isMutation = !["GET", "HEAD", "OPTIONS"].includes(request.method);
-    const hasSessionCookie = /(?:^|;\s*)moliris_session=[^;]+/.test(request.headers.cookie || "");
+    const hasSessionCookie = /(?:^|;\s*)__Host-moliris_session=[^;]+/.test(request.headers.cookie || "");
     if (!isMutation || !hasSessionCookie || !request.url.startsWith("/api/")) return;
 
     const origin = request.headers.origin;
     let originMatches = false;
     if (origin && request.headers.host) {
       try {
-        originMatches = new URL(origin).origin === `${request.protocol}://${request.headers.host}`;
+        const protocol = (request.raw.socket as any).encrypted ? "https:" : "http:";
+        const expectedOrigin = new URL(`${protocol}//${request.headers.host}`).origin;
+        originMatches = new URL(origin).origin === expectedOrigin;
       } catch {
         originMatches = false;
       }
@@ -417,6 +419,7 @@ export async function startServer(): Promise<void> {
     const appConfig = loadConfig();
     const config = loadAndValidateConfig(process.env);
     const mongoConfig = resolveMongoConfig();
+    assertMongoCredentialsInProduction(mongoConfig.uri);
     mongoClient = new MongoClient(mongoConfig.uri);
     await mongoClient.connect();
 

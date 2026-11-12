@@ -321,12 +321,14 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
     method: "POST",
     url: "/api/robots/robot_ssh_01/terminal/sessions",
     headers: {
-      cookie: `moliris_session=${userSession.sessionId}`,
+      cookie: `__Host-moliris_session=${userSession.sessionId}`,
+      Origin: `http://127.0.0.1:${serverPort}`,
+      Host: `127.0.0.1:${serverPort}`,
     },
     payload: { cols: 80, rows: 24 },
   });
 
-  assert.strictEqual(allocRes.statusCode, 201);
+  assert.strictEqual(allocRes.statusCode, 201, allocRes.body);
   const allocBody = JSON.parse(allocRes.body);
   assert.ok(allocBody.sessionId);
   assert.strictEqual(allocBody.robotId, "robot_ssh_01");
@@ -338,7 +340,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
     rejectUnauthorized: false,
     headers: {
       Origin: `https://127.0.0.1:${serverPort}`,
-      cookie: `moliris_session=${userSession.sessionId}`,
+      cookie: `__Host-moliris_session=${userSession.sessionId}`,
     },
   });
 
@@ -408,7 +410,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   const allocRes = await server.inject({
     method: "POST",
     url: "/api/robots/robot_ssh_02/terminal/sessions",
-    headers: { cookie: `moliris_session=${userSession.sessionId}` },
+    headers: { cookie: `__Host-moliris_session=${userSession.sessionId}` },
     payload: { cols: 80, rows: 24 },
   });
   const { sessionId } = JSON.parse(allocRes.body);
@@ -417,7 +419,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
     rejectUnauthorized: false,
     headers: {
       Origin: `https://127.0.0.1:${serverPort}`,
-      cookie: `moliris_session=${userSession.sessionId}`,
+      cookie: `__Host-moliris_session=${userSession.sessionId}`,
     },
   });
 
@@ -655,7 +657,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   const deniedRes = await server.inject({
     method: "POST",
     url: "/api/robots/robot_ssh_05/terminal/sessions",
-    headers: { cookie: `moliris_session=${deniedSession.sessionId}` },
+    headers: { cookie: `__Host-moliris_session=${deniedSession.sessionId}` },
   });
   assert.strictEqual(deniedRes.statusCode, 403, "Utente senza TERMINAL_OPEN deve ricevere 403");
 
@@ -663,7 +665,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   const legitimateRes = await server.inject({
     method: "POST",
     url: "/api/robots/robot_ssh_05/terminal/sessions",
-    headers: { cookie: `moliris_session=${validSession.sessionId}` },
+    headers: { cookie: `__Host-moliris_session=${validSession.sessionId}` },
   });
   assert.strictEqual(legitimateRes.statusCode, 201);
   const { sessionId } = JSON.parse(legitimateRes.body);
@@ -676,7 +678,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
         rejectUnauthorized: false,
         headers: {
           Origin: "https://attacker.example",
-          cookie: `moliris_session=${validSession.sessionId}`,
+          cookie: `__Host-moliris_session=${validSession.sessionId}`,
         },
       }
     );
@@ -696,7 +698,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
       {
         rejectUnauthorized: false,
         headers: {
-          cookie: `moliris_session=${validSession.sessionId}`,
+          cookie: `__Host-moliris_session=${validSession.sessionId}`,
         },
       }
     );
@@ -729,7 +731,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
     rejectUnauthorized: false,
     headers: {
       Origin: `https://127.0.0.1:${serverPort}`,
-      cookie: `moliris_session=${attackerSession.sessionId}`,
+      cookie: `__Host-moliris_session=${attackerSession.sessionId}`,
     },
   });
 
@@ -784,7 +786,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
     rejectUnauthorized: false,
     headers: {
       Origin: `https://127.0.0.1:${serverPort}`,
-      cookie: `moliris_session=${validSession.sessionId}`,
+      cookie: `__Host-moliris_session=${validSession.sessionId}`,
     },
   });
 
@@ -1115,7 +1117,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   const adminRes = await server.inject({
     method: "POST",
     url: "/api/robots/robot_ssh_rf04/terminal/sessions",
-    headers: { cookie: `moliris_session=${adminSession.sessionId}` },
+    headers: { cookie: `__Host-moliris_session=${adminSession.sessionId}` },
     payload: { cols: 80, rows: 24 },
   });
   assert.strictEqual(adminRes.statusCode, 201, "Admin deve poter aprire una sessione terminale (201)");
@@ -1125,7 +1127,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   const operatorRes = await server.inject({
     method: "POST",
     url: "/api/robots/robot_ssh_rf04/terminal/sessions",
-    headers: { cookie: `moliris_session=${operatorSession.sessionId}` },
+    headers: { cookie: `__Host-moliris_session=${operatorSession.sessionId}` },
     payload: { cols: 80, rows: 24 },
   });
   assert.strictEqual(operatorRes.statusCode, 403, "Operatore deve ricevere 403 Forbidden");
@@ -1142,7 +1144,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
     rejectUnauthorized: false,
     headers: {
       Origin: `https://127.0.0.1:${serverPort}`,
-      cookie: `moliris_session=${operatorSession.sessionId}`,
+      cookie: `__Host-moliris_session=${operatorSession.sessionId}`,
     },
   });
 

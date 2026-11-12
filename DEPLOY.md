@@ -31,6 +31,28 @@ sudo apt-get install -y mongodb-org || sudo apt-get install -y mongodb
 sudo systemctl enable --now mongod
 ```
 
+### Abilitare l'autenticazione MongoDB
+
+Creare un account applicativo limitato al database Moliris prima di avviare l'applicazione. Le password iniziali di `admin` e `operatore` devono contenere almeno 15 caratteri:
+```bash
+mongosh
+```
+Nel prompt MongoDB:
+```javascript
+use moliris_maintenance
+db.createUser({
+  user: "moliris_app",
+  pwd: passwordPrompt(),
+  roles: [{ role: "readWrite", db: "moliris_maintenance" }]
+})
+```
+Abilitare quindi l'autenticazione in `/etc/mongod.conf`:
+```yaml
+security:
+  authorization: enabled
+```
+Riavviare MongoDB con `sudo systemctl restart mongod`. L'URI di connessione dell'applicazione deve includere le credenziali dell'account limitato; codificare i caratteri speciali della password secondo la codifica URL e conservarla solo nel file ambiente protetto.
+
 ---
 
 ## 2. Creazione Utente di Servizio e Cartelle Dedicate
@@ -51,6 +73,7 @@ sudo chmod 750 /var/lib/moliris/server-fs
 sudo chown -R root:moliris /etc/moliris
 sudo chmod 750 /etc/moliris
 sudo chmod 700 /etc/moliris/certs
+sudo install -d -o moliris -g moliris -m 700 /etc/moliris/keys
 ```
 
 ---
@@ -83,6 +106,12 @@ sudo chown -R root:moliris /etc/moliris/certs
 sudo chmod 640 /etc/moliris/certs/*
 ```
 
+Generare la master key AES-256 nel percorso configurato. Il file deve appartenere all'utente del servizio e avere permessi `0600`:
+```bash
+sudo -u moliris openssl rand -out /etc/moliris/keys/master.key 32
+sudo chmod 600 /etc/moliris/keys/master.key
+```
+
 ---
 
 ## 5. Configurazione d'Ambiente (`/etc/moliris/moliris.env`)
@@ -96,13 +125,14 @@ sudo chmod 640 /etc/moliris/moliris.env
 
 Verificare i parametri obbligatori in `/etc/moliris/moliris.env`:
 ```ini
+NODE_ENV=production
 MOLIRIS_FS_ROOT=/var/lib/moliris/server-fs
 MOLIRIS_TLS_CERT_PATH=/etc/moliris/certs/cert.pem
 MOLIRIS_TLS_KEY_PATH=/etc/moliris/certs/key.pem
 MOLIRIS_REGISTRATION_MODE=rigorosa
 MOLIRIS_SESSION_TIMEOUT_MIN=30
 MOLIRIS_AUDIT_RETENTION_DAYS=90
-MOLIRIS_MONGODB_URI=mongodb://127.0.0.1:27017/moliris_maintenance
+MOLIRIS_MONGODB_URI=mongodb://moliris_app:<PASSWORD_URL_ENCODED>@127.0.0.1:27017/moliris_maintenance?authSource=moliris_maintenance
 MOLIRIS_SERVER_PORT=8443
 MOLIRIS_SERVER_HOST=0.0.0.0
 ```
@@ -115,16 +145,20 @@ Per creare gli account amministrativi e operatori iniziali nel database MongoDB:
 ```bash
 cd /opt/moliris/Moliris_Maintenance_Webapp_SRS
 
-# Esecuzione con password specificate via variabile d'ambiente
-sudo MOLIRIS_MONGODB_URI="mongodb://127.0.0.1:27017/moliris_maintenance" \
-     ADMIN_INITIAL_PASSWORD="PasswordSicuraAmministratore2026!" \
-     OPERATOR_INITIAL_PASSWORD="PasswordSicuraOperatore2026!" \
-     node --experimental-strip-types scripts/seed-users.ts
+# Creare un file leggibile solo dall'utente di servizio e inserire password uniche
+sudo install -o moliris -g moliris -m 600 /dev/null /var/lib/moliris/seed_passwords.env
+sudo -u moliris nano /var/lib/moliris/seed_passwords.env
+# Formato del file:
+# MOLIRIS_INITIAL_ADMIN_PASSWORD=<password unica>
+# MOLIRIS_INITIAL_OPERATOR_PASSWORD=<password unica>
+
+sudo -u moliris bash -c 'set -a; source /etc/moliris/moliris.env; set +a; NODE_ENV=production node --experimental-strip-types scripts/seed-users.ts --password-file /var/lib/moliris/seed_passwords.env'
+sudo rm -f /var/lib/moliris/seed_passwords.env
 ```
 
 Output atteso:
 ```
-Utenti di test verificati/inizializzati con successo in MongoDB.
+Provisioning completato con successo.
 - admin (amministratore)
 - operatore (operatore)
 ```

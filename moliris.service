@@ -10,6 +10,7 @@ User=moliris
 Group=moliris
 WorkingDirectory=/opt/moliris/Moliris_Maintenance_Webapp_SRS
 EnvironmentFile=/etc/moliris/moliris.env
+Environment=NODE_ENV=production
 ExecStart=/usr/bin/node dist/backend/server.js
 Restart=on-failure
 # RestartSec=5 definisce l'intervallo di attesa prima del riavvio del processo da parte di systemd;

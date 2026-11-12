@@ -13,7 +13,9 @@ if (!stat.isFile() || (process.platform !== "win32" && (stat.mode & 0o077) !== 0
   throw new Error("Il file password deve essere regolare e avere permessi 0600.");
 }
 const password = fs.readFileSync(passwordFile, "utf8").replace(/[\r\n]+$/, "");
-if (password.length < 8) throw new Error("La nuova password deve contenere almeno 8 caratteri.");
+if (Array.from(password).length < 15 || Buffer.byteLength(password, "utf8") > 1024) {
+  throw new Error("La nuova password deve contenere almeno 15 caratteri e non superare 1024 byte.");
+}
 
 const mongoConfig = resolveMongoConfig();
 const client = new MongoClient(mongoConfig.uri);

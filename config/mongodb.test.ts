@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { resolveMongoConfig } from "./mongodb.ts";
+import { assertMongoCredentialsInProduction, resolveMongoConfig } from "./mongodb.ts";
 
 console.log("--> Test configurazione MongoDB...");
 
@@ -91,4 +91,13 @@ assert.equal(
   "srv_db",
 );
 
-console.log("PASS: tutti i 9 test della configurazione MongoDB.");
+assert.doesNotThrow(() => assertMongoCredentialsInProduction("mongodb://127.0.0.1:27017/moliris", "test"));
+assert.throws(
+  () => assertMongoCredentialsInProduction("mongodb://127.0.0.1:27017/moliris", "production"),
+  /username e password/
+);
+assert.doesNotThrow(() => assertMongoCredentialsInProduction(
+  "mongodb://moliris_app:encoded%40password@127.0.0.1:27017/moliris?authSource=moliris", "production"
+));
+
+console.log("PASS: configurazione MongoDB, inclusi i controlli credenziali production.");

@@ -50,7 +50,7 @@ export class AuthMiddleware {
 
     const cookies = req.headers.cookie;
     if (cookies) {
-      const match = cookies.match(/(?:^|;\s*)moliris_session=([^;]+)/);
+      const match = cookies.match(/(?:^|;\s*)__Host-moliris_session=([^;]+)/);
       if (match) {
         return match[1].trim();
       }
