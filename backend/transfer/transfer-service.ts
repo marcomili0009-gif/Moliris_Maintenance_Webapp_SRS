@@ -106,7 +106,11 @@ export class TransferService {
 
     // STEP 9 – Hook di chiusura/scadenza sessione utente (RF-TRF-013, Prompt 3)
     this.sessionManager.onSessionTerminated((sessionId, userId, reason) => {
-      this.cancelTransfersForUser(userId, `SESSION_TERMINATED_${reason}`);
+      this.cancelTransfersForSession(
+        sessionId,
+        userId,
+        `SESSION_TERMINATED_${reason}`
+      );
     });
 
     // Task orario per la pulizia dei file temporanei orfani sul server (Problema A2 punto e, RF-TRF-009)
@@ -1395,6 +1399,28 @@ export class TransferService {
   public cancelTransfersForUser(userId: string, reason: string): void {
     for (const record of Array.from(this.transfers.values())) {
       if (record.userId === userId && (record.status === TransferStatus.IN_PROGRESS || record.status === TransferStatus.INTEGRITY_CHECKING)) {
+        this.cancelTransfer(record.transferId, userId, reason).catch(() => {});
+      }
+    }
+  }
+
+  /**
+   * Annulla i trasferimenti attivi associati a una specifica sessione utente.
+   */
+  public cancelTransfersForSession(
+    sessionId: string,
+    userId: string,
+    reason: string
+  ): void {
+    for (const record of Array.from(this.transfers.values())) {
+      if (
+        record.userId === userId &&
+        record.userSessionId === sessionId &&
+        (
+          record.status === TransferStatus.IN_PROGRESS ||
+          record.status === TransferStatus.INTEGRITY_CHECKING
+        )
+      ) {
         this.cancelTransfer(record.transferId, userId, reason).catch(() => {});
       }
     }

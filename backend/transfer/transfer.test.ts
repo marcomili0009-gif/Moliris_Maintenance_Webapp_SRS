@@ -787,6 +787,63 @@ fs.writeFileSync(validPreexistingServerPath, "VALID_SERVER_PREEXISTING_DATA_ORIG
 }
 
 // =========================================================================
+// =========================================================================
+// TEST 10B: Isolamento dei trasferimenti tra sessioni dello stesso utente
+// =========================================================================
+{
+  const sessionA = sessionManager.createSession(userAuthorized);
+  const sessionB = sessionManager.createSession(userAuthorized);
+
+  const contextA = sessionManager.createAuthorizedContext(sessionA, userAuthorized, testRobot.id);
+  const contextB = sessionManager.createAuthorizedContext(sessionB, userAuthorized, testRobot.id);
+
+  const streamA = new PassThrough();
+  const streamB = new PassThrough();
+
+  const promiseA = transferService.uploadClientToServer(
+    contextA, testRobot, "", "session_a_test.dat",
+    streamA, { overwrite: true }, 100000
+  ).catch((err) => err);
+
+  const promiseB = transferService.uploadClientToServer(
+    contextB, testRobot, "", "session_b_test.dat",
+    streamB, { overwrite: true }, 100000
+  ).catch((err) => err);
+
+  await new Promise((r) => setTimeout(r, 20));
+
+  const transfers = transferService.listTransfers(contextA, testRobot.id);
+  const transferA = transfers.find((t) => t.filename === "session_a_test.dat");
+  const transferB = transfers.find((t) => t.filename === "session_b_test.dat");
+
+  assert.ok(transferA, "Trasferimento A non trovato");
+  assert.ok(transferB, "Trasferimento B non trovato");
+
+  sessionManager.destroySession(sessionA.sessionId);
+
+  assert.strictEqual(
+    transferService.listTransfers(contextA, testRobot.id)
+      .find((t) => t.transferId === transferA.transferId)?.status,
+    TransferStatus.CANCELLED
+  );
+
+  assert.strictEqual(
+    transferService.listTransfers(contextB, testRobot.id)
+      .find((t) => t.transferId === transferB.transferId)?.status,
+    TransferStatus.IN_PROGRESS
+  );
+
+  sessionManager.destroySession(sessionB.sessionId);
+
+  const [errorA, errorB] = await Promise.all([promiseA, promiseB]);
+
+  assert.strictEqual(errorA.code, ErrorCode.TRANSFER_INTERRUPTED);
+  assert.strictEqual(errorB.code, ErrorCode.TRANSFER_INTERRUPTED);
+
+  console.log("  PASS: isolamento dei trasferimenti tra sessioni verificato.");
+}
+
+// =========================================================================
 // TEST 11: Politica di Sovrascrittura (RF-TRF-011, RNF-FS-003, §11.5)
 // =========================================================================
 {
