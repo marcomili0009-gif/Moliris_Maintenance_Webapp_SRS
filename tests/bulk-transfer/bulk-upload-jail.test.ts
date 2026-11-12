@@ -582,6 +582,7 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
   const resJail = await server.inject({
     method: "POST",
     url: "/api/transfers/bulk/pre-check",
+    headers: { origin: "http://localhost" },
     cookies: { "__Host-moliris_session": sessionOp.sessionId },
     payload: {
       filenames: ["file.txt"],
@@ -594,6 +595,7 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
   const resPreCheck = await server.inject({
     method: "POST",
     url: "/api/transfers/bulk/pre-check",
+    headers: { origin: "http://localhost" },
     cookies: { "__Host-moliris_session": sessionAdmin.sessionId },
     payload: {
       filenames: ["existing_server.txt"],
@@ -618,6 +620,7 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
     url: "/api/transfers/bulk/upload",
     headers: {
       "content-type": `multipart/form-data; boundary=${boundary}`,
+      origin: "http://localhost",
     },
     cookies: { "__Host-moliris_session": sessionAdmin.sessionId },
     payload: multipartConflict,
@@ -639,6 +642,7 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
     url: "/api/transfers/bulk/upload",
     headers: {
       "content-type": `multipart/form-data; boundary=${boundary2}`,
+      origin: "http://localhost",
     },
     cookies: { "__Host-moliris_session": sessionAdmin.sessionId },
     payload: multipartSuccess,

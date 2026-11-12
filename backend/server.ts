@@ -147,6 +147,8 @@ export function createServer(
     limits: {
       fileSize: appConfig.maxFileUploadBytes,
       files: appConfig.bulkUploadConfig.maxConcurrentFiles || config.maxBulkUploadFiles || 20,
+      fields: 10,
+      fieldSize: 64 * 1024,
     },
   });
 

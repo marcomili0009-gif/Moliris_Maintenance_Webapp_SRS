@@ -33,11 +33,28 @@ sudo systemctl enable --now mongod
 
 ### Abilitare l'autenticazione MongoDB
 
-Creare un account applicativo limitato al database Moliris prima di avviare l'applicazione. Le password iniziali di `admin` e `operatore` devono contenere almeno 15 caratteri:
+Abilitare l'autenticazione in `/etc/mongod.conf`:
+```yaml
+security:
+  authorization: enabled
+```
+Riavviare MongoDB con `sudo systemctl restart mongod`. Al primo accesso, la localhost exception consente di creare un solo utente iniziale nel database `admin`, che deve poter gestire gli utenti. Crearlo con una password robusta richiesta interattivamente:
 ```bash
 mongosh
 ```
 Nel prompt MongoDB:
+```javascript
+use admin
+db.createUser({
+  user: "moliris_user_admin",
+  pwd: passwordPrompt(),
+  roles: [{ role: "userAdminAnyDatabase", db: "admin" }]
+})
+```
+Riconnettersi autenticandosi con questo account e creare l'utente applicativo con permessi limitati:
+```bash
+mongosh -u moliris_user_admin --authenticationDatabase admin
+```
 ```javascript
 use moliris_maintenance
 db.createUser({
@@ -46,12 +63,7 @@ db.createUser({
   roles: [{ role: "readWrite", db: "moliris_maintenance" }]
 })
 ```
-Abilitare quindi l'autenticazione in `/etc/mongod.conf`:
-```yaml
-security:
-  authorization: enabled
-```
-Riavviare MongoDB con `sudo systemctl restart mongod`. L'URI di connessione dell'applicazione deve includere le credenziali dell'account limitato; codificare i caratteri speciali della password secondo la codifica URL e conservarla solo nel file ambiente protetto.
+Configurare l'URI applicativa con le credenziali di `moliris_app`; codificare i caratteri speciali della password secondo la codifica URL e conservarla solo nel file ambiente protetto. La documentazione MongoDB spiega che il primo utente va creato in `admin` e deve avere privilegi di gestione utenti ([localhost exception](https://www.mongodb.com/docs/manual/core/localhost-exception/)).
 
 ---
 
