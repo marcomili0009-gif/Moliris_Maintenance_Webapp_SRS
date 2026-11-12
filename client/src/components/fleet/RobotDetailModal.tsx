@@ -3,6 +3,19 @@ import type { RobotDetailDto } from "../../types/fleet.ts";
 import { StatusBadge } from "../common/StatusBadge.tsx";
 import { StateFormatter } from "../../services/state-formatter.ts";
 
+const FEATURE_LABELS: Record<string, string> = {
+  monitoring: "Monitoraggio Stato",
+  terminal: "Terminale Remoto PTY",
+  remoteFs: "Filesystem Remoto SFTP",
+  serverFs: "Archivio Server Dedicato",
+  transfer: "Trasferimenti File",
+  statusRefresh: "Aggiornamento Stato",
+  configure: "Configurazione",
+  disable: "Disabilitazione",
+  enable: "Abilitazione",
+  remove: "Rimozione",
+};
+
 interface RobotDetailModalProps {
   robot: RobotDetailDto | null;
   isOpen: boolean;
@@ -84,28 +97,28 @@ export const RobotDetailModal: React.FC<RobotDetailModalProps> = ({
 
           <div className="features-section mt-4">
             <h4>Funzionalità del Robot (RF-ROB-011)</h4>
-            <div className="features-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "0.5rem", marginTop: "0.5rem" }}>
+            <div className="features-grid">
               {robot.features ? (
                 Object.entries(robot.features).map(([key, val]) => (
                   <div
                     key={key}
-                    className={`feature-item p-2 rounded border ${
-                      val.available ? "bg-green-50 border-green-200" : "bg-gray-50 border-gray-200"
-                    }`}
+                    className={`feature-card ${val.available ? "feature-enabled" : "feature-disabled"}`}
                   >
-                    <div className="font-semibold text-sm">
-                      {val.available ? "✅ " : "❌ "}
-                      {key.toUpperCase()}
+                    <div className="feature-title">
+                      <span>{FEATURE_LABELS[key] || key.toUpperCase()}</span>
+                      <span className={`badge-status ${val.available ? "badge-attivo" : "badge-errore"}`}>
+                        {val.available ? "Disponibile" : "Non disponibile"}
+                      </span>
                     </div>
                     {!val.available && val.reason && (
-                      <small className="text-gray-500 block text-xs mt-1">
+                      <div className="feature-reason">
                         {val.reason}
-                      </small>
+                      </div>
                     )}
                   </div>
                 ))
               ) : (
-                <p className="text-gray-500 text-sm">Matrice funzionalità disponibile</p>
+                <p className="text-muted small">Nessuna informazione sulle funzionalità disponibile.</p>
               )}
             </div>
           </div>

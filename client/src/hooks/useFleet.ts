@@ -44,7 +44,31 @@ export function useFleet(isAuthenticated: boolean) {
       const res = await apiClient.get(`/api/robots/${encodeURIComponent(robotId)}`);
       if (res.ok) {
         const data = await res.json();
-        const detail: RobotDetailDto = data.robot;
+        const detail: RobotDetailDto = {
+          ...data.robot,
+          features: data.robot?.features || (data.availableFeatures ? {
+            monitoring: {
+              available: data.availableFeatures.monitoring,
+              reason: data.availableFeatures.reasons?.monitoring,
+            },
+            terminal: {
+              available: data.availableFeatures.terminal,
+              reason: data.availableFeatures.reasons?.terminal,
+            },
+            remoteFs: {
+              available: data.availableFeatures.remoteFs,
+              reason: data.availableFeatures.reasons?.remoteFs,
+            },
+            serverFs: {
+              available: data.availableFeatures.serverFs,
+              reason: data.availableFeatures.reasons?.serverFs,
+            },
+            transfer: {
+              available: data.availableFeatures.transfers,
+              reason: data.availableFeatures.reasons?.transfers,
+            },
+          } : undefined),
+        };
         setSelectedRobot(detail);
         return detail;
       } else {
