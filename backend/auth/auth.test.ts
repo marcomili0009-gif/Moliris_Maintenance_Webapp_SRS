@@ -153,6 +153,7 @@ async function makeHttpsRequest(
     const reqHeaders: Record<string, string> = {
       ...(postData ? { "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(postData)) } : {}),
       ...(token ? { Cookie: `moliris_session=${token}` } : {}),
+      ...(token && !["GET", "HEAD", "OPTIONS"].includes(method) ? { Origin: `https://127.0.0.1:${port}` } : {}),
     };
 
     const req = https.request(

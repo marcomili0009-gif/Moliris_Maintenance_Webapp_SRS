@@ -22,6 +22,7 @@ export function registerAuthRoutes(
   const loginAttempts = new Map<string, { count: number; windowStartedAt: number; blockedUntil: number }>();
   const loginWindowMs = 5 * 60 * 1000;
   const loginMaxAttempts = 10;
+  const maxTrackedLoginIps = 10_000;
 
   /**
    * Endpoint di Login (RF-AUTH-001, RF-AUTH-002, §6.1, CA-AUTH-001, CA-AUTH-002)
@@ -31,13 +32,12 @@ export function registerAuthRoutes(
     const now = Date.now();
     let attempt = loginAttempts.get(ip);
     if (!attempt || now - attempt.windowStartedAt >= loginWindowMs) {
+      if (!attempt && loginAttempts.size >= maxTrackedLoginIps) {
+        const oldestIp = loginAttempts.keys().next().value;
+        if (oldestIp !== undefined) loginAttempts.delete(oldestIp);
+      }
       attempt = { count: 0, windowStartedAt: now, blockedUntil: 0 };
       loginAttempts.set(ip, attempt);
-    }
-    if (loginAttempts.size > 10_000) {
-      for (const [key, value] of loginAttempts) {
-        if (now - value.windowStartedAt >= loginWindowMs && value.blockedUntil <= now) loginAttempts.delete(key);
-      }
     }
     const recordFailure = () => {
       attempt!.count++;

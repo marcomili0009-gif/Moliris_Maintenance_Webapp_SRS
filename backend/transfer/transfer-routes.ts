@@ -501,6 +501,8 @@ export function registerTransferRoutes(
         sizeBytes: number;
         sha256: string;
       }> = [];
+      const stagingPaths: string[] = [];
+      let totalStagedBytes = 0;
 
       const stagingDir = path.join(
         transferService.getConfig().serverFilesystemRoot,
@@ -520,6 +522,7 @@ export function registerTransferRoutes(
             fileIndex++;
             const safeFilename = path.basename(part.filename);
             const stagingPath = path.join(stagingDir, `staging_${uploadSessionId}_${fileIndex}.part`);
+            stagingPaths.push(stagingPath);
 
             const hash = crypto.createHash("sha256");
             let totalBytes = 0;
@@ -536,6 +539,15 @@ export function registerTransferRoutes(
               writeStream.on("finish", () => resolve());
               part.file.pipe(writeStream);
             });
+
+            if (part.file.truncated) {
+              throw new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Un file supera la dimensione massima consentita.");
+            }
+            totalStagedBytes += totalBytes;
+            const maxUploadBytes = (req.server as any).appConfig.maxFileUploadBytes as number;
+            if (totalStagedBytes > maxUploadBytes) {
+              throw new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "La dimensione totale dei file supera il limite consentito.");
+            }
 
             stagedFiles.push({
               filename: safeFilename,
@@ -595,10 +607,10 @@ export function registerTransferRoutes(
       } catch (err: any) {
         return handleRouteError(reply, err);
       } finally {
-        for (const s of stagedFiles) {
+        for (const s of stagingPaths) {
           try {
-            if (fs.existsSync(s.stagingPath)) {
-              await fs.promises.unlink(s.stagingPath);
+            if (fs.existsSync(s)) {
+              await fs.promises.unlink(s);
             }
           } catch {}
         }

@@ -178,7 +178,7 @@ async function sendHttpsRequest(
   bodyData: any = null
 ): Promise<{ statusCode: number; headers: any; body: any; rawBody: string }> {
   return new Promise((resolve, reject) => {
-    const reqHeaders = { ...headers };
+    const reqHeaders = { Origin: serverBaseUrl, ...headers };
     if (bodyData && !reqHeaders["Content-Type"] && !reqHeaders["content-type"]) {
       reqHeaders["Content-Type"] = "application/json";
     }

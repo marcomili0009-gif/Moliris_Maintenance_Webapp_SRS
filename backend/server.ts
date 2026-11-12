@@ -112,6 +112,31 @@ export function createServer(
     return payload;
   });
 
+  // SameSite=Strict limita le richieste cross-site, ma non i sottodomini dello
+  // stesso site. Per richieste mutative autenticate via cookie imponiamo anche
+  // un controllo Origin esatto, mantenendo bearer token e client non-browser.
+  app.addHook("onRequest", async (request, reply) => {
+    const isMutation = !["GET", "HEAD", "OPTIONS"].includes(request.method);
+    const hasSessionCookie = /(?:^|;\s*)moliris_session=[^;]+/.test(request.headers.cookie || "");
+    if (!isMutation || !hasSessionCookie || !request.url.startsWith("/api/")) return;
+
+    const origin = request.headers.origin;
+    let originMatches = false;
+    if (origin && request.headers.host) {
+      try {
+        originMatches = new URL(origin).origin === `${request.protocol}://${request.headers.host}`;
+      } catch {
+        originMatches = false;
+      }
+    }
+    if (!originMatches) {
+      return reply.status(403).send({
+        code: "CSRF_ORIGIN_REJECTED",
+        message: "Origine della richiesta non consentita.",
+      });
+    }
+  });
+
   // Registrazione supporto WebSocket per canale terminale interattivo (RF-SSH-004, §5.4)
   app.register(websocket);
 
