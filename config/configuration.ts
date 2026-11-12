@@ -29,7 +29,7 @@ export interface SystemConfiguration {
 
   // 8. Parametri di sicurezza e sessione (RNF-MNT-001, RF-AUTH-006, §11.6, RNF-SEC-001)
   inactiveSessionTimeoutMinutes: number;
-  sessionAbsoluteMaxMinutes?: number; // MOLIRIS_SESSION_ABSOLUTE_MAX_MIN (opzionale, nessun default)
+  sessionAbsoluteMaxMinutes?: number; // MOLIRIS_SESSION_ABSOLUTE_MAX_MIN (obbligatorio in production)
   tlsCertPath: string; // Riferimento sicuro senza contenere segreti (RNF-SEC-002)
   tlsKeyPath: string;  // Riferimento sicuro senza contenere segreti (RNF-SEC-002)
 
@@ -174,7 +174,13 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     if (isNaN(val) || !Number.isInteger(val) || val <= 0) {
       throw new Error("Valore non valido per MOLIRIS_SESSION_ABSOLUTE_MAX_MIN: deve essere un numero intero positivo maggiore di zero.");
     }
+    if (val > 1440) {
+      throw new Error("Valore non valido per MOLIRIS_SESSION_ABSOLUTE_MAX_MIN: non può superare 1440 minuti (24 ore).");
+    }
     sessionAbsoluteMaxMinutes = val;
+  }
+  if (env["NODE_ENV"] === "production" && sessionAbsoluteMaxMinutes === undefined) {
+    throw new Error("Configurazione non sicura: MOLIRIS_SESSION_ABSOLUTE_MAX_MIN deve essere impostato in production (massimo 24 ore).");
   }
 
   // Provider di credenziali (§11.2, RNF-SEC-002, RNF-SEC-004)
@@ -250,6 +256,9 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
   const allowedDestinations = env["MOLIRIS_ALLOWED_DESTINATIONS"]
     ? env["MOLIRIS_ALLOWED_DESTINATIONS"].split(",").map(d => d.trim()).filter(Boolean)
     : undefined;
+  if (env["NODE_ENV"] === "production" && !allowedDestinations?.length) {
+    throw new Error("Configurazione non sicura: MOLIRIS_ALLOWED_DESTINATIONS deve elencare gli host o gli IP SSH autorizzati in production.");
+  }
 
   const maxConcurrentRegistrationVerifications = env["MOLIRIS_MAX_REG_VERIFICATIONS"] && !isNaN(Number(env["MOLIRIS_MAX_REG_VERIFICATIONS"]))
     ? Number(env["MOLIRIS_MAX_REG_VERIFICATIONS"])

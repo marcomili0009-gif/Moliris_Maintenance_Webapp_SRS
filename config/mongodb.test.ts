@@ -99,5 +99,23 @@ assert.throws(
 assert.doesNotThrow(() => assertMongoCredentialsInProduction(
   "mongodb://moliris_app:encoded%40password@127.0.0.1:27017/moliris?authSource=moliris", "production"
 ));
+assert.throws(
+  () => assertMongoCredentialsInProduction("mongodb://app:secret@db.example.com/moliris", "production"),
+  /remote.*TLS/
+);
+assert.doesNotThrow(() => assertMongoCredentialsInProduction(
+  "mongodb://app:secret@db.example.com/moliris?tls=true", "production"
+));
+assert.doesNotThrow(() => assertMongoCredentialsInProduction(
+  "mongodb://app:secret@db1.example.com:27017,db2.example.com:27017/moliris?tls=true", "production"
+));
+assert.throws(
+  () => assertMongoCredentialsInProduction("mongodb+srv://app:secret@cluster.example.com/moliris?tlsInsecure=true", "production"),
+  /verifica del certificato TLS/
+);
+assert.throws(
+  () => assertMongoCredentialsInProduction("mongodb://app:secret@db.example.com/moliris?tls=true&tlsAllowInvalidHostnames=true", "production"),
+  /verifica del certificato TLS/
+);
 
 console.log("PASS: configurazione MongoDB, inclusi i controlli credenziali production.");

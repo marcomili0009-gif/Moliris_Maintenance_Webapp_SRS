@@ -146,14 +146,15 @@ async function makeHttpsRequest(
   method: string,
   pathName: string,
   body?: any,
-  token?: string
+  token?: string,
+  origin?: string
 ): Promise<{ status: number; headers: Record<string, any>; body: any }> {
   return new Promise((resolve, reject) => {
     const postData = body ? JSON.stringify(body) : undefined;
     const reqHeaders: Record<string, string> = {
       ...(postData ? { "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(postData)) } : {}),
       ...(token ? { Cookie: `__Host-moliris_session=${token}` } : {}),
-      ...(token && !["GET", "HEAD", "OPTIONS"].includes(method) ? { Origin: `https://127.0.0.1:${port}` } : {}),
+      ...(token && !["GET", "HEAD", "OPTIONS"].includes(method) ? { Origin: origin || `https://127.0.0.1:${port}` } : {}),
     };
 
     const req = https.request(
@@ -237,6 +238,10 @@ assert.strictEqual(meRes.body.user.username, "operatore_test");
 // Verifica accesso a endpoint flotta autorizzato (FLEET_VIEW)
 const fleetRes = await makeHttpsRequest("GET", "/api/fleet/summary", undefined, operatorToken);
 assert.strictEqual(fleetRes.status, 200, "Operatore deve poter accedere all'elenco flotta");
+
+const csrfRes = await makeHttpsRequest("POST", "/api/auth/logout", {}, operatorToken, "https://attacker.example");
+assert.strictEqual(csrfRes.status, 403, "Richiesta cookie da un'origine diversa deve essere bloccata (CSRF)");
+assert.strictEqual(csrfRes.body.code, "CSRF_ORIGIN_REJECTED");
 
 // CA-AUTH-003: Chiamata senza sessione o token non valido viene rifiutata
 const noAuthRes = await makeHttpsRequest("GET", "/api/fleet/summary");

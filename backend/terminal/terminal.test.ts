@@ -410,7 +410,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   const allocRes = await server.inject({
     method: "POST",
     url: "/api/robots/robot_ssh_02/terminal/sessions",
-    headers: { cookie: `__Host-moliris_session=${userSession.sessionId}` },
+    headers: { cookie: `__Host-moliris_session=${userSession.sessionId}`, origin: "http://localhost" },
     payload: { cols: 80, rows: 24 },
   });
   const { sessionId } = JSON.parse(allocRes.body);
@@ -657,7 +657,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   const deniedRes = await server.inject({
     method: "POST",
     url: "/api/robots/robot_ssh_05/terminal/sessions",
-    headers: { cookie: `__Host-moliris_session=${deniedSession.sessionId}` },
+    headers: { cookie: `__Host-moliris_session=${deniedSession.sessionId}`, origin: "http://localhost" },
   });
   assert.strictEqual(deniedRes.statusCode, 403, "Utente senza TERMINAL_OPEN deve ricevere 403");
 
@@ -665,7 +665,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   const legitimateRes = await server.inject({
     method: "POST",
     url: "/api/robots/robot_ssh_05/terminal/sessions",
-    headers: { cookie: `__Host-moliris_session=${validSession.sessionId}` },
+    headers: { cookie: `__Host-moliris_session=${validSession.sessionId}`, origin: "http://localhost" },
   });
   assert.strictEqual(legitimateRes.statusCode, 201);
   const { sessionId } = JSON.parse(legitimateRes.body);
@@ -1117,7 +1117,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   const adminRes = await server.inject({
     method: "POST",
     url: "/api/robots/robot_ssh_rf04/terminal/sessions",
-    headers: { cookie: `__Host-moliris_session=${adminSession.sessionId}` },
+    headers: { cookie: `__Host-moliris_session=${adminSession.sessionId}`, origin: "http://localhost" },
     payload: { cols: 80, rows: 24 },
   });
   assert.strictEqual(adminRes.statusCode, 201, "Admin deve poter aprire una sessione terminale (201)");
@@ -1127,7 +1127,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   const operatorRes = await server.inject({
     method: "POST",
     url: "/api/robots/robot_ssh_rf04/terminal/sessions",
-    headers: { cookie: `__Host-moliris_session=${operatorSession.sessionId}` },
+    headers: { cookie: `__Host-moliris_session=${operatorSession.sessionId}`, origin: "http://localhost" },
     payload: { cols: 80, rows: 24 },
   });
   assert.strictEqual(operatorRes.statusCode, 403, "Operatore deve ricevere 403 Forbidden");

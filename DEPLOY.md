@@ -143,10 +143,13 @@ MOLIRIS_TLS_CERT_PATH=/etc/moliris/certs/cert.pem
 MOLIRIS_TLS_KEY_PATH=/etc/moliris/certs/key.pem
 MOLIRIS_REGISTRATION_MODE=rigorosa
 MOLIRIS_SESSION_TIMEOUT_MIN=30
+MOLIRIS_SESSION_ABSOLUTE_MAX_MIN=480
 MOLIRIS_AUDIT_RETENTION_DAYS=90
 MOLIRIS_MONGODB_URI=mongodb://moliris_app:<PASSWORD_URL_ENCODED>@127.0.0.1:27017/moliris_maintenance?authSource=moliris_maintenance
 MOLIRIS_SERVER_PORT=8443
 MOLIRIS_SERVER_HOST=0.0.0.0
+# Elenco esatto degli hostname o IP dei robot autorizzati, separati da virgola (no CIDR)
+MOLIRIS_ALLOWED_DESTINATIONS=192.168.1.10,192.168.1.11,robot1.local
 ```
 
 ---

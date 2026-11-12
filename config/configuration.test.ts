@@ -78,6 +78,29 @@ assert.strictEqual(config.maxFileSizeBytes, undefined);
 assert.strictEqual(config.quotaPerRobotBytes, undefined);
 assert.strictEqual(config.standardSubdirectories, undefined);
 
+assert.throws(
+  () => loadAndValidateConfig({ ...validEnv, NODE_ENV: "production", MOLIRIS_SESSION_ABSOLUTE_MAX_MIN: "480" }),
+  /MOLIRIS_ALLOWED_DESTINATIONS/,
+  "In produzione la whitelist delle destinazioni SSH deve essere obbligatoria"
+);
+assert.throws(
+  () => loadAndValidateConfig({
+    ...validEnv,
+    NODE_ENV: "production",
+    MOLIRIS_ALLOWED_DESTINATIONS: "robot1.local",
+  }),
+  /MOLIRIS_SESSION_ABSOLUTE_MAX_MIN/,
+  "In produzione il timeout assoluto sessione deve essere obbligatorio"
+);
+const productionConfig = loadAndValidateConfig({
+  ...validEnv,
+  NODE_ENV: "production",
+  MOLIRIS_ALLOWED_DESTINATIONS: "robot1.local,192.168.1.10",
+  MOLIRIS_SESSION_ABSOLUTE_MAX_MIN: "480",
+});
+assert.deepStrictEqual(productionConfig.allowedDestinations, ["robot1.local", "192.168.1.10"]);
+assert.strictEqual(productionConfig.sessionAbsoluteMaxMinutes, 480);
+
 // Test 4: Supporto modalità differita
 const configDifferita = loadAndValidateConfig({
   ...validEnv,
@@ -96,6 +119,8 @@ try {
   loadAndValidateConfig({
     ...validEnv,
     NODE_ENV: "production",
+    MOLIRIS_ALLOWED_DESTINATIONS: "robot1.local",
+    MOLIRIS_SESSION_ABSOLUTE_MAX_MIN: "480",
     MOLIRIS_CREDENTIAL_PROVIDER: "in-memory",
   });
   assert.fail("Avrebbe dovuto fallire per in-memory in produzione");
