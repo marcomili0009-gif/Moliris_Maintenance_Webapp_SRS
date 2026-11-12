@@ -262,8 +262,8 @@ export class ServerFilesystemService {
       }
 
       // Creazione idempotente delle sottodirectory standard (RF-ROB-009, RF-SRVFS-007)
-      // Baseline decision: logs, configs, backups (finalità DA DEFINIRE DAL COMMITTENTE in DECISIONS.md)
-      const subdirs = options?.standardSubdirectories ?? ["logs", "configs", "backups"];
+      // Baseline decision: upload, download, shared, logs, configs, backups (RF-SRVFS-007, RF-ROB-009)
+      const subdirs = options?.standardSubdirectories ?? ["upload", "download", "shared", "logs", "configs", "backups"];
       if (subdirs && subdirs.length > 0) {
         for (const subName of subdirs) {
           const subPath = path.join(robotDir, subName);
@@ -343,10 +343,17 @@ export class ServerFilesystemService {
     this.assertAuthorizedContext(context, robot, AppPermission.FS_SERVER_NAVIGATE);
 
     const isOp = this.isOperator(context);
-    const isRoot = !relativeSubPath || relativeSubPath.trim() === "" || relativeSubPath.trim() === ".";
+    const trimmedSub = (relativeSubPath ?? "").trim();
+    const isRoot = !trimmedSub || trimmedSub === "." || trimmedSub === "/" || trimmedSub === "\\";
 
     if (isOp && !isRoot) {
       this.assertOperatorAccess(context, relativeSubPath, "LIST");
+    }
+
+    // Creazione lazy e idempotente della directory radice del robot se non esiste ancora (RF-ROB-008, CA-ROB-004)
+    const robotDir = path.resolve(robot.serverDirectoryPath);
+    if (!fs.existsSync(robotDir)) {
+      await this.ensureRobotDirectory(robot);
     }
 
     const targetDir = await this.resolveRobotPath(robot, relativeSubPath);

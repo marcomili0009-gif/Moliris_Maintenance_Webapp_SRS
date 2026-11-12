@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { apiClient } from "../services/api-client.ts";
 import { ErrorPresenter } from "../services/error-presenter.ts";
+import { triggerDownload } from "../utils/download.ts";
 import type { DirectoryListing } from "../types/filesystem.ts";
 import type { FormattedError } from "../types/error.ts";
 
@@ -88,16 +89,19 @@ export function useFilesystem() {
   // Upload to Server
   const uploadToServer = async (file: File, targetPath: string, overwrite = false): Promise<boolean> => {
     if (!serverRobotId) return false;
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("path", targetPath);
-    if (overwrite) formData.append("overwrite", "true");
-
     try {
-      const res = await apiClient.post(
-        `/api/robots/${encodeURIComponent(serverRobotId)}/fs/server/upload`,
-        formData
-      );
+      const cleanSubPath = targetPath === "/" ? "" : targetPath.replace(/^\//, "");
+      const url = `/api/robots/${encodeURIComponent(serverRobotId)}/transfers/client-server/upload?filename=${encodeURIComponent(file.name)}&subPath=${encodeURIComponent(cleanSubPath)}${overwrite ? "&overwrite=true" : ""}`;
+      const res = await apiClient.request(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "x-filename": file.name,
+          "x-subpath": cleanSubPath,
+          ...(overwrite ? { "x-overwrite": "true" } : {}),
+        },
+        body: file,
+      });
       if (res.ok) {
         await loadServerDirectory(serverRobotId, serverPath);
         return true;
@@ -115,16 +119,18 @@ export function useFilesystem() {
   // Upload to Remote SFTP
   const uploadToRemote = async (file: File, targetPath: string, overwrite = false): Promise<boolean> => {
     if (!remoteRobotId) return false;
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("path", targetPath);
-    if (overwrite) formData.append("overwrite", "true");
-
     try {
-      const res = await apiClient.post(
-        `/api/robots/${encodeURIComponent(remoteRobotId)}/fs/remote/upload`,
-        formData
-      );
+      const url = `/api/robots/${encodeURIComponent(remoteRobotId)}/transfers/client-robot/upload?filename=${encodeURIComponent(file.name)}&remoteDirectory=${encodeURIComponent(targetPath)}${overwrite ? "&overwrite=true" : ""}`;
+      const res = await apiClient.request(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "x-filename": file.name,
+          "x-remote-dir": targetPath,
+          ...(overwrite ? { "x-overwrite": "true" } : {}),
+        },
+        body: file,
+      });
       if (res.ok) {
         await loadRemoteDirectory(remoteRobotId, remotePath);
         return true;
@@ -145,18 +151,10 @@ export function useFilesystem() {
     const filePath = serverPath.endsWith("/") ? `${serverPath}${fileName}` : `${serverPath}/${fileName}`;
     try {
       const res = await apiClient.get(
-        `/api/robots/${encodeURIComponent(serverRobotId)}/fs/server/download?path=${encodeURIComponent(filePath)}`
+        `/api/robots/${encodeURIComponent(serverRobotId)}/transfers/client-server/download?path=${encodeURIComponent(filePath)}`
       );
       if (res.ok) {
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        window.URL.revokeObjectURL(url);
+        triggerDownload(await res.blob(), fileName);
       } else {
         const errData = await res.json().catch(() => ({}));
         setServerError(ErrorPresenter.formatError(errData));
@@ -172,18 +170,10 @@ export function useFilesystem() {
     const filePath = remotePath.endsWith("/") ? `${remotePath}${fileName}` : `${remotePath}/${fileName}`;
     try {
       const res = await apiClient.get(
-        `/api/robots/${encodeURIComponent(remoteRobotId)}/fs/remote/download?path=${encodeURIComponent(filePath)}`
+        `/api/robots/${encodeURIComponent(remoteRobotId)}/transfers/client-robot/download?path=${encodeURIComponent(filePath)}`
       );
       if (res.ok) {
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        window.URL.revokeObjectURL(url);
+        triggerDownload(await res.blob(), fileName);
       } else {
         const errData = await res.json().catch(() => ({}));
         setRemoteError(ErrorPresenter.formatError(errData));
@@ -240,12 +230,13 @@ export function useFilesystem() {
   // Transfer Server -> Remote SFTP
   const transferServerToRemote = async (fileName: string, overwrite = false): Promise<boolean> => {
     if (!serverRobotId) return false;
-    const sourcePath = serverPath.endsWith("/") ? `${serverPath}${fileName}` : `${serverPath}/${fileName}`;
-    const targetPath = `/${fileName}`;
+    const cleanServerPath = serverPath === "/" ? "" : serverPath.replace(/^\//, "");
+    const serverRelativePath = cleanServerPath ? `${cleanServerPath}/${fileName}` : fileName;
+    const remotePath = `/${fileName}`;
     try {
       const res = await apiClient.post(
-        `/api/robots/${encodeURIComponent(serverRobotId)}/fs/transfer-to-remote`,
-        { sourcePath, targetPath, overwrite }
+        `/api/robots/${encodeURIComponent(serverRobotId)}/transfers/server-robot`,
+        { direction: "SERVER_TO_ROBOT", serverRelativePath, remotePath, overwrite }
       );
       if (res.ok) {
         return true;
@@ -263,12 +254,13 @@ export function useFilesystem() {
   // Transfer Remote SFTP -> Server
   const transferRemoteToServer = async (fileName: string, overwrite = false): Promise<boolean> => {
     if (!remoteRobotId) return false;
-    const sourcePath = remotePath.endsWith("/") ? `${remotePath}${fileName}` : `${remotePath}/${fileName}`;
-    const targetPath = `/${fileName}`;
+    const remotePathClean = remotePath.endsWith("/") ? `${remotePath}${fileName}` : `${remotePath}/${fileName}`;
+    const cleanServerPath = serverPath === "/" ? "" : serverPath.replace(/^\//, "");
+    const serverRelativePath = cleanServerPath ? `${cleanServerPath}/${fileName}` : fileName;
     try {
       const res = await apiClient.post(
-        `/api/robots/${encodeURIComponent(remoteRobotId)}/fs/transfer-to-server`,
-        { sourcePath, targetPath, overwrite }
+        `/api/robots/${encodeURIComponent(remoteRobotId)}/transfers/server-robot`,
+        { direction: "ROBOT_TO_SERVER", serverRelativePath, remotePath: remotePathClean, overwrite }
       );
       if (res.ok) {
         return true;

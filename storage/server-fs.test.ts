@@ -344,6 +344,32 @@ assert.strictEqual(resApiA.status, 200);
 assert(Array.isArray(resApiA.body.items));
 assert(resApiA.body.items.some((i: any) => i.name === "file1.txt"));
 
+// Chiamata con path="/" (root esplicita dal frontend): deve restituire 200 con la lista root
+const resApiRootSlash = await apiGet("/api/robots/robot_A/fs/server/list?path=/", sessionA.sessionId);
+assert.strictEqual(resApiRootSlash.status, 200, "Richiesta con path='/' deve restituire 200");
+assert(Array.isArray(resApiRootSlash.body.items));
+assert.strictEqual(resApiRootSlash.body.currentPath, "/");
+
+// Chiamata lazy su robot con directory non ancora creata su disco
+const robotUncreated: RobotEntity = {
+  ...robotA,
+  id: "robot_lazy_create",
+  remoteUsername: "operator_lazy",
+  host: "192.168.1.55",
+  serverDirectoryPath: path.join(testFsRoot, "operator_lazy_robot_lazy"),
+};
+await robotRepo.create(robotUncreated);
+await userRepo.update(userAuthA.id, {
+  robotPermissions: {
+    robot_A: [AppPermission.FS_SERVER_NAVIGATE, AppPermission.FS_SERVER_DELETE],
+    robot_lazy_create: [AppPermission.FS_SERVER_NAVIGATE],
+  },
+});
+assert.strictEqual(fs.existsSync(robotUncreated.serverDirectoryPath), false, "La cartella inizialmente non esiste");
+const resApiLazy = await apiGet("/api/robots/robot_lazy_create/fs/server/list?path=/", sessionA.sessionId);
+assert.strictEqual(resApiLazy.status, 200, "Accesso iniziale deve creare la cartella in modo lazy");
+assert.strictEqual(fs.existsSync(robotUncreated.serverDirectoryPath), true, "La directory deve essere stata creata");
+
 // Chiamata su robotB con credenziali autorizzate solo per robotA: deve restituire 403 (RF-SRVFS-005)
 const resApiB = await apiGet("/api/robots/robot_B/fs/server/list", sessionA.sessionId);
 assert.strictEqual(resApiB.status, 403, "Accesso a robotB deve essere rifiutato con 403");

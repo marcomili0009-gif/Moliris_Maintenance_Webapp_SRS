@@ -74,6 +74,140 @@ export function registerTransferRoutes(
     }
   );
 
+  // Alias per trasferimento Robot → Server (RF-TRF-002, §6.6)
+  app.post(
+    "/api/robots/:robotId/transfers/robot-server",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.TRANSFER_SERVER_ROBOT,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { robotId } = req.params as { robotId: string };
+      const body = (req.body as any) || {};
+
+      const robot = await robotRepository.findById(robotId);
+      if (!robot) {
+        return sendErrorReply(reply, 404, ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${robotId}' non trovato.`);
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        robot.id,
+        roleMapping
+      );
+
+      const reqBody: StartServerRobotTransferRequest = {
+        direction: "ROBOT_TO_SERVER",
+        serverRelativePath: body.serverRelativePath || body.targetPath || "",
+        remotePath: body.remotePath || body.sourcePath || "",
+        overwrite: body.overwrite,
+        confirmed: body.confirmed,
+        expectedChecksum: body.expectedChecksum,
+      };
+
+      try {
+        const transferDto = await transferService.executeServerRobotTransfer(context, robot, reqBody);
+        return reply.status(200).send(transferDto);
+      } catch (err: any) {
+        return handleRouteError(reply, err);
+      }
+    }
+  );
+
+  // Alias retrocompatibili per chiamate dirette dal pannello filesystem (RF-TRF-002)
+  app.post(
+    "/api/robots/:robotId/fs/transfer-to-remote",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.TRANSFER_SERVER_ROBOT,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { robotId } = req.params as { robotId: string };
+      const body = (req.body as any) || {};
+
+      const robot = await robotRepository.findById(robotId);
+      if (!robot) {
+        return sendErrorReply(reply, 404, ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${robotId}' non trovato.`);
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        robot.id,
+        roleMapping
+      );
+
+      const reqBody: StartServerRobotTransferRequest = {
+        direction: "SERVER_TO_ROBOT",
+        serverRelativePath: body.serverRelativePath || body.sourcePath || "",
+        remotePath: body.remotePath || body.targetPath || "",
+        overwrite: body.overwrite,
+        confirmed: body.confirmed,
+        expectedChecksum: body.expectedChecksum,
+      };
+
+      try {
+        const transferDto = await transferService.executeServerRobotTransfer(context, robot, reqBody);
+        return reply.status(200).send(transferDto);
+      } catch (err: any) {
+        return handleRouteError(reply, err);
+      }
+    }
+  );
+
+  app.post(
+    "/api/robots/:robotId/fs/transfer-to-server",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.TRANSFER_SERVER_ROBOT,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { robotId } = req.params as { robotId: string };
+      const body = (req.body as any) || {};
+
+      const robot = await robotRepository.findById(robotId);
+      if (!robot) {
+        return sendErrorReply(reply, 404, ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${robotId}' non trovato.`);
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        robot.id,
+        roleMapping
+      );
+
+      const reqBody: StartServerRobotTransferRequest = {
+        direction: "ROBOT_TO_SERVER",
+        serverRelativePath: body.serverRelativePath || body.targetPath || "",
+        remotePath: body.remotePath || body.sourcePath || "",
+        overwrite: body.overwrite,
+        confirmed: body.confirmed,
+        expectedChecksum: body.expectedChecksum,
+      };
+
+      try {
+        const transferDto = await transferService.executeServerRobotTransfer(context, robot, reqBody);
+        return reply.status(200).send(transferDto);
+      } catch (err: any) {
+        return handleRouteError(reply, err);
+      }
+    }
+  );
+
   // =========================================================================
   // 2. UPLOAD CLIENT → SERVER (RF-TRF-001, §6.5, CA-FS-002)
   // =========================================================================
