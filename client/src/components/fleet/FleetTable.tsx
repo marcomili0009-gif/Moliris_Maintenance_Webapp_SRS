@@ -276,7 +276,7 @@ export const FleetTable: React.FC<FleetTableProps> = ({
               onRefreshStatus(activeRobot.id);
             }}
           >
-            🔄 Aggiorna Stato
+            Aggiorna Stato
           </button>
 
           {isAdmin && (
@@ -289,7 +289,7 @@ export const FleetTable: React.FC<FleetTableProps> = ({
                   onOpenEdit(activeRobot);
                 }}
               >
-                ⚙️ Configura
+                Configura
               </button>
 
               <button
@@ -300,7 +300,7 @@ export const FleetTable: React.FC<FleetTableProps> = ({
                   onRepairRobot(activeRobot.id);
                 }}
               >
-                🛠️ Ripara Directory
+                Ripara Directory
               </button>
 
               <button
@@ -311,7 +311,7 @@ export const FleetTable: React.FC<FleetTableProps> = ({
                   onToggleStatus(activeRobot.id, activeRobot.anagraphicState);
                 }}
               >
-                {activeRobot.anagraphicState === "disabilitato" ? "✅ Abilita Robot" : "⏸️ Disabilita Robot"}
+                {activeRobot.anagraphicState === "disabilitato" ? "Abilita Robot" : "Disabilita Robot"}
               </button>
 
               <div className="dropdown-divider my-1" />
@@ -324,7 +324,7 @@ export const FleetTable: React.FC<FleetTableProps> = ({
                   onOpenRemove(activeRobot);
                 }}
               >
-                🗑️ Rimuovi Robot
+                Rimuovi Robot
               </button>
             </>
           )}

@@ -173,7 +173,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
 
         <div className="terminal-footer flex justify-between items-center text-xs text-gray-400 p-2">
           <span id="terminal-footer-info">
-            Connessione PTY interattiva bidirezionale (RF-SSH-002, RF-SSH-004)
+            Connessione PTY interattiva bidirezionale
           </span>
           <span id="terminal-footer-dims" className="badge bg-secondary">
             {cols} x {rows}

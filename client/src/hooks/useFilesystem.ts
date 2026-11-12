@@ -2,23 +2,74 @@ import { useState, useCallback } from "react";
 import { apiClient } from "../services/api-client.ts";
 import { ErrorPresenter } from "../services/error-presenter.ts";
 import { triggerDownload } from "../utils/download.ts";
-import type { DirectoryListing } from "../types/filesystem.ts";
+import type { DirectoryListing, FsEntry } from "../types/filesystem.ts";
 import type { FormattedError } from "../types/error.ts";
+
+function normalizeDirectoryListing(data: any, fallbackPath = "/"): DirectoryListing {
+  if (!data) {
+    return {
+      path: fallbackPath,
+      entries: [],
+      totalCount: 0,
+      isTruncated: false,
+    };
+  }
+
+  const rawList = Array.isArray(data.entries)
+    ? data.entries
+    : Array.isArray(data.items)
+    ? data.items
+    : [];
+
+  const entries: FsEntry[] = rawList.map((it: any) => ({
+    name: it.name,
+    type: it.type === "directory" ? "directory" : (it.type === "link" || it.type === "symlink" ? "symlink" : "file"),
+    size: typeof it.size === "number" ? it.size : 0,
+    mtime: it.mtime || it.modifiedAt || new Date().toISOString(),
+    modifiedAt: it.modifiedAt || it.mtime || new Date().toISOString(),
+    permissions: it.permissions,
+    target: it.target,
+  }));
+
+  return {
+    path: data.path || data.currentPath || fallbackPath,
+    currentPath: data.currentPath || data.path || fallbackPath,
+    robotId: data.robotId,
+    entries,
+    items: data.items,
+    totalCount: typeof data.totalCount === "number" ? data.totalCount : entries.length,
+    isTruncated: Boolean(data.isTruncated || data.truncated),
+  };
+}
 
 export function useFilesystem() {
   // Server state
-  const [serverRobotId, setServerRobotId] = useState<string>("");
+  const [serverRobotId, setServerRobotIdState] = useState<string>("");
   const [serverPath, setServerPath] = useState<string>("/");
   const [serverListing, setServerListing] = useState<DirectoryListing | null>(null);
   const [serverLoading, setServerLoading] = useState<boolean>(false);
   const [serverError, setServerError] = useState<FormattedError | null>(null);
 
   // Remote SFTP state
-  const [remoteRobotId, setRemoteRobotId] = useState<string>("");
+  const [remoteRobotId, setRemoteRobotIdState] = useState<string>("");
   const [remotePath, setRemotePath] = useState<string>("/");
   const [remoteListing, setRemoteListing] = useState<DirectoryListing | null>(null);
   const [remoteLoading, setRemoteLoading] = useState<boolean>(false);
   const [remoteError, setRemoteError] = useState<FormattedError | null>(null);
+
+  const setServerRobotId = useCallback((id: string) => {
+    setServerRobotIdState(id);
+    setServerListing(null);
+    setServerError(null);
+    setServerPath("/");
+  }, []);
+
+  const setRemoteRobotId = useCallback((id: string) => {
+    setRemoteRobotIdState(id);
+    setRemoteListing(null);
+    setRemoteError(null);
+    setRemotePath("/");
+  }, []);
 
   // Load Server Directory
   const loadServerDirectory = useCallback(async (robotId: string, path = "/") => {
@@ -30,9 +81,10 @@ export function useFilesystem() {
       const res = await apiClient.get(url);
       if (res.ok) {
         const data = await res.json();
-        setServerListing(data);
-        setServerPath(data.path || path);
-        setServerRobotId(robotId);
+        const normalized = normalizeDirectoryListing(data, path);
+        setServerListing(normalized);
+        setServerPath(normalized.path);
+        setServerRobotIdState(robotId);
       } else {
         const errData = await res.json().catch(() => ({}));
         setServerError(ErrorPresenter.formatError(errData));
@@ -54,9 +106,10 @@ export function useFilesystem() {
       const res = await apiClient.get(url);
       if (res.ok) {
         const data = await res.json();
-        setRemoteListing(data);
-        setRemotePath(data.path || path);
-        setRemoteRobotId(robotId);
+        const normalized = normalizeDirectoryListing(data, path);
+        setRemoteListing(normalized);
+        setRemotePath(normalized.path);
+        setRemoteRobotIdState(robotId);
       } else {
         const errData = await res.json().catch(() => ({}));
         setRemoteError(ErrorPresenter.formatError(errData));

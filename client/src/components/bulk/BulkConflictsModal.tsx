@@ -21,7 +21,7 @@ export const BulkConflictsModal: React.FC<BulkConflictsModalProps> = ({
     <div id="modal-bulk-conflicts" className="modal" role="dialog" aria-modal="true">
       <div className="modal-content">
         <div className="modal-header">
-          <h3 style={{ color: "#b91c1c" }}>⚠️ Rilevati Conflitti di Sovrascrittura</h3>
+          <h3 style={{ color: "#b91c1c" }}>Rilevati Conflitti di Sovrascrittura</h3>
           <button
             type="button"
             className="btn-close"
@@ -50,13 +50,13 @@ export const BulkConflictsModal: React.FC<BulkConflictsModalProps> = ({
           >
             {conflicts.map((c, i) => (
               <div key={i} className="mb-1">
-                <strong>[{c.targetType.toUpperCase()}: {c.targetName}]</strong> {c.filename} ➔ {c.targetPath}
+                <strong>[{c.targetType.toUpperCase()}: {c.targetName}]</strong> {c.filename} &rarr; {c.targetPath}
               </div>
             ))}
           </div>
 
           <div className="alert-box alert-warning">
-            <strong>Politica di integrità e atomicità (RF-TRF-011, RNF-REL-004):</strong>
+            <strong>Politica di integrità e atomicità:</strong>
             <br />
             Se confermi, i file preesistenti verranno sostituiti in modo atomico solo al termine del trasferimento e verifica del checksum.
             <br />

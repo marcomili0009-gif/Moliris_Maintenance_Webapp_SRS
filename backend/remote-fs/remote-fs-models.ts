@@ -29,6 +29,13 @@ export interface RemoteDirectoryListingDto {
   currentPath: string;
   parentPath: string | null; // null se alla radice del filesystem remoto
   items: RemoteFileItemDto[];
+  entries?: Array<{
+    name: string;
+    type: "file" | "directory" | "symlink" | "other";
+    size: number;
+    mtime: string;
+    modifiedAt?: string;
+  }>;
   totalCount: number;
   truncated: boolean; // true se il numero di elementi ha superato il limite di sicurezza configurato (RNF-PERF-002)
   isTruncated: boolean; // Flag semantico esplicito di troncamento per il frontend (Problema C2)

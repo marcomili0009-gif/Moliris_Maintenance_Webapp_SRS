@@ -102,7 +102,7 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
     if (!operationalData) {
       return (
         <span className={`badge text-bg-danger badge-status badge-nodata ${className}`}>
-          dato non disponibile (RF-MON-005)
+          dato non disponibile
         </span>
       );
     }

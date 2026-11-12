@@ -584,11 +584,20 @@ export class RemoteFilesystemService {
       // Calcolo parentPath (RF-FS-003, CA-FS-001)
       const parentPath = targetPath === "/" ? null : path.posix.dirname(targetPath);
 
+      const mappedEntries = items.map((it) => ({
+        name: it.name,
+        type: it.type === "directory" ? ("directory" as const) : (it.type === "link" ? ("symlink" as const) : ("file" as const)),
+        size: typeof it.size === "number" ? it.size : 0,
+        mtime: it.modifiedAt || new Date().toISOString(),
+        modifiedAt: it.modifiedAt || new Date().toISOString(),
+      }));
+
       return {
         robotId: robot.id,
         currentPath: targetPath,
         parentPath,
         items,
+        entries: mappedEntries,
         totalCount,
         truncated,
         isTruncated: truncated,

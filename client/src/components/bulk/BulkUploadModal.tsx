@@ -127,7 +127,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
     <div id="modal-bulk-upload" className="modal" role="dialog" aria-modal="true">
       <div className="modal-content modal-large">
         <div className="modal-header">
-          <h3>📦 Caricamento Massivo Multi-Target</h3>
+          <h3>Caricamento Massivo</h3>
           <button
             type="button"
             className="btn-close"
@@ -196,7 +196,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                       checked={targetServerChecked}
                       onChange={(e) => setTargetServerChecked(e.target.checked)}
                     />{" "}
-                    🗄️ Server Locale (Archivio Dedicato Robot)
+                    Server Locale (Archivio Dedicato Robot)
                   </label>
                   {targetServerChecked && (
                     <div id="bulk-server-config" style={{ marginTop: "0.5rem", marginLeft: "1.5rem" }}>
@@ -233,7 +233,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
 
                 <div>
                   <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
-                    🌐 Robot Remoti (SFTP Diretto):
+                    Robot Remoti (SFTP Diretto):
                   </div>
                   <div
                     id="bulk-robots-checkboxes"
@@ -305,7 +305,10 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                 </h4>
                 {results.map((res, i) => (
                   <div key={i} style={{ fontSize: "0.85rem", marginBottom: "0.25rem" }}>
-                    {res.success ? "✅" : "❌"} <strong>{res.targetName} ({res.targetType})</strong>:{" "}
+                    <span className={res.success ? "badge bg-success me-1" : "badge bg-danger me-1"}>
+                      {res.success ? "OK" : "KO"}
+                    </span>{" "}
+                    <strong>{res.targetName} ({res.targetType})</strong>:{" "}
                     {res.transferredFiles.length} file trasferiti con successo
                     {res.failedFiles.length > 0 && ` (${res.failedFiles.length} falliti)`}
                   </div>
@@ -336,7 +339,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                 id="btn-start-bulk-upload"
                 pendingText="Caricamento..."
               >
-                🚀 Avvia Caricamento Massivo
+                Avvia Caricamento Massivo
               </DoubleSubmitButton>
             </div>
           </form>

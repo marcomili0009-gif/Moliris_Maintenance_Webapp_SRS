@@ -71,7 +71,7 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                 >
                   <div className="flex justify-between items-center mb-1">
                     <span className="font-semibold text-sm">
-                      {trf.sourceFile} ➔ {trf.targetFile}
+                      {trf.sourceFile} &rarr; {trf.targetFile}
                     </span>
                     <span className={`badge-status ${statusClass}`}>
                       {trf.status}

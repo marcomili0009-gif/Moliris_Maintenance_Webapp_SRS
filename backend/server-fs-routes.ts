@@ -59,11 +59,22 @@ export function registerServerFsRoutes(
 
       try {
         const items = await serverFsService.listDirectory(context, robot, subPath);
+        const mappedEntries = items.map((it: any) => ({
+          name: it.name,
+          type: it.type === "directory" ? "directory" : "file",
+          size: typeof it.size === "number" ? it.size : 0,
+          mtime: it.modifiedAt instanceof Date ? it.modifiedAt.toISOString() : (it.modifiedAt || new Date().toISOString()),
+          modifiedAt: it.modifiedAt instanceof Date ? it.modifiedAt.toISOString() : (it.modifiedAt || new Date().toISOString()),
+        }));
+
         return reply.status(200).send({
           robotId: robot.id,
           currentPath: rawPath || "/",
           path: rawPath || "/",
           items,
+          entries: mappedEntries,
+          totalCount: items.length,
+          isTruncated: false,
         });
       } catch (err: any) {
         if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {

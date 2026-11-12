@@ -45,12 +45,13 @@ export const FsTable: React.FC<FsTableProps> = ({
           ) : (
             entries.map((entry) => {
               const isDir = entry.type === "directory";
+              const isSymlink = entry.type === "symlink";
 
               return (
                 <tr key={entry.name}>
                   <td>
-                    <span className={`badge ${isDir ? "badge-info" : "badge-secondary"}`}>
-                      {isDir ? "📁 DIR" : "📄 FILE"}
+                    <span className={`badge ${isDir ? "badge-info" : isSymlink ? "badge-warning" : "badge-secondary"}`}>
+                      {isDir ? "Cartella" : isSymlink ? "Link" : "File"}
                     </span>
                   </td>
                   <td>
@@ -67,7 +68,7 @@ export const FsTable: React.FC<FsTableProps> = ({
                     )}
                   </td>
                   <td>{isDir ? "-" : StateFormatter.formatBytes(entry.size)}</td>
-                  <td>{StateFormatter.formatDate(entry.mtime)}</td>
+                  <td>{StateFormatter.formatDate(entry.mtime || entry.modifiedAt)}</td>
                   <td>
                     <div style={{ display: "flex", gap: "0.25rem", flexWrap: "wrap" }}>
                       {!isDir && (

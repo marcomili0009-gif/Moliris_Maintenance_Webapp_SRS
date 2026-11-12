@@ -50,19 +50,35 @@ export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
     }
   };
 
+  const entries = listing?.entries || (listing as any)?.items || [];
+
+  let emptyMessage = "Nessuna directory remota caricata.";
+  if (loading) {
+    emptyMessage = "Caricamento directory remota in corso...";
+  } else if (!robotId) {
+    emptyMessage = "Nessun robot selezionato. Selezionare o inserire un ID robot per visualizzare i file.";
+  } else if (!listing) {
+    emptyMessage = "Robot selezionato. Premere 'Carica Directory Remota' per consultare i file.";
+  } else if (entries.length === 0) {
+    emptyMessage = "La cartella remota è vuota.";
+  }
+
   return (
     <div id="fs-panel-remote" className="fs-panel">
-      <div className="fs-header">
-        <div>
-          <h3>Esplora Filesystem del Robot (Remoto SFTP)</h3>
-          <small className="fs-subtitle">
-            Navigazione diretta nel filesystem remoto del robot tramite SFTP via backend (§1.2, vincolo 2.4). Nessun file archiviato sul server locale.
-          </small>
-        </div>
-        <div className="fs-robot-selector d-flex align-items-center gap-2 flex-wrap">
-          <label htmlFor="fs-remote-robot-id" className="form-label mb-0 fw-semibold text-secondary">
-            ID Robot:
-          </label>
+      {/* 3. Titolo e descrizione del contesto */}
+      <div className="fs-context-header mb-3">
+        <h3 className="h5 fw-bold mb-1">Esplora Filesystem del Robot (Remoto SFTP)</h3>
+        <small className="fs-subtitle text-secondary">
+          Navigazione diretta nel filesystem remoto del robot tramite SFTP via backend. Nessun file archiviato sul server locale.
+        </small>
+      </div>
+
+      {/* 4. Selettore robot + Carica Directory */}
+      <div className="fs-robot-selector-bar d-flex align-items-center gap-3 mb-3 p-3 bg-light border rounded flex-wrap">
+        <label htmlFor="fs-remote-robot-id" className="form-label mb-0 fw-semibold text-secondary" style={{ whiteSpace: "nowrap" }}>
+          ID Robot:
+        </label>
+        <div className="fs-combobox-wrapper" style={{ minWidth: 280, maxWidth: 400, flex: "1 1 300px" }}>
           <RobotCombobox
             id="fs-remote-robot-id"
             name="fsRemoteRobotId"
@@ -72,23 +88,24 @@ export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
             onSubmit={onLoad}
             robots={robots}
           />
-          <button
-            type="button"
-            id="btn-fs-remote-load"
-            className="btn btn-primary"
-            onClick={onLoad}
-          >
-            Carica Directory Remota
-          </button>
         </div>
+        <button
+          type="button"
+          id="btn-fs-remote-load"
+          className="btn btn-primary fs-control-btn"
+          onClick={onLoad}
+        >
+          Carica Directory Remota
+        </button>
       </div>
 
-      <div className="fs-navigation-bar">
+      {/* 5. Barra del percorso corrente e azioni */}
+      <div className="fs-navigation-bar d-flex align-items-center gap-3 p-2 px-3 mb-3 bg-light border rounded flex-wrap">
         <button
           type="button"
           id="btn-fs-remote-up"
-          className="btn btn-secondary"
-          title="Torna al livello precedente (RF-FS-003)"
+          className="btn btn-outline-secondary btn-sm"
+          title="Torna al livello precedente"
           onClick={onUp}
           disabled={currentPath === "/" || !currentPath}
         >
@@ -97,7 +114,7 @@ export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
         <span className="fs-breadcrumb">
           Percorso Remoto: <strong id="fs-remote-current-path">{currentPath || "/"}</strong>
         </span>
-        <div className="fs-actions" style={{ marginLeft: "auto", display: "flex", gap: "0.5rem" }}>
+        <div className="fs-actions ms-auto d-flex gap-2">
           <input
             type="file"
             id="fs-remote-file-input"
@@ -111,7 +128,7 @@ export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
             type="button"
             id="btn-fs-remote-upload"
             className="btn btn-primary btn-sm"
-            title="Carica file dal computer verso il robot (RF-TRF-003)"
+            title="Carica file dal computer verso il robot"
             onClick={() => fileInputRef.current?.click()}
           >
             Carica sul Robot
@@ -120,7 +137,7 @@ export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
             type="button"
             id="btn-fs-remote-purge"
             className="btn btn-danger btn-sm"
-            title="Elimina definitivamente tutti i file temporanei orfani (.tmp_moliris_*) dal robot e server"
+            title="Elimina definitivamente i file temporanei orfani dal robot e server"
             onClick={onPurgeTemp}
           >
             Bonifica Temp
@@ -136,14 +153,11 @@ export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
         {error?.userMessage}
       </div>
 
+      {/* 6. Tabella dei file */}
       <FsTable
-        entries={listing?.entries || []}
+        entries={entries}
         tbodyId="fs-remote-table-body"
-        emptyMessage={
-          loading
-            ? "Caricamento directory remota in corso..."
-            : "Nessuna directory remota caricata. Selezionare un robot attivo e premere 'Carica Directory Remota'."
-        }
+        emptyMessage={emptyMessage}
         onNavigateDir={onNavigateDir}
         onDownload={onDownload}
         onTransfer={onTransferToServer}

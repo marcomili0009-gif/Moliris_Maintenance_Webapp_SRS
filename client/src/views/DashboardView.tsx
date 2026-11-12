@@ -240,22 +240,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 className="btn btn-primary"
                 onClick={() => setIsRegisterOpen(true)}
               >
-                ＋ Registra Nuovo Robot
+                Registra Nuovo Robot
               </button>
             )}
-            <button
-              id="btn-bulk-upload-open"
-              className="btn btn-outline-primary"
-              onClick={() => setIsBulkUploadOpen(true)}
-            >
-              📦 Caricamento Massivo Multi-Target
-            </button>
             <button
               id="btn-refresh-fleet"
               className="btn btn-outline-secondary"
               onClick={() => fleet.loadFleet()}
             >
-              🔄 Aggiorna Flotta
+              Aggiorna Flotta
             </button>
           </div>
 
@@ -292,6 +285,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 handleViewChange("files");
               }
             }}
+            onOpenBulkUpload={() => setIsBulkUploadOpen(true)}
             serverRobotId={fs.serverRobotId}
             onServerRobotIdChange={fs.setServerRobotId}
             serverPath={fs.serverPath}
@@ -376,7 +370,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         onConfirm={handleConfirmRemove}
         title="Conferma Rimozione Robot"
         targetDescription={removingRobot ? `Robot: ${removingRobot.displayName} (${removingRobot.id})` : ""}
-        warningNote="La rimozione esclude il robot dalle operazioni attive ma NON cancella i file e le cartelle archiviati sul filesystem del server né l'anagrafica storica (RF-ROB-013, CA-ROB-011)."
+        warningNote="La rimozione esclude il robot dalle operazioni attive ma non cancella i file e le cartelle archiviati sul filesystem del server né l'anagrafica storica."
         confirmText="Conferma Rimozione"
         confirmBtnId="btn-confirm-remove"
         cancelBtnId="btn-cancel-remove"
@@ -399,7 +393,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         onConfirm={handleConfirmOverwrite}
         title="Avviso: Conferma Sovrascrittura File"
         targetDescription={overwriteTarget?.file.name}
-        warningNote="La sovrascrittura cancellerà definitivamente la versione preesistente sostituendola con i dati trasferiti (RNF-FS-003)."
+        warningNote="La sovrascrittura cancellerà definitivamente la versione preesistente sostituendola con i dati trasferiti."
         confirmText="Sovrascrivi File Esistente"
         confirmBtnId="btn-confirm-overwrite"
         cancelBtnId="btn-cancel-overwrite"
@@ -413,7 +407,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         onConfirm={handleConfirmDelete}
         title="Conferma Eliminazione File"
         targetDescription={deleteTarget?.fileName}
-        warningNote="L'eliminazione rimuoverà il file dal filesystem in modo irreversibile (RNF-FS-003)."
+        warningNote="L'eliminazione rimuoverà il file dal filesystem in modo irreversibile."
         confirmText="Elimina Definitivamente"
         confirmBtnId="btn-confirm-delete"
         cancelBtnId="btn-cancel-delete"

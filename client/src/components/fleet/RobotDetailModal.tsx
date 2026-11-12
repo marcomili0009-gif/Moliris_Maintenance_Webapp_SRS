@@ -58,7 +58,7 @@ export const RobotDetailModal: React.FC<RobotDetailModalProps> = ({
             </div>
 
             <div className="detail-card card">
-              <h4>Stati di Sistema (§10.2)</h4>
+              <h4>Stati di Sistema</h4>
               <p>
                 <strong>Stato Anagrafico:</strong>{" "}
                 <StatusBadge type="anagraphic" state={robot.anagraphicState} />
@@ -96,7 +96,7 @@ export const RobotDetailModal: React.FC<RobotDetailModalProps> = ({
           </div>
 
           <div className="features-section mt-4">
-            <h4>Funzionalità del Robot (RF-ROB-011)</h4>
+            <h4>Funzionalità del Robot</h4>
             <div className="features-grid">
               {robot.features ? (
                 Object.entries(robot.features).map(([key, val]) => (

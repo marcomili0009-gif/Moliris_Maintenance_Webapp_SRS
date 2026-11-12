@@ -106,7 +106,7 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
 
               <div className="form-group">
                 <label htmlFor="edit-remoteUsername">
-                  Username remoto (Immutabile, §11.3):
+                  Username remoto (Immutabile):
                 </label>
                 <input
                   type="text"

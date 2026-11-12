@@ -11,6 +11,7 @@ interface FsBrowserSectionProps {
   robots?: RobotSummaryDto[];
   activeSubTab?: "server" | "remote" | "transfers";
   onSubTabChange?: (tab: "server" | "remote" | "transfers") => void;
+  onOpenBulkUpload?: () => void;
 
   // Server
   serverRobotId: string;
@@ -56,6 +57,7 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
   robots = [],
   activeSubTab,
   onSubTabChange,
+  onOpenBulkUpload,
 
   serverRobotId,
   onServerRobotIdChange,
@@ -105,6 +107,27 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
 
   return (
     <section id="fs-browser-section" className="fs-browser-card p-3">
+      {/* 1. Barra superiore di sezione con pulsante Caricamento Massivo */}
+      <div className="fs-section-toolbar d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom flex-wrap gap-2">
+        <div>
+          <h2 className="h4 fw-bold mb-0">Gestione File e Trasferimenti</h2>
+          <small className="text-secondary">
+            Archiviazione su server locale e navigazione remota SFTP sui robot
+          </small>
+        </div>
+        <div>
+          <button
+            type="button"
+            id="btn-bulk-upload-open"
+            className="btn btn-primary"
+            onClick={onOpenBulkUpload}
+          >
+            Caricamento Massivo
+          </button>
+        </div>
+      </div>
+
+      {/* 2. Tab di navigazione */}
       <div className="fs-tab-bar mb-3">
         <button
           type="button"
@@ -113,7 +136,7 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
           className={`fs-tab-btn ${currentTab === "server" ? "active" : ""}`}
           onClick={() => handleTabClick("server")}
         >
-          📁 File sul Server (Archivio Locale)
+          File sul Server (Archivio Locale)
         </button>
 
         <button
@@ -123,7 +146,7 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
           className={`fs-tab-btn ${currentTab === "remote" ? "active" : ""}`}
           onClick={() => handleTabClick("remote")}
         >
-          🤖 File sul Robot (Filesystem Remoto SFTP)
+          File sul Robot (Filesystem Remoto SFTP)
         </button>
 
         <button
@@ -133,7 +156,7 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
           className={`fs-tab-btn ${currentTab === "transfers" ? "active" : ""}`}
           onClick={() => handleTabClick("transfers")}
         >
-          ⚡ Gestione Trasferimenti (<span id="transfers-active-count">{activeTransfersCount}</span> attivi)
+          Gestione Trasferimenti (<span id="transfers-active-count">{activeTransfersCount}</span> attivi)
         </button>
       </div>
 

@@ -311,7 +311,7 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
               {/* Host Key Verification */}
               <div className="form-group full-width">
                 <fieldset className="form-fieldset">
-                  <legend>Verifica crittografica chiave host SSH (RNF-SEC-003) <span className="required">*</span></legend>
+                  <legend>Verifica crittografica chiave host SSH <span className="required">*</span></legend>
                   <div className="form-group">
                     <label htmlFor="reg-fingerprint">Impronta crittografica SHA256 attesa:</label>
                     <input
@@ -349,7 +349,7 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
                       disabled
                     />
                     <label htmlFor="reg-strictHostKey">
-                      StrictHostKeyChecking (Sempre attivo, RNF-SEC-003 vieta bypass)
+                      StrictHostKeyChecking (Sempre attivo, verifica obbligatoria)
                     </label>
                   </div>
                 </fieldset>
