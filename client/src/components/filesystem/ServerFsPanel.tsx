@@ -90,7 +90,7 @@ export const ServerFsPanel: React.FC<ServerFsPanelProps> = ({
         <button
           type="button"
           id="btn-fs-load"
-          className="btn btn-secondary fs-control-btn"
+          className="btn btn-primary fs-control-btn"
           onClick={onLoad}
         >
           Carica Directory Server
