@@ -80,6 +80,11 @@ export class MongoUserRepository implements UserRepository {
 
   async initIndexes(): Promise<void> {
     try {
+      // Bonifica dell'eventuale vecchio indice duplicato standard binary 'username_1'
+      try {
+        await this.collection.dropIndex("username_1");
+      } catch {}
+
       await this.collection.createIndex(
         { username: 1 },
         { unique: true, name: "username_unique_case_insensitive", collation: { locale: "en", strength: 2 } }

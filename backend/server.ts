@@ -45,6 +45,7 @@ import { RemoteFilesystemService } from "./remote-fs/remote-fs-service.ts";
 import { registerRemoteFsRoutes } from "./remote-fs/remote-fs-routes.ts";
 import { TransferService } from "./transfer/transfer-service.ts";
 import { registerTransferRoutes } from "./transfer/transfer-routes.ts";
+import { type TelemetryRepository, MongoTelemetryRepository, InMemoryTelemetryRepository } from "../storage/telemetry-repository.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -67,6 +68,7 @@ export interface ServerDependencies {
   terminalService?: TerminalService;
   remoteFsService?: RemoteFilesystemService;
   transferService?: TransferService;
+  telemetryRepository?: TelemetryRepository;
   roleMapping?: RolePermissionMapping;
   db?: any;
   appConfig?: AppConfig;
@@ -240,6 +242,8 @@ export function createServer(
   );
 
   // Servizio di monitoraggio remoto (Prompt 7, RF-MON-001..006, §5.3, §11.4)
+  const telemetryRepository =
+    deps.telemetryRepository || (deps.db ? new MongoTelemetryRepository(deps.db) : new InMemoryTelemetryRepository());
   const stateFileParser = deps.stateFileParser || new ProvisionalDevelopmentStateFileParser(config.stateFileFormat, config.stateFileSchemaPath);
   const remoteRobotReader = deps.remoteRobotReader || new RemoteRobotReader(
     connectionManager,
@@ -253,7 +257,8 @@ export function createServer(
     remoteRobotReader,
     stateFileParser,
     roleMapping,
-    logger
+    logger,
+    telemetryRepository
   );
 
   // Servizio di navigazione filesystem remoto del robot (Prompt 9, RF-FS-001..007, §5.5)

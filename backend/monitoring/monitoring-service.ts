@@ -14,6 +14,7 @@ import { MolirisAppError, ErrorCode } from "../../errors/app-errors.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
 import { type StateFileParser } from "./state-file-parser.ts";
 import { RemoteRobotReader, type RemoteReadResult } from "./robot-reader.ts";
+import { type TelemetryRepository } from "../../storage/telemetry-repository.ts";
 
 export interface StatusRefreshResult {
   robot: RobotDetailDto;
@@ -29,6 +30,7 @@ export class MonitoringService {
   private parser: StateFileParser;
   private roleMapping: RolePermissionMapping;
   private logger: MolirisLogger;
+  private telemetryRepository?: TelemetryRepository;
 
   // Tracciamento dei cicli di polling attivi per robot per evitare sovrapposizioni (RNF-PERF-004)
   private activePolls: Set<string> = new Set();
@@ -41,7 +43,8 @@ export class MonitoringService {
     remoteReader: RemoteRobotReader,
     parser: StateFileParser,
     roleMapping: RolePermissionMapping,
-    logger: MolirisLogger
+    logger: MolirisLogger,
+    telemetryRepository?: TelemetryRepository
   ) {
     this.config = config;
     this.robotRepository = robotRepository;
@@ -50,6 +53,7 @@ export class MonitoringService {
     this.parser = parser;
     this.roleMapping = roleMapping;
     this.logger = logger;
+    this.telemetryRepository = telemetryRepository;
   }
 
   /**
@@ -219,7 +223,23 @@ export class MonitoringService {
         if (finalData) {
           await this.robotRepository.updateOperationalState(robot.id, finalData, now);
         }
-        return await this.robotRepository.updateConnectionState(robot.id, "raggiungibile", outcome);
+        const updated = await this.robotRepository.updateConnectionState(robot.id, "raggiungibile", outcome);
+
+        if (this.telemetryRepository) {
+          try {
+            await this.telemetryRepository.record({
+              robotId: robot.id,
+              timestamp: now,
+              connectionState: "raggiungibile",
+              operationalState: finalData || undefined,
+              lastAttemptOutcome: outcome,
+            });
+          } catch (telErr: any) {
+            this.logger.warn("Errore archiviazione telemetria separata", { error: telErr.message, robotId: robot.id });
+          }
+        }
+
+        return updated;
       } else {
         // Errore lettura remota, file assente o non interpretabile (Problema B2 punto c, RF-MON-005):
         // Preserva intatto l'ultimo dato valido precedente; aggiorna connectionState e lastAttemptOutcome
@@ -238,7 +258,23 @@ export class MonitoringService {
           attempts: readResult.attempts,
         };
 
-        return await this.robotRepository.updateConnectionState(robot.id, connectionState, outcome);
+        const updated = await this.robotRepository.updateConnectionState(robot.id, connectionState, outcome);
+
+        if (this.telemetryRepository) {
+          try {
+            await this.telemetryRepository.record({
+              robotId: robot.id,
+              timestamp: now,
+              connectionState,
+              operationalState: robot.operationalState || undefined,
+              lastAttemptOutcome: outcome,
+            });
+          } catch (telErr: any) {
+            this.logger.warn("Errore archiviazione telemetria separata", { error: telErr.message, robotId: robot.id });
+          }
+        }
+
+        return updated;
       }
     } finally {
       this.activePolls.delete(robotId);

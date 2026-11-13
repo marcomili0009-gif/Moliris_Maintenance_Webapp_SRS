@@ -13,6 +13,7 @@ import { SessionManager } from "../backend/auth/session-manager.ts";
 import { AppPermission, DEFAULT_ROLE_PERMISSIONS } from "../backend/auth/permissions.ts";
 import { ServerFilesystemService } from "../storage/server-fs.ts";
 import { type RobotEntity } from "../storage/robot-models.ts";
+import { type UserEntity } from "../backend/auth/user-models.ts";
 
 console.log("--> Esecuzione test suite Nuove Funzionalità (§1..§9, §15, §16)...");
 
@@ -88,23 +89,27 @@ try {
   };
 
   // Creazione utenti: admin e operator
-  const adminUser = {
+  const adminUser: UserEntity = {
     id: "usr_admin",
     username: "admin_test",
     passwordHash: "hash",
     roles: ["amministratore"],
     permissions: Object.values(AppPermission),
     enabled: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
   };
   await userRepo.create(adminUser);
 
-  const operUser = {
+  const operUser: UserEntity = {
     id: "usr_oper",
     username: "oper_test",
     passwordHash: "hash",
     roles: ["operatore"],
     permissions: [AppPermission.FLEET_VIEW, AppPermission.STATUS_VIEW],
     enabled: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
   };
   await userRepo.create(operUser);
 
@@ -172,13 +177,17 @@ try {
   const robot1: RobotEntity = {
     id: "robot-bulk-01",
     displayName: "Robot Bulk 1",
-    hostname: "127.0.0.1",
-    port: 22,
+    host: "127.0.0.1",
+    sshPort: 22,
+    sshAuthMethod: "password",
+    credentialReference: "vault://robot-bulk-01",
     remoteUsername: "operator",
     serverDirectoryPath: path.join(fsRoot, "operator_robot-bulk-01"),
     anagraphicState: "attivo",
     connectionState: "raggiungibile",
-    registrationState: "ssh_verificata",
+    operationalState: null,
+    lastValidUpdateAt: null,
+    registrationState: "registrazione_completata",
     createdAt: new Date(),
     updatedAt: new Date(),
   };
