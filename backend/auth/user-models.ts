@@ -13,6 +13,7 @@ export interface UserEntity {
   enabled: boolean;     // Stato abilitato/disabilitato dell'account
   permissions?: string[]; // Permessi globali aggiuntivi
   robotPermissions?: Record<string, string[]>; // Permessi specifici per robot: robotId -> permissions[] (CA-SSH-005)
+  passwordChangedAt?: Date; // Timestamp atomico dell'ultimo cambio/reset password per revoca sessioni
   createdAt: Date;
   updatedAt: Date;
 }

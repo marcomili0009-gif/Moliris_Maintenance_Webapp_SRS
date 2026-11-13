@@ -101,6 +101,25 @@ export class AuthMiddleware {
       return;
     }
 
+    // Revoca atomica sessioni su reset/cambio password:
+    // Se la password è stata cambiata, qualsiasi sessione creata in precedenza (o nello stesso millisecondo del reset)
+    // viene distrutta all'istante (fail-closed) impedendo accessi abusivi con vecchie sessioni.
+    if (user.passwordChangedAt) {
+      const resetTime = new Date(user.passwordChangedAt).getTime();
+      const sessionTime = new Date(session.createdAt).getTime();
+      if (sessionTime <= resetTime) {
+        await this.recordSecurityError(session.username, undefined, "SESSION_REVOKED_PASSWORD_CHANGED");
+        this.sessionManager.destroySession(sessionId, "PASSWORD_RESET");
+        const errDef = ERROR_CATALOG[ErrorCode.INVALID_CREDENTIALS];
+        reply.status(401).send({
+          code: errDef.code,
+          message: "Sessione revocata a seguito del cambio password. Effettuare nuovamente il login.",
+          classification: errDef.classification,
+        });
+        return;
+      }
+    }
+
     // Rinnovo attività qualificata: richieste API autenticate (escluso polling automatico di monitoraggio RF-MON-003)
     const isMonitoringPolling =
       req.method === "GET" &&

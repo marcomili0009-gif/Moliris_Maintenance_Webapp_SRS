@@ -12,6 +12,7 @@ import { type SystemConfiguration } from "../../config/configuration.ts";
 import { InMemoryRobotRepository } from "../../storage/robot-repository.ts";
 import { InMemoryClientRepository, InMemoryPlantRepository } from "../../storage/client-plant-repository.ts";
 import { InMemoryAuditRepository } from "../../storage/audit-repository.ts";
+import { AuditOperation } from "../../storage/audit-models.ts";
 import { ServerFilesystemService } from "../../storage/server-fs.ts";
 import { InMemoryCredentialProvider } from "../connection/credential-provider.ts";
 import { DefaultHostKeyVerifier, computeHostKeyFingerprint } from "../connection/host-key-verifier.ts";
@@ -141,13 +142,14 @@ function createService(
   overrides: Partial<SystemConfiguration> = {},
   repoOverride?: InMemoryRobotRepository,
   clientRepoOverride?: InMemoryClientRepository,
-  plantRepoOverride?: InMemoryPlantRepository
+  plantRepoOverride?: InMemoryPlantRepository,
+  auditOverride?: InMemoryAuditRepository
 ) {
   const cfg = { ...testConfig, ...overrides };
   const repo = repoOverride || new InMemoryRobotRepository();
   const clientRepo = clientRepoOverride || new InMemoryClientRepository();
   const plantRepo = plantRepoOverride || new InMemoryPlantRepository();
-  const audit = new InMemoryAuditRepository();
+  const audit = auditOverride || new InMemoryAuditRepository();
   const serverFs = new ServerFilesystemService(cfg.serverFilesystemRoot, audit, testLogger);
   const creds = new InMemoryCredentialProvider(cfg.allowedSshAuthMethods);
   const hostVerifier = new DefaultHostKeyVerifier();
@@ -893,6 +895,329 @@ try {
     assert.strictEqual(postRestartDetail.robot.clientId, updatedClient.id);
 
     console.log("  PASS: Requisito RF-05 pienamente verificato (Creazione, Modifica, DB, Compatibilità, Persistenza).");
+  }
+
+  // =========================================================================
+  // PROBLEMA 3 – TEST SUITE: SINCRONIZZAZIONE CLIENTI E IMPIANTI MOLIRIS
+  // =========================================================================
+  {
+    console.log("\n--> Collaudo Problema 3: Sincronizzazione atomica/idempotente Clienti e Impianti...");
+
+    const repo = new InMemoryRobotRepository();
+    const clientRepo = new InMemoryClientRepository();
+    const plantRepo = new InMemoryPlantRepository();
+    const auditRepo = new InMemoryAuditRepository();
+    const { service } = createService({ registrationMode: "differita" }, repo, clientRepo, plantRepo, auditRepo);
+
+    // Setup iniziale: 1 Cliente con 2 Impianti, e 3 Robot
+    const c1 = await clientRepo.create({
+      id: "cli_sync_01",
+      name: "Acme Robotics",
+      version: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const p1 = await plantRepo.create({
+      id: "plant_sync_01",
+      clientId: c1.id,
+      name: "Stabilimento Nord",
+      version: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const p2 = await plantRepo.create({
+      id: "plant_sync_02",
+      clientId: c1.id,
+      name: "Stabilimento Sud",
+      version: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // Robot 1: Acme Robotics / Stabilimento Nord
+    await repo.create({
+      id: "robot-sync-01",
+      displayName: "Robot Nord 1",
+      remoteUsername: "bot_nord_1",
+      serverDirectoryPath: path.join(testFsRoot, "bot_nord_1"),
+      host: "127.0.0.1",
+      sshPort: 22,
+      sshAuthMethod: "password",
+      credentialReference: "vault://creds/1",
+      stateFilePaths: ["/status.txt"],
+      anagraphicState: "attivo",
+      connectionState: "non_verificato",
+      operationalState: null,
+      lastValidUpdateAt: null,
+      lastAttemptOutcome: null,
+      registrationState: "registrazione_completata",
+      lastConnectionVerification: null,
+      clientId: c1.id,
+      clientName: c1.name,
+      customerName: c1.name,
+      plantId: p1.id,
+      plantName: p1.name,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // Robot 2: Acme Robotics / Stabilimento Nord
+    await repo.create({
+      id: "robot-sync-02",
+      displayName: "Robot Nord 2",
+      remoteUsername: "bot_nord_2",
+      serverDirectoryPath: path.join(testFsRoot, "bot_nord_2"),
+      host: "127.0.0.1",
+      sshPort: 22,
+      sshAuthMethod: "password",
+      credentialReference: "vault://creds/2",
+      stateFilePaths: ["/status.txt"],
+      anagraphicState: "attivo",
+      connectionState: "non_verificato",
+      operationalState: null,
+      lastValidUpdateAt: null,
+      lastAttemptOutcome: null,
+      registrationState: "registrazione_completata",
+      lastConnectionVerification: null,
+      clientId: c1.id,
+      clientName: c1.name,
+      customerName: c1.name,
+      plantId: p1.id,
+      plantName: p1.name,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // Robot 3: Acme Robotics / Stabilimento Sud
+    await repo.create({
+      id: "robot-sync-03",
+      displayName: "Robot Sud 1",
+      remoteUsername: "bot_sud_1",
+      serverDirectoryPath: path.join(testFsRoot, "bot_sud_1"),
+      host: "127.0.0.1",
+      sshPort: 22,
+      sshAuthMethod: "password",
+      credentialReference: "vault://creds/3",
+      stateFilePaths: ["/status.txt"],
+      anagraphicState: "attivo",
+      connectionState: "non_verificato",
+      operationalState: null,
+      lastValidUpdateAt: null,
+      lastAttemptOutcome: null,
+      registrationState: "registrazione_completata",
+      lastConnectionVerification: null,
+      clientId: c1.id,
+      clientName: c1.name,
+      customerName: c1.name,
+      plantId: p2.id,
+      plantName: p2.name,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // Scenario 1: Rinomina cliente propaga a tutti i robot associati (clientName e customerName)
+    console.log("  Scenario 1: Rinomina cliente propaga a tutti i robot associati");
+    const updatedClient = await service.updateClientName(adminUser, c1.id, "Acme Corporation SpA");
+    assert.strictEqual(updatedClient.name, "Acme Corporation SpA");
+    assert.strictEqual(updatedClient.version, 2);
+
+    const r1 = await repo.findById("robot-sync-01");
+    const r2 = await repo.findById("robot-sync-02");
+    const r3 = await repo.findById("robot-sync-03");
+
+    assert.strictEqual(r1?.clientName, "Acme Corporation SpA");
+    assert.strictEqual(r1?.customerName, "Acme Corporation SpA");
+    assert.strictEqual(r2?.clientName, "Acme Corporation SpA");
+    assert.strictEqual(r2?.customerName, "Acme Corporation SpA");
+    assert.strictEqual(r3?.clientName, "Acme Corporation SpA");
+    assert.strictEqual(r3?.customerName, "Acme Corporation SpA");
+    // ID cliente e impianto rimangono tassativamente intatti
+    assert.strictEqual(r1?.clientId, c1.id);
+    assert.strictEqual(r2?.clientId, c1.id);
+    assert.strictEqual(r3?.clientId, c1.id);
+
+    // Scenario 2: Rinomina impianto propaga ai soli robot dell'impianto interessato
+    console.log("  Scenario 2: Rinomina impianto propaga ai robot associati");
+    const updatedPlant = await service.updatePlantName(adminUser, p1.id, "Stabilimento Nord Avanzato");
+    assert.strictEqual(updatedPlant.name, "Stabilimento Nord Avanzato");
+    assert.strictEqual(updatedPlant.version, 2);
+
+    const r1AfterPlant = await repo.findById("robot-sync-01");
+    const r2AfterPlant = await repo.findById("robot-sync-02");
+    const r3AfterPlant = await repo.findById("robot-sync-03");
+
+    assert.strictEqual(r1AfterPlant?.plantName, "Stabilimento Nord Avanzato");
+    assert.strictEqual(r2AfterPlant?.plantName, "Stabilimento Nord Avanzato");
+    // Robot 3 apparteneva a p2 e non deve essere modificato nel plantName
+    assert.strictEqual(r3AfterPlant?.plantName, "Stabilimento Sud");
+    assert.strictEqual(r1AfterPlant?.plantId, p1.id);
+    assert.strictEqual(r2AfterPlant?.plantId, p1.id);
+    assert.strictEqual(r3AfterPlant?.plantId, p2.id);
+
+    // Scenario 3: Due rinomine concorrenti dello stesso cliente (gestione lock / serializzazione)
+    console.log("  Scenario 3: Rinomine concorrenti dello stesso cliente");
+    const pClientA = service.updateClientName(adminUser, c1.id, "Acme Nome A");
+    const pClientB = service.updateClientName(adminUser, c1.id, "Acme Nome B");
+    const clientResults = await Promise.allSettled([pClientA, pClientB]);
+    const clientFulfilled = clientResults.filter(r => r.status === "fulfilled");
+    const clientRejected = clientResults.filter(r => r.status === "rejected");
+    // Il lock in-memory deve permettere a una di passare e all'altra di essere respinta in modo sicuro
+    assert.strictEqual(clientFulfilled.length, 1);
+    assert.strictEqual(clientRejected.length, 1);
+
+    // Scenario 4: Due rinomine concorrenti dello stesso impianto (gestione lock / serializzazione)
+    console.log("  Scenario 4: Rinomine concorrenti dello stesso impianto");
+    const pPlantA = service.updatePlantName(adminUser, p1.id, "Nord Variant A");
+    const pPlantB = service.updatePlantName(adminUser, p1.id, "Nord Variant B");
+    const plantResults = await Promise.allSettled([pPlantA, pPlantB]);
+    const plantFulfilled = plantResults.filter(r => r.status === "fulfilled");
+    const plantRejected = plantResults.filter(r => r.status === "rejected");
+    assert.strictEqual(plantFulfilled.length, 1);
+    assert.strictEqual(plantRejected.length, 1);
+
+    // Scenario 5: Errore durante propagazione ai robot e audit logging
+    console.log("  Scenario 5: Gestione errore propagazione robot e audit");
+    const failingRepo = new InMemoryRobotRepository();
+    failingRepo.updateClientNameForRobots = async () => {
+      throw new Error("Simulazione errore I/O robot repository");
+    };
+    const { service: failingService } = createService(
+      { registrationMode: "differita" },
+      failingRepo,
+      clientRepo,
+      plantRepo,
+      auditRepo
+    );
+
+    let caughtError: any = null;
+    try {
+      await failingService.updateClientName(adminUser, c1.id, "Acme Name With Failing Repo");
+    } catch (err: any) {
+      caughtError = err;
+    }
+    assert.ok(caughtError, "Deve sollevare eccezione in caso di errore propagazione");
+    assert.strictEqual(caughtError.code, ErrorCode.DB_PERSISTENCE_ERROR);
+
+    const auditLogs = await auditRepo.query();
+    const failureLog = auditLogs.find(
+      l => l.operation === AuditOperation.ROBOT_UPDATE &&
+           l.outcome === "FAILURE" &&
+           l.details?.reason === "CLIENT_ROBOT_PROPAGATION_FAILED"
+    );
+    assert.ok(failureLog, "Deve registrare evento di audit con outcome FAILURE per mancata propagazione");
+
+    // Scenario 6: Idempotenza della rinomina (ripetizione con stesso nome completa la propagazione)
+    console.log("  Scenario 6: Idempotenza rinomina cliente");
+    // Creiamo un robot disallineato manualmente per simulare stato post-interruzione
+    await repo.create({
+      id: "robot-sync-unpropagated",
+      displayName: "Robot Non Propagato",
+      remoteUsername: "bot_unprop",
+      serverDirectoryPath: path.join(testFsRoot, "bot_unprop"),
+      host: "127.0.0.1",
+      sshPort: 22,
+      sshAuthMethod: "password",
+      credentialReference: "vault://creds/unprop",
+      stateFilePaths: ["/status.txt"],
+      anagraphicState: "attivo",
+      connectionState: "non_verificato",
+      operationalState: null,
+      lastValidUpdateAt: null,
+      lastAttemptOutcome: null,
+      registrationState: "registrazione_completata",
+      lastConnectionVerification: null,
+      clientId: c1.id,
+      clientName: "Vecchio Nome Obsoleto",
+      customerName: "Vecchio Nome Obsoleto",
+      plantId: p1.id,
+      plantName: p1.name,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const currentClientDoc = await clientRepo.findById(c1.id);
+    assert.ok(currentClientDoc);
+    // Esecuzione con il medesimo nome già presente nel documento cliente
+    await service.updateClientName(adminUser, c1.id, currentClientDoc.name);
+    const completedRobot = await repo.findById("robot-sync-unpropagated");
+    assert.strictEqual(completedRobot?.clientName, currentClientDoc.name);
+    assert.strictEqual(completedRobot?.customerName, currentClientDoc.name);
+
+    // Scenario 7: Protezione del controllo versione (OCC) contro aggiornamenti obsoleti
+    console.log("  Scenario 7: Protezione versione OCC");
+    let versionConflictCaught = false;
+    try {
+      // Tentativo di aggiornare con expectedVersion precedente (v1 quando il documento è già v3 o superiore)
+      await clientRepo.updateName(c1.id, "Nome Conflittuale", 1);
+    } catch (err: any) {
+      versionConflictCaught = true;
+      assert.strictEqual(err.code, ErrorCode.DB_PERSISTENCE_ERROR);
+    }
+    assert.ok(versionConflictCaught, "Deve bloccare aggiornamenti con expectedVersion disallineata");
+
+    // Scenario 8: Riconciliazione robot disallineati (reconcileRobotEntityNames)
+    console.log("  Scenario 8: Riconciliazione robot (reconcileRobotEntityNames)");
+    // Disallineiamo un robot appositamente
+    await repo.updateConfiguration("robot-sync-01", {
+      clientName: "Disallineato Client",
+      customerName: "Disallineato Customer",
+      plantName: "Disallineato Plant",
+    });
+
+    const reconcileResult = await service.reconcileRobotEntityNames("robot-sync-01");
+    assert.strictEqual(reconcileResult.examined, 1);
+    assert.strictEqual(reconcileResult.reconciled, 1);
+
+    const reconciledRobot = await repo.findById("robot-sync-01");
+    const freshClient = await clientRepo.findById(c1.id);
+    const freshPlant = await plantRepo.findById(p1.id);
+    assert.strictEqual(reconciledRobot?.clientName, freshClient?.name);
+    assert.strictEqual(reconciledRobot?.customerName, freshClient?.name);
+    assert.strictEqual(reconciledRobot?.plantName, freshPlant?.name);
+
+    // Scenario 9: Protezione delle relazioni (clientId e plantId immutabili)
+    console.log("  Scenario 9: Immutabilità clientId e plantId");
+    assert.strictEqual(reconciledRobot?.clientId, c1.id);
+    assert.strictEqual(reconciledRobot?.plantId, p1.id);
+
+    // Scenario 10: Compatibilità con record privi del campo version (legacy)
+    console.log("  Scenario 10: Compatibilità record senza version");
+    const legacyClient = await clientRepo.create({
+      id: "cli_legacy_no_ver",
+      name: "Legacy Client Senza Version",
+      // version omessa intenzionalmente
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as any);
+
+    const updatedLegacyClient = await service.updateClientName(adminUser, legacyClient.id, "Legacy Client Ridenominato");
+    assert.strictEqual(updatedLegacyClient.name, "Legacy Client Ridenominato");
+    assert.strictEqual(updatedLegacyClient.version, 2);
+
+    // Scenario 11: Verifica autorizzazioni e audit logging
+    console.log("  Scenario 11: Verifica RBAC e audit");
+    const unprivilegedUser: UserEntity = {
+      id: "user-unprivileged",
+      username: "viewer_user",
+      roles: ["operatore"], // l'operatore non ha ROBOT_CONFIG_UPDATE per default
+      enabled: true,
+      passwordHash: "dummy",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    let forbiddenCaught = false;
+    try {
+      await service.updateClientName(unprivilegedUser, c1.id, "Nuovo Nome Non Autorizzato");
+    } catch (err: any) {
+      forbiddenCaught = true;
+      assert.strictEqual(err.code, ErrorCode.INSUFFICIENT_PERMISSIONS);
+    }
+    assert.ok(forbiddenCaught, "Utente senza ROBOT_CONFIG_UPDATE deve ricevere 403 / INSUFFICIENT_PERMISSIONS");
+
+    console.log("  PASS: Tutti gli 11 scenari di test del Problema 3 superati con successo.");
   }
 
   console.log("PASS: Tutti i test di Gestione della Flotta superati con successo.");

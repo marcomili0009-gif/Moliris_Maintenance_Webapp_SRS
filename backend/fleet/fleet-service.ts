@@ -44,6 +44,7 @@ import {
   InMemoryClientRepository,
   InMemoryPlantRepository,
 } from "../../storage/client-plant-repository.ts";
+import { type ClientEntity, type PlantEntity } from "../../storage/client-plant-models.ts";
 import { type TerminalService } from "../terminal/terminal-service.ts";
 
 export class FleetService {
@@ -61,6 +62,7 @@ export class FleetService {
   private roleMapping: RolePermissionMapping;
   private directoryNamingPolicy: StandardRobotDirectoryNamingPolicy;
   private terminalService?: TerminalService;
+  private activeEntityRenameLocks: Set<string> = new Set();
 
   constructor(
     config: SystemConfiguration,
@@ -1255,6 +1257,218 @@ export class FleetService {
     await this.recordAudit(user.username, AuditOperation.ROBOT_REMOVAL, robotId, "SUCCESS", {
       serverDirectoryPreserved: robot.serverDirectoryPath,
     });
+  }
+
+  /**
+   * Rinomina un cliente garantendo la sincronizzazione atomica/idempotente
+   * verso tutti i robot associati della flotta (Problema 3).
+   */
+  public async updateClientName(
+    user: UserEntity,
+    clientId: string,
+    newName: string
+  ): Promise<ClientEntity> {
+    if (!hasPermission(user, AppPermission.ROBOT_CONFIG_UPDATE, undefined, this.roleMapping)) {
+      await this.recordAudit(user.username, AuditOperation.SECURITY_AUTHORIZATION_ERROR, undefined, "FAILURE", {
+        reason: "PERMISSION_DENIED_CLIENT_RENAME",
+        clientId,
+      });
+      throw new MolirisAppError(ErrorCode.INSUFFICIENT_PERMISSIONS, "Autorizzazioni insufficienti per rinominare il cliente.");
+    }
+
+    if (typeof newName !== "string" || newName.includes("\0")) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Nome cliente non valido.");
+    }
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed.length > 100) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Il nome cliente deve essere compreso tra 1 e 100 caratteri.");
+    }
+
+    const lockKey = `client:${clientId}`;
+    this.acquireEntityLock(lockKey);
+    try {
+      const existingClient = await this.clientRepository.findById(clientId);
+      if (!existingClient) {
+        throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Cliente '${clientId}' non trovato.`);
+      }
+
+      // 1. Aggiornamento atomico del cliente su DB (con controllo versione OCC)
+      const updatedClient = await this.clientRepository.updateName(clientId, trimmed);
+
+      // 2. Propagazione a tutti i robot associati
+      let modifiedRobots = 0;
+      try {
+        modifiedRobots = await this.robotRepository.updateClientNameForRobots(clientId, trimmed);
+      } catch (propErr: any) {
+        await this.recordAudit(user.username, AuditOperation.ROBOT_UPDATE, undefined, "FAILURE", {
+          reason: "CLIENT_ROBOT_PROPAGATION_FAILED",
+          clientId,
+          newName: trimmed,
+          error: propErr.message,
+        });
+        throw new MolirisAppError(
+          ErrorCode.DB_PERSISTENCE_ERROR,
+          `Aggiornamento cliente completato ma propagazione parziale ai robot fallita: ${propErr.message}`
+        );
+      }
+
+      await this.recordAudit(user.username, AuditOperation.ROBOT_UPDATE, undefined, "SUCCESS", {
+        action: "CLIENT_RENAME",
+        clientId,
+        newName: trimmed,
+        version: updatedClient.version,
+        modifiedRobots,
+      });
+
+      return updatedClient;
+    } finally {
+      this.releaseEntityLock(lockKey);
+    }
+  }
+
+  /**
+   * Rinomina un impianto garantendo la sincronizzazione atomica/idempotente
+   * verso tutti i robot associati della flotta (Problema 3).
+   */
+  public async updatePlantName(
+    user: UserEntity,
+    plantId: string,
+    newName: string
+  ): Promise<PlantEntity> {
+    if (!hasPermission(user, AppPermission.ROBOT_CONFIG_UPDATE, undefined, this.roleMapping)) {
+      await this.recordAudit(user.username, AuditOperation.SECURITY_AUTHORIZATION_ERROR, undefined, "FAILURE", {
+        reason: "PERMISSION_DENIED_PLANT_RENAME",
+        plantId,
+      });
+      throw new MolirisAppError(ErrorCode.INSUFFICIENT_PERMISSIONS, "Autorizzazioni insufficienti per rinominare l'impianto.");
+    }
+
+    if (typeof newName !== "string" || newName.includes("\0")) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Nome impianto non valido.");
+    }
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed.length > 100) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Il nome impianto deve essere compreso tra 1 e 100 caratteri.");
+    }
+
+    const lockKey = `plant:${plantId}`;
+    this.acquireEntityLock(lockKey);
+    try {
+      const existingPlant = await this.plantRepository.findById(plantId);
+      if (!existingPlant) {
+        throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Impianto '${plantId}' non trovato.`);
+      }
+
+      // 1. Aggiornamento atomico dell'impianto su DB (con controllo versione OCC)
+      const updatedPlant = await this.plantRepository.updateName(plantId, trimmed);
+
+      // 2. Propagazione a tutti i robot associati
+      let modifiedRobots = 0;
+      try {
+        modifiedRobots = await this.robotRepository.updatePlantNameForRobots(plantId, trimmed);
+      } catch (propErr: any) {
+        await this.recordAudit(user.username, AuditOperation.ROBOT_UPDATE, undefined, "FAILURE", {
+          reason: "PLANT_ROBOT_PROPAGATION_FAILED",
+          plantId,
+          newName: trimmed,
+          error: propErr.message,
+        });
+        throw new MolirisAppError(
+          ErrorCode.DB_PERSISTENCE_ERROR,
+          `Aggiornamento impianto completato ma propagazione parziale ai robot fallita: ${propErr.message}`
+        );
+      }
+
+      await this.recordAudit(user.username, AuditOperation.ROBOT_UPDATE, undefined, "SUCCESS", {
+        action: "PLANT_RENAME",
+        plantId,
+        newName: trimmed,
+        version: updatedPlant.version,
+        modifiedRobots,
+      });
+
+      return updatedPlant;
+    } finally {
+      this.releaseEntityLock(lockKey);
+    }
+  }
+
+  /**
+   * Riconciliazione controllata dei nomi cliente/impianto nei robot (Problema 3).
+   * Rileva eventuali disallineamenti tra i robot e le collezioni autorevoli clients/plants,
+   * correggendoli senza mai alterare clientId o plantId.
+   */
+  public async reconcileRobotEntityNames(robotId?: string): Promise<{ examined: number; reconciled: number }> {
+    let robotsToInspect: RobotEntity[] = [];
+    if (robotId) {
+      const single = await this.robotRepository.findById(robotId);
+      if (single) robotsToInspect = [single];
+    } else {
+      robotsToInspect = await this.robotRepository.list();
+    }
+
+    let examined = 0;
+    let reconciled = 0;
+
+    for (const r of robotsToInspect) {
+      examined++;
+      let needsUpdate = false;
+      let targetClientName = r.clientName;
+      let targetCustomerName = r.customerName;
+      let targetPlantName = r.plantName;
+
+      if (r.clientId) {
+        const lockKey = `client:${r.clientId}`;
+        if (!this.activeEntityRenameLocks.has(lockKey)) {
+          const authoritativeClient = await this.clientRepository.findById(r.clientId);
+          if (authoritativeClient) {
+            if (r.clientName !== authoritativeClient.name || r.customerName !== authoritativeClient.name) {
+              targetClientName = authoritativeClient.name;
+              targetCustomerName = authoritativeClient.name;
+              needsUpdate = true;
+            }
+          }
+        }
+      }
+
+      if (r.plantId) {
+        const lockKey = `plant:${r.plantId}`;
+        if (!this.activeEntityRenameLocks.has(lockKey)) {
+          const authoritativePlant = await this.plantRepository.findById(r.plantId);
+          if (authoritativePlant) {
+            if (r.plantName !== authoritativePlant.name) {
+              targetPlantName = authoritativePlant.name;
+              needsUpdate = true;
+            }
+          }
+        }
+      }
+
+      if (needsUpdate) {
+        await this.robotRepository.updateConfiguration(r.id, {
+          clientName: targetClientName,
+          customerName: targetCustomerName,
+          plantName: targetPlantName,
+        });
+        reconciled++;
+      }
+    }
+
+    return { examined, reconciled };
+  }
+
+  private acquireEntityLock(key: string): void {
+    if (this.activeEntityRenameLocks.has(key)) {
+      throw new MolirisAppError(
+        ErrorCode.DB_PERSISTENCE_ERROR,
+        `Operazione simultanea di modifica in corso per '${key}'. Riprovare tra pochi istanti.`
+      );
+    }
+    this.activeEntityRenameLocks.add(key);
+  }
+
+  private releaseEntityLock(key: string): void {
+    this.activeEntityRenameLocks.delete(key);
   }
 
   private async recordAudit(
