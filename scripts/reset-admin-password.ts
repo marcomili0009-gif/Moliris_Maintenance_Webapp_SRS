@@ -24,8 +24,13 @@ try {
   const repo = new MongoUserRepository(client.db(mongoConfig.dbName));
   const admin = await repo.findByUsername("admin");
   if (!admin) throw new Error(`Utente admin non trovato nel database '${mongoConfig.dbName}'.`);
-  await repo.update(admin.id, { passwordHash: await hashPassword(password), enabled: true });
-  console.log(`Password aggiornata per admin nel database '${mongoConfig.dbName}'.`);
+  const now = new Date();
+  await repo.update(admin.id, {
+    passwordHash: await hashPassword(password),
+    passwordChangedAt: now,
+    enabled: true,
+  });
+  console.log(`Password aggiornata per admin nel database '${mongoConfig.dbName}' con revoca automatica sessioni precedenti.`);
 } finally {
   await client.close();
 }

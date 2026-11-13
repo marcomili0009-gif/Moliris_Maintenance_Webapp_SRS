@@ -181,6 +181,18 @@ export function registerTerminalRoutes(
         return;
       }
 
+      // Verifica revoca sessione per cambio password
+      if (user.passwordChangedAt) {
+        const resetTime = new Date(user.passwordChangedAt).getTime();
+        const sessionTime = new Date(userSession.createdAt).getTime();
+        if (sessionTime <= resetTime) {
+          sessionManager.destroySession(sessionId, "PASSWORD_RESET");
+          socket.send(JSON.stringify({ type: "error", message: "Sessione utente revocata a seguito del cambio password." }));
+          socket.close(4401, "Session Revoked");
+          return;
+        }
+      }
+
       // RF-04: Controllo di sicurezza lato backend per WebSocket diretto - Riservato esclusivamente ad Admin
       const session = terminalService.getSession(sessionId);
       const isAdmin = Array.isArray(user.roles) && user.roles.some((r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore");

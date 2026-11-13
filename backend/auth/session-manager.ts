@@ -14,7 +14,7 @@ export interface SessionData {
   lastActivityAt: Date;
 }
 
-export type SessionTerminationReason = "LOGOUT" | "EXPIRED";
+export type SessionTerminationReason = "LOGOUT" | "EXPIRED" | "PASSWORD_RESET";
 
 export type SessionTerminationListener = (
   sessionId: string,
@@ -200,15 +200,33 @@ export class SessionManager {
   /**
    * Invalida esplicitamente la sessione lato server (RF-AUTH-004).
    */
-  public destroySession(sessionId: string): boolean {
+  public destroySession(sessionId: string, reason: SessionTerminationReason = "LOGOUT"): boolean {
     if (!sessionId) return false;
 
     const session = this.sessions.get(sessionId);
     if (!session) return false;
 
     this.sessions.delete(sessionId);
-    this.notifyTermination(sessionId, session.userId, "LOGOUT");
+    this.notifyTermination(sessionId, session.userId, reason);
     return true;
+  }
+
+  /**
+   * Distrugge e revoca immediatamente tutte le sessioni attive in RAM per un determinato utente.
+   * Rilascia tutte le risorse associate (terminali WebSocket/PTY e trasferimenti SFTP)
+   * tramite i listener onSessionTerminated registrati.
+   */
+  public destroySessionsForUser(userId: string, reason: SessionTerminationReason = "PASSWORD_RESET"): number {
+    if (!userId) return 0;
+    let count = 0;
+    for (const [sessionId, session] of Array.from(this.sessions.entries())) {
+      if (session.userId === userId) {
+        this.sessions.delete(sessionId);
+        this.notifyTermination(sessionId, session.userId, reason);
+        count++;
+      }
+    }
+    return count;
   }
 
   /**

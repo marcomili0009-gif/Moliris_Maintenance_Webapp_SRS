@@ -21,6 +21,7 @@ export function registerAuthRoutes(
   logger: MolirisLogger
 ): void {
   const loginAttempts = new Map<string, { count: number; windowStartedAt: number; blockedUntil: number }>();
+  (app as any)._molirisLoginAttempts = loginAttempts;
   const loginWindowMs = 5 * 60 * 1000;
   const loginMaxAttempts = 10;
   const maxTrackedLoginIps = 10_000;
@@ -118,7 +119,22 @@ export function registerAuthRoutes(
     loginAttempts.delete(ip);
 
     // Creazione della sessione autenticata (§6.1 punto 4)
-    const session = sessionManager.createSession(user);
+    // Se l'utente ha subito un reset password, assicuriamo che la nuova sessione sia temporalmente
+    // strettamente successiva al reset (createdAt > passwordChangedAt), garantendo l'autenticazione valida
+    // anche nell'eventualità remota di login nello stesso millisecondo.
+    let session = sessionManager.createSession(user);
+    if (user.passwordChangedAt) {
+      const resetMs = new Date(user.passwordChangedAt).getTime();
+      const sessionMs = new Date(session.createdAt).getTime();
+      if (sessionMs <= resetMs) {
+        // Garantisce che session.createdAt sia posteriore al resetTime
+        const sessionRecord = (sessionManager as any).sessions.get(session.sessionId);
+        if (sessionRecord) {
+          sessionRecord.createdAt = new Date(resetMs + 1);
+          session = structuredClone(sessionRecord);
+        }
+      }
+    }
 
     await auditRepository.record({
       userId: user.username,

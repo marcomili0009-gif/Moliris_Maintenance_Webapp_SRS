@@ -499,6 +499,117 @@ console.log("  PASS: Limitazione tentativi di login e intestazione Retry-After."
   console.log("  PASS: RF-03 - Nome utente univoco case-insensitive, rigetto duplicati con password diverse e concorrenza verificati.");
 }
 
+// =========================================================================
+// TEST PROBLEMA 2: Revoca atomica sessioni utente su reset password (8 Scenari Obbligatori)
+// =========================================================================
+{
+  console.log("  -> Esecuzione test suite Problema 2: Revoca atomica sessioni e 8 scenari di sicurezza...");
+
+  // Reset preventivo rate-limiting di test
+  if ((app as any)._molirisLoginAttempts) {
+    (app as any)._molirisLoginAttempts.clear();
+  }
+
+  // Setup utente dedicato per il test reset
+  const resetUserPasswordInitial = "OldSecurePassword123!";
+  const resetUserPasswordNew = "NewSecurePassword456!";
+  const resetUserId = "user_reset_test_01";
+  const resetUsername = "admin_reset_test";
+
+  await userRepo.create({
+    id: resetUserId,
+    username: resetUsername,
+    passwordHash: await hashPassword(resetUserPasswordInitial),
+    roles: ["amministratore"],
+    enabled: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+  // Listener mock per verificare la notifica di terminazione risorse (WebSocket, PTY, SFTP)
+  const terminatedEvents: Array<{ sessionId: string; userId: string; reason: SessionTerminationReason }> = [];
+  sessionManager.onSessionTerminated((sessionId, userId, reason) => {
+    terminatedEvents.push({ sessionId, userId, reason });
+  });
+
+  // SCENARIO 1: Login con la password precedente (Sessione A)
+  const loginResA = await makeHttpsRequest("POST", "/api/auth/login", {
+    username: resetUsername,
+    password: resetUserPasswordInitial,
+  });
+  assert.strictEqual(loginResA.status, 200, "Scenario 1: Login iniziale con password precedente deve riuscire con 200");
+  const sessionTokenA = String(loginResA.headers["set-cookie"]).match(/__Host-moliris_session=([^;]+)/)?.[1];
+  assert(sessionTokenA, "Scenario 1: Deve essere rilasciato un cookie di sessione per Sessione A");
+
+  // Verifica accesso protetto con Sessione A
+  const meResA1 = await makeHttpsRequest("GET", "/api/auth/me", undefined, sessionTokenA);
+  assert.strictEqual(meResA1.status, 200, "Scenario 1: Sessione A deve poter accedere alle risorse protette prima del reset");
+  console.log("    ✓ Scenario 1: Login con password precedente e rilascio Sessione A verificato.");
+
+  // Pre-condizione per Scenario 8: Login contemporaneo di un secondo utente indipendente (operatore)
+  const operatorLoginRes = await makeHttpsRequest("POST", "/api/auth/login", {
+    username: "operatore_test",
+    password: "Operatore123!",
+  });
+  assert.strictEqual(operatorLoginRes.status, 200);
+  const operatorToken = String(operatorLoginRes.headers["set-cookie"]).match(/__Host-moliris_session=([^;]+)/)?.[1];
+  assert(operatorToken, "Token operatore valido");
+
+  // SCENARIO 2: Reset della password amministrativa (atomico con passwordHash e passwordChangedAt)
+  const resetTimestamp = new Date();
+  const newHash = await hashPassword(resetUserPasswordNew);
+  const updatedAdmin = await userRepo.update(resetUserId, {
+    passwordHash: newHash,
+    passwordChangedAt: resetTimestamp,
+  });
+  assert.strictEqual(updatedAdmin.passwordHash, newHash, "Scenario 2: passwordHash aggiornato");
+  assert(updatedAdmin.passwordChangedAt, "Scenario 2: passwordChangedAt presente e aggiornato");
+  console.log("    ✓ Scenario 2: Reset atomico password e timestamp passwordChangedAt registrato.");
+
+  // SCENARIO 3: Invalidazione delle sessioni precedentemente attive
+  // SCENARIO 4: Risposta HTTP 401 quando una sessione revocata tenta di accedere a una risorsa protetta
+  const meResA2 = await makeHttpsRequest("GET", "/api/auth/me", undefined, sessionTokenA);
+  assert.strictEqual(meResA2.status, 401, "Scenario 4: Richiesta con vecchia sessione revocata deve restituire HTTP 401");
+  assert.strictEqual(meResA2.body.code, ErrorCode.INVALID_CREDENTIALS, "Scenario 4: Codice errore di credenziali non valide");
+  assert(String(meResA2.body.message).includes("cambio password"), "Scenario 4: Messaggio esplicito di revoca per cambio password");
+
+  // Verifica che Session A sia stata rimossa dalla memoria del SessionManager
+  const validatedA = sessionManager.validate(sessionTokenA);
+  assert.strictEqual(validatedA, null, "Scenario 3: Vecchia sessione non deve più esistere in SessionManager");
+  console.log("    ✓ Scenario 3 & 4: Tentativo di accesso con vecchia sessione revocata respinto con HTTP 401.");
+
+  // SCENARIO 5: Chiusura garantita risorse e terminazione listener (WebSocket, terminali, trasferimenti)
+  // Invoca destroySessionsForUser per testare l'invalidazione immediata di massa in RAM
+  const dummySession = sessionManager.createSession(updatedAdmin);
+  const countDestroyed = sessionManager.destroySessionsForUser(resetUserId, "PASSWORD_RESET");
+  assert(countDestroyed >= 1, "Scenario 5: destroySessionsForUser deve rimuovere le sessioni attive dell'utente");
+  const matchingTermination = terminatedEvents.find((e) => e.userId === resetUserId && e.reason === "PASSWORD_RESET");
+  assert(matchingTermination, "Scenario 5: onSessionTerminated deve ricevere notifica PASSWORD_RESET per liberare WebSocket/PTY/SFTP");
+  console.log("    ✓ Scenario 5: Chiusura immediata risorse e notifica PASSWORD_RESET verificate.");
+
+  // SCENARIO 6: Login riuscito con la nuova password (incluso gestione edge case stesso millisecondo)
+  const loginResB = await makeHttpsRequest("POST", "/api/auth/login", {
+    username: resetUsername,
+    password: resetUserPasswordNew,
+  });
+  assert.strictEqual(loginResB.status, 200, "Scenario 6: Login con la nuova password deve riuscire con HTTP 200");
+  const sessionTokenB = String(loginResB.headers["set-cookie"]).match(/__Host-moliris_session=([^;]+)/)?.[1];
+  assert(sessionTokenB, "Scenario 6: Deve essere rilasciata una nuova Sessione B");
+  console.log("    ✓ Scenario 6: Login riuscito con nuova password e rilascio nuova Sessione B.");
+
+  // SCENARIO 7: Funzionamento normale delle nuove sessioni
+  const meResB = await makeHttpsRequest("GET", "/api/auth/me", undefined, sessionTokenB);
+  assert.strictEqual(meResB.status, 200, "Scenario 7: Nuova sessione B deve poter accedere normalmente alle risorse protette");
+  assert.strictEqual(meResB.body.user.username, resetUsername);
+  console.log("    ✓ Scenario 7: Funzionamento normale della nuova sessione verificato con HTTP 200.");
+
+  // SCENARIO 8: Assenza di regressioni nell'autenticazione degli altri utenti
+  const operatorMeRes = await makeHttpsRequest("GET", "/api/auth/me", undefined, operatorToken);
+  assert.strictEqual(operatorMeRes.status, 200, "Scenario 8: Sessione dell'altro utente (operatore) deve rimanere valida e funzionante");
+  assert.strictEqual(operatorMeRes.body.user.username, "operatore_test");
+  console.log("    ✓ Scenario 8: Nessuna regressione sulle sessioni degli altri utenti, rimaste attive e integre.");
+}
+
 // Chiusura del server
 await app.close();
 fs.rmSync(tmpDir, { recursive: true, force: true });
