@@ -26,9 +26,8 @@ export const RegistrationOutcomeModal: React.FC<RegistrationOutcomeModalProps> =
             className="btn-close"
             id="btn-close-outcome"
             onClick={onClose}
-          >
-            &times;
-          </button>
+            aria-label="Chiudi"
+          />
         </div>
 
         <div className="modal-body" id="outcome-modal-body">

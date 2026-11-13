@@ -125,6 +125,34 @@ export class MonitoringService {
   }
 
   /**
+   * Aggiorna lo stato di tutti i robot attivi su richiesta manuale (§15)
+   */
+  public async refreshAllRobots(user: UserEntity): Promise<{ updatedCount: number; errors: Record<string, string> }> {
+    const robots = await this.robotRepository.list();
+    const eligible = robots.filter(
+      (r) =>
+        r.anagraphicState === "attivo" &&
+        r.registrationState !== "ssh_non_verificata"
+    );
+
+    const errors: Record<string, string> = {};
+    let updatedCount = 0;
+
+    await Promise.allSettled(
+      eligible.map(async (r) => {
+        try {
+          await this.pollSingleRobot(r.id, user.username);
+          updatedCount++;
+        } catch (err: any) {
+          errors[r.id] = err?.message || String(err);
+        }
+      })
+    );
+
+    return { updatedCount, errors };
+  }
+
+  /**
    * Esegue la lettura e interpretazione dello stato di un singolo robot (RF-MON-001, RF-MON-002, CA-MON-001).
    * Rispetta rigorosamente la separazione degli stati (RF-MON-005, §10.2, RNF-REL-002):
    * - operationalState e lastValidUpdateAt aggiornati SOLO in caso di successo.

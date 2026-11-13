@@ -8,9 +8,9 @@ interface FsTableProps {
   emptyMessage?: string;
   onNavigateDir: (dirName: string) => void;
   onDownload: (fileName: string) => void;
-  onTransfer: (fileName: string) => void;
+  onTransfer?: (fileName: string) => void;
   onDelete: (fileName: string) => void;
-  transferActionLabel: string;
+  transferActionLabel?: string;
 }
 
 export const FsTable: React.FC<FsTableProps> = ({
@@ -81,14 +81,16 @@ export const FsTable: React.FC<FsTableProps> = ({
                           >
                             Scarica
                           </button>
-                          <button
-                            type="button"
-                            className="btn btn-primary btn-sm"
-                            title={transferActionLabel}
-                            onClick={() => onTransfer(entry.name)}
-                          >
-                            {transferActionLabel}
-                          </button>
+                          {onTransfer && transferActionLabel && (
+                            <button
+                              type="button"
+                              className="btn btn-primary btn-sm"
+                              title={transferActionLabel}
+                              onClick={() => onTransfer(entry.name)}
+                            >
+                              {transferActionLabel}
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="btn btn-danger btn-sm"

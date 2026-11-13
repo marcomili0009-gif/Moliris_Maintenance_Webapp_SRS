@@ -221,13 +221,46 @@ export function useFleet(isAuthenticated: boolean) {
     }
   };
 
+  const refreshFleet = async (): Promise<boolean> => {
+    setLoading(true);
+    setError(null);
+    try {
+      await apiClient.post("/api/fleet/status/refresh", {}).catch(() => {});
+      await loadFleet();
+      return true;
+    } catch (err) {
+      setError(ErrorPresenter.formatError(err));
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    if (isAuthenticated) {
-      loadFleet();
-    } else {
+    if (!isAuthenticated) {
       setRobots([]);
       setSelectedRobot(null);
+      return;
     }
+
+    loadFleet();
+
+    // Polling automatico della flotta ogni 5 secondi (§16)
+    const pollIntervalMs = 5000;
+    const timer = setInterval(() => {
+      // Aggiornamento silenzioso dei dati senza flickering dello spinner
+      apiClient
+        .get("/api/robots")
+        .then(async (res) => {
+          if (res.ok) {
+            const data = await res.json();
+            setRobots(data.robots || []);
+          }
+        })
+        .catch(() => {});
+    }, pollIntervalMs);
+
+    return () => clearInterval(timer);
   }, [isAuthenticated, loadFleet]);
 
   return {
@@ -237,6 +270,7 @@ export function useFleet(isAuthenticated: boolean) {
     selectedRobot,
     loadingDetail,
     loadFleet,
+    refreshFleet,
     loadRobotDetail,
     setSelectedRobot,
     registerRobot,

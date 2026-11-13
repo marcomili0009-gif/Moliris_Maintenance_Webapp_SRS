@@ -411,12 +411,56 @@ const fileToDelete = path.join(robotA.serverDirectoryPath, "delete_me.txt");
 fs.writeFileSync(fileToDelete, "test delete content");
 assert.strictEqual(fs.existsSync(fileToDelete), true);
 
-// Autorizziamo operatore_a per FS_SERVER_DELETE su robot_A
+// Autorizziamo operatore_a per FS_SERVER_NAVIGATE, FS_SERVER_UPLOAD, FS_SERVER_DOWNLOAD, FS_SERVER_DELETE
 await userRepo.update(userAuthA.id, {
+  roles: ["operatore"],
+  permissions: [
+    AppPermission.FS_SERVER_NAVIGATE,
+    AppPermission.FS_SERVER_UPLOAD,
+    AppPermission.FS_SERVER_DOWNLOAD,
+    AppPermission.FS_SERVER_DELETE,
+  ],
   robotPermissions: {
-    robot_A: [AppPermission.FS_SERVER_NAVIGATE, AppPermission.FS_SERVER_DELETE],
+    robot_A: [
+      AppPermission.FS_SERVER_NAVIGATE,
+      AppPermission.FS_SERVER_UPLOAD,
+      AppPermission.FS_SERVER_DOWNLOAD,
+      AppPermission.FS_SERVER_DELETE,
+    ],
   },
 });
+
+function apiPost(pathUrl: string, token?: string, body?: any): Promise<{ status: number; body: any }> {
+  return new Promise((resolve, reject) => {
+    const jsonStr = body !== undefined ? JSON.stringify(body) : "";
+    const req = https.request(
+      `https://127.0.0.1:${testPort}${pathUrl}`,
+      {
+        method: "POST",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(jsonStr),
+        },
+        rejectUnauthorized: false,
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          try {
+            resolve({ status: res.statusCode || 0, body: JSON.parse(data) });
+          } catch {
+            resolve({ status: res.statusCode || 0, body: data });
+          }
+        });
+      }
+    );
+    req.on("error", reject);
+    if (jsonStr) req.write(jsonStr);
+    req.end();
+  });
+}
 
 // Eliminazione riuscita
 const resDelete = await apiDelete("/api/robots/robot_A/fs/server/file?path=delete_me.txt", sessionA.sessionId);
@@ -432,6 +476,92 @@ const resDeleteDir = await apiDelete("/api/robots/robot_A/fs/server/file?path=su
 assert.strictEqual(resDeleteDir.status, 400, "Eliminazione di directory deve essere respinta");
 
 console.log("  PASS: Eliminazione controllata file sul server verificata con RBAC e sicurezza (RNF-FS-003).");
+
+// 11. Test Nuova Cartella Robot Server (§2, §4)
+const resMkdirRobot = await apiPost("/api/robots/robot_A/fs/server/mkdir", sessionA.sessionId, {
+  folderName: "test_robot_subfolder",
+  path: "/",
+});
+assert.strictEqual(resMkdirRobot.status, 201, "Creazione nuova cartella robot server deve restituire 201");
+const robotSubfolder = path.join(robotA.serverDirectoryPath, "test_robot_subfolder");
+assert.ok(fs.existsSync(robotSubfolder), "La cartella creata deve esistere sul filesystem server");
+if (process.platform !== "win32") {
+  const statFolder = fs.statSync(robotSubfolder);
+  const modeOct = (statFolder.mode & 0o777).toString(8);
+  assert.strictEqual(modeOct, "750", "I permessi devono essere rigorosamente 0750 (RNF-FS-001, §4)");
+}
+
+// Tentativo duplicato cartella robot -> 409
+const resMkdirDup = await apiPost("/api/robots/robot_A/fs/server/mkdir", sessionA.sessionId, {
+  folderName: "test_robot_subfolder",
+  path: "/",
+});
+assert.strictEqual(resMkdirDup.status, 409, "Cartella duplicata deve essere respinta con status 409");
+
+// Nome cartella non valido (path traversal) -> 400
+const resMkdirInvalid = await apiPost("/api/robots/robot_A/fs/server/mkdir", sessionA.sessionId, {
+  folderName: "../escape_dir",
+  path: "/",
+});
+assert.strictEqual(resMkdirInvalid.status, 400, "Nome cartella con path traversal deve essere respinto con status 400");
+console.log("  PASS: Nuova cartella su robot server verificata con validazione, duplicati e permessi 0750 (§2, §4).");
+
+// 12. Test Archivio Generale del Server (§1, §3, §4)
+const resGeneralMkdir = await apiPost("/api/fs/general/mkdir", sessionA.sessionId, {
+  folderName: "shared_packages",
+  path: "/",
+});
+assert.strictEqual(resGeneralMkdir.status, 201, "Creazione nuova cartella archivio generale deve restituire 201");
+
+const resGeneralList = await apiGet("/api/fs/general/list", sessionA.sessionId);
+assert.strictEqual(resGeneralList.status, 200, "Elenco archivio generale deve restituire 200");
+assert.ok(
+  resGeneralList.body.entries.some((e: any) => e.name === "shared_packages" && e.type === "directory"),
+  "La cartella shared_packages deve essere presente nell'elenco generale"
+);
+
+// Upload su archivio generale
+const resGeneralUpload = await new Promise<any>((resolve, reject) => {
+  const req = https.request(
+    `https://127.0.0.1:${testPort}/api/fs/general/upload`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${sessionA.sessionId}`,
+        "content-type": "application/octet-stream",
+        "x-filename": "package_v1.tar.gz",
+        "x-subpath": "/shared_packages",
+      },
+      rejectUnauthorized: false,
+    },
+    (res) => {
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => {
+        try {
+          resolve({ status: res.statusCode, body: JSON.parse(data) });
+        } catch {
+          resolve({ status: res.statusCode, body: data });
+        }
+      });
+    }
+  );
+  req.on("error", reject);
+  req.write("TEST_PACKAGE_BINARY_DATA_CONTENT");
+  req.end();
+});
+assert.strictEqual(resGeneralUpload.status, 200, "Upload su archivio generale deve restituire 200");
+
+// Download da archivio generale
+const resGeneralDownload = await apiGet("/api/fs/general/download?path=/shared_packages/package_v1.tar.gz", sessionA.sessionId);
+assert.strictEqual(resGeneralDownload.status, 200, "Download da archivio generale deve restituire 200");
+assert.strictEqual(resGeneralDownload.body, "TEST_PACKAGE_BINARY_DATA_CONTENT", "Il contenuto scaricato deve corrispondere");
+
+// Eliminazione da archivio generale
+const resGeneralDelete = await apiDelete("/api/fs/general/file?path=/shared_packages/package_v1.tar.gz", sessionA.sessionId);
+assert.strictEqual(resGeneralDelete.status, 200, "Eliminazione file da archivio generale deve restituire 200");
+
+console.log("  PASS: Archivio Generale del Server (navigazione, mkdir, upload, download, delete) verificato (§1, §3, §4).");
 
 await testApp.close();
 fs.rmSync(tlsDir, { recursive: true, force: true });

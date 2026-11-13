@@ -75,4 +75,19 @@ export function registerMonitoringRoutes(
       }
     }
   );
+
+  // Aggiornamento manuale di tutti i robot della flotta (§15)
+  app.post(
+    "/api/fleet/status/refresh",
+    { preHandler: [authMiddleware.requirePermission(AppPermission.STATUS_REFRESH_MANUAL)] },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = req.molirisUser!;
+        const result = await monitoringService.refreshAllRobots(user);
+        return reply.status(200).send(result);
+      } catch (err: any) {
+        return handleError(err, reply);
+      }
+    }
+  );
 }

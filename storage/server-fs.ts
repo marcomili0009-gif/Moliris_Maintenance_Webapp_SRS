@@ -48,6 +48,7 @@ export interface ServerFileItem {
 
 export class ServerFilesystemService {
   private fsRoot: string;
+  private generalFsRoot: string;
   private auditRepository: AuditRepository;
   private logger: MolirisLogger;
   private operatorAllowedPaths?: string[];
@@ -69,6 +70,23 @@ export class ServerFilesystemService {
           .map((p) => p.trim().replace(/^\/+|\/+$/g, ""))
           .filter(Boolean)
       : undefined;
+
+    // Inizializzazione Archivio Generale del server (§1, §3)
+    const envGeneral = process.env.MOLIRIS_GENERAL_FS_ROOT?.trim();
+    this.generalFsRoot = envGeneral ? path.resolve(envGeneral) : path.join(this.fsRoot, "general");
+    if (!fs.existsSync(this.generalFsRoot)) {
+      try {
+        fs.mkdirSync(this.generalFsRoot, { recursive: true, mode: 0o750 });
+      } catch (err: any) {
+        this.logger.warn(`Inizializzazione generalFsRoot differita o non accessibile: ${this.generalFsRoot}`, {
+          error: String(err),
+        });
+      }
+    }
+  }
+
+  public getGeneralFsRoot(): string {
+    return this.generalFsRoot;
   }
 
   /**
@@ -227,6 +245,379 @@ export class ServerFilesystemService {
     }
 
     return resolvedPath;
+  }
+
+  /**
+   * Risolve e valida un percorso all'interno dell'Archivio Generale del server (§1, §3).
+   * Rifiuta path traversal, byte nulli, percorsi assoluti, directory temporanee e link simbolici esterni.
+   */
+  public async resolveGeneralPath(relativeSubPath?: string): Promise<string> {
+    const generalDir = path.resolve(this.generalFsRoot);
+    if (!fs.existsSync(generalDir)) {
+      await fs.promises.mkdir(generalDir, { recursive: true, mode: 0o750 });
+    }
+
+    const trimmed = (relativeSubPath ?? "").trim();
+    if (!trimmed || trimmed === "." || trimmed === "/" || trimmed === "\\" || trimmed === "./" || trimmed === ".\\") {
+      return generalDir;
+    }
+
+    const subPath = trimmed;
+
+    // 1. Rifiuto byte nulli
+    if (subPath.includes("\0")) {
+      await this.recordPathTraversalViolation("general", subPath, "NULL_BYTE_DETECTED");
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso non valido: sequenza non consentita.");
+    }
+
+    // 2. Rifiuto percorsi assoluti
+    if (path.isAbsolute(subPath) || /^[a-zA-Z]:/.test(subPath)) {
+      await this.recordPathTraversalViolation("general", subPath, "ABSOLUTE_PATH_REJECTED");
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso non consentito: percorsi assoluti rifiutati.");
+    }
+
+    // 3. Rifiuto sequenze di path traversal
+    if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(subPath) || /%2e%2e/i.test(subPath)) {
+      await this.recordPathTraversalViolation("general", subPath, "PATH_TRAVERSAL_DETECTED");
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso non consentito: attraversamento directory non autorizzato.");
+    }
+
+    // 4. Rifiuto nomi riservati (.tmp, .moliris_tmp)
+    let decodedSubPath = subPath;
+    try {
+      decodedSubPath = decodeURIComponent(subPath);
+    } catch {}
+
+    const reservedNames = [".tmp", ".moliris_tmp"];
+    const segments = decodedSubPath.split(/[\\/]+/).filter(Boolean);
+    for (const seg of segments) {
+      const lower = seg.toLowerCase();
+      if (reservedNames.includes(lower) || lower === ".tmp" || lower.startsWith(".tmp")) {
+        await this.recordPathTraversalViolation("general", subPath, "RESERVED_DIRECTORY_ACCESS_DENIED");
+        throw new MolirisAppError(
+          ErrorCode.SERVER_DIR_INACCESSIBLE,
+          "Percorso non consentito: accesso a nomi o directory riservate negato."
+        );
+      }
+    }
+
+    // 5. Risoluzione normalizzata rispetto alla directory generale
+    const resolvedPath = path.resolve(generalDir, subPath);
+
+    // 6. Verifica che rimanga all'interno di generalDir
+    if (!resolvedPath.startsWith(generalDir + path.sep) && resolvedPath !== generalDir) {
+      await this.recordPathTraversalViolation("general", subPath, "PATH_ESCAPED_GENERAL_DIR");
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso non consentito: accesso all'esterno dell'archivio generale negato.");
+    }
+
+    // 7. Symlink validation
+    try {
+      if (fs.existsSync(resolvedPath)) {
+        const realTarget = await fs.promises.realpath(resolvedPath);
+        let realGeneralDir = generalDir;
+        if (fs.existsSync(generalDir)) {
+          realGeneralDir = await fs.promises.realpath(generalDir);
+        }
+        if (!realTarget.startsWith(realGeneralDir + path.sep) && realTarget !== realGeneralDir) {
+          await this.recordPathTraversalViolation("general", subPath, "SYMLINK_ESCAPED_ROOT");
+          throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso non consentito: collegamento simbolico esterno non autorizzato.");
+        }
+      }
+    } catch (err: any) {
+      if (err instanceof MolirisAppError) throw err;
+    }
+
+    return resolvedPath;
+  }
+
+  /**
+   * Validazione del nome della nuova cartella (§4).
+   * Rifiuta stringhe vuote, caratteri non ammessi (/ \ : * ? " < > |), nomi riservati, lunghezza > 255.
+   */
+  public validateFolderName(name: string): string {
+    const trimmed = (name || "").trim();
+    if (!trimmed) {
+      throw new MolirisAppError(
+        ErrorCode.MISSING_ROBOT_PARAMS,
+        "Nome cartella non specificato o vuoto.",
+        "Inserire un nome valido per la cartella."
+      );
+    }
+    if (trimmed.length > 255) {
+      throw new MolirisAppError(
+        ErrorCode.MISSING_ROBOT_PARAMS,
+        "Nome cartella troppo lungo (massimo 255 caratteri).",
+        "Il nome della cartella non può superare 255 caratteri."
+      );
+    }
+    if (/[\/\\\0:\*\?"<>\|]/.test(trimmed)) {
+      throw new MolirisAppError(
+        ErrorCode.MISSING_ROBOT_PARAMS,
+        "Il nome della cartella contiene caratteri non consentiti.",
+        "Il nome non può contenere caratteri speciali (/ \\ : * ? \" < > |)."
+      );
+    }
+    if (trimmed === "." || trimmed === ".." || trimmed.startsWith(".tmp") || trimmed.startsWith(".moliris")) {
+      throw new MolirisAppError(
+        ErrorCode.MISSING_ROBOT_PARAMS,
+        "Nome cartella riservato non consentito.",
+        "Nome cartella riservato dal sistema."
+      );
+    }
+    return trimmed;
+  }
+
+  /**
+   * Creazione sicura di una nuova cartella nella directory server del robot (§2, §4).
+   */
+  public async createRobotFolder(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    relativeParentPath: string,
+    folderName: string
+  ): Promise<{ path: string; name: string }> {
+    const validName = this.validateFolderName(folderName);
+    const parentDir = await this.resolveRobotPath(robot, relativeParentPath);
+    if (!fs.existsSync(parentDir)) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Directory genitore non trovata: ${parentDir}`,
+        "La cartella di destinazione non esiste sul server."
+      );
+    }
+
+    const targetDir = path.join(parentDir, validName);
+    if (fs.existsSync(targetDir)) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Una cartella o file con il nome '${validName}' esiste già.`,
+        `Esiste già una cartella o file con il nome '${validName}'.`
+      );
+    }
+
+    try {
+      await fs.promises.mkdir(targetDir, { mode: 0o750 });
+      if (process.platform !== "win32") {
+        try { await fs.promises.chmod(targetDir, 0o750); } catch {}
+      }
+
+      await this.auditRepository.record({
+        userId: context.username,
+        operation: AuditOperation.SRVFS_MKDIR,
+        robotId: robot.id,
+        outcome: "SUCCESS",
+        timestamp: new Date(),
+        details: { parentPath: relativeParentPath, folderName: validName, fullPath: targetDir },
+      });
+
+      const relPath = path.relative(robot.serverDirectoryPath, targetDir).replace(/\\/g, "/");
+      return { path: relPath, name: validName };
+    } catch (err: any) {
+      if (err instanceof MolirisAppError) throw err;
+      await this.auditRepository.record({
+        userId: context.username,
+        operation: AuditOperation.SRVFS_MKDIR,
+        robotId: robot.id,
+        outcome: "FAILURE",
+        timestamp: new Date(),
+        details: { parentPath: relativeParentPath, folderName: validName, error: err?.message },
+      });
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Errore creazione cartella: ${err?.message}`,
+        "Impossibile creare la cartella sul server."
+      );
+    }
+  }
+
+  /**
+   * Creazione sicura di una nuova cartella nell'Archivio Generale del server (§3, §4).
+   */
+  public async createGeneralFolder(
+    context: AuthorizedContext,
+    relativeParentPath: string,
+    folderName: string
+  ): Promise<{ path: string; name: string }> {
+    const validName = this.validateFolderName(folderName);
+    const parentDir = await this.resolveGeneralPath(relativeParentPath);
+    if (!fs.existsSync(parentDir)) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Directory genitore non trovata: ${parentDir}`,
+        "La cartella di destinazione non esiste nell'archivio generale."
+      );
+    }
+
+    const targetDir = path.join(parentDir, validName);
+    if (fs.existsSync(targetDir)) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Una cartella o file con il nome '${validName}' esiste già.`,
+        `Esiste già una cartella o file con il nome '${validName}'.`
+      );
+    }
+
+    try {
+      await fs.promises.mkdir(targetDir, { mode: 0o750 });
+      if (process.platform !== "win32") {
+        try { await fs.promises.chmod(targetDir, 0o750); } catch {}
+      }
+
+      await this.auditRepository.record({
+        userId: context.username,
+        operation: AuditOperation.SRVFS_MKDIR,
+        robotId: undefined,
+        outcome: "SUCCESS",
+        timestamp: new Date(),
+        details: { parentPath: relativeParentPath, folderName: validName, fullPath: targetDir, scope: "general" },
+      });
+
+      const relPath = path.relative(this.generalFsRoot, targetDir).replace(/\\/g, "/");
+      return { path: relPath, name: validName };
+    } catch (err: any) {
+      if (err instanceof MolirisAppError) throw err;
+      await this.auditRepository.record({
+        userId: context.username,
+        operation: AuditOperation.SRVFS_MKDIR,
+        robotId: undefined,
+        outcome: "FAILURE",
+        timestamp: new Date(),
+        details: { parentPath: relativeParentPath, folderName: validName, error: err?.message, scope: "general" },
+      });
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Errore creazione cartella nell'archivio generale: ${err?.message}`,
+        "Impossibile creare la cartella nell'archivio generale."
+      );
+    }
+  }
+
+  /**
+   * Elenco file e cartelle nell'Archivio Generale del server (§3).
+   */
+  public async listGeneralDirectory(
+    _context: AuthorizedContext,
+    relativeSubPath?: string
+  ): Promise<ServerFileItem[]> {
+    const targetDir = await this.resolveGeneralPath(relativeSubPath);
+
+    if (!fs.existsSync(targetDir)) {
+      return [];
+    }
+
+    const dirStat = await fs.promises.stat(targetDir);
+    if (!dirStat.isDirectory()) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Il percorso specificato non è una directory: ${targetDir}`,
+        "Il percorso richiesto non è una directory."
+      );
+    }
+
+    const dirents = await fs.promises.readdir(targetDir, { withFileTypes: true });
+    const items: ServerFileItem[] = [];
+
+    for (const ent of dirents) {
+      if (ent.name === ".tmp" || ent.name === ".moliris_tmp") continue;
+      const fullPath = path.join(targetDir, ent.name);
+      try {
+        const stat = await fs.promises.stat(fullPath);
+        items.push({
+          name: ent.name,
+          type: ent.isDirectory() ? "directory" : "file",
+          size: ent.isDirectory() ? null : stat.size,
+          modifiedAt: stat.mtime,
+        });
+      } catch {}
+    }
+
+    items.sort((a, b) => {
+      if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    });
+
+    return items;
+  }
+
+  /**
+   * Apertura stream di lettura per un file nell'Archivio Generale (§3).
+   */
+  public async openGeneralFileReadStream(
+    _context: AuthorizedContext,
+    relativeFilePath: string
+  ): Promise<Readable> {
+    const fullPath = await this.resolveGeneralPath(relativeFilePath);
+    if (!fs.existsSync(fullPath)) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `File non trovato nell'archivio generale: ${fullPath}`,
+        "File non trovato nell'archivio generale."
+      );
+    }
+    const stat = await fs.promises.stat(fullPath);
+    if (!stat.isFile()) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Il percorso non è un file: ${fullPath}`,
+        "Il percorso specificato non è un file regolare."
+      );
+    }
+    return fs.createReadStream(fullPath);
+  }
+
+  /**
+   * Apertura stream di scrittura per un file nell'Archivio Generale (§3).
+   */
+  public async openGeneralFileWriteStream(
+    _context: AuthorizedContext,
+    relativeFilePath: string,
+    options?: { overwrite?: boolean }
+  ): Promise<Writable> {
+    const fullPath = await this.resolveGeneralPath(relativeFilePath);
+    if (fs.existsSync(fullPath) && !options?.overwrite) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Il file '${path.basename(fullPath)}' esiste già.`,
+        `Il file '${path.basename(fullPath)}' esiste già nell'archivio generale.`
+      );
+    }
+    const parent = path.dirname(fullPath);
+    if (!fs.existsSync(parent)) {
+      await fs.promises.mkdir(parent, { recursive: true, mode: 0o750 });
+    }
+    return fs.createWriteStream(fullPath, { mode: 0o640 });
+  }
+
+  /**
+   * Eliminazione file o cartella nell'Archivio Generale (§3).
+   */
+  public async deleteGeneralFile(
+    context: AuthorizedContext,
+    relativeFilePath: string
+  ): Promise<void> {
+    const fullPath = await this.resolveGeneralPath(relativeFilePath);
+    if (!fs.existsSync(fullPath)) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Elemento non trovato nell'archivio generale: ${fullPath}`,
+        "File o cartella non trovato."
+      );
+    }
+    const stat = await fs.promises.stat(fullPath);
+    if (stat.isDirectory()) {
+      await fs.promises.rm(fullPath, { recursive: true, force: true });
+    } else {
+      await fs.promises.unlink(fullPath);
+    }
+
+    await this.auditRepository.record({
+      userId: context.username,
+      operation: AuditOperation.SRVFS_DELETE,
+      robotId: undefined,
+      outcome: "SUCCESS",
+      timestamp: new Date(),
+      details: { path: relativeFilePath, scope: "general" },
+    });
   }
 
   /**

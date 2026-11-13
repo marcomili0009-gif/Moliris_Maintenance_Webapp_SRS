@@ -71,6 +71,49 @@ export function useTerminal() {
     }
   }, []);
 
+  const openServerTerminal = useCallback(async () => {
+    setTerminalState({
+      isOpen: true,
+      robotId: "server",
+      robotName: "Terminale Server Moliris",
+      sessionId: null,
+      status: "connecting",
+      error: null,
+      cols: 80,
+      rows: 24,
+    });
+
+    try {
+      const res = await apiClient.post(
+        `/api/server/terminal/sessions`,
+        { cols: 80, rows: 24 }
+      );
+
+      const data = await res.json();
+      if (!res.ok || !data.sessionId) {
+        setTerminalState((prev) => ({
+          ...prev,
+          status: "error",
+          error: ErrorPresenter.formatError(data),
+        }));
+        return;
+      }
+
+      setTerminalState((prev) => ({
+        ...prev,
+        sessionId: data.sessionId,
+        cols: data.cols || 80,
+        rows: data.rows || 24,
+      }));
+    } catch (err) {
+      setTerminalState((prev) => ({
+        ...prev,
+        status: "error",
+        error: ErrorPresenter.formatError(err),
+      }));
+    }
+  }, []);
+
   const attachWebSocket = useCallback(
     (
       sessionId: string,
@@ -174,6 +217,7 @@ export function useTerminal() {
   return {
     terminalState,
     openTerminal,
+    openServerTerminal,
     attachWebSocket,
     sendInput,
     resize,

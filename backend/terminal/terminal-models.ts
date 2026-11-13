@@ -43,8 +43,9 @@ export interface TerminalSession {
   rows: number;
   createdAt: Date;
   lastActivityAt: Date;
-  managedConnection: ManagedRobotConnection;
-  ptyChannel: ClientChannel;
+  managedConnection?: ManagedRobotConnection;
+  ptyChannel: any; // ClientChannel SSH2 o Duplex stream di processo locale
+  localProcess?: any;
   webSocket?: any; // Instanza WebSocket (@fastify/websocket o ws)
   hasHadSocket?: boolean;
   onPtyData?: (chunk: Buffer | string) => void;

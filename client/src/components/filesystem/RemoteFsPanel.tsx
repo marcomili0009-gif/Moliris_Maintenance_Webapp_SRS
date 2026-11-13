@@ -20,7 +20,6 @@ interface RemoteFsPanelProps {
   onDownload: (fileName: string) => void;
   onTransferToServer: (fileName: string) => void;
   onDelete: (fileName: string) => void;
-  onPurgeTemp: () => void;
 }
 
 export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
@@ -38,7 +37,6 @@ export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
   onDownload,
   onTransferToServer,
   onDelete,
-  onPurgeTemp,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -132,15 +130,6 @@ export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
             onClick={() => fileInputRef.current?.click()}
           >
             Carica sul Robot
-          </button>
-          <button
-            type="button"
-            id="btn-fs-remote-purge"
-            className="btn btn-danger btn-sm"
-            title="Elimina definitivamente i file temporanei orfani dal robot e server"
-            onClick={onPurgeTemp}
-          >
-            Bonifica Temp
           </button>
         </div>
       </div>

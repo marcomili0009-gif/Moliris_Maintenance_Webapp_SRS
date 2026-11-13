@@ -27,9 +27,8 @@ export const BulkConflictsModal: React.FC<BulkConflictsModalProps> = ({
             className="btn-close"
             id="btn-close-bulk-conflicts"
             onClick={onClose}
-          >
-            &times;
-          </button>
+            aria-label="Chiudi"
+          />
         </div>
 
         <div className="modal-body">

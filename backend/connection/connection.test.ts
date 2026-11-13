@@ -314,7 +314,7 @@ const concurrentFailure = concurrentFailures[0];
 assert(
   concurrentFailure.status === "rejected" &&
     concurrentFailure.reason instanceof MolirisAppError &&
-    concurrentFailure.reason.code === ErrorCode.INSUFFICIENT_STORAGE,
+    concurrentFailure.reason.code === ErrorCode.CONNECTION_LIMIT_REACHED,
   "La richiesta eccedente deve essere rifiutata per superamento del limite"
 );
 

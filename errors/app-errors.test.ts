@@ -5,7 +5,7 @@ import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "./app-errors.ts";
 
 console.log("--> Esecuzione test modello errori e messaggi sicuri...");
 
-// Test 1: Verifica che tutte le 17 categorie §9 siano definite nel catalogo
+// Test 1: Verifica che tutte le categorie §9 e gli errori operativi siano definite nel catalogo
 const expectedCodes: ErrorCode[] = [
   ErrorCode.INVALID_CREDENTIALS,
   ErrorCode.INSUFFICIENT_PERMISSIONS,
@@ -19,6 +19,7 @@ const expectedCodes: ErrorCode[] = [
   ErrorCode.REMOTE_FS_ERROR,
   ErrorCode.SERVER_DIR_INACCESSIBLE,
   ErrorCode.INSUFFICIENT_STORAGE,
+  ErrorCode.CONNECTION_LIMIT_REACHED,
   ErrorCode.TRANSFER_INTERRUPTED,
   ErrorCode.TIMEOUT_ERROR,
   ErrorCode.INTEGRITY_CHECK_FAILED,
@@ -26,7 +27,7 @@ const expectedCodes: ErrorCode[] = [
   ErrorCode.DB_FS_SYNC_ERROR,
 ];
 
-assert.strictEqual(expectedCodes.length, 17, "Devono essere presenti esattamente le 17 categorie della SRS §9");
+assert.strictEqual(expectedCodes.length, 18, "Devono essere presenti le 17 categorie della SRS §9 più il limite connessioni");
 for (const code of expectedCodes) {
   const entry = ERROR_CATALOG[code];
   assert(entry, `Il codice errore ${code} deve essere presente nel catalogo`);

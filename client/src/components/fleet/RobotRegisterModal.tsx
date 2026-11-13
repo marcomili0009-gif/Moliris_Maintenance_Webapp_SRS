@@ -112,9 +112,8 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
             className="btn-close"
             id="btn-close-register"
             onClick={onClose}
-          >
-            &times;
-          </button>
+            aria-label="Chiudi"
+          />
         </div>
 
         <div className="modal-body">
@@ -291,6 +290,9 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
                     value={privateKey}
                     onChange={(e) => setPrivateKey(e.target.value)}
                   />
+                  <div className="field-error" id="err-privateKey">
+                    {fieldErrors["privateKey"]}
+                  </div>
                   <label htmlFor="reg-passphrase" style={{ marginTop: "0.5rem", display: "block" }}>
                     Passphrase chiave (opzionale):
                   </label>
@@ -302,9 +304,6 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
                     value={passphrase}
                     onChange={(e) => setPassphrase(e.target.value)}
                   />
-                  <div className="field-error" id="err-privateKey">
-                    {fieldErrors["privateKey"]}
-                  </div>
                 </div>
               )}
 

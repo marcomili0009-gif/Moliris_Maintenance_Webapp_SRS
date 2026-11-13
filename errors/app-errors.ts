@@ -16,6 +16,7 @@ export const ErrorCode = {
   REMOTE_FS_ERROR: "REMOTE_FS_IO_ERROR",
   SERVER_DIR_INACCESSIBLE: "SERVER_DIR_INACCESSIBLE",
   INSUFFICIENT_STORAGE: "STORAGE_INSUFFICIENT_SPACE",
+  CONNECTION_LIMIT_REACHED: "CONNECTION_LIMIT_REACHED",
   TRANSFER_INTERRUPTED: "TRF_TRANSFER_INTERRUPTED",
   TIMEOUT_ERROR: "OPERATION_TIMEOUT",
   INTEGRITY_CHECK_FAILED: "TRF_INTEGRITY_FAILED",
@@ -91,6 +92,11 @@ export const ERROR_CATALOG: Record<ErrorCode, AppErrorDefinition> = {
   [ErrorCode.INSUFFICIENT_STORAGE]: {
     code: ErrorCode.INSUFFICIENT_STORAGE,
     userMessage: "Spazio di archiviazione insufficiente per completare l'operazione.",
+    classification: "recuperabile",
+  },
+  [ErrorCode.CONNECTION_LIMIT_REACHED]: {
+    code: ErrorCode.CONNECTION_LIMIT_REACHED,
+    userMessage: "Troppe connessioni simultanee. Riprovare a breve.",
     classification: "recuperabile",
   },
   [ErrorCode.TRANSFER_INTERRUPTED]: {

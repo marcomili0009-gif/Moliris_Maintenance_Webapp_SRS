@@ -6,14 +6,12 @@ interface TransfersPanelProps {
   transfers: TransferProgress[];
   loading: boolean;
   onRefresh: () => void;
-  onPurgeTemp: () => void;
   onCancelTransfer: (transferId: string) => void;
 }
 
 export const TransfersPanel: React.FC<TransfersPanelProps> = ({
   transfers,
   onRefresh,
-  onPurgeTemp,
   onCancelTransfer,
 }) => {
   return (
@@ -26,15 +24,6 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
           </small>
         </div>
         <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button
-            type="button"
-            id="btn-purge-transfers-temp"
-            className="btn btn-danger btn-sm"
-            title="Bonifica file temporanei orfani da tutti i robot e server"
-            onClick={onPurgeTemp}
-          >
-            Bonifica File Temp
-          </button>
           <button
             type="button"
             id="btn-refresh-transfers"

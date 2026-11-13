@@ -79,9 +79,8 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
             className="btn-close"
             id="btn-close-edit"
             onClick={onClose}
-          >
-            &times;
-          </button>
+            aria-label="Chiudi"
+          />
         </div>
 
         <div className="modal-body">

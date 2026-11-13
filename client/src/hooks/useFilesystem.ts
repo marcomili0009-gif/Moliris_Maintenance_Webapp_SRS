@@ -57,6 +57,12 @@ export function useFilesystem() {
   const [remoteLoading, setRemoteLoading] = useState<boolean>(false);
   const [remoteError, setRemoteError] = useState<FormattedError | null>(null);
 
+  // General Server Archive state (§3)
+  const [generalPath, setGeneralPath] = useState<string>("/");
+  const [generalListing, setGeneralListing] = useState<DirectoryListing | null>(null);
+  const [generalLoading, setGeneralLoading] = useState<boolean>(false);
+  const [generalError, setGeneralError] = useState<FormattedError | null>(null);
+
   const setServerRobotId = useCallback((id: string) => {
     setServerRobotIdState(id);
     setServerListing(null);
@@ -137,6 +143,152 @@ export function useFilesystem() {
     parts.pop();
     const parentPath = parts.length > 0 ? `/${parts.join("/")}` : "/";
     loadRemoteDirectory(remoteRobotId, parentPath);
+  };
+
+  // Load General Server Directory (§3)
+  const loadGeneralDirectory = useCallback(async (path = "/") => {
+    setGeneralLoading(true);
+    setGeneralError(null);
+    try {
+      const url = `/api/fs/general/list?path=${encodeURIComponent(path)}`;
+      const res = await apiClient.get(url);
+      if (res.ok) {
+        const data = await res.json();
+        const normalized = normalizeDirectoryListing(data, path);
+        setGeneralListing(normalized);
+        setGeneralPath(normalized.path);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setGeneralError(ErrorPresenter.formatError(errData));
+      }
+    } catch (err) {
+      setGeneralError(ErrorPresenter.formatError(err));
+    } finally {
+      setGeneralLoading(false);
+    }
+  }, []);
+
+  // Navigate Up General (§3)
+  const navigateGeneralUp = () => {
+    if (generalPath === "/" || !generalPath) return;
+    const parts = generalPath.split("/").filter(Boolean);
+    parts.pop();
+    const parentPath = parts.length > 0 ? `/${parts.join("/")}` : "/";
+    loadGeneralDirectory(parentPath);
+  };
+
+  // Create Folder in Dedicated Robot Server Directory (§4)
+  const createRobotServerFolder = async (
+    robotId: string,
+    folderName: string,
+    parentPath: string = serverPath
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!robotId) return { success: false, error: "Nessun robot selezionato." };
+    try {
+      const res = await apiClient.post(`/api/robots/${encodeURIComponent(robotId)}/fs/server/mkdir`, {
+        name: folderName,
+        path: parentPath,
+      });
+      if (res.ok) {
+        await loadServerDirectory(robotId, parentPath);
+        return { success: true };
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, error: errData.message || "Errore nella creazione della cartella." };
+      }
+    } catch (err: any) {
+      return { success: false, error: err.message || "Errore di connessione." };
+    }
+  };
+
+  // Create Folder in General Server Archive (§3, §4)
+  const createGeneralFolder = async (
+    folderName: string,
+    parentPath: string = generalPath
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await apiClient.post(`/api/fs/general/mkdir`, {
+        name: folderName,
+        path: parentPath,
+      });
+      if (res.ok) {
+        await loadGeneralDirectory(parentPath);
+        return { success: true };
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, error: errData.message || "Errore nella creazione della cartella." };
+      }
+    } catch (err: any) {
+      return { success: false, error: err.message || "Errore di connessione." };
+    }
+  };
+
+  // Upload to General Server Archive (§3)
+  const uploadToGeneral = async (file: File, targetPath: string, overwrite = false): Promise<boolean> => {
+    try {
+      const cleanSubPath = targetPath === "/" ? "" : targetPath.replace(/^\//, "");
+      const url = `/api/fs/general/upload?filename=${encodeURIComponent(file.name)}&path=${encodeURIComponent(cleanSubPath)}${overwrite ? "&overwrite=true" : ""}`;
+      const res = await apiClient.request(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "x-filename": file.name,
+          "x-subpath": cleanSubPath,
+          ...(overwrite ? { "x-overwrite": "true" } : {}),
+        },
+        body: file,
+      });
+      if (res.ok) {
+        await loadGeneralDirectory(generalPath);
+        return true;
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setGeneralError(ErrorPresenter.formatError(errData));
+        return false;
+      }
+    } catch (err) {
+      setGeneralError(ErrorPresenter.formatError(err));
+      return false;
+    }
+  };
+
+  // Download from General Server Archive (§3)
+  const downloadFromGeneral = async (fileName: string) => {
+    const filePath = generalPath.endsWith("/") ? `${generalPath}${fileName}` : `${generalPath}/${fileName}`;
+    try {
+      const res = await apiClient.get(
+        `/api/fs/general/download?path=${encodeURIComponent(filePath)}`
+      );
+      if (res.ok) {
+        triggerDownload(await res.blob(), fileName);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setGeneralError(ErrorPresenter.formatError(errData));
+      }
+    } catch (err) {
+      setGeneralError(ErrorPresenter.formatError(err));
+    }
+  };
+
+  // Delete from General Server Archive (§3)
+  const deleteFromGeneral = async (fileName: string): Promise<boolean> => {
+    const filePath = generalPath.endsWith("/") ? `${generalPath}${fileName}` : `${generalPath}/${fileName}`;
+    try {
+      const res = await apiClient.delete(
+        `/api/fs/general/file?path=${encodeURIComponent(filePath)}`
+      );
+      if (res.ok) {
+        await loadGeneralDirectory(generalPath);
+        return true;
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setGeneralError(ErrorPresenter.formatError(errData));
+        return false;
+      }
+    } catch (err) {
+      setGeneralError(ErrorPresenter.formatError(err));
+      return false;
+    }
   };
 
   // Upload to Server
@@ -347,10 +499,24 @@ export function useFilesystem() {
     serverError,
     loadServerDirectory,
     navigateServerUp,
+    createRobotServerFolder,
     uploadToServer,
     downloadFromServer,
     deleteFromServer,
     transferServerToRemote,
+
+    generalPath,
+    setGeneralPath,
+    generalListing,
+    generalLoading,
+    generalError,
+    loadGeneralDirectory,
+    navigateGeneralUp,
+    createGeneralFolder,
+    uploadToGeneral,
+    downloadFromGeneral,
+    deleteFromGeneral,
+    clearGeneralError: () => setGeneralError(null),
 
     remoteRobotId,
     setRemoteRobotId,

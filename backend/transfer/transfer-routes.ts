@@ -751,6 +751,87 @@ export function registerTransferRoutes(
       }
     }
   );
+
+  // =========================================================================
+  // 8. CARICAMENTO MASSIVO DA FILE SUL SERVER (§5, §7)
+  // =========================================================================
+  app.post(
+    "/api/transfers/bulk/server-source",
+    {
+      preHandler: [authMiddleware.requirePermission(AppPermission.FLEET_VIEW)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const body = req.body as any;
+      if (!body || !Array.isArray(body.sourcePaths) || !Array.isArray(body.targets)) {
+        return reply.status(400).send({
+          code: "INVALID_REQUEST_BODY",
+          message: "Richiesta non valida: 'sourcePaths' e 'targets' devono essere array.",
+        });
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        undefined,
+        roleMapping
+      );
+
+      try {
+        const response = await transferService.executeBulkServerSource(context, {
+          sourceScope: body.sourceScope || "general",
+          sourceRobotId: body.sourceRobotId,
+          sourcePaths: body.sourcePaths,
+          targets: body.targets,
+          overwrite: Boolean(body.overwrite),
+        });
+        return reply.status(200).send(response);
+      } catch (err: any) {
+        return handleRouteError(reply, err);
+      }
+    }
+  );
+
+  // =========================================================================
+  // 9. TRASFERIMENTO ROBOT -> ROBOT (COPIA O SPOSTAMENTO) (§6)
+  // =========================================================================
+  app.post(
+    "/api/transfers/robot-robot",
+    {
+      preHandler: [authMiddleware.requirePermission(AppPermission.FLEET_VIEW)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const body = req.body as any;
+      if (!body || !body.sourceRobotId || !body.sourceRemotePath || !Array.isArray(body.targetRobotIds)) {
+        return reply.status(400).send({
+          code: "INVALID_REQUEST_BODY",
+          message: "Richiesta non valida: 'sourceRobotId', 'sourceRemotePath' e 'targetRobotIds' sono obbligatori.",
+        });
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        undefined,
+        roleMapping
+      );
+
+      try {
+        const response = await transferService.executeRobotToRobotTransfer(context, {
+          sourceRobotId: body.sourceRobotId,
+          sourceRemotePath: body.sourceRemotePath,
+          targetRobotIds: body.targetRobotIds,
+          targetRemotePaths: body.targetRemotePaths,
+          commonTargetDirectory: body.commonTargetDirectory,
+          isMove: Boolean(body.isMove),
+          confirmation: Boolean(body.confirmation),
+          overwrite: Boolean(body.overwrite),
+        });
+        return reply.status(200).send(response);
+      } catch (err: any) {
+        return handleRouteError(reply, err);
+      }
+    }
+  );
 }
 
 function sendErrorReply(reply: FastifyReply, status: number, code: ErrorCode, message: string): FastifyReply {

@@ -29,6 +29,9 @@ import {
   type StartServerRobotTransferRequest,
   type IChecksumAlgorithm,
   type TransferProgressSnapshot,
+  type RobotToRobotTransferRequest,
+  type RobotToRobotExecutionResult,
+  type RobotToRobotTargetResult,
 } from "./transfer-models.ts";
 import { resolveChecksumAlgorithm, ChecksumTransformStream } from "./checksum-service.ts";
 import { ProgressTrackerStream } from "./transfer-progress.ts";
@@ -1987,7 +1990,11 @@ export class TransferService {
     } catch (err: any) {
       this.logger.warn("Bonifica remota sul robot fallita o non disponibile", {
         robotId: robot.id,
-        error: err.message,
+        errorCode: err instanceof MolirisAppError ? err.code : undefined,
+        error: err instanceof MolirisAppError
+          ? err.diagnosticDetail
+          : err instanceof Error ? err.message : String(err),
+        userMessage: err instanceof MolirisAppError ? err.userMessage : undefined,
       });
     } finally {
       if (managedConn) {
@@ -2504,6 +2511,9 @@ export class TransferService {
               );
             }
 
+            // Assicura che la directory genitore esista con permessi 0750 prima del rename
+            await fs.promises.mkdir(path.dirname(finalPath), { recursive: true, mode: 0o750 });
+
             // Sostituzione atomica via rename
             await fs.promises.rename(tempPartPath, finalPath);
 
@@ -2657,6 +2667,281 @@ export class TransferService {
         failed,
         skipped,
       },
+    };
+  }
+
+  /**
+   * Esegue caricamento massivo partendo da file già presenti sul server (Archivio Generale o Server Robot) (§5, §7)
+   */
+  public async executeBulkServerSource(
+    context: AuthorizedContext,
+    req: {
+      sourceScope: "general" | "server";
+      sourceRobotId?: string;
+      sourcePaths: string[];
+      targets: BulkTarget[];
+      overwrite: boolean;
+    }
+  ): Promise<BulkUploadResponse> {
+    const stagedFiles: Array<{
+      filename: string;
+      stagingPath: string;
+      sizeBytes: number;
+      sha256: string;
+    }> = [];
+
+    for (const sourceRel of req.sourcePaths) {
+      let resolvedSourcePath: string;
+      if (req.sourceScope === "general") {
+        resolvedSourcePath = await this.serverFsService.resolveGeneralPath(sourceRel);
+      } else {
+        if (!req.sourceRobotId) {
+          throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "sourceRobotId mancante per sorgente server robot.");
+        }
+        let robot = await this.robotRepository.findById(req.sourceRobotId);
+        if (!robot) {
+          robot = await this.robotRepository.findByServerDirectory(req.sourceRobotId);
+        }
+        if (!robot) {
+          throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot sorgente '${req.sourceRobotId}' non trovato.`);
+        }
+        resolvedSourcePath = await this.serverFsService.resolveRobotPath(robot, sourceRel);
+      }
+
+      if (!fs.existsSync(resolvedSourcePath)) {
+        throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, `File sorgente sul server '${sourceRel}' non trovato.`);
+      }
+
+      const stat = await fs.promises.stat(resolvedSourcePath);
+      if (stat.isDirectory()) {
+        throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, `Il percorso '${sourceRel}' è una directory, atteso un file.`);
+      }
+
+      const hash = crypto.createHash("sha256");
+      const readStream = fs.createReadStream(resolvedSourcePath);
+      await new Promise<void>((resolve, reject) => {
+        readStream.on("data", (chunk) => hash.update(chunk));
+        readStream.on("end", () => resolve());
+        readStream.on("error", reject);
+      });
+      const sha256 = hash.digest("hex");
+
+      stagedFiles.push({
+        filename: path.basename(sourceRel),
+        stagingPath: resolvedSourcePath,
+        sizeBytes: stat.size,
+        sha256,
+      });
+    }
+
+    return await this.executeBulkUpload(context, {
+      targets: req.targets,
+      overwrite: req.overwrite,
+      stagedFiles,
+    });
+  }
+
+  /**
+   * Trasferimento Copia o Spostamento da Robot a Robot con stream intermediario costante (§6)
+   */
+  public async executeRobotToRobotTransfer(
+    context: AuthorizedContext,
+    req: RobotToRobotTransferRequest
+  ): Promise<RobotToRobotExecutionResult> {
+    const { sourceRobotId, sourceRemotePath, targetRobotIds, isMove = false, confirmation = false, overwrite = false } = req;
+
+    if (!sourceRobotId || !sourceRemotePath || !Array.isArray(targetRobotIds) || targetRobotIds.length === 0) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Parametri obbligatori mancanti per il trasferimento Robot->Robot.");
+    }
+
+    const sourceRobot = await this.robotRepository.findById(sourceRobotId);
+    if (!sourceRobot) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot sorgente '${sourceRobotId}' non trovato.`);
+    }
+
+    this.assertRobotAccessible(sourceRobot);
+    this.assertAuthorized(context, sourceRobot, [AppPermission.FS_REMOTE_DOWNLOAD]);
+    if (isMove) {
+      this.assertAuthorized(context, sourceRobot, [AppPermission.FS_REMOTE_DELETE]);
+    }
+
+    // Verifica esistenza e acquisizione metadati della sorgente remota
+    const sourceMeta = await this.remoteFsService.getRemoteFileStats(context, sourceRobot, sourceRemotePath);
+    if (sourceMeta.type === "directory") {
+      throw new MolirisAppError(ErrorCode.REMOTE_FS_ERROR, "Impossibile trasferire una directory: selezionare singoli file.");
+    }
+    const sourceSize = typeof sourceMeta.size === "number" ? sourceMeta.size : 0;
+
+    const filename = path.posix.basename(sourceRemotePath);
+    const results: RobotToRobotTargetResult[] = [];
+    let allTargetsSucceeded = true;
+
+    for (const targetRobotId of targetRobotIds) {
+      const destDir = (req.targetRemotePaths && req.targetRemotePaths[targetRobotId])
+        || req.commonTargetDirectory
+        || "/";
+      const finalDestPath = destDir.endsWith("/") ? `${destDir}${filename}` : `${destDir}/${filename}`;
+
+      const targetRobot = await this.robotRepository.findById(targetRobotId);
+      if (!targetRobot) {
+        results.push({
+          robotId: targetRobotId,
+          destinationPath: finalDestPath,
+          success: false,
+          error: `Robot destinatario '${targetRobotId}' non trovato.`,
+        });
+        allTargetsSucceeded = false;
+        continue;
+      }
+
+      if (targetRobot.anagraphicState === "disabilitato" || targetRobot.anagraphicState === "rimosso") {
+        results.push({
+          robotId: targetRobotId,
+          destinationPath: finalDestPath,
+          success: false,
+          error: `Robot destinatario non attivo (${targetRobot.anagraphicState}).`,
+        });
+        allTargetsSucceeded = false;
+        continue;
+      }
+
+      let readHandle: any = null;
+      let writeHandle: any = null;
+      let targetRecord: TransferRecord | null = null;
+      const transferId = crypto.randomUUID();
+
+      try {
+        this.assertAuthorized(context, targetRobot, [AppPermission.FS_REMOTE_UPLOAD]);
+
+        // Verifica esistenza su target se overwrite non abilitato
+        if (!overwrite) {
+          const targetExists = await this.remoteFsService.getRemoteFileStats(context, targetRobot, finalDestPath).then(() => true).catch(() => false);
+          if (targetExists) {
+            results.push({
+              robotId: targetRobotId,
+              destinationPath: finalDestPath,
+              success: false,
+              error: "File già esistente sulla destinazione. Sovrascrittura non autorizzata.",
+            });
+            allTargetsSucceeded = false;
+            continue;
+          }
+        }
+
+        readHandle = await this.remoteFsService.openRemoteReadStream(context, sourceRobot, sourceRemotePath);
+        writeHandle = await this.remoteFsService.openRemoteWriteStream(context, targetRobot, finalDestPath, { overwrite });
+
+        targetRecord = {
+          transferId,
+          userId: context.userId,
+          userSessionId: context.sessionId,
+          robotId: targetRobot.id,
+          direction: TransferDirection.ROBOT_TO_ROBOT,
+          filename,
+          sourcePath: `robot:${sourceRobot.id}:${sourceRemotePath}`,
+          destinationPath: `robot:${targetRobot.id}:${finalDestPath}`,
+          tempDestinationPath: (writeHandle as any).tempPath || finalDestPath,
+          totalBytes: sourceSize,
+          transferredBytes: 0,
+          speedBytesPerSec: null,
+          etaSeconds: null,
+          status: TransferStatus.IN_PROGRESS,
+          error: null,
+          checksumAlgorithm: this.checksumAlgorithm.name,
+          startedAt: new Date(),
+          lastProgressUpdateAt: Date.now(),
+          lastBytesAtUpdate: 0,
+          abortController: new AbortController(),
+          cleanupHandlers: [],
+        };
+        this.transfers.set(transferId, targetRecord);
+        await this.recordAuditStart(targetRecord);
+
+        // Stream con tracking e checksum
+        await this.streamWithTrackingAndChecksum(readHandle.stream, writeHandle.stream, targetRecord);
+
+        await readHandle.cleanup();
+        readHandle = null;
+        await writeHandle.cleanup();
+        writeHandle = null;
+
+        targetRecord.status = TransferStatus.COMPLETED;
+        targetRecord.completedAt = new Date();
+        await this.recordAuditSuccess(targetRecord);
+
+        results.push({
+          robotId: targetRobotId,
+          transferId,
+          destinationPath: finalDestPath,
+          success: true,
+        });
+      } catch (err: any) {
+        if (targetRecord) {
+          targetRecord.status = TransferStatus.FAILED;
+          targetRecord.error = err?.message || String(err);
+          await this.auditRepository.record({
+            userId: targetRecord.userId,
+            operation: AuditOperation.TRANSFER_FAILURE,
+            robotId: targetRecord.robotId,
+            outcome: "FAILURE",
+            timestamp: new Date(),
+            details: {
+              transferId: targetRecord.transferId,
+              direction: targetRecord.direction,
+              filename: targetRecord.filename,
+              error: targetRecord.error,
+            },
+          });
+        }
+        if (readHandle) {
+          try { await readHandle.cleanup(); } catch {}
+        }
+        if (writeHandle) {
+          try { await writeHandle.cleanup(); } catch {}
+        }
+        results.push({
+          robotId: targetRobotId,
+          transferId,
+          destinationPath: finalDestPath,
+          success: false,
+          error: err?.userMessage || err?.message || "Errore durante il trasferimento.",
+        });
+        allTargetsSucceeded = false;
+      }
+    }
+
+    let sourceDeleted = false;
+    let sourceDeleteError: string | undefined;
+
+    if (isMove) {
+      if (!allTargetsSucceeded) {
+        sourceDeleteError = "Cancellazione sorgente annullata: uno o più trasferimenti verso i destinatari sono falliti.";
+      } else if (!confirmation) {
+        sourceDeleteError = "Cancellazione sorgente annullata: conferma esplicita dell'utente mancante.";
+      } else {
+        try {
+          // Ricontrolla che la sorgente non sia stata modificata durante il trasferimento
+          const currentMeta = await this.remoteFsService.getRemoteFileStats(context, sourceRobot, sourceRemotePath);
+          if (currentMeta.size !== sourceMeta.size || (sourceMeta.modifiedAt && currentMeta.modifiedAt && currentMeta.modifiedAt !== sourceMeta.modifiedAt)) {
+            sourceDeleteError = "Cancellazione sorgente annullata: il file sorgente è stato modificato durante il trasferimento.";
+          } else {
+            await this.remoteFsService.deleteRemoteFile(context, sourceRobot, sourceRemotePath);
+            sourceDeleted = true;
+          }
+        } catch (delErr: any) {
+          sourceDeleteError = `Impossibile cancellare il file sorgente: ${delErr.message || delErr}`;
+        }
+      }
+    }
+
+    return {
+      sourceRobotId,
+      sourceRemotePath,
+      isMove,
+      allTargetsSucceeded,
+      sourceDeleted: isMove ? sourceDeleted : undefined,
+      sourceDeleteError,
+      results,
     };
   }
 }

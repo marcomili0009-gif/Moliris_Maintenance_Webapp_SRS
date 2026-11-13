@@ -3,6 +3,8 @@
 // CA-SSH-001, CA-SSH-002, CA-SSH-003, CA-SSH-004, CA-SSH-005
 
 import crypto from "crypto";
+import { EventEmitter } from "events";
+import { spawn } from "child_process";
 import { type SystemConfiguration } from "../../config/configuration.ts";
 import { type RobotRepository } from "../../storage/robot-repository.ts";
 import { type AuditRepository } from "../../storage/audit-repository.ts";
@@ -20,6 +22,56 @@ import {
   DefaultDenyTerminalSessionSharingPolicy,
 } from "./terminal-models.ts";
 import { type TerminalConcurrencyLimits, DEFAULT_TERMINAL_LIMITS } from "./terminal-limits.ts";
+
+export class ProcessPtyChannel extends EventEmitter {
+  constructor(private proc: any) {
+    super();
+    this.proc.stdout?.on("data", (chunk: any) => this.emit("data", chunk));
+    this.proc.stderr?.on("data", (chunk: any) => this.emit("data", chunk));
+    this.proc.on("exit", (code: any) => this.emit("exit", code));
+    this.proc.on("close", (code: any) => this.emit("close", code));
+    this.proc.on("error", (err: any) => this.emit("error", err));
+  }
+
+  public write(data: string | Buffer): boolean {
+    if (this.proc.stdin && !this.proc.stdin.destroyed) {
+      return this.proc.stdin.write(data);
+    }
+    return false;
+  }
+
+  public setWindow(rows: number, cols: number, _height?: number, _width?: number): void {
+    try {
+      if ((this.proc.stdin as any)?.setWindow) {
+        (this.proc.stdin as any).setWindow(rows, cols);
+      }
+    } catch {}
+  }
+
+  public pause(): void {
+    try {
+      this.proc.stdout?.pause();
+    } catch {}
+  }
+
+  public resume(): void {
+    try {
+      this.proc.stdout?.resume();
+    } catch {}
+  }
+
+  public end(): void {
+    try {
+      this.proc.stdin?.end();
+    } catch {}
+  }
+
+  public destroy(): void {
+    try {
+      this.proc.kill("SIGTERM");
+    } catch {}
+  }
+}
 
 export class TerminalService {
   private config: SystemConfiguration;
@@ -425,6 +477,116 @@ export class TerminalService {
   }
 
   /**
+   * Apertura sessione terminale locale sul server Moliris (§9).
+   * Riservato esclusivamente agli amministratori.
+   */
+  public async openServerTerminalSession(
+    user: UserEntity,
+    initialDimensions: { cols?: number; rows?: number },
+    userSessionId: string
+  ): Promise<TerminalSession> {
+    const isAdmin = Array.isArray(user.roles) && user.roles.some((r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore");
+    if (!isAdmin) {
+      await this.auditRepository.record({
+        userId: user.username,
+        operation: AuditOperation.SECURITY_AUTHORIZATION_ERROR,
+        robotId: "server",
+        outcome: "FAILURE",
+        timestamp: new Date(),
+        details: { reason: "PERMISSION_DENIED_SERVER_TERMINAL_NOT_ADMIN", roles: user.roles },
+      });
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Operazione non consentita: l'accesso al terminale server è riservato agli utenti amministratori."
+      );
+    }
+
+    const sessionData = this.sessionManager.validate(userSessionId);
+    if (!sessionData || sessionData.userId !== user.id) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Sessione utente non valida o scaduta."
+      );
+    }
+
+    if (this.activeSessions.size >= this.limits.maxConcurrentServer) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_STORAGE,
+        "Numero massimo di sessioni terminale contemporanee sul server raggiunto. Riprovare a breve."
+      );
+    }
+
+    const userCount = this.userSessionCounts.get(user.id) || 0;
+    if (userCount >= this.limits.maxConcurrentPerUser) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_STORAGE,
+        "Numero massimo di sessioni terminale simultanee per utente raggiunto."
+      );
+    }
+
+    const sessionId = crypto.randomUUID();
+    const cols = initialDimensions?.cols || 80;
+    const rows = initialDimensions?.rows || 24;
+
+    const proc = spawn("/bin/bash", ["-i"], {
+      env: {
+        ...process.env,
+        TERM: "xterm-256color",
+        COLUMNS: String(cols),
+        LINES: String(rows),
+      },
+    });
+
+    const ptyChannel = new ProcessPtyChannel(proc);
+
+    const authorizedContext = this.sessionManager.createAuthorizedContext(
+      sessionData,
+      user,
+      "server",
+      this.roleMapping
+    );
+
+    const session: TerminalSession = {
+      sessionId,
+      userId: user.id,
+      username: user.username,
+      robotId: "server",
+      authorizedContext,
+      state: "active",
+      cols,
+      rows,
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      ptyChannel,
+      localProcess: proc,
+    };
+
+    this.activeSessions.set(sessionId, session);
+    this.userSessionCounts.set(user.id, userCount + 1);
+
+    ptyChannel.on("exit", () => {
+      this.closeSessionSafely(sessionId, "SHELL_EXIT", "Processo shell server terminato dall'utente (exit).");
+    });
+    ptyChannel.on("close", () => {
+      this.closeSessionSafely(sessionId, "SHELL_EXIT", "Canale shell server chiuso.");
+    });
+    ptyChannel.on("error", (err: any) => {
+      this.closeSessionSafely(sessionId, "ERROR", `Errore shell server: ${err?.message}`);
+    });
+
+    await this.auditRepository.record({
+      userId: user.username,
+      operation: AuditOperation.TERMINAL_OPEN,
+      robotId: "server",
+      outcome: "SUCCESS",
+      timestamp: new Date(),
+      details: { sessionId, cols, rows, type: "server_terminal" },
+    });
+
+    return session;
+  }
+
+  /**
    * STEP 2 & 4 – Aggancio del canale WebSocket alla sessione PTY (RF-SSH-004, RF-SSH-006, CA-SSH-005).
    * Verifica rigorosa dell'identità dell'utente (nessun accesso a sessioni altrui).
    * Flusso trasparente bidirezionale senza interpretazione o filtraggio comandi (RF-SSH-002, RF-SSH-008).
@@ -714,9 +876,14 @@ export class TerminalService {
       session.ptyChannel.destroy();
     } catch {}
 
-    // 3. Rilascio garantito della connessione gestita SSH (RNF-REL-005)
+    // 3. Rilascio garantito della connessione gestita SSH (RNF-REL-005) o del processo locale
     try {
-      await session.managedConnection.close();
+      if (session.managedConnection) {
+        await session.managedConnection.close();
+      }
+      if (session.localProcess) {
+        session.localProcess.kill("SIGTERM");
+      }
     } catch {}
 
     session.state = "closed";

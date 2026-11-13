@@ -58,9 +58,7 @@ export const Modal: React.FC<ModalProps> = ({
             className="btn-close"
             onClick={onClose}
             aria-label="Chiudi finestra"
-          >
-            &times;
-          </button>
+          />
         </div>
         <div className="modal-body">{children}</div>
         {footer && <div className="modal-footer">{footer}</div>}

@@ -19,6 +19,7 @@ export const TransferDirection = {
   ROBOT_TO_SERVER: "ROBOT_TO_SERVER",
   CLIENT_TO_ROBOT: "CLIENT_TO_ROBOT",
   ROBOT_TO_CLIENT: "ROBOT_TO_CLIENT",
+  ROBOT_TO_ROBOT: "ROBOT_TO_ROBOT",
 } as const;
 
 export type TransferDirection = (typeof TransferDirection)[keyof typeof TransferDirection];
@@ -150,4 +151,36 @@ export interface TransferExecutionOptions {
   overwrite?: boolean;
   confirmed?: boolean;
   expectedChecksum?: string;
+}
+
+/**
+ * Richiesta trasferimento Copia/Sposta Robot -> Robot (§6)
+ */
+export interface RobotToRobotTransferRequest {
+  sourceRobotId: string;
+  sourceRemotePath: string;
+  targetRobotIds: string[];
+  targetRemotePaths?: Record<string, string>;
+  commonTargetDirectory?: string;
+  isMove?: boolean;
+  confirmation?: boolean;
+  overwrite?: boolean;
+}
+
+export interface RobotToRobotTargetResult {
+  robotId: string;
+  transferId?: string;
+  success: boolean;
+  error?: string;
+  destinationPath: string;
+}
+
+export interface RobotToRobotExecutionResult {
+  sourceRobotId: string;
+  sourceRemotePath: string;
+  isMove: boolean;
+  allTargetsSucceeded: boolean;
+  sourceDeleted?: boolean;
+  sourceDeleteError?: string;
+  results: RobotToRobotTargetResult[];
 }

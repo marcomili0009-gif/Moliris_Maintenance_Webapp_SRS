@@ -52,8 +52,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
   };
 
-  // Sotto-tab vista unificata file ("server" | "remote" | "transfers")
-  const [activeSubTab, setActiveSubTab] = useState<"server" | "remote" | "transfers">("server");
+  // Sotto-tab vista unificata file ("server" | "general" | "remote" | "transfers")
+  const [activeSubTab, setActiveSubTab] = useState<"server" | "general" | "remote" | "transfers">("server");
 
   // Hooks di dominio
   const fleet = useFleet(true);
@@ -90,6 +90,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setOverwriteTarget(null);
     setDeleteTarget(null);
     setBulkConflicts(null);
+    // Rimuove eventuali classi o stili residui sul body per garantire piena interattività
+    if (typeof document !== "undefined") {
+      document.body.classList.remove("modal-open");
+      document.body.style.removeProperty("overflow");
+      document.body.style.removeProperty("pointer-events");
+      document.querySelectorAll(".modal-backdrop").forEach((el) => el.remove());
+    }
     // Preserva intatti i trasferimenti attivi e la sessione terminale aperta
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, [fleet, handleResetFilters]);
@@ -117,7 +124,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Delete confirm modal state
   const [deleteTarget, setDeleteTarget] = useState<{
     fileName: string;
-    isServer: boolean;
+    isServer?: boolean;
+    targetType?: "server" | "general" | "remote";
   } | null>(null);
 
   // Bulk conflicts state
@@ -171,7 +179,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const handleConfirmDelete = async () => {
     if (deleteTarget) {
-      if (deleteTarget.isServer) {
+      if (deleteTarget.targetType === "general") {
+        await fs.deleteFromGeneral(deleteTarget.fileName);
+      } else if (deleteTarget.targetType === "server" || deleteTarget.isServer) {
         await fs.deleteFromServer(deleteTarget.fileName);
       } else {
         await fs.deleteFromRemote(deleteTarget.fileName);
@@ -243,12 +253,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 Registra Nuovo Robot
               </button>
             )}
+            {isAdmin && (
+              <button
+                type="button"
+                id="btn-server-terminal"
+                className="btn btn-outline-dark"
+                onClick={() => terminal.openServerTerminal()}
+                title="Apre una sessione terminale interattiva sul server Moliris"
+              >
+                Terminale Server
+              </button>
+            )}
             <button
+              type="button"
               id="btn-refresh-fleet"
               className="btn btn-outline-secondary"
-              onClick={() => fleet.loadFleet()}
+              onClick={() => fleet.refreshFleet()}
+              disabled={fleet.loading}
             >
-              Aggiorna Flotta
+              {fleet.loading ? "Aggiornamento in corso..." : "Aggiorna Flotta"}
             </button>
           </div>
 
@@ -298,12 +321,28 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               const newPath = fs.serverPath.endsWith("/") ? `${fs.serverPath}${d}` : `${fs.serverPath}/${d}`;
               fs.loadServerDirectory(fs.serverRobotId, newPath);
             }}
+            onCreateServerFolder={(name) => fs.createRobotServerFolder(fs.serverRobotId, name, fs.serverPath)}
             onServerUpload={(file) => {
               fs.uploadToServer(file, fs.serverPath);
             }}
             onServerDownload={fs.downloadFromServer}
             onServerTransferToRemote={(fileName) => fs.transferServerToRemote(fileName)}
-            onServerDelete={(fileName) => setDeleteTarget({ fileName, isServer: true })}
+            onServerDelete={(fileName) => setDeleteTarget({ fileName, targetType: "server" })}
+
+            generalPath={fs.generalPath}
+            generalListing={fs.generalListing}
+            generalLoading={fs.generalLoading}
+            generalError={fs.generalError}
+            onLoadGeneral={(p) => fs.loadGeneralDirectory(p || fs.generalPath)}
+            onGeneralUp={fs.navigateGeneralUp}
+            onGeneralNavigateDir={(d) => {
+              const newPath = fs.generalPath.endsWith("/") ? `${fs.generalPath}${d}` : `${fs.generalPath}/${d}`;
+              fs.loadGeneralDirectory(newPath);
+            }}
+            onCreateGeneralFolder={(name) => fs.createGeneralFolder(name, fs.generalPath)}
+            onGeneralUpload={(file) => fs.uploadToGeneral(file, fs.generalPath)}
+            onGeneralDownload={fs.downloadFromGeneral}
+            onGeneralDelete={(fileName) => setDeleteTarget({ fileName, targetType: "general" })}
 
             remoteRobotId={fs.remoteRobotId}
             onRemoteRobotIdChange={fs.setRemoteRobotId}
@@ -322,14 +361,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             }}
             onRemoteDownload={fs.downloadFromRemote}
             onRemoteTransferToServer={(fileName) => fs.transferRemoteToServer(fileName)}
-            onRemoteDelete={(fileName) => setDeleteTarget({ fileName, isServer: false })}
-            onRemotePurgeTemp={() => fs.cleanupRobotTemp(fs.remoteRobotId)}
+            onRemoteDelete={(fileName) => setDeleteTarget({ fileName, targetType: "remote" })}
 
             transfers={transfers.transfers}
             transfersLoading={transfers.loading}
             activeTransfersCount={transfers.activeCount}
             onRefreshTransfers={() => transfers.loadTransfers()}
-            onPurgeAllTemp={transfers.cleanupAllTemp}
             onCancelTransfer={transfers.cancelTransfer}
           />
         </div>

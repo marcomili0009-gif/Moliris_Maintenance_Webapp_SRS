@@ -341,6 +341,41 @@ await robotRepo.create(testRobot);
 credentialProvider.registerSecret("vault://creds/robot_trf_01", { method: "password", password: "ValidPass123!" });
 await serverFsService.ensureRobotDirectory(testRobot);
 
+// Cleanup scans /tmp without deleting unrelated robot files and reports the technical reason when SSH capacity is full.
+{
+  const tempFile = ".tmp_moliris_cleanup_test.tmp";
+  mockRemoteFs["/tmp"] = {
+    [tempFile]: { type: "file", size: 12, content: Buffer.from("temporary") },
+    "keep.txt": { type: "file", size: 4, content: Buffer.from("keep") },
+  };
+
+  const heldConnections = [];
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (message?: unknown) => warnings.push(String(message));
+  try {
+    for (let index = 0; index < 5; index++) {
+      heldConnections.push(await connectionManager.acquireConnection("cleanup-capacity-test", testRobot));
+    }
+
+    await transferService.purgeTempFilesForRobot(testRobot);
+  } finally {
+    console.warn = originalWarn;
+    await Promise.all(heldConnections.map((connection) => connection.close()));
+  }
+
+  const warning = warnings.map((line) => JSON.parse(line)).find(
+    (entry) => entry.message === "Bonifica remota sul robot fallita o non disponibile"
+  );
+  assert.strictEqual(warning?.meta.errorCode, ErrorCode.CONNECTION_LIMIT_REACHED);
+  assert.match(warning?.meta.error, /Limite massimo di connessioni simultanee per questo robot raggiunto/);
+
+  const cleanupResult = await transferService.purgeTempFilesForRobot(testRobot);
+  assert.strictEqual(cleanupResult.purgedFiles.includes(`[ROBOT ${testRobot.id}] /tmp/${tempFile}`), true);
+  assert.ok(mockRemoteFs["/tmp"]["keep.txt"], "La bonifica deve preservare i file non temporanei in /tmp");
+  assert.strictEqual(mockRemoteFs["/tmp"][tempFile], undefined);
+}
+
 // Setup utente autorizzato per i trasferimenti
 const userAuthorized: UserEntity = {
   id: "user_trf_op",

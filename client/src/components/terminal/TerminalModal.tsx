@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { TerminalState } from "../../hooks/useTerminal.ts";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -27,8 +27,9 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termInstanceRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const [isExpanded, setIsExpanded] = useState<boolean>(false);
 
-  const { isOpen, robotName, sessionId, status, error, cols, rows } = terminalState;
+  const { isOpen, robotId, robotName, sessionId, status, error, cols, rows } = terminalState;
 
   useEffect(() => {
     if (!isOpen || !sessionId || !containerRef.current) return;
@@ -130,15 +131,41 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
 
   return (
     <div id="modal-terminal" className="modal" role="dialog" aria-modal="true">
-      <div className="modal-content modal-terminal-window">
+      <div className={`modal-content modal-terminal-window ${isExpanded ? "terminal-expanded" : ""}`}>
         <div className="modal-header terminal-modal-header">
           <div className="terminal-title-container flex items-center gap-2">
-            <h3 id="terminal-robot-title">Terminale Remoto: {robotName}</h3>
+            <h3 id="terminal-robot-title">
+              {robotId === "server" ? "Terminale Server: Host Locale" : `Terminale Remoto: ${robotName}`}
+            </h3>
             <span id="terminal-session-status" className={`badge-status ${statusBadgeClass}`}>
               {statusText}
             </span>
           </div>
           <div className="terminal-header-actions flex items-center gap-2">
+            <button
+              type="button"
+              className="btn btn-outline-light btn-sm"
+              id="btn-terminal-expand"
+              title={isExpanded ? "Ripristina dimensioni normali" : "Espandi a finestra intera"}
+              onClick={() => {
+                const next = !isExpanded;
+                setIsExpanded(next);
+                setTimeout(() => {
+                  if (fitAddonRef.current && termInstanceRef.current && containerRef.current) {
+                    try {
+                      fitAddonRef.current.fit();
+                      const newCols = termInstanceRef.current.cols;
+                      const newRows = termInstanceRef.current.rows;
+                      if (newCols && newRows) {
+                        onResize(newCols, newRows);
+                      }
+                    } catch {}
+                  }
+                }, 60);
+              }}
+            >
+              {isExpanded ? "Ripristina" : "Espandi"}
+            </button>
             <button
               type="button"
               className="btn btn-danger btn-sm"
@@ -152,9 +179,8 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
               className="btn-close"
               id="btn-close-terminal"
               onClick={onClose}
-            >
-              &times;
-            </button>
+              aria-label="Chiudi"
+            />
           </div>
         </div>
 

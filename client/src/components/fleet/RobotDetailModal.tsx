@@ -39,9 +39,8 @@ export const RobotDetailModal: React.FC<RobotDetailModalProps> = ({
             className="btn-close"
             id="btn-close-detail"
             onClick={onClose}
-          >
-            &times;
-          </button>
+            aria-label="Chiudi"
+          />
         </div>
 
         <div className="modal-body" id="detail-body">

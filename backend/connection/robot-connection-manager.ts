@@ -119,7 +119,7 @@ export class RobotConnectionManager {
     // 2. Controllo e applicazione limiti di concorrenza (RNF-PERF-003, RF-TRF-012)
     if (this.activeConnections.size + this.pendingConnections.size >= this.limits.maxConcurrentServer) {
       throw new MolirisAppError(
-        ErrorCode.INSUFFICIENT_STORAGE,
+        ErrorCode.CONNECTION_LIMIT_REACHED,
         "Limite massimo di connessioni contemporanee sul server raggiunto. Riprovare a breve."
       );
     }
@@ -127,7 +127,7 @@ export class RobotConnectionManager {
     const currentForUser = this.getUserConnectionCount(userId);
     if (currentForUser >= this.limits.maxConcurrentPerUser) {
       throw new MolirisAppError(
-        ErrorCode.INSUFFICIENT_STORAGE,
+        ErrorCode.CONNECTION_LIMIT_REACHED,
         "Limite massimo di connessioni simultanee per utente raggiunto."
       );
     }
@@ -135,7 +135,7 @@ export class RobotConnectionManager {
     const currentForRobot = this.getRobotConnectionCount(robot.id);
     if (currentForRobot >= this.limits.maxConcurrentPerRobot) {
       throw new MolirisAppError(
-        ErrorCode.INSUFFICIENT_STORAGE,
+        ErrorCode.CONNECTION_LIMIT_REACHED,
         "Limite massimo di connessioni simultanee per questo robot raggiunto."
       );
     }

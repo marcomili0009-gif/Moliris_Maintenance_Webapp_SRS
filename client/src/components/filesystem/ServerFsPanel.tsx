@@ -1,9 +1,10 @@
-import React, { useRef } from "react";
+import React, { useRef, useState } from "react";
 import type { DirectoryListing } from "../../types/filesystem.ts";
 import type { FormattedError } from "../../types/error.ts";
 import type { RobotSummaryDto } from "../../types/fleet.ts";
 import { FsTable } from "./FsTable.tsx";
 import { RobotCombobox } from "../common/RobotCombobox.tsx";
+import { NewFolderModal } from "../common/NewFolderModal.tsx";
 
 interface ServerFsPanelProps {
   robotId: string;
@@ -16,6 +17,7 @@ interface ServerFsPanelProps {
   onLoad: () => void;
   onUp: () => void;
   onNavigateDir: (dirName: string) => void;
+  onCreateFolder?: (name: string) => Promise<{ success: boolean; error?: string }>;
   onUpload: (file: File) => void;
   onDownload: (fileName: string) => void;
   onTransferToRemote: (fileName: string) => void;
@@ -33,12 +35,14 @@ export const ServerFsPanel: React.FC<ServerFsPanelProps> = ({
   onLoad,
   onUp,
   onNavigateDir,
+  onCreateFolder,
   onUpload,
   onDownload,
   onTransferToRemote,
   onDelete,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isNewFolderOpen, setIsNewFolderOpen] = useState(false);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -113,6 +117,18 @@ export const ServerFsPanel: React.FC<ServerFsPanelProps> = ({
           Percorso Server: <strong id="fs-current-path">{currentPath || "/"}</strong>
         </span>
         <div className="fs-actions ms-auto d-flex gap-2">
+          {onCreateFolder && (
+            <button
+              type="button"
+              id="btn-server-mkdir"
+              className="btn btn-outline-primary btn-sm"
+              title="Crea una nuova cartella nel percorso corrente"
+              onClick={() => setIsNewFolderOpen(true)}
+              disabled={!robotId}
+            >
+              Nuova Cartella
+            </button>
+          )}
           <input
             type="file"
             id="fs-server-file-input"
@@ -128,6 +144,7 @@ export const ServerFsPanel: React.FC<ServerFsPanelProps> = ({
             className="btn btn-primary btn-sm"
             title="Carica file dal computer al server"
             onClick={() => fileInputRef.current?.click()}
+            disabled={!robotId}
           >
             Carica sul Server
           </button>
@@ -153,6 +170,15 @@ export const ServerFsPanel: React.FC<ServerFsPanelProps> = ({
         onDelete={onDelete}
         transferActionLabel="Invia al Robot"
       />
+
+      {onCreateFolder && (
+        <NewFolderModal
+          isOpen={isNewFolderOpen}
+          currentPath={currentPath || "/"}
+          onClose={() => setIsNewFolderOpen(false)}
+          onCreate={onCreateFolder}
+        />
+      )}
     </div>
   );
 };

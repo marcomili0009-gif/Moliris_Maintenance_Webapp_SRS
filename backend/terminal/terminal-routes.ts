@@ -88,6 +88,37 @@ export function registerTerminalRoutes(
     }
   );
 
+  // STEP 1-Server – Apertura sessione terminale locale sul server Moliris (§9, riservato admin)
+  app.post(
+    "/api/server/terminal/sessions",
+    { preHandler: [authMiddleware.authenticate.bind(authMiddleware)] },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = req.molirisUser!;
+        const userSessionId = req.molirisSession!.sessionId;
+        const body = (req.body as any) || {};
+        const cols = typeof body.cols === "number" ? body.cols : 80;
+        const rows = typeof body.rows === "number" ? body.rows : 24;
+
+        const session = await terminalService.openServerTerminalSession(
+          user,
+          { cols, rows },
+          userSessionId
+        );
+
+        return reply.status(201).send({
+          success: true,
+          sessionId: session.sessionId,
+          robotId: session.robotId,
+          cols: session.cols,
+          rows: session.rows,
+        });
+      } catch (err: any) {
+        return handleError(err, reply);
+      }
+    }
+  );
+
   // STEP 1 & 2 – Canale bidirezionale in tempo reale protetto su WebSocket / WSS (§5.4, §6.4 passi 4-5)
   // Autenticato e autorizzato lato server prima di connettere il flusso (RF-SSH-006, RNF-SEC-004)
   app.get(
