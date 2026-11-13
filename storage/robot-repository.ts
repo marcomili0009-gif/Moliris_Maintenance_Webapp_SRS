@@ -31,6 +31,7 @@ export interface RobotConfigurationUpdate {
   sftpParameters?: SftpParameters;
   customParameters?: Record<string, unknown>;
   clientId?: string;
+  clientName?: string;
   customerName?: string;
   plantId?: string;
   plantName?: string;
@@ -313,6 +314,9 @@ export class MongoRobotRepository implements RobotRepository {
       if (this.usernameUniqueness === "globale") {
         await this.collection.createIndex({ remoteUsername: 1 }, { unique: true });
       }
+
+      // 5. Indice composto per filtraggio flotta per cliente e impianto (RF-05)
+      await this.collection.createIndex({ clientId: 1, plantId: 1 });
     } catch (err: any) {
       throw new MolirisAppError(
         ErrorCode.DB_PERSISTENCE_ERROR,
@@ -323,8 +327,15 @@ export class MongoRobotRepository implements RobotRepository {
 
   async create(robot: RobotEntity): Promise<RobotEntity> {
     try {
-      await this.collection.insertOne(structuredClone(robot));
-      return structuredClone(robot);
+      const cloned = structuredClone(robot);
+      // Sincronizzazione automatica bidirezionale tra clientName e customerName
+      if (cloned.clientName && !cloned.customerName) {
+        cloned.customerName = cloned.clientName;
+      } else if (cloned.customerName && !cloned.clientName) {
+        cloned.clientName = cloned.customerName;
+      }
+      await this.collection.insertOne(cloned);
+      return structuredClone(cloned);
     } catch (err: any) {
       if (err.code === 11000) {
         throw new MolirisAppError(
@@ -395,13 +406,17 @@ export class MongoRobotRepository implements RobotRepository {
         if (val === undefined) {
           continue;
         } else if (val === null || val === "") {
-          if (key === "customerName" || key === "clientId" || key === "plantName" || key === "plantId") {
+          if (key === "customerName" || key === "clientName" || key === "clientId" || key === "plantName" || key === "plantId") {
             $unset[key] = "";
+            if (key === "customerName") $unset["clientName"] = "";
+            if (key === "clientName") $unset["customerName"] = "";
           } else {
             $set[key] = val;
           }
         } else {
           $set[key] = val;
+          if (key === "clientName") $set["customerName"] = val;
+          if (key === "customerName" && !update.clientName) $set["clientName"] = val;
         }
       }
 

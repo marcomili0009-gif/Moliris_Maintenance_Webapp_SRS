@@ -150,7 +150,8 @@ export interface RobotEntity {
 
   // Campi per associazione Cliente e Impianto (RF-05)
   clientId?: string;
-  customerName?: string;
+  clientName?: string;
+  customerName?: string; // Mantenuto per retrocompatibilità trasparente con record e API esistenti
   plantId?: string;
   plantName?: string;
 }

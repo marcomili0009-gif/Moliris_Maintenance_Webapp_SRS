@@ -32,6 +32,7 @@ export interface RobotSummaryDto {
   lastAttemptOutcome: LastAttemptOutcome | null;
   isStale?: boolean;
   clientId?: string;
+  clientName?: string;
   customerName?: string;
   plantId?: string;
   plantName?: string;
@@ -65,6 +66,7 @@ export interface RobotDetailDto {
   updatedAt: Date;
   isStale?: boolean;
   clientId?: string;
+  clientName?: string;
   customerName?: string;
   plantId?: string;
   plantName?: string;
@@ -101,7 +103,8 @@ export function toRobotSummaryDto(robot: RobotEntity, staleThresholdSeconds?: nu
     lastAttemptOutcome: robot.lastAttemptOutcome ?? null,
     isStale,
     clientId: robot.clientId,
-    customerName: robot.customerName,
+    clientName: robot.clientName || robot.customerName,
+    customerName: robot.customerName || robot.clientName,
     plantId: robot.plantId,
     plantName: robot.plantName,
   };
@@ -143,7 +146,8 @@ export function toRobotDetailDto(robot: RobotEntity, staleThresholdSeconds?: num
     updatedAt: robot.updatedAt,
     isStale,
     clientId: robot.clientId,
-    customerName: robot.customerName,
+    clientName: robot.clientName || robot.customerName,
+    customerName: robot.customerName || robot.clientName,
     plantId: robot.plantId,
     plantName: robot.plantName,
   };

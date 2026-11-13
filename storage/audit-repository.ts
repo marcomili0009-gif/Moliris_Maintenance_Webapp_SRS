@@ -128,6 +128,10 @@ export class MongoAuditRepository implements AuditRepository {
       await this.collection.createIndex({ userId: 1 });
       await this.collection.createIndex({ robotId: 1 });
       await this.collection.createIndex({ operation: 1 });
+
+      // Indici composti per query temporali filtrate per utente o robot (§10.4, audit ottimizzato)
+      await this.collection.createIndex({ userId: 1, timestamp: -1 });
+      await this.collection.createIndex({ robotId: 1, timestamp: -1 });
     } catch (err: any) {
       throw new MolirisAppError(
         ErrorCode.DB_PERSISTENCE_ERROR,
