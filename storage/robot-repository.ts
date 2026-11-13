@@ -54,6 +54,10 @@ export interface RobotRepository {
   updateLastAttempt(id: string, outcome: LastAttemptOutcome): Promise<RobotEntity>;
   updateAnagraphicState(id: string, newState: AnagraphicState): Promise<RobotEntity>;
   updateRegistrationState(id: string, regState: RegistrationState, verificationInfo?: ConnectionVerificationInfo): Promise<RobotEntity>;
+  updateClientNameForRobots(clientId: string, newName: string): Promise<number>;
+  updatePlantNameForRobots(plantId: string, newName: string): Promise<number>;
+  listByClientId(clientId: string): Promise<RobotEntity[]>;
+  listByPlantId(plantId: string): Promise<RobotEntity[]>;
 }
 
 /**
@@ -268,6 +272,55 @@ export class InMemoryRobotRepository implements RobotRepository {
     };
     this.robots.set(id, updated);
     return structuredClone(updated);
+  }
+
+  async updateClientNameForRobots(clientId: string, newName: string): Promise<number> {
+    let count = 0;
+    const now = new Date();
+    for (const [id, robot] of this.robots.entries()) {
+      if (robot.clientId === clientId) {
+        robot.clientName = newName;
+        robot.customerName = newName;
+        robot.updatedAt = now;
+        this.robots.set(id, robot);
+        count++;
+      }
+    }
+    return count;
+  }
+
+  async updatePlantNameForRobots(plantId: string, newName: string): Promise<number> {
+    let count = 0;
+    const now = new Date();
+    for (const [id, robot] of this.robots.entries()) {
+      if (robot.plantId === plantId) {
+        robot.plantName = newName;
+        robot.updatedAt = now;
+        this.robots.set(id, robot);
+        count++;
+      }
+    }
+    return count;
+  }
+
+  async listByClientId(clientId: string): Promise<RobotEntity[]> {
+    const list: RobotEntity[] = [];
+    for (const robot of this.robots.values()) {
+      if (robot.clientId === clientId) {
+        list.push(structuredClone(robot));
+      }
+    }
+    return list;
+  }
+
+  async listByPlantId(plantId: string): Promise<RobotEntity[]> {
+    const list: RobotEntity[] = [];
+    for (const robot of this.robots.values()) {
+      if (robot.plantId === plantId) {
+        list.push(structuredClone(robot));
+      }
+    }
+    return list;
   }
 }
 
@@ -560,6 +613,71 @@ export class MongoRobotRepository implements RobotRepository {
     } catch (err: any) {
       if (err instanceof MolirisAppError) throw err;
       throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore MongoDB durante updateRegistrationState: ${err.message}`);
+    }
+  }
+
+  async updateClientNameForRobots(clientId: string, newName: string): Promise<number> {
+    try {
+      const res = await this.collection.updateMany(
+        { clientId },
+        {
+          $set: {
+            clientName: newName,
+            customerName: newName,
+            updatedAt: new Date(),
+          },
+        }
+      );
+      return res.modifiedCount;
+    } catch (err: any) {
+      throw new MolirisAppError(
+        ErrorCode.DB_PERSISTENCE_ERROR,
+        `Errore MongoDB durante updateClientNameForRobots: ${err.message}`
+      );
+    }
+  }
+
+  async updatePlantNameForRobots(plantId: string, newName: string): Promise<number> {
+    try {
+      const res = await this.collection.updateMany(
+        { plantId },
+        {
+          $set: {
+            plantName: newName,
+            updatedAt: new Date(),
+          },
+        }
+      );
+      return res.modifiedCount;
+    } catch (err: any) {
+      throw new MolirisAppError(
+        ErrorCode.DB_PERSISTENCE_ERROR,
+        `Errore MongoDB durante updatePlantNameForRobots: ${err.message}`
+      );
+    }
+  }
+
+  async listByClientId(clientId: string): Promise<RobotEntity[]> {
+    try {
+      const docs = await this.collection.find({ clientId }, { projection: { _id: 0 } }).toArray();
+      return docs as RobotEntity[];
+    } catch (err: any) {
+      throw new MolirisAppError(
+        ErrorCode.DB_PERSISTENCE_ERROR,
+        `Errore MongoDB durante listByClientId: ${err.message}`
+      );
+    }
+  }
+
+  async listByPlantId(plantId: string): Promise<RobotEntity[]> {
+    try {
+      const docs = await this.collection.find({ plantId }, { projection: { _id: 0 } }).toArray();
+      return docs as RobotEntity[];
+    } catch (err: any) {
+      throw new MolirisAppError(
+        ErrorCode.DB_PERSISTENCE_ERROR,
+        `Errore MongoDB durante listByPlantId: ${err.message}`
+      );
     }
   }
 }

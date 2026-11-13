@@ -11,6 +11,7 @@ export interface ClientRepository {
   findById(id: string): Promise<ClientEntity | null>;
   findByName(name: string): Promise<ClientEntity | null>;
   findOrCreate(name: string): Promise<ClientEntity>;
+  updateName(id: string, newName: string, expectedVersion?: number): Promise<ClientEntity>;
   list(): Promise<ClientEntity[]>;
 }
 
@@ -20,6 +21,7 @@ export interface PlantRepository {
   findById(id: string): Promise<PlantEntity | null>;
   findByNameAndClient(clientId: string, name: string): Promise<PlantEntity | null>;
   findOrCreate(clientId: string, name: string): Promise<PlantEntity>;
+  updateName(id: string, newName: string, expectedVersion?: number): Promise<PlantEntity>;
   listByClient(clientId: string): Promise<PlantEntity[]>;
   list(): Promise<PlantEntity[]>;
 }
@@ -65,10 +67,50 @@ export class InMemoryClientRepository implements ClientRepository {
     const newClient: ClientEntity = {
       id: "cli_" + crypto.randomUUID(),
       name: name.trim(),
+      version: 1,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
     return this.create(newClient);
+  }
+
+  async updateName(id: string, newName: string, expectedVersion?: number): Promise<ClientEntity> {
+    const trimmed = newName.trim();
+    if (!trimmed) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Il nome cliente non può essere vuoto.");
+    }
+    const found = this.clients.get(id);
+    if (!found) {
+      throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Cliente con id '${id}' non trovato.`);
+    }
+
+    const curVersion = found.version ?? 1;
+    if (expectedVersion !== undefined && curVersion !== expectedVersion) {
+      throw new MolirisAppError(
+        ErrorCode.DB_PERSISTENCE_ERROR,
+        `Conflitto di versione cliente: attesa v${expectedVersion}, attuale v${curVersion}.`
+      );
+    }
+
+    // Se il nome è invariato, operazione idempotente
+    if (found.name === trimmed) {
+      return structuredClone(found);
+    }
+
+    // Controllo unicità case-insensitive
+    const existingWithSameName = await this.findByName(trimmed);
+    if (existingWithSameName && existingWithSameName.id !== id) {
+      throw new MolirisAppError(
+        ErrorCode.DB_PERSISTENCE_ERROR,
+        `Cliente '${trimmed}' già esistente.`
+      );
+    }
+
+    found.name = trimmed;
+    found.version = curVersion + 1;
+    found.updatedAt = new Date();
+    this.clients.set(id, found);
+    return structuredClone(found);
   }
 
   async list(): Promise<ClientEntity[]> {
@@ -118,10 +160,48 @@ export class InMemoryPlantRepository implements PlantRepository {
       id: "plant_" + crypto.randomUUID(),
       clientId,
       name: name.trim(),
+      version: 1,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
     return this.create(newPlant);
+  }
+
+  async updateName(id: string, newName: string, expectedVersion?: number): Promise<PlantEntity> {
+    const trimmed = newName.trim();
+    if (!trimmed) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Il nome impianto non può essere vuoto.");
+    }
+    const found = this.plants.get(id);
+    if (!found) {
+      throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Impianto con id '${id}' non trovato.`);
+    }
+
+    const curVersion = found.version ?? 1;
+    if (expectedVersion !== undefined && curVersion !== expectedVersion) {
+      throw new MolirisAppError(
+        ErrorCode.DB_PERSISTENCE_ERROR,
+        `Conflitto di versione impianto: attesa v${expectedVersion}, attuale v${curVersion}.`
+      );
+    }
+
+    if (found.name === trimmed) {
+      return structuredClone(found);
+    }
+
+    const existingWithSameName = await this.findByNameAndClient(found.clientId, trimmed);
+    if (existingWithSameName && existingWithSameName.id !== id) {
+      throw new MolirisAppError(
+        ErrorCode.DB_PERSISTENCE_ERROR,
+        `Impianto '${trimmed}' già esistente per il cliente '${found.clientId}'.`
+      );
+    }
+
+    found.name = trimmed;
+    found.version = curVersion + 1;
+    found.updatedAt = new Date();
+    this.plants.set(id, found);
+    return structuredClone(found);
   }
 
   async listByClient(clientId: string): Promise<PlantEntity[]> {
@@ -204,6 +284,7 @@ export class MongoClientRepository implements ClientRepository {
     const newClient: ClientEntity = {
       id: "cli_" + crypto.randomUUID(),
       name: name.trim(),
+      version: 1,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -213,6 +294,72 @@ export class MongoClientRepository implements ClientRepository {
       const race = await this.findByName(name);
       if (race) return race;
       throw err;
+    }
+  }
+
+  async updateName(id: string, newName: string, expectedVersion?: number): Promise<ClientEntity> {
+    const trimmed = newName.trim();
+    if (!trimmed) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Il nome cliente non può essere vuoto.");
+    }
+    try {
+      const existing = await this.findById(id);
+      if (!existing) {
+        throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Cliente con id '${id}' non trovato.`);
+      }
+
+      const curVersion = existing.version ?? 1;
+      if (expectedVersion !== undefined && curVersion !== expectedVersion) {
+        throw new MolirisAppError(
+          ErrorCode.DB_PERSISTENCE_ERROR,
+          `Conflitto di versione cliente: attesa v${expectedVersion}, attuale v${curVersion}.`
+        );
+      }
+
+      if (existing.name === trimmed) {
+        return existing;
+      }
+
+      const nextVersion = curVersion + 1;
+      const filter: any = {
+        id,
+        $or: [{ version: curVersion }, { version: { $exists: false } }],
+      };
+
+      const result = await this.collection.findOneAndUpdate(
+        filter,
+        {
+          $set: {
+            name: trimmed,
+            version: nextVersion,
+            updatedAt: new Date(),
+          },
+        },
+        { returnDocument: "after", projection: { _id: 0 } }
+      );
+
+      if (!result) {
+        // Nessun match: concorrenza o id inesistente
+        const fresh = await this.findById(id);
+        if (!fresh) {
+          throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Cliente con id '${id}' non trovato.`);
+        }
+        throw new MolirisAppError(
+          ErrorCode.DB_PERSISTENCE_ERROR,
+          `Conflitto di concorrenza su aggiornamento cliente '${id}'. Versione modificata da un'altra operazione.`
+        );
+      }
+
+      return result as ClientEntity;
+    } catch (err: any) {
+      if (err instanceof MolirisAppError) throw err;
+      if (err.code === 11000) {
+        throw new MolirisAppError(
+          ErrorCode.DB_PERSISTENCE_ERROR,
+          `Cliente '${trimmed}' già esistente.`
+        );
+      }
+      throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore MongoDB updateName client: ${err.message}`);
     }
   }
 
@@ -292,6 +439,7 @@ export class MongoPlantRepository implements PlantRepository {
       id: "plant_" + crypto.randomUUID(),
       clientId,
       name: name.trim(),
+      version: 1,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -301,6 +449,71 @@ export class MongoPlantRepository implements PlantRepository {
       const race = await this.findByNameAndClient(clientId, name);
       if (race) return race;
       throw err;
+    }
+  }
+
+  async updateName(id: string, newName: string, expectedVersion?: number): Promise<PlantEntity> {
+    const trimmed = newName.trim();
+    if (!trimmed) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Il nome impianto non può essere vuoto.");
+    }
+    try {
+      const existing = await this.findById(id);
+      if (!existing) {
+        throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Impianto con id '${id}' non trovato.`);
+      }
+
+      const curVersion = existing.version ?? 1;
+      if (expectedVersion !== undefined && curVersion !== expectedVersion) {
+        throw new MolirisAppError(
+          ErrorCode.DB_PERSISTENCE_ERROR,
+          `Conflitto di versione impianto: attesa v${expectedVersion}, attuale v${curVersion}.`
+        );
+      }
+
+      if (existing.name === trimmed) {
+        return existing;
+      }
+
+      const nextVersion = curVersion + 1;
+      const filter: any = {
+        id,
+        $or: [{ version: curVersion }, { version: { $exists: false } }],
+      };
+
+      const result = await this.collection.findOneAndUpdate(
+        filter,
+        {
+          $set: {
+            name: trimmed,
+            version: nextVersion,
+            updatedAt: new Date(),
+          },
+        },
+        { returnDocument: "after", projection: { _id: 0 } }
+      );
+
+      if (!result) {
+        const fresh = await this.findById(id);
+        if (!fresh) {
+          throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Impianto con id '${id}' non trovato.`);
+        }
+        throw new MolirisAppError(
+          ErrorCode.DB_PERSISTENCE_ERROR,
+          `Conflitto di concorrenza su aggiornamento impianto '${id}'. Versione modificata da un'altra operazione.`
+        );
+      }
+
+      return result as PlantEntity;
+    } catch (err: any) {
+      if (err instanceof MolirisAppError) throw err;
+      if (err.code === 11000) {
+        throw new MolirisAppError(
+          ErrorCode.DB_PERSISTENCE_ERROR,
+          `Impianto '${trimmed}' già esistente per il cliente specificato.`
+        );
+      }
+      throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore MongoDB updateName plant: ${err.message}`);
     }
   }
 
