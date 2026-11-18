@@ -3,12 +3,13 @@ import { ServerFsPanel } from "./ServerFsPanel.tsx";
 import { GeneralFsPanel } from "./GeneralFsPanel.tsx";
 import { RemoteFsPanel } from "./RemoteFsPanel.tsx";
 import { TransfersPanel } from "./TransfersPanel.tsx";
+import { FsTabBar, type FsSubTab } from "./FsTabBar.tsx";
 import type { DirectoryListing } from "../../types/filesystem.ts";
 import type { TransferProgress } from "../../types/transfer.ts";
 import type { FormattedError } from "../../types/error.ts";
 import type { RobotSummaryDto } from "../../types/fleet.ts";
 
-export type FsSubTab = "server" | "general" | "remote" | "transfers";
+export type { FsSubTab };
 
 interface FsBrowserSectionProps {
   robots?: RobotSummaryDto[];
@@ -26,11 +27,13 @@ interface FsBrowserSectionProps {
   onLoadServer: () => void;
   onServerUp: () => void;
   onServerNavigateDir: (dirName: string) => void;
+  onServerNavigatePath?: (path: string) => void;
   onCreateServerFolder?: (name: string) => Promise<{ success: boolean; error?: string }>;
   onServerUpload: (file: File) => void;
   onServerDownload: (fileName: string) => void;
   onServerTransferToRemote: (fileName: string) => void;
   onServerDelete: (fileName: string) => void;
+  onServerDeleteFolder?: (folderName: string) => void;
 
   // General Server Archive
   generalPath?: string;
@@ -40,10 +43,13 @@ interface FsBrowserSectionProps {
   onLoadGeneral?: (path?: string) => void;
   onGeneralUp?: () => void;
   onGeneralNavigateDir?: (dirName: string) => void;
+  onGeneralNavigatePath?: (path: string) => void;
+  onGeneralOpenRobot?: (robotId: string) => void;
   onCreateGeneralFolder?: (name: string) => Promise<{ success: boolean; error?: string }>;
   onGeneralUpload?: (file: File) => void;
   onGeneralDownload?: (fileName: string) => void;
   onGeneralDelete?: (fileName: string) => void;
+  onGeneralDeleteFolder?: (folderName: string) => void;
 
   // Remote
   remoteRobotId: string;
@@ -55,10 +61,12 @@ interface FsBrowserSectionProps {
   onLoadRemote: () => void;
   onRemoteUp: () => void;
   onRemoteNavigateDir: (dirName: string) => void;
+  onRemoteNavigatePath?: (path: string) => void;
   onRemoteUpload: (file: File) => void;
   onRemoteDownload: (fileName: string) => void;
   onRemoteTransferToServer: (fileName: string) => void;
   onRemoteDelete: (fileName: string) => void;
+  onRemoteDeleteFolder?: (folderName: string) => void;
 
   // Transfers
   transfers: TransferProgress[];
@@ -83,11 +91,13 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
   onLoadServer,
   onServerUp,
   onServerNavigateDir,
+  onServerNavigatePath,
   onCreateServerFolder,
   onServerUpload,
   onServerDownload,
   onServerTransferToRemote,
   onServerDelete,
+  onServerDeleteFolder,
 
   generalPath = "/",
   generalListing = null,
@@ -96,10 +106,13 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
   onLoadGeneral = () => {},
   onGeneralUp = () => {},
   onGeneralNavigateDir = () => {},
+  onGeneralNavigatePath,
+  onGeneralOpenRobot,
   onCreateGeneralFolder = async () => ({ success: false, error: "Non supportato" }),
   onGeneralUpload = () => {},
   onGeneralDownload = () => {},
   onGeneralDelete = () => {},
+  onGeneralDeleteFolder,
 
   remoteRobotId,
   onRemoteRobotIdChange,
@@ -110,10 +123,12 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
   onLoadRemote,
   onRemoteUp,
   onRemoteNavigateDir,
+  onRemoteNavigatePath,
   onRemoteUpload,
   onRemoteDownload,
   onRemoteTransferToServer,
   onRemoteDelete,
+  onRemoteDeleteFolder,
 
   transfers,
   transfersLoading,
@@ -153,50 +168,18 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
         </div>
       </div>
 
-      {/* 2. Tab di navigazione */}
-      <div className="fs-tab-bar mb-3 d-flex flex-wrap gap-2">
-        <button
-          type="button"
-          id="btn-tab-fs-server"
-          data-view="server"
-          className={`fs-tab-btn ${currentTab === "server" ? "active" : ""}`}
-          onClick={() => handleTabClick("server")}
-        >
-          File sul Server (Archivio Locale)
-        </button>
+      {/* 2. Tab di navigazione con indicatore animato */}
+      <FsTabBar
+        activeTab={currentTab}
+        onChange={handleTabClick}
+        activeTransfersCount={activeTransfersCount}
+      />
 
-        <button
-          type="button"
-          id="btn-tab-general"
-          data-view="general"
-          className={`fs-tab-btn ${currentTab === "general" ? "active" : ""}`}
-          onClick={() => handleTabClick("general")}
-        >
-          Archivio Generale Server
-        </button>
-
-        <button
-          type="button"
-          id="btn-tab-fs-remote"
-          data-view="remote"
-          className={`fs-tab-btn ${currentTab === "remote" ? "active" : ""}`}
-          onClick={() => handleTabClick("remote")}
-        >
-          File sul Robot (Filesystem Remoto SFTP)
-        </button>
-
-        <button
-          type="button"
-          id="btn-tab-transfers"
-          data-view="transfers"
-          className={`fs-tab-btn ${currentTab === "transfers" ? "active" : ""}`}
-          onClick={() => handleTabClick("transfers")}
-        >
-          Gestione Trasferimenti (<span id="transfers-active-count">{activeTransfersCount}</span> attivi)
-        </button>
-      </div>
-
-      <div style={{ display: currentTab === "server" ? "block" : "none" }}>
+      <div
+        role="tabpanel"
+        aria-hidden={currentTab !== "server"}
+        style={{ display: currentTab === "server" ? "block" : "none" }}
+      >
         <ServerFsPanel
           robotId={serverRobotId}
           onRobotIdChange={onServerRobotIdChange}
@@ -208,15 +191,21 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
           onLoad={onLoadServer}
           onUp={onServerUp}
           onNavigateDir={onServerNavigateDir}
+          onNavigatePath={onServerNavigatePath}
           onCreateFolder={onCreateServerFolder}
           onUpload={onServerUpload}
           onDownload={onServerDownload}
           onTransferToRemote={onServerTransferToRemote}
           onDelete={onServerDelete}
+          onDeleteFolder={onServerDeleteFolder}
         />
       </div>
 
-      <div style={{ display: currentTab === "general" ? "block" : "none" }}>
+      <div
+        role="tabpanel"
+        aria-hidden={currentTab !== "general"}
+        style={{ display: currentTab === "general" ? "block" : "none" }}
+      >
         <GeneralFsPanel
           currentPath={generalPath}
           listing={generalListing}
@@ -225,14 +214,21 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
           onLoad={onLoadGeneral}
           onUp={onGeneralUp}
           onNavigateDir={onGeneralNavigateDir}
+          onNavigatePath={onGeneralNavigatePath}
+          onOpenRobot={onGeneralOpenRobot}
           onCreateFolder={onCreateGeneralFolder}
           onUpload={onGeneralUpload}
           onDownload={onGeneralDownload}
           onDelete={onGeneralDelete}
+          onDeleteFolder={onGeneralDeleteFolder}
         />
       </div>
 
-      <div style={{ display: currentTab === "remote" ? "block" : "none" }}>
+      <div
+        role="tabpanel"
+        aria-hidden={currentTab !== "remote"}
+        style={{ display: currentTab === "remote" ? "block" : "none" }}
+      >
         <RemoteFsPanel
           robotId={remoteRobotId}
           onRobotIdChange={onRemoteRobotIdChange}
@@ -244,14 +240,20 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
           onLoad={onLoadRemote}
           onUp={onRemoteUp}
           onNavigateDir={onRemoteNavigateDir}
+          onNavigatePath={onRemoteNavigatePath}
           onUpload={onRemoteUpload}
           onDownload={onRemoteDownload}
           onTransferToServer={onRemoteTransferToServer}
           onDelete={onRemoteDelete}
+          onDeleteFolder={onRemoteDeleteFolder}
         />
       </div>
 
-      <div style={{ display: currentTab === "transfers" ? "block" : "none" }}>
+      <div
+        role="tabpanel"
+        aria-hidden={currentTab !== "transfers"}
+        style={{ display: currentTab === "transfers" ? "block" : "none" }}
+      >
         <TransfersPanel
           transfers={transfers}
           loading={transfersLoading}

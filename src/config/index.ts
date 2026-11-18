@@ -65,6 +65,11 @@ export interface LoadConfigOptions {
   configPath?: string;
 
   /**
+   * Directory base per la ricerca dei file di configurazione (default: process.cwd()).
+   */
+  cwd?: string;
+
+  /**
    * Oggetto variabili d'ambiente (default: process.env).
    */
   env?: Record<string, string | undefined>;
@@ -167,22 +172,38 @@ function extractEnvConfig(env: Record<string, string | undefined>): Record<strin
 export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
   const env = options.env || process.env;
   let fileConfig: Record<string, any> = {};
+  const cwd = path.resolve(options.cwd || process.cwd());
 
   const targetPath = options.configPath || env["MOLIRIS_CONFIG_FILE"] || env["CONFIG_FILE_PATH"];
+  const defaultPaths = [
+    path.join(cwd, "config", "config.json"),
+    path.join(cwd, "config.json"),
+    path.join(cwd, "config.example.json"),
+  ];
+  const resolvedPath = targetPath
+    ? path.resolve(cwd, targetPath)
+    : defaultPaths.find((candidate) => fs.existsSync(candidate));
 
-  if (targetPath) {
-    const resolvedPath = path.resolve(targetPath);
-    if (!fs.existsSync(resolvedPath)) {
-      throw new ConfigError(
-        `File di configurazione specificato non trovato: "${resolvedPath}". Interruzione immediata del bootstrap.`,
-        "CONFIG_FILE_NOT_FOUND"
-      );
-    }
+  if (targetPath && resolvedPath && !fs.existsSync(resolvedPath)) {
+    throw new ConfigError(
+      `File di configurazione specificato non trovato: "${resolvedPath}". Interruzione immediata del bootstrap.`,
+      "CONFIG_FILE_NOT_FOUND"
+    );
+  }
 
+  if (resolvedPath && fs.existsSync(resolvedPath)) {
     try {
       const rawContent = fs.readFileSync(resolvedPath, "utf-8");
-      fileConfig = JSON.parse(rawContent);
+      const parsedConfig = JSON.parse(rawContent);
+      if (!parsedConfig || typeof parsedConfig !== "object" || Array.isArray(parsedConfig)) {
+        throw new ConfigError(
+          `Il file di configurazione "${resolvedPath}" deve contenere un oggetto JSON.`,
+          "CONFIG_FORMAT_ERROR"
+        );
+      }
+      fileConfig = parsedConfig;
     } catch (err: any) {
+      if (err instanceof ConfigError) throw err;
       if (err instanceof SyntaxError) {
         throw new ConfigError(
           `Sintassi JSON non valida nel file di configurazione "${resolvedPath}": ${err.message}`,
@@ -193,20 +214,6 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
         `Impossibile leggere il file di configurazione "${resolvedPath}": ${err.message}`,
         "CONFIG_READ_ERROR"
       );
-    }
-  } else {
-    // Verifica file di default opzionale (es. config.json nella root del progetto)
-    const defaultJsonPath = path.resolve(process.cwd(), "config.json");
-    if (fs.existsSync(defaultJsonPath)) {
-      try {
-        const rawContent = fs.readFileSync(defaultJsonPath, "utf-8");
-        fileConfig = JSON.parse(rawContent);
-      } catch (err: any) {
-        throw new ConfigError(
-          `Sintassi JSON non valida nel file di configurazione predefinito "${defaultJsonPath}": ${err.message}`,
-          "CONFIG_SYNTAX_ERROR"
-        );
-      }
     }
   }
 

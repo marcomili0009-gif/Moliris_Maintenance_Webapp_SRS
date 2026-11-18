@@ -6,7 +6,7 @@ import path from "path";
 import os from "os";
 import https from "https";
 import { execSync } from "child_process";
-import { createServer } from "./server.ts";
+import { createServer, resolveFrontendDistDir } from "./server.ts";
 import { MolirisLogger } from "../logging/logger.ts";
 import { type SystemConfiguration } from "../config/configuration.ts";
 
@@ -50,6 +50,15 @@ try {
 
 console.log("PASS: Test verifica certificati TLS mancanti superato.");
 
+// Il bundle Node viene emesso in dist/backend e deve continuare a trovare
+// gli asset sibling in dist/frontend, oltre alla modalità tsx da backend/.
+const projectRoot = path.resolve(import.meta.dirname, "..");
+assert.strictEqual(
+  resolveFrontendDistDir(path.join(projectRoot, "dist", "backend")),
+  path.join(projectRoot, "dist", "frontend"),
+  "Il server compilato deve risolvere la directory dist/frontend"
+);
+
 // Test 2: Avvio server HTTPS e verifica endpoint /healthz (RNF-SEC-001)
 const validConfig: SystemConfiguration = {
   ...invalidConfig,
@@ -62,6 +71,24 @@ assert(server.hasDecorator("appConfig"), "Il server Fastify deve avere il decora
 assert.strictEqual(server.appConfig.sessionInactivityTimeoutMinutes, 30);
 assert.strictEqual(server.appConfig.maxFileUploadBytes, 3 * 1024 * 1024 * 1024);
 assert.strictEqual(server.appConfig.bulkUploadConfig.chunkSizeBytes, 2 * 1024 * 1024);
+
+const publicConfigResponse = await server.inject({
+  method: "GET",
+  url: "/api/config/public",
+});
+assert.strictEqual(publicConfigResponse.statusCode, 200, "La configurazione pubblica deve essere leggibile");
+const publicConfig = publicConfigResponse.json();
+assert.strictEqual(publicConfig.sessionInactivityTimeoutMinutes, 30);
+assert.strictEqual(publicConfig.sshTerminalActiveTimeoutMinutes, 15);
+assert.strictEqual(publicConfig.maxConcurrentWebUsers, 10);
+assert.strictEqual(publicConfig.maxConcurrentTerminalsPerRobot, 1);
+assert.strictEqual(publicConfig.maxSessionsPerAccount, 1);
+assert.strictEqual(publicConfig.bulkUploadConfig.maxConcurrentFiles, 20);
+assert.strictEqual(publicConfig.customSettings, undefined, "Le impostazioni estese non devono essere esposte pubblicamente");
+
+const frontendResponse = await server.inject({ method: "GET", url: "/" });
+assert.strictEqual(frontendResponse.statusCode, 200, "La route root deve servire la build React");
+assert.match(frontendResponse.body, /assets\/index-[^"]+\.js/);
 
 const address = await server.listen({ port: 0, host: "127.0.0.1" });
 const port = (server.server.address() as any).port;

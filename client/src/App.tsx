@@ -11,10 +11,12 @@ export const App: React.FC = () => {
     isAuthenticated,
     loading,
     loginError,
+    sessionConflict,
     idleWarning,
     login,
     logout,
     dismissIdleWarning,
+    dismissSessionConflict,
   } = useAuth();
 
   const [activeMainView, setActiveMainView] = useState<"fleet" | "files">("fleet");
@@ -56,7 +58,12 @@ export const App: React.FC = () => {
         onViewChange={setActiveMainView}
       />
       {!isAuthenticated || !currentUser ? (
-        <LoginView onLogin={login} error={loginError} />
+        <LoginView
+          onLogin={login}
+          error={loginError}
+          sessionConflict={sessionConflict}
+          onDismissSessionConflict={dismissSessionConflict}
+        />
       ) : (
         <DashboardView
           user={currentUser}

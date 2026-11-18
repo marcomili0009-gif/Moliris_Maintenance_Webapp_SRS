@@ -137,7 +137,7 @@ const testSshServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, 
           sftp.name(reqid, fileEntries as any);
         });
 
-        sftp.on("STAT", (reqid: number, targetPath: string) => {
+        const handleStat = (reqid: number, targetPath: string) => {
           const norm = toAbs(targetPath);
           if (mockRemoteFs[norm]) {
             return sftp.attrs(reqid, {
@@ -163,7 +163,10 @@ const testSshServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, 
             });
           }
           sftp.status(reqid, 2 /* NO_SUCH_FILE */);
-        });
+        };
+
+        sftp.on("STAT", handleStat);
+        sftp.on("LSTAT", handleStat);
 
         sftp.on("OPEN", (reqid: number, filename: string, flags: number) => {
           const norm = toAbs(filename);
@@ -253,6 +256,18 @@ const testSshServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, 
             return sftp.status(reqid, 0 /* OK */);
           }
           sftp.status(reqid, 2 /* NO_SUCH_FILE */);
+        });
+
+        sftp.on("RMDIR", (reqid: number, targetPath: string) => {
+          const norm = toAbs(targetPath);
+          const entries = mockRemoteFs[norm];
+          if (!entries) return sftp.status(reqid, 2 /* NO_SUCH_FILE */);
+          if (Object.keys(entries).length > 0) return sftp.status(reqid, 4 /* FAILURE */);
+          delete mockRemoteFs[norm];
+          const parent = path.posix.dirname(norm);
+          const base = path.posix.basename(norm);
+          if (mockRemoteFs[parent]) delete mockRemoteFs[parent][base];
+          return sftp.status(reqid, 0 /* OK */);
         });
       });
     });
@@ -964,6 +979,41 @@ fs.writeFileSync(validPreexistingServerPath, "VALID_SERVER_PREEXISTING_DATA_ORIG
   console.log("  PASS: RF-TRF-010 - Ripresa trasferimenti interrotti verificata con successo.");
 }
 
+// TEST: Preflight conteggio e rimozione ricorsiva di una cartella SFTP
+{
+  mockRemoteFs["/home/operator"]["archive_to_delete"] = { type: "directory", size: 4096 };
+  mockRemoteFs["/home/operator/archive_to_delete"] = {
+    "first.txt": { type: "file", size: 1, mtime: 1700000000, content: Buffer.from("1") },
+    "nested": { type: "directory", size: 4096 },
+  };
+  mockRemoteFs["/home/operator/archive_to_delete/nested"] = {
+    "second.txt": { type: "file", size: 1, mtime: 1700000000, content: Buffer.from("2") },
+  };
+
+  const deleteContext: typeof contextAuth = {
+    ...contextAuth,
+    permissions: new Set([...contextAuth.permissions, AppPermission.FS_REMOTE_DELETE]),
+  };
+  const remoteFolderInfo = await remoteFsService.getRemoteFolderDeletionInfo(
+    deleteContext,
+    testRobot,
+    "/home/operator/archive_to_delete"
+  );
+  assert.strictEqual(remoteFolderInfo.fileCount, 2);
+  assert.strictEqual(remoteFolderInfo.directoryCount, 1);
+  assert.strictEqual(remoteFolderInfo.totalCount, 3);
+
+  await remoteFsService.deleteRemoteFolder(
+    deleteContext,
+    testRobot,
+    "/home/operator/archive_to_delete",
+    { recursive: true }
+  );
+  assert.strictEqual(mockRemoteFs["/home/operator/archive_to_delete"], undefined);
+  assert.strictEqual(mockRemoteFs["/home/operator"]["archive_to_delete"], undefined);
+  console.log("  PASS: Preflight conteggio e rimozione ricorsiva sicura cartella SFTP verificati.");
+}
+
 // =========================================================================
 // TEST 12: Endpoint REST Backend e Fastify Integration (RF-TRF-001..003)
 // =========================================================================
@@ -1008,6 +1058,44 @@ fs.writeFileSync(validPreexistingServerPath, "VALID_SERVER_PREEXISTING_DATA_ORIG
   assert.strictEqual(listRes.statusCode, 200);
   const listBody = JSON.parse(listRes.body);
   assert.ok(Array.isArray(listBody));
+
+  // Registro globale recente: deve includere lo storico del job appena consultato
+  const recentRes = await testServer.inject({
+    method: "GET",
+    url: "/api/transfers/recent",
+    headers: {
+      cookie: `__Host-moliris_session=${sessionAuth.sessionId}`,
+    },
+  });
+  assert.strictEqual(recentRes.statusCode, 200);
+  const recentBody = JSON.parse(recentRes.body);
+  assert.ok(Array.isArray(recentBody.transfers));
+  assert.ok(recentBody.transfers.length > 0, "Lo storico recente non deve essere vuoto");
+
+  // Endpoint attivi: compatibile con il nome richiesto dal frontend
+  const activeRes = await testServer.inject({
+    method: "GET",
+    url: "/api/transfers/active",
+    headers: {
+      cookie: `__Host-moliris_session=${sessionAuth.sessionId}`,
+    },
+  });
+  assert.strictEqual(activeRes.statusCode, 200);
+  assert.ok(Array.isArray(JSON.parse(activeRes.body).transfers));
+
+  // Snapshot SSE iniziale: ?once=1 è il contratto deterministico per test e health-check
+  const streamRes = await testServer.inject({
+    method: "GET",
+    url: "/api/transfers/stream?once=1",
+    headers: {
+      cookie: `__Host-moliris_session=${sessionAuth.sessionId}`,
+      accept: "text/event-stream",
+    },
+  });
+  assert.strictEqual(streamRes.statusCode, 200);
+  assert.match(String(streamRes.headers["content-type"] || ""), /text\/event-stream/);
+  assert.match(streamRes.body, /event: snapshot/);
+  assert.match(streamRes.body, /data:/);
 
   await testServer.close();
   console.log("  PASS: Endpoint REST di trasferimento verificati con autenticazione e RBAC.");

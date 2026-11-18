@@ -1,0 +1,126 @@
+{
+  "mode": "implement",
+  "objective": "Correggere i bug critici del wizard Caricamento Massivo, l'eliminazione sicura di file/cartelle server e SFTP, e il monitoraggio realtime/storico dei trasferimenti con layout corretto.",
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "statement": "Nel wizard Caricamento Massivo la sorgente selezionata non viene resettata dai re-render della flotta; la selezione di File dal computer conserva nome/dimensione, abilita Avanti e porta al passo Destinazione."
+    },
+    {
+      "id": "AC2",
+      "statement": "L'eliminazione di un file dal filesystem server e dall'archivio generale gestisce correttamente i percorsi UI con slash iniziale, riporta permessi/nonexistenza con status HTTP coerenti e non blocca l'intera UI."
+    },
+    {
+      "id": "AC3",
+      "statement": "Le cartelle del filesystem server e SFTP possono essere eliminateRicorsivamente; un preflight API restituisce il conteggio di file e sottodirectory e la UI mostra una conferma distruttiva con avviso esplicito e pulsanti Annulla/Elimina Definitivamente."
+    },
+    {
+      "id": "AC4",
+      "statement": "Gestione Trasferimenti mostra in tempo reale i trasferimenti attivi tramite SSE e mantiene lo storico recente con stati Completato, In corso e Fallito, senza reload della pagina."
+    },
+    {
+      "id": "AC5",
+      "statement": "Aggiorna Lista è allineato in alto a destra del titolo Trasferimenti File e Avanzamento Streaming e avvia una query immediata alla coda/registro dei job."
+    },
+    {
+      "id": "AC6",
+      "statement": "I test di regressione mirati, la typecheck, la build e la suite completa del repository passano dopo le modifiche."
+    }
+  ],
+  "allowed_write_scope": [
+    "client/src/components/bulk/BulkUploadModal.tsx",
+    "client/src/components/common/ConfirmDialog.tsx",
+    "client/src/components/filesystem/FsTable.tsx",
+    "client/src/components/filesystem/FsBrowserSection.tsx",
+    "client/src/components/filesystem/ServerFsPanel.tsx",
+    "client/src/components/filesystem/RemoteFsPanel.tsx",
+    "client/src/components/filesystem/GeneralFsPanel.tsx",
+    "client/src/components/filesystem/TransfersPanel.tsx",
+    "client/src/hooks/useFilesystem.ts",
+    "client/src/hooks/useTransfers.ts",
+    "client/src/types/transfer.ts",
+    "client/src/views/DashboardView.tsx",
+    "client/react-frontend.test.ts",
+    "backend/server-fs-routes.ts",
+    "backend/remote-fs/remote-fs-routes.ts",
+    "backend/remote-fs/remote-fs-service.ts",
+    "backend/transfer/transfer-routes.ts",
+    "backend/transfer/transfer-service.ts",
+    "backend/transfer/transfer-models.ts",
+    "backend/transfer/transfer.test.ts",
+    "storage/server-fs.ts",
+    "storage/server-fs.test.ts",
+    ".gravitas/sessions/conversation-bulk-fs-transfer-2026-11-18"
+  ],
+  "validators": [
+    {
+      "id": "npm-typecheck",
+      "command": [
+        "npm",
+        "run",
+        "typecheck"
+      ],
+      "criterion_ids": [
+        "AC1",
+        "AC2",
+        "AC3",
+        "AC4",
+        "AC5",
+        "AC6"
+      ]
+    },
+    {
+      "id": "npm-typecheck-client",
+      "command": [
+        "npm",
+        "run",
+        "typecheck:client"
+      ],
+      "criterion_ids": [
+        "AC1",
+        "AC2",
+        "AC3",
+        "AC4",
+        "AC5"
+      ]
+    },
+    {
+      "id": "npm-test",
+      "command": [
+        "bash",
+        "-c",
+        "set -o pipefail; npm run test 2>&1 | tee .gravitas/bulk-fs-transfer-npm-test-last.log"
+      ],
+      "criterion_ids": [
+        "AC1",
+        "AC2",
+        "AC3",
+        "AC4",
+        "AC5",
+        "AC6"
+      ]
+    },
+    {
+      "id": "npm-build",
+      "command": [
+        "npm",
+        "run",
+        "build"
+      ],
+      "criterion_ids": [
+        "AC6"
+      ]
+    }
+  ],
+  "required_validators": [
+    "npm-typecheck",
+    "npm-typecheck-client",
+    "npm-test",
+    "npm-build"
+  ],
+  "policy": {
+    "uncertainty": "medium",
+    "verification_depth": "impact"
+  },
+  "session_key": "conversation-bulk-fs-transfer-2026-11-18"
+}

@@ -78,7 +78,14 @@ export function registerServerFsRoutes(
         });
       } catch (err: any) {
         if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
-          const status = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : 400;
+          const status =
+            err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+              ? 403
+              : err.userMessage?.includes("cambiato") || err.userMessage?.includes("PREFLIGHT_STALE")
+                ? 409
+                : err.userMessage?.includes("non trovato") || err.userMessage?.includes("non presente")
+                  ? 404
+                  : 400;
           return reply.status(status).send({
             code: err.code,
             message: err.userMessage,
@@ -148,7 +155,14 @@ export function registerServerFsRoutes(
         return reply.send(stream);
       } catch (err: any) {
         if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
-          const status = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : 400;
+          const status =
+            err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+              ? 403
+              : err.userMessage?.includes("cambiato") || err.userMessage?.includes("PREFLIGHT_STALE")
+                ? 409
+                : err.userMessage?.includes("non trovato") || err.userMessage?.includes("non presente")
+                  ? 404
+                  : 400;
           return reply.status(status).send({
             code: err.code,
             message: err.userMessage,
@@ -180,9 +194,11 @@ export function registerServerFsRoutes(
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { robotId } = req.params as { robotId: string };
       const query = (req.query as any) || {};
-      const filePath = typeof query.path === "string" ? query.path : "";
+      const body = (req.body as any) || {};
+      const rawPath = typeof query.path === "string" ? query.path.trim() : (typeof body.path === "string" ? body.path.trim() : "");
+      const filePath = rawPath === "/" || rawPath === "\\" || rawPath === "." ? "" : rawPath.replace(/^[/\\]+/, "");
 
-      if (!filePath || filePath.trim() === "") {
+      if (!filePath) {
         return reply.status(400).send({
           code: ErrorCode.SERVER_DIR_INACCESSIBLE,
           message: "Percorso del file da eliminare mancante o non specificato.",
@@ -218,7 +234,195 @@ export function registerServerFsRoutes(
         });
       } catch (err: any) {
         if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
-          const status = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : 400;
+          const status =
+            err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+              ? 403
+              : err.userMessage?.includes("cambiato") || err.userMessage?.includes("PREFLIGHT_STALE")
+                ? 409
+                : err.userMessage?.includes("non trovato") || err.userMessage?.includes("non presente")
+                  ? 404
+                  : 400;
+          return reply.status(status).send({
+            code: err.code,
+            message: err.userMessage,
+            classification: err.classification,
+          });
+        }
+        return reply.status(500).send({
+          code: ErrorCode.SERVER_DIR_INACCESSIBLE,
+          message: ERROR_CATALOG[ErrorCode.SERVER_DIR_INACCESSIBLE].userMessage,
+          classification: "richiede_intervento_amministrativo",
+        });
+      }
+    }
+  );
+
+  /**
+   * Ispezione preliminare cartella sul server robot per modale di conferma eliminazione (§3)
+   */
+  const handleInspectRobotFolder = async (req: FastifyRequest, reply: FastifyReply) => {
+    const { robotId } = req.params as { robotId: string };
+    const query = (req.query as any) || {};
+    const rawPath = typeof query.path === "string" ? query.path.trim() : "";
+    const subPath = rawPath === "/" || rawPath === "\\" || rawPath === "." ? "" : rawPath.replace(/^[/\\]+/, "");
+
+    let robot = await robotRepository.findById(robotId);
+    if (!robot) {
+      robot = await robotRepository.findByServerDirectory(robotId);
+    }
+    if (!robot) {
+      return reply.status(404).send({
+        code: ErrorCode.SERVER_DIR_INACCESSIBLE,
+        message: "Robot specificato non trovato nell'anagrafica.",
+        classification: "richiede_intervento_amministrativo",
+      });
+    }
+
+    const context = sessionManager.createAuthorizedContext(
+      req.molirisSession!,
+      req.molirisUser!,
+      robot.id,
+      roleMapping
+    );
+
+    try {
+      const result = await serverFsService.inspectRobotDirectory(context, robot, subPath);
+      return reply.status(200).send({
+        success: true,
+        ...result,
+      });
+    } catch (err: any) {
+      if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
+        const status = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : 400;
+        return reply.status(status).send({
+          code: err.code,
+          message: err.userMessage,
+          classification: err.classification,
+        });
+      }
+      return reply.status(500).send({
+        code: ErrorCode.SERVER_DIR_INACCESSIBLE,
+        message: ERROR_CATALOG[ErrorCode.SERVER_DIR_INACCESSIBLE].userMessage,
+        classification: "richiede_intervento_amministrativo",
+      });
+    }
+  };
+
+  app.get(
+    "/api/robots/:robotId/fs/server/folder",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.FS_SERVER_NAVIGATE,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    handleInspectRobotFolder
+  );
+
+  app.get(
+    "/api/robots/:robotId/fs/server/inspect",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.FS_SERVER_NAVIGATE,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    handleInspectRobotFolder
+  );
+
+  app.get(
+    "/api/robots/:robotId/fs/server/folder/inspect",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.FS_SERVER_NAVIGATE,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    handleInspectRobotFolder
+  );
+
+  /**
+   * Eliminazione cartella nel filesystem server del robot con safety check (§3)
+   */
+  app.delete(
+    "/api/robots/:robotId/fs/server/folder",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.FS_SERVER_DELETE,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { robotId } = req.params as { robotId: string };
+      const query = (req.query as any) || {};
+      const body = (req.body as any) || {};
+      const rawPath = typeof query.path === "string" ? query.path.trim() : (typeof body.path === "string" ? body.path.trim() : "");
+      const folderPath = rawPath === "/" || rawPath === "\\" || rawPath === "." ? "" : rawPath.replace(/^[/\\]+/, "");
+      const recursive = query.recursive !== "false" && query.recursive !== false && body.recursive !== false;
+      const expectedFileCount = query.expectedFileCount !== undefined ? Number(query.expectedFileCount) : (body.expectedFileCount !== undefined ? Number(body.expectedFileCount) : undefined);
+      const expectedDirectoryCount = query.expectedDirectoryCount !== undefined ? Number(query.expectedDirectoryCount) : (body.expectedDirectoryCount !== undefined ? Number(body.expectedDirectoryCount) : undefined);
+
+      if (!folderPath) {
+        return reply.status(400).send({
+          code: ErrorCode.SERVER_DIR_INACCESSIBLE,
+          message: "Percorso della cartella da eliminare mancante o non specificato.",
+          classification: "recuperabile",
+        });
+      }
+
+      let robot = await robotRepository.findById(robotId);
+      if (!robot) {
+        robot = await robotRepository.findByServerDirectory(robotId);
+      }
+      if (!robot) {
+        return reply.status(404).send({
+          code: ErrorCode.SERVER_DIR_INACCESSIBLE,
+          message: "Robot specificato non trovato nell'anagrafica.",
+          classification: "richiede_intervento_amministrativo",
+        });
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        robot.id,
+        roleMapping
+      );
+
+      try {
+        const opts: { recursive?: boolean; expectedFileCount?: number; expectedDirectoryCount?: number } = {
+          recursive,
+        };
+        if (typeof expectedFileCount === "number" && Number.isInteger(expectedFileCount)) {
+          opts.expectedFileCount = expectedFileCount;
+        }
+        if (typeof expectedDirectoryCount === "number" && Number.isInteger(expectedDirectoryCount)) {
+          opts.expectedDirectoryCount = expectedDirectoryCount;
+        }
+        await serverFsService.deleteRobotFolder(context, robot, folderPath, opts);
+        const folderName = path.basename(folderPath);
+        return reply.status(200).send({
+          success: true,
+          message: `Cartella '${folderName}' eliminata con successo dal server.`,
+        });
+      } catch (err: any) {
+        if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
+          const status =
+            err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+              ? 403
+              : err.userMessage?.includes("cambiato") || err.userMessage?.includes("PREFLIGHT_STALE")
+                ? 409
+                : err.userMessage?.includes("non trovato") || err.userMessage?.includes("non presente")
+                  ? 404
+                  : 400;
           return reply.status(status).send({
             code: err.code,
             message: err.userMessage,
@@ -335,27 +539,48 @@ export function registerServerFsRoutes(
       );
 
       try {
-        const items = await serverFsService.listGeneralDirectory(context, subPath);
+        const robots = await robotRepository.list();
+        const items = await serverFsService.listAggregateGeneralDirectory(context, robots, subPath);
         const mappedEntries = items.map((it: any) => ({
           name: it.name,
           type: it.type === "directory" ? "directory" : "file",
           size: typeof it.size === "number" ? it.size : 0,
           mtime: it.modifiedAt instanceof Date ? it.modifiedAt.toISOString() : (it.modifiedAt || new Date().toISOString()),
           modifiedAt: it.modifiedAt instanceof Date ? it.modifiedAt.toISOString() : (it.modifiedAt || new Date().toISOString()),
+          scope: it.scope || "general",
+          isRobotFolder: it.isRobotFolder ?? (it.scope === "robot"),
+          robotId: it.robotId,
+          displayName: it.displayName,
+          exists: it.exists,
         }));
 
         return reply.status(200).send({
           scope: "general",
           currentPath: rawPath || "/",
           path: rawPath || "/",
-          items,
+          items: items.map((it: any) => ({
+            ...it,
+            scope: it.scope || "general",
+            isRobotFolder: it.isRobotFolder ?? (it.scope === "robot"),
+            modifiedAt:
+              it.modifiedAt instanceof Date
+                ? it.modifiedAt.toISOString()
+                : it.modifiedAt || new Date().toISOString(),
+          })),
           entries: mappedEntries,
           totalCount: items.length,
           isTruncated: false,
         });
       } catch (err: any) {
         if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
-          const status = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : 400;
+          const status =
+            err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+              ? 403
+              : err.userMessage?.includes("cambiato") || err.userMessage?.includes("PREFLIGHT_STALE")
+                ? 409
+                : err.userMessage?.includes("non trovato") || err.userMessage?.includes("non presente")
+                  ? 404
+                  : 400;
           return reply.status(status).send({
             code: err.code,
             message: err.userMessage,
@@ -465,7 +690,14 @@ export function registerServerFsRoutes(
         return reply.send(stream);
       } catch (err: any) {
         if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
-          const status = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : 400;
+          const status =
+            err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+              ? 403
+              : err.userMessage?.includes("cambiato") || err.userMessage?.includes("PREFLIGHT_STALE")
+                ? 409
+                : err.userMessage?.includes("non trovato") || err.userMessage?.includes("non presente")
+                  ? 404
+                  : 400;
           return reply.status(status).send({
             code: err.code,
             message: err.userMessage,
@@ -610,7 +842,157 @@ export function registerServerFsRoutes(
         });
       } catch (err: any) {
         if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
-          const status = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : 400;
+          const status =
+            err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+              ? 403
+              : err.userMessage?.includes("cambiato") || err.userMessage?.includes("PREFLIGHT_STALE")
+                ? 409
+                : err.userMessage?.includes("non trovato") || err.userMessage?.includes("non presente")
+                  ? 404
+                  : 400;
+          return reply.status(status).send({
+            code: err.code,
+            message: err.userMessage,
+            classification: err.classification,
+          });
+        }
+        return reply.status(500).send({
+          code: ErrorCode.SERVER_DIR_INACCESSIBLE,
+          message: ERROR_CATALOG[ErrorCode.SERVER_DIR_INACCESSIBLE].userMessage,
+          classification: "richiede_intervento_amministrativo",
+        });
+      }
+    }
+  );
+
+  /**
+   * Ispezione preliminare cartella nell'Archivio Generale per dialog di conferma eliminazione (§3)
+   */
+  const handleInspectGeneralFolder = async (req: FastifyRequest, reply: FastifyReply) => {
+    const query = (req.query as any) || {};
+    const rawPath = typeof query.path === "string" ? query.path.trim() : "";
+    const subPath = rawPath === "/" || rawPath === "\\" || rawPath === "." ? "" : rawPath.replace(/^[/\\]+/, "");
+
+    const context = sessionManager.createAuthorizedContext(
+      req.molirisSession!,
+      req.molirisUser!,
+      undefined,
+      roleMapping
+    );
+
+    try {
+      const result = await serverFsService.inspectGeneralDirectory(context, subPath);
+      return reply.status(200).send({
+        success: true,
+        ...result,
+      });
+    } catch (err: any) {
+      if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
+        const status = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : 400;
+        return reply.status(status).send({
+          code: err.code,
+          message: err.userMessage,
+          classification: err.classification,
+        });
+      }
+      return reply.status(500).send({
+        code: ErrorCode.SERVER_DIR_INACCESSIBLE,
+        message: ERROR_CATALOG[ErrorCode.SERVER_DIR_INACCESSIBLE].userMessage,
+        classification: "richiede_intervento_amministrativo",
+      });
+    }
+  };
+
+  app.get(
+    "/api/fs/general/folder",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(AppPermission.FS_SERVER_NAVIGATE),
+      ],
+    },
+    handleInspectGeneralFolder
+  );
+
+  app.get(
+    "/api/fs/general/inspect",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(AppPermission.FS_SERVER_NAVIGATE),
+      ],
+    },
+    handleInspectGeneralFolder
+  );
+
+  app.get(
+    "/api/fs/general/folder/inspect",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(AppPermission.FS_SERVER_NAVIGATE),
+      ],
+    },
+    handleInspectGeneralFolder
+  );
+
+  /**
+   * Eliminazione cartella nell'Archivio Generale del server con safety check (§3)
+   */
+  app.delete(
+    "/api/fs/general/folder",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(AppPermission.FS_SERVER_DELETE),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const query = (req.query as any) || {};
+      const body = (req.body as any) || {};
+      const rawPath = typeof query.path === "string" ? query.path.trim() : (typeof body.path === "string" ? body.path.trim() : "");
+      const folderPath = rawPath === "/" || rawPath === "\\" || rawPath === "." ? "" : rawPath.replace(/^[/\\]+/, "");
+      const recursive = query.recursive !== "false" && query.recursive !== false && body.recursive !== false;
+      const expectedFileCount = query.expectedFileCount !== undefined ? Number(query.expectedFileCount) : (body.expectedFileCount !== undefined ? Number(body.expectedFileCount) : undefined);
+      const expectedDirectoryCount = query.expectedDirectoryCount !== undefined ? Number(query.expectedDirectoryCount) : (body.expectedDirectoryCount !== undefined ? Number(body.expectedDirectoryCount) : undefined);
+
+      if (!folderPath) {
+        return reply.status(400).send({
+          code: ErrorCode.SERVER_DIR_INACCESSIBLE,
+          message: "Percorso della cartella da eliminare mancante o non specificato.",
+          classification: "recuperabile",
+        });
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        undefined,
+        roleMapping
+      );
+
+      try {
+        const opts: { recursive?: boolean; expectedFileCount?: number; expectedDirectoryCount?: number } = {
+          recursive,
+        };
+        if (typeof expectedFileCount === "number" && Number.isInteger(expectedFileCount)) {
+          opts.expectedFileCount = expectedFileCount;
+        }
+        if (typeof expectedDirectoryCount === "number" && Number.isInteger(expectedDirectoryCount)) {
+          opts.expectedDirectoryCount = expectedDirectoryCount;
+        }
+        await serverFsService.deleteGeneralFolder(context, folderPath, opts);
+        const folderName = path.basename(folderPath);
+        return reply.status(200).send({
+          success: true,
+          message: `Cartella '${folderName}' eliminata con successo dall'archivio generale.`,
+        });
+      } catch (err: any) {
+        if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
+          const status =
+            err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+              ? 403
+              : err.userMessage?.includes("cambiato") || err.userMessage?.includes("PREFLIGHT_STALE")
+                ? 409
+                : err.userMessage?.includes("non trovato") || err.userMessage?.includes("non presente")
+                  ? 404
+                  : 400;
           return reply.status(status).send({
             code: err.code,
             message: err.userMessage,

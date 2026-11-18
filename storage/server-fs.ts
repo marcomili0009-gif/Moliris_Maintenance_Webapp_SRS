@@ -44,6 +44,32 @@ export interface ServerFileItem {
   type: "file" | "directory";
   size: number | null; // Byte per file regolari, null per directory
   modifiedAt: Date;
+  /**
+   * Provenienza dell'elemento nella vista aggregata dell'Archivio Generale.
+   * - "general": contenuto reale dell'archivio condiviso
+   * - "robot": directory dedicata di un robot registrato, mostrata come collegamento
+   */
+  scope?: "general" | "robot";
+  /** ID del robot a cui appartiene la directory (solo scope "robot"). */
+  robotId?: string;
+  /** Etichetta leggibile del robot (solo scope "robot"). */
+  displayName?: string;
+  /** true se la directory del robot esiste realmente sul filesystem. */
+  exists?: boolean;
+  /** Flag esplicito per badge 'Cartella Robot' */
+  isRobotFolder?: boolean;
+}
+
+export interface DirectoryInspectionResult {
+  path: string;
+  name: string;
+  isEmpty: boolean;
+  fileCount: number;
+  dirCount: number;
+  directoryCount: number;
+  totalItems: number;
+  totalCount: number;
+  totalSize: number;
 }
 
 export class ServerFilesystemService {
@@ -245,6 +271,19 @@ export class ServerFilesystemService {
     }
 
     return resolvedPath;
+  }
+
+  /**
+   * Risolve il percorso server di un robot ripulendo i prefissi slashes superflui
+   * per garantire pieno allineamento tra listing, download e delete.
+   */
+  public async resolveServerPath(
+    robot: Pick<RobotEntity, "id" | "remoteUsername" | "host" | "serverDirectoryPath">,
+    relativeSubPath?: string
+  ): Promise<string> {
+    const raw = (relativeSubPath ?? "").trim();
+    const clean = raw === "/" || raw === "\\" || raw === "." ? "" : raw.replace(/^[/\\]+/, "");
+    return this.resolveRobotPath(robot, clean);
   }
 
   /**
@@ -527,6 +566,7 @@ export class ServerFilesystemService {
           type: ent.isDirectory() ? "directory" : "file",
           size: ent.isDirectory() ? null : stat.size,
           modifiedAt: stat.mtime,
+          scope: "general",
         });
       } catch {}
     }
@@ -540,8 +580,93 @@ export class ServerFilesystemService {
   }
 
   /**
-   * Apertura stream di lettura per un file nell'Archivio Generale (§3).
+   * Elenco aggregato della radice dell'Archivio Generale del server (§3).
+   *
+   * Alla radice vengono mostrati sia i contenuti realmente presenti nell'archivio
+   * condiviso sia le directory dedicate dei robot registrati (figlie dirette di
+   * `fsRoot`). Le directory robot sono restituite come elementi "sintetici"
+   * con `scope: "robot"`, `robotId` e `displayName`, così che la UI possa aprire
+   * il filesystem dedicato del robot con un solo click.
+   *
+   * Nei sotto-percorsi il comportamento resta identico a `listGeneralDirectory`.
    */
+  public async listAggregateGeneralDirectory(
+    context: AuthorizedContext,
+    robots: RobotEntity[],
+    relativeSubPath?: string
+  ): Promise<ServerFileItem[]> {
+    const items = await this.listGeneralDirectory(context, relativeSubPath);
+
+    const trimmed = (relativeSubPath ?? "").trim();
+    const isRoot =
+      !trimmed ||
+      trimmed === "." ||
+      trimmed === "/" ||
+      trimmed === "\\" ||
+      trimmed === "./" ||
+      trimmed === ".\\";
+
+    if (!isRoot) {
+      return items;
+    }
+
+    const generalRoot = path.resolve(this.generalFsRoot);
+    const knownNames = new Set(items.map((item) => item.name.toLowerCase()));
+    const robotItems: ServerFileItem[] = [];
+
+    for (const robot of robots ?? []) {
+      if (!robot?.serverDirectoryPath) continue;
+
+      const robotDir = path.resolve(robot.serverDirectoryPath);
+
+      // Solo directory di primo livello sotto la root server: evita di esporre
+      // percorsi arbitrari o la stessa directory dell'archivio generale.
+      if (path.dirname(robotDir) !== this.fsRoot) continue;
+      if (robotDir === generalRoot) continue;
+
+      const name = path.basename(robotDir);
+      if (!name || knownNames.has(name.toLowerCase())) continue;
+      knownNames.add(name.toLowerCase());
+
+      let modifiedAt = new Date(0);
+      let exists = false;
+      let isDirectory = true;
+      try {
+        const stat = await fs.promises.stat(robotDir);
+        isDirectory = stat.isDirectory();
+        if (isDirectory) {
+          modifiedAt = stat.mtime;
+          exists = true;
+        }
+      } catch {
+        exists = false;
+      }
+      if (!isDirectory) continue;
+
+      robotItems.push({
+        name,
+        type: "directory",
+        size: null,
+        modifiedAt,
+        scope: "robot",
+        isRobotFolder: true,
+        robotId: robot.id,
+        displayName: robot.displayName || robot.id,
+        exists,
+      });
+    }
+
+    const merged = [...items, ...robotItems];
+    merged.sort((a, b) => {
+      if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
+      return (a.displayName || a.name).localeCompare(b.displayName || b.name, undefined, {
+        sensitivity: "base",
+      });
+    });
+
+    return merged;
+  }
+
   public async openGeneralFileReadStream(
     _context: AuthorizedContext,
     relativeFilePath: string
@@ -589,7 +714,8 @@ export class ServerFilesystemService {
   }
 
   /**
-   * Eliminazione file o cartella nell'Archivio Generale (§3).
+   * Eliminazione di un solo file nell'Archivio Generale (§3).
+   * Le directory devono usare l'endpoint dedicato con preflight esplicito.
    */
   public async deleteGeneralFile(
     context: AuthorizedContext,
@@ -599,16 +725,19 @@ export class ServerFilesystemService {
     if (!fs.existsSync(fullPath)) {
       throw new MolirisAppError(
         ErrorCode.SERVER_DIR_INACCESSIBLE,
-        `Elemento non trovato nell'archivio generale: ${fullPath}`,
-        "File o cartella non trovato."
+        `File non trovato nell'archivio generale: ${fullPath}`,
+        "File non trovato."
       );
     }
-    const stat = await fs.promises.stat(fullPath);
-    if (stat.isDirectory()) {
-      await fs.promises.rm(fullPath, { recursive: true, force: true });
-    } else {
-      await fs.promises.unlink(fullPath);
+    const stat = await fs.promises.lstat(fullPath);
+    if (!stat.isFile()) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        "Impossibile eliminare: il percorso selezionato non è un file regolare.",
+        "Il percorso selezionato non è un file regolare."
+      );
     }
+    await fs.promises.unlink(fullPath);
 
     await this.auditRepository.record({
       userId: context.username,
@@ -893,17 +1022,330 @@ export class ServerFilesystemService {
     this.assertOperatorAccess(context, relativeFilePath, "DELETE");
 
     const targetPath = await this.resolveRobotPath(robot, relativeFilePath);
-    if (!fs.existsSync(targetPath)) {
-      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "File specificato non trovato sul server.");
-    }
 
-    const stat = await fs.promises.stat(targetPath);
-    if (stat.isDirectory()) {
-      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Impossibile eliminare: il percorso selezionato è una directory.");
+    try {
+      const stat = await fs.promises.lstat(targetPath);
+      if (!stat.isFile()) {
+        throw new MolirisAppError(
+          ErrorCode.SERVER_DIR_INACCESSIBLE,
+          "Impossibile eliminare: il percorso selezionato non è un file regolare."
+        );
+      }
+      await fs.promises.unlink(targetPath);
+    } catch (err: any) {
+      if (err instanceof MolirisAppError) throw err;
+      if (err?.code === "ENOENT") {
+        throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "File specificato non trovato sul server.");
+      }
+      if (err?.code === "EACCES" || err?.code === "EPERM") {
+        throw new MolirisAppError(
+          ErrorCode.INSUFFICIENT_PERMISSIONS,
+          "Permessi insufficienti per eliminare il file dal filesystem server."
+        );
+      }
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        "Impossibile eliminare il file dal filesystem server."
+      );
     }
-
-    await fs.promises.unlink(targetPath);
     this.logger.info("File eliminato dal filesystem server", { robotId: robot.id, file: path.basename(targetPath) });
+
+    await this.auditRepository.record({
+      userId: context.username,
+      operation: AuditOperation.SRVFS_DELETE,
+      robotId: robot.id,
+      outcome: "SUCCESS",
+      timestamp: new Date(),
+      details: { path: relativeFilePath, file: path.basename(targetPath), scope: "robot" },
+    });
+  }
+
+  /**
+   * Helper per scorrere ricorsivamente una directory e contarne elementi e dimensione totale.
+   */
+  private async inspectDirRecursive(dirPath: string): Promise<{ fileCount: number; dirCount: number; totalSize: number }> {
+    let fileCount = 0;
+    let dirCount = 0;
+    let totalSize = 0;
+
+    // Fail-closed: qualsiasi errore di lettura/stat interrompe il preflight.
+    // Nessun errore viene ignorato e tutti gli elementi rimovibili sono conteggiati.
+    const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+    for (const ent of entries) {
+      const full = path.join(dirPath, ent.name);
+      if (ent.isDirectory()) {
+        dirCount++;
+        const sub = await this.inspectDirRecursive(full);
+        fileCount += sub.fileCount;
+        dirCount += sub.dirCount;
+        totalSize += sub.totalSize;
+      } else {
+        fileCount++;
+        const stat = await fs.promises.lstat(full);
+        totalSize += stat.size;
+      }
+    }
+
+    return { fileCount, dirCount, totalSize };
+  }
+
+  /**
+   * Ispezione preliminare di una cartella del robot (per dialog di conferma eliminazione).
+   */
+  public async inspectRobotDirectory(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    relativeSubPath?: string
+  ): Promise<DirectoryInspectionResult> {
+    this.assertAuthorizedContext(context, robot, AppPermission.FS_SERVER_NAVIGATE);
+    const cleanSubPath = (relativeSubPath || "").replace(/^[/\\]+/, "").trim();
+    this.assertOperatorAccess(context, cleanSubPath, "INSPECT");
+    const targetDir = await this.resolveRobotPath(robot, cleanSubPath);
+
+    if (!fs.existsSync(targetDir)) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Cartella specificata non trovata sul server.");
+    }
+    const stat = await fs.promises.stat(targetDir);
+    if (!stat.isDirectory()) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Il percorso specificato non è una directory.");
+    }
+
+    const { fileCount, dirCount, totalSize } = await this.inspectDirRecursive(targetDir);
+    const displayName = cleanSubPath ? path.basename(cleanSubPath) : path.basename(robot.serverDirectoryPath);
+
+    return {
+      path: cleanSubPath ? `/${cleanSubPath}` : "/",
+      name: displayName,
+      isEmpty: fileCount === 0 && dirCount === 0,
+      fileCount,
+      dirCount,
+      directoryCount: dirCount,
+      totalItems: fileCount + dirCount,
+      totalCount: fileCount + dirCount,
+      totalSize,
+    };
+  }
+
+  /**
+   * Alias per retrocompatibilità test suite con getRobotFolderDeletionInfo
+   */
+  public async getRobotFolderDeletionInfo(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    relativeSubPath: string
+  ): Promise<DirectoryInspectionResult> {
+    return this.inspectRobotDirectory(context, robot, relativeSubPath);
+  }
+
+  /**
+   * Eliminazione sicura di una cartella nel filesystem server del robot.
+   * Impedisce categoricamente la cancellazione di root protette e verifica recursive: true se non vuota.
+   */
+  public async deleteRobotFolder(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    relativeSubPath: string,
+    options: {
+      recursive?: boolean;
+      expectedFileCount?: number;
+      expectedDirectoryCount?: number;
+    } = {}
+  ): Promise<void> {
+    this.assertAuthorizedContext(context, robot, AppPermission.FS_SERVER_DELETE);
+    const cleanSub = (relativeSubPath || "").replace(/^[/\\]+/, "").trim();
+    this.assertOperatorAccess(context, cleanSub, "DELETE");
+
+    if (!cleanSub || cleanSub === "." || cleanSub === "/" || cleanSub === "./") {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Operazione vietata: impossibile eliminare la directory radice del robot."
+      );
+    }
+
+    const targetDir = await this.resolveRobotPath(robot, cleanSub);
+    const robotRootDir = path.resolve(robot.serverDirectoryPath);
+
+    if (targetDir === robotRootDir || targetDir === path.resolve(this.fsRoot) || targetDir === path.resolve("/")) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Operazione vietata: impossibile eliminare una directory radice protetta."
+      );
+    }
+
+    if (!fs.existsSync(targetDir)) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Cartella specificata non trovata sul server.");
+    }
+    const stat = await fs.promises.lstat(targetDir);
+    if (!stat.isDirectory()) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Il percorso specificato non è una directory.");
+    }
+
+    const { fileCount, dirCount } = await this.inspectDirRecursive(targetDir);
+    if (
+      options.expectedFileCount !== undefined &&
+      options.expectedDirectoryCount !== undefined &&
+      (fileCount !== options.expectedFileCount || dirCount !== options.expectedDirectoryCount)
+    ) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        "PREFLIGHT_STALE: il contenuto della cartella è cambiato dopo la conferma."
+      );
+    }
+    if ((fileCount > 0 || dirCount > 0) && options.recursive !== true) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `La cartella non è vuota (${fileCount} file, ${dirCount} sottocartelle). L'eliminazione ricorsiva richiede conferma esplicita.`
+      );
+    }
+
+    await fs.promises.rm(targetDir, { recursive: true, force: false });
+    this.logger.info("Cartella eliminata dal filesystem server del robot", {
+      robotId: robot.id,
+      folder: path.basename(targetDir),
+      recursive: options.recursive === true,
+      fileCount,
+      directoryCount: dirCount,
+    });
+
+    await this.auditRepository.record({
+      userId: context.username,
+      operation: AuditOperation.SRVFS_DELETE,
+      robotId: robot.id,
+      outcome: "SUCCESS",
+      timestamp: new Date(),
+      details: {
+        path: cleanSub,
+        folderName: path.basename(targetDir),
+        recursive: options.recursive === true,
+        fileCount,
+        directoryCount: dirCount,
+        scope: "robot",
+      },
+    });
+  }
+
+  /**
+   * Ispezione preliminare di una cartella nell'Archivio Generale.
+   */
+  public async inspectGeneralDirectory(
+    _context: AuthorizedContext,
+    relativeSubPath?: string
+  ): Promise<DirectoryInspectionResult> {
+    const cleanSubPath = (relativeSubPath || "").replace(/^[/\\]+/, "").trim();
+    const targetDir = await this.resolveGeneralPath(cleanSubPath);
+
+    if (!fs.existsSync(targetDir)) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Cartella non trovata nell'archivio generale.");
+    }
+    const stat = await fs.promises.stat(targetDir);
+    if (!stat.isDirectory()) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Il percorso specificato non è una directory.");
+    }
+
+    const { fileCount, dirCount, totalSize } = await this.inspectDirRecursive(targetDir);
+    const displayName = cleanSubPath ? path.basename(cleanSubPath) : "general";
+
+    return {
+      path: cleanSubPath ? `/${cleanSubPath}` : "/",
+      name: displayName,
+      isEmpty: fileCount === 0 && dirCount === 0,
+      fileCount,
+      dirCount,
+      directoryCount: dirCount,
+      totalItems: fileCount + dirCount,
+      totalCount: fileCount + dirCount,
+      totalSize,
+    };
+  }
+
+  public async getGeneralFolderDeletionInfo(
+    context: AuthorizedContext,
+    relativeSubPath: string
+  ): Promise<DirectoryInspectionResult> {
+    return this.inspectGeneralDirectory(context, relativeSubPath);
+  }
+
+  /**
+   * Eliminazione sicura di una cartella nell'Archivio Generale.
+   * Impedisce la cancellazione della radice dell'archivio o delle cartelle robot.
+   */
+  public async deleteGeneralFolder(
+    context: AuthorizedContext,
+    relativeSubPath: string,
+    options: {
+      recursive?: boolean;
+      expectedFileCount?: number;
+      expectedDirectoryCount?: number;
+    } = {}
+  ): Promise<void> {
+    const cleanSub = (relativeSubPath || "").replace(/^[/\\]+/, "").trim();
+
+    if (!cleanSub || cleanSub === "." || cleanSub === "/" || cleanSub === "./") {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Operazione vietata: impossibile eliminare la directory radice dell'archivio generale."
+      );
+    }
+
+    const targetDir = await this.resolveGeneralPath(cleanSub);
+    const generalRoot = path.resolve(this.generalFsRoot);
+
+    if (targetDir === generalRoot || targetDir === path.resolve(this.fsRoot) || targetDir === path.resolve("/")) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Operazione vietata: impossibile eliminare la radice dell'archivio generale."
+      );
+    }
+
+    if (!fs.existsSync(targetDir)) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Cartella non trovata nell'archivio generale.");
+    }
+    const stat = await fs.promises.lstat(targetDir);
+    if (!stat.isDirectory()) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Il percorso specificato non è una directory.");
+    }
+
+    const { fileCount, dirCount } = await this.inspectDirRecursive(targetDir);
+    if (
+      options.expectedFileCount !== undefined &&
+      options.expectedDirectoryCount !== undefined &&
+      (fileCount !== options.expectedFileCount || dirCount !== options.expectedDirectoryCount)
+    ) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        "PREFLIGHT_STALE: il contenuto della cartella è cambiato dopo la conferma."
+      );
+    }
+    if ((fileCount > 0 || dirCount > 0) && options.recursive !== true) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `La cartella non è vuota (${fileCount} file, ${dirCount} sottocartelle). L'eliminazione ricorsiva richiede conferma esplicita.`
+      );
+    }
+
+    await fs.promises.rm(targetDir, { recursive: true, force: false });
+    this.logger.info("Cartella eliminata dall'archivio generale", {
+      folder: path.basename(targetDir),
+      recursive: options.recursive === true,
+      fileCount,
+      directoryCount: dirCount,
+    });
+
+    await this.auditRepository.record({
+      userId: context.username,
+      operation: AuditOperation.SRVFS_DELETE,
+      robotId: undefined,
+      outcome: "SUCCESS",
+      timestamp: new Date(),
+      details: {
+        path: cleanSub,
+        folderName: path.basename(targetDir),
+        recursive: options.recursive === true,
+        fileCount,
+        directoryCount: dirCount,
+        scope: "general",
+      },
+    });
   }
 
   private assertAuthorizedContext(

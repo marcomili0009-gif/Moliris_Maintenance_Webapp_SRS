@@ -14,6 +14,7 @@ export type TerminalSessionState = "connecting" | "active" | "closing" | "closed
 export type TerminalCloseReason =
   | "USER_EXPLICIT"            // 1. Chiusura esplicita dell'utente dal frontend (CA-SSH-004)
   | "CLIENT_DISCONNECT"         // 2. Disconnessione del browser, canale WebSocket o perdita heartbeat
+  | "TERMINAL_DISCONNECT"       // Disconnessione esplicita o perdita del canale terminale
   | "IDLE_TIMEOUT"              // 3. Timeout di inattività della sessione terminale
   | "USER_SESSION_TERMINATED"   // 4. Logout o scadenza della sessione utente Moliris
   | "ROBOT_DISCONNECT"          // 5. Disconnessione, errore di rete o timeout del robot

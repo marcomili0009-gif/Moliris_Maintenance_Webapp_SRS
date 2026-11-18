@@ -52,14 +52,14 @@ export const FutureExtensionsConfigSchema = z.object({
     .default(100),
 
   /**
-   * Numero massimo di sessioni simultanee attive per singolo account (default: 3)
+   * Numero massimo di sessioni simultanee attive per singolo account (default: 1)
    */
   maxSessionsPerAccount: z
     .number({ message: "maxSessionsPerAccount deve essere un numero" })
     .int("maxSessionsPerAccount deve essere un intero")
     .min(1, "maxSessionsPerAccount deve essere almeno 1")
     .optional()
-    .default(3),
+    .default(1),
 
   /**
    * Parametri personalizzati o sperimentali opzionali concordati con il committente
@@ -137,7 +137,7 @@ export const AppConfigSchema = z.object({
    */
   futureExtensions: FutureExtensionsConfigSchema.default({
     maxFleetRobots: 100,
-    maxSessionsPerAccount: 3,
+    maxSessionsPerAccount: 1,
     customSettings: {},
   }),
 });

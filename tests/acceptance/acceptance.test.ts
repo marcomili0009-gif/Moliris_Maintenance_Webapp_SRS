@@ -294,7 +294,7 @@ const operatorUser: UserEntity = {
 };
 await userRepo.create(operatorUser);
 
-const adminSession = sessionManager.createSession(adminUser);
+let adminSession = sessionManager.createSession(adminUser);
 const opSession = sessionManager.createSession(operatorUser);
 
 // Setup Server HTTPS
@@ -353,11 +353,17 @@ console.log("  [1/6] Collaudo Sezione CA-AUTH (Autenticazione e Accesso)...");
 
 // CA-AUTH-001: Autenticazione con credenziali valide
 {
+  sessionManager.destroySession(adminSession.sessionId);
   const res = await api("POST", "/api/auth/login", {}, { username: "admin", password: "AdminPass123!" });
   assert.strictEqual(res.status, 200, "CA-AUTH-001: Login riuscito deve restituire 200");
   assert.ok(res.headers["set-cookie"]?.some((cookie: string) => cookie.startsWith("__Host-moliris_session=")), "CA-AUTH-001: Sessione rilasciata in cookie");
   assert.strictEqual(res.body.sessionToken, undefined, "CA-AUTH-001: Token assente dal JSON");
   assert.strictEqual(res.body.user.username, "admin");
+  const cookieHeader = res.headers["set-cookie"]?.find((cookie: string) => cookie.startsWith("__Host-moliris_session="));
+  const newSessionId = cookieHeader?.split(";")[0]?.split("=")[1];
+  if (newSessionId) {
+    adminSession = sessionManager.getSession(newSessionId)!;
+  }
   console.log("    PASS: CA-AUTH-001 - Autenticazione con credenziali valide e rilascio sessione.");
 }
 

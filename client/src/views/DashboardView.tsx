@@ -12,6 +12,7 @@ import { TerminalModal } from "../components/terminal/TerminalModal.tsx";
 import { BulkUploadModal } from "../components/bulk/BulkUploadModal.tsx";
 import { BulkConflictsModal } from "../components/bulk/BulkConflictsModal.tsx";
 import { ConfirmDialog } from "../components/common/ConfirmDialog.tsx";
+import { DeleteFolderModal, type DeleteFolderTarget } from "../components/common/DeleteFolderModal.tsx";
 import { NotificationBanner } from "../components/common/NotificationBanner.tsx";
 import { Modal } from "../components/common/Modal.tsx";
 import { FleetFilterBar } from "../components/fleet/FleetFilterBar.tsx";
@@ -54,12 +55,40 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   // Sotto-tab vista unificata file ("server" | "general" | "remote" | "transfers")
   const [activeSubTab, setActiveSubTab] = useState<"server" | "general" | "remote" | "transfers">("server");
-
   // Hooks di dominio
   const fleet = useFleet(true);
   const fs = useFilesystem();
   const transfers = useTransfers(true);
   const terminal = useTerminal();
+
+  // Apre il filesystem dedicato di un robot elencato nella root aggregata dell'Archivio Generale.
+  const handleOpenRobotFromGeneral = (robotId: string) => {
+    if (!robotId) return;
+    setActiveSubTab("server");
+    if (effectiveView !== "files") handleViewChange("files");
+    fs.setServerRobotId(robotId);
+    fs.loadServerDirectory(robotId, "/");
+  };
+
+  // "Torna su" dal filesystem server: dalla root del robot si torna all'Archivio Generale.
+  const handleServerUp = () => {
+    if (!fs.serverPath || fs.serverPath === "/") {
+      setActiveSubTab("general");
+      if (effectiveView !== "files") handleViewChange("files");
+      fs.loadGeneralDirectory("/");
+      return;
+    }
+    fs.navigateServerUp();
+  };
+
+  // Cambio tab della sezione file: mantiene la vista coerente e refresha l'archivio generale.
+  const handleSubTabChange = (tab: "server" | "general" | "remote" | "transfers") => {
+    setActiveSubTab(tab);
+    if (effectiveView !== "files") handleViewChange("files");
+    if (tab === "general") {
+      fs.loadGeneralDirectory(fs.generalPath || "/");
+    }
+  };
 
   // Fleet Filter State
   const [filteredRobots, setFilteredRobots] = useState<RobotSummaryDto[]>(fleet.robots);
@@ -89,6 +118,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setRemovingRobot(null);
     setOverwriteTarget(null);
     setDeleteTarget(null);
+    setDeleteFolderTarget(null);
     setBulkConflicts(null);
     // Rimuove eventuali classi o stili residui sul body per garantire piena interattività
     if (typeof document !== "undefined") {
@@ -127,6 +157,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     isServer?: boolean;
     targetType?: "server" | "general" | "remote";
   } | null>(null);
+
+  // Delete folder confirm modal state with backend inspection
+  const [deleteFolderTarget, setDeleteFolderTarget] = useState<DeleteFolderTarget | null>(null);
 
   // Bulk conflicts state
   const [bulkConflicts, setBulkConflicts] = useState<{
@@ -188,6 +221,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       }
       setDeleteTarget(null);
     }
+  };
+
+  const handleConfirmDeleteFolder = async (target: DeleteFolderTarget, recursive: boolean) => {
+    if (target.scope === "server" && target.robotId) {
+      await fs.deleteServerFolder(target.robotId, target.folderPath, recursive);
+    } else if (target.scope === "general") {
+      await fs.deleteGeneralFolder(target.folderPath, recursive);
+    }
+    setDeleteFolderTarget(null);
   };
 
   const handleConfirmBulkOverwrite = async () => {
@@ -302,12 +344,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <FsBrowserSection
             robots={fleet.robots}
             activeSubTab={activeSubTab}
-            onSubTabChange={(tab) => {
-              setActiveSubTab(tab);
-              if (effectiveView !== "files") {
-                handleViewChange("files");
-              }
-            }}
+            onSubTabChange={handleSubTabChange}
             onOpenBulkUpload={() => setIsBulkUploadOpen(true)}
             serverRobotId={fs.serverRobotId}
             onServerRobotIdChange={fs.setServerRobotId}
@@ -316,11 +353,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             serverLoading={fs.serverLoading}
             serverError={fs.serverError}
             onLoadServer={() => fs.loadServerDirectory(fs.serverRobotId, fs.serverPath)}
-            onServerUp={fs.navigateServerUp}
+            onServerUp={handleServerUp}
             onServerNavigateDir={(d) => {
               const newPath = fs.serverPath.endsWith("/") ? `${fs.serverPath}${d}` : `${fs.serverPath}/${d}`;
               fs.loadServerDirectory(fs.serverRobotId, newPath);
             }}
+            onServerNavigatePath={(path) => fs.loadServerDirectory(fs.serverRobotId, path)}
             onCreateServerFolder={(name) => fs.createRobotServerFolder(fs.serverRobotId, name, fs.serverPath)}
             onServerUpload={(file) => {
               fs.uploadToServer(file, fs.serverPath);
@@ -328,6 +366,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             onServerDownload={fs.downloadFromServer}
             onServerTransferToRemote={(fileName) => fs.transferServerToRemote(fileName)}
             onServerDelete={(fileName) => setDeleteTarget({ fileName, targetType: "server" })}
+            onServerDeleteFolder={(folderName) =>
+              setDeleteFolderTarget({
+                folderName,
+                folderPath: fs.serverPath.endsWith("/") ? `${fs.serverPath}${folderName}` : `${fs.serverPath}/${folderName}`,
+                scope: "server",
+                robotId: fs.serverRobotId,
+              })
+            }
 
             generalPath={fs.generalPath}
             generalListing={fs.generalListing}
@@ -339,10 +385,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               const newPath = fs.generalPath.endsWith("/") ? `${fs.generalPath}${d}` : `${fs.generalPath}/${d}`;
               fs.loadGeneralDirectory(newPath);
             }}
+            onGeneralNavigatePath={(path) => fs.loadGeneralDirectory(path)}
+            onGeneralOpenRobot={handleOpenRobotFromGeneral}
             onCreateGeneralFolder={(name) => fs.createGeneralFolder(name, fs.generalPath)}
             onGeneralUpload={(file) => fs.uploadToGeneral(file, fs.generalPath)}
             onGeneralDownload={fs.downloadFromGeneral}
             onGeneralDelete={(fileName) => setDeleteTarget({ fileName, targetType: "general" })}
+            onGeneralDeleteFolder={(folderName) =>
+              setDeleteFolderTarget({
+                folderName,
+                folderPath: fs.generalPath.endsWith("/") ? `${fs.generalPath}${folderName}` : `${fs.generalPath}/${folderName}`,
+                scope: "general",
+              })
+            }
 
             remoteRobotId={fs.remoteRobotId}
             onRemoteRobotIdChange={fs.setRemoteRobotId}
@@ -356,6 +411,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               const newPath = fs.remotePath.endsWith("/") ? `${fs.remotePath}${d}` : `${fs.remotePath}/${d}`;
               fs.loadRemoteDirectory(fs.remoteRobotId, newPath);
             }}
+            onRemoteNavigatePath={(path) => fs.loadRemoteDirectory(fs.remoteRobotId, path)}
             onRemoteUpload={(file) => {
               fs.uploadToRemote(file, fs.remotePath);
             }}
@@ -468,6 +524,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         conflicts={bulkConflicts?.conflicts || []}
         onClose={() => setBulkConflicts(null)}
         onConfirmOverwrite={handleConfirmBulkOverwrite}
+      />
+
+      {/* Modal Conferma Eliminazione Cartella con Ispezione */}
+      <DeleteFolderModal
+        isOpen={Boolean(deleteFolderTarget)}
+        target={deleteFolderTarget}
+        onClose={() => setDeleteFolderTarget(null)}
+        onConfirm={handleConfirmDeleteFolder}
       />
     </section>
   );

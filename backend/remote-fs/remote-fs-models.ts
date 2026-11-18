@@ -24,6 +24,15 @@ export interface RemoteFileItemDto {
 /**
  * Risultato dell'elenco di una directory remota (RF-FS-001, RF-FS-002, RF-FS-003, CA-FS-001)
  */
+export interface RemoteFolderInspectionResult {
+  path: string;
+  name: string;
+  fileCount: number;
+  directoryCount: number;
+  totalCount: number;
+  isEmpty: boolean;
+}
+
 export interface RemoteDirectoryListingDto {
   robotId: string;
   currentPath: string;

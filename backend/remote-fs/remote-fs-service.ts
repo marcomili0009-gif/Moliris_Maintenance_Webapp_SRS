@@ -15,6 +15,7 @@ import { AuditOperation } from "../../storage/audit-models.ts";
 import { MolirisLogger, redactSensitiveData } from "../../logging/logger.ts";
 import { MolirisAppError, ErrorCode } from "../../errors/app-errors.ts";
 import {
+  type RemoteFolderInspectionResult,
   type RemoteFileItemDto,
   type RemoteFileItemType,
   type RemoteDirectoryListingDto,
@@ -1052,6 +1053,248 @@ export class RemoteFilesystemService {
     } finally {
       await managedConn.close();
     }
+  }
+
+  /**
+   * Preflight non distruttivo per l'eliminazione ricorsiva di una cartella remota.
+   * I link simbolici sono conteggiati come elementi ma non vengono mai attraversati.
+   */
+  public async getRemoteFolderDeletionInfo(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    remotePath: string
+  ): Promise<RemoteFolderInspectionResult> {
+    this.assertRemoteDeleteAuthorized(context, robot);
+
+    const managedConn = await this.connectionManager.acquireConnection(context.username, robot);
+    try {
+      const sftp = await managedConn.getSftpClient();
+      const targetPath = await this.resolveAndValidatePath(remotePath, context, robot, sftp);
+      await this.assertRemoteFolderDeletable(context, robot, sftp, targetPath);
+
+      const stats = await this.sftpStat(sftp, targetPath, robot.id);
+      if (!stats.isDirectory()) {
+        throw new MolirisAppError(
+          ErrorCode.REMOTE_FS_ERROR,
+          `Il percorso '${targetPath}' non è una directory.`,
+          "Impossibile eliminare la cartella: il percorso selezionato non è una directory."
+        );
+      }
+
+      const counts = await this.countRemoteFolder(sftp, targetPath, robot.id);
+      return {
+        path: targetPath,
+        name: path.posix.basename(targetPath),
+        fileCount: counts.fileCount,
+        directoryCount: counts.directoryCount,
+        totalCount: counts.fileCount + counts.directoryCount,
+        isEmpty: counts.fileCount === 0 && counts.directoryCount === 0,
+      };
+    } finally {
+      await managedConn.close();
+    }
+  }
+
+  /**
+   * Eliminazione ricorsiva fail-closed di una cartoria remota. Il contenuto viene
+   * enumerato immediatamente prima della mutazione e confrontato con il preflight.
+   */
+  public async deleteRemoteFolder(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    remotePath: string,
+    options: {
+      recursive?: boolean;
+      expectedFileCount?: number;
+      expectedDirectoryCount?: number;
+    } = {}
+  ): Promise<void> {
+    this.assertRemoteDeleteAuthorized(context, robot);
+
+    const managedConn = await this.connectionManager.acquireConnection(context.username, robot);
+    try {
+      const sftp = await managedConn.getSftpClient();
+      const targetPath = await this.resolveAndValidatePath(remotePath, context, robot, sftp);
+      await this.assertRemoteFolderDeletable(context, robot, sftp, targetPath);
+
+      const stats = await this.sftpStat(sftp, targetPath, robot.id);
+      if (!stats.isDirectory()) {
+        throw new MolirisAppError(
+          ErrorCode.REMOTE_FS_ERROR,
+          `Il percorso '${targetPath}' non è una directory.`,
+          "Impossibile eliminare la cartella: il percorso selezionato non è una directory."
+        );
+      }
+
+      const counts = await this.countRemoteFolder(sftp, targetPath, robot.id);
+      if (
+        options.expectedFileCount !== undefined &&
+        options.expectedDirectoryCount !== undefined &&
+        (counts.fileCount !== options.expectedFileCount ||
+          counts.directoryCount !== options.expectedDirectoryCount)
+      ) {
+        throw new MolirisAppError(
+          ErrorCode.REMOTE_FS_ERROR,
+          "PREFLIGHT_STALE: il contenuto della cartella è cambiato dopo la conferma.",
+          "Il contenuto della cartella è cambiato. Eseguire nuovamente il controllo prima di confermare."
+        );
+      }
+
+      if ((counts.fileCount > 0 || counts.directoryCount > 0) && options.recursive !== true) {
+        throw new MolirisAppError(
+          ErrorCode.REMOTE_FS_ERROR,
+          "Eliminazione ricorsiva non confermata.",
+          "La cartella non è vuota: è richiesta la conferma esplicita dell'eliminazione ricorsiva."
+        );
+      }
+
+      await this.deleteRemoteFolderRecursive(sftp, targetPath, robot.id);
+      this.logger.info("Cartella eliminata dal filesystem remoto del robot", {
+        robotId: robot.id,
+        folder: path.posix.basename(targetPath),
+        recursive: true,
+        fileCount: counts.fileCount,
+        directoryCount: counts.directoryCount,
+      });
+    } finally {
+      await managedConn.close();
+    }
+  }
+
+  private assertRemoteDeleteAuthorized(context: AuthorizedContext, robot: RobotEntity): void {
+    if (context.targetRobotId && context.targetRobotId !== robot.id) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Operazione non consentita: contesto autorizzato per un robot differente."
+      );
+    }
+    if (!context.permissions.has(AppPermission.FS_REMOTE_DELETE)) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Utente '${context.username}' non autorizzato all'eliminazione di file sul robot '${robot.id}'.`
+      );
+    }
+    this.assertRobotAccessible(robot);
+  }
+
+  private async assertRemoteFolderDeletable(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    sftp: SFTPWrapper,
+    targetPath: string
+  ): Promise<void> {
+    const protectedPaths = new Set<string>(["/"]);
+    const naturalRoot = await this.resolveAndValidatePath("", context, robot, sftp);
+    protectedPaths.add(path.posix.normalize(naturalRoot));
+
+    for (const allowed of this.config.remoteFsAllowedPaths || []) {
+      const normalized = path.posix.normalize(allowed.startsWith("/") ? allowed : `/${allowed}`);
+      protectedPaths.add(normalized);
+    }
+
+    if (protectedPaths.has(path.posix.normalize(targetPath))) {
+      throw new MolirisAppError(
+        ErrorCode.REMOTE_FS_ERROR,
+        `Rifiutata l'eliminazione della root remota '${targetPath}'.`,
+        "Impossibile eliminare una directory radice o una directory protetta."
+      );
+    }
+  }
+
+  private async countRemoteFolder(
+    sftp: SFTPWrapper,
+    directoryPath: string,
+    robotId: string
+  ): Promise<{ fileCount: number; directoryCount: number }> {
+    const entries = await this.sftpReaddir(sftp, directoryPath, robotId);
+    let fileCount = 0;
+    let directoryCount = 0;
+
+    for (const entry of entries) {
+      const childPath = path.posix.join(directoryPath, entry.filename);
+      const attrs = await this.sftpLstat(sftp, childPath, robotId);
+      if (attrs.isDirectory()) {
+        directoryCount++;
+        const nested = await this.countRemoteFolder(sftp, childPath, robotId);
+        fileCount += nested.fileCount;
+        directoryCount += nested.directoryCount;
+      } else {
+        fileCount++;
+      }
+    }
+
+    return { fileCount, directoryCount };
+  }
+
+  private async deleteRemoteFolderRecursive(
+    sftp: SFTPWrapper,
+    directoryPath: string,
+    robotId: string
+  ): Promise<void> {
+    const entries = await this.sftpReaddir(sftp, directoryPath, robotId);
+    for (const entry of entries) {
+      const childPath = path.posix.join(directoryPath, entry.filename);
+      const attrs = await this.sftpLstat(sftp, childPath, robotId);
+      if (attrs.isDirectory()) {
+        await this.deleteRemoteFolderRecursive(sftp, childPath, robotId);
+      } else {
+        await this.sftpUnlink(sftp, childPath, robotId);
+      }
+    }
+    await this.sftpRmdir(sftp, directoryPath, robotId);
+  }
+
+  private async sftpReaddir(sftp: SFTPWrapper, directoryPath: string, robotId: string): Promise<any[]> {
+    return new Promise((resolve, reject) => {
+      sftp.readdir(directoryPath, (err, list) => {
+        if (err) return reject(this.mapSftpError(err, directoryPath, robotId));
+        resolve(list || []);
+      });
+    });
+  }
+
+  private async sftpLstat(sftp: SFTPWrapper, targetPath: string, robotId: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      sftp.lstat(targetPath, (err, stats) => {
+        if (err) {
+          if ((err as any).code === 8 || (err as any).message?.toLowerCase().includes("unsupported")) {
+            return sftp.stat(targetPath, (statErr, statStats) => {
+              if (statErr) return reject(this.mapSftpError(statErr, targetPath, robotId));
+              resolve(statStats);
+            });
+          }
+          return reject(this.mapSftpError(err, targetPath, robotId));
+        }
+        resolve(stats);
+      });
+    });
+  }
+
+  private async sftpStat(sftp: SFTPWrapper, targetPath: string, robotId: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      sftp.stat(targetPath, (err, stats) => {
+        if (err) return reject(this.mapSftpError(err, targetPath, robotId));
+        resolve(stats);
+      });
+    });
+  }
+
+  private async sftpUnlink(sftp: SFTPWrapper, targetPath: string, robotId: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      sftp.unlink(targetPath, (err) => {
+        if (err) return reject(this.mapSftpError(err, targetPath, robotId));
+        resolve();
+      });
+    });
+  }
+
+  private async sftpRmdir(sftp: SFTPWrapper, targetPath: string, robotId: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      sftp.rmdir(targetPath, (err) => {
+        if (err) return reject(this.mapSftpError(err, targetPath, robotId));
+        resolve();
+      });
+    });
   }
 
   /**

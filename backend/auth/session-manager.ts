@@ -22,6 +22,14 @@ export type SessionTerminationListener = (
   reason: SessionTerminationReason
 ) => void;
 
+export class SessionLimitReachedError extends Error {
+  constructor(userId: string, maxSessions: number) {
+    super(`User "${userId}" already has ${maxSessions} active session(s).`);
+    this.name = "SessionLimitReachedError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 /**
  * Contesto autorizzato (RF-SSH-006, RNF-SEC-007).
  * Oggetto riusabile dai servizi (terminale, trasferimenti)
@@ -124,7 +132,22 @@ export class SessionManager {
   /**
    * Crea una nuova sessione autenticata con token crittografico casuale a 256 bit (RF-AUTH-003).
    */
-  public createSession(user: UserEntity): SessionData {
+  public createSession(user: UserEntity, maxSessionsPerUser = Number.POSITIVE_INFINITY): SessionData {
+    if (!Number.isInteger(maxSessionsPerUser) && maxSessionsPerUser !== Number.POSITIVE_INFINITY) {
+      throw new RangeError("Il limite di sessioni per utente deve essere un intero positivo.");
+    }
+    if (maxSessionsPerUser < 1) {
+      throw new RangeError("Il limite di sessioni per utente deve essere un intero positivo.");
+    }
+
+    this.purgeExpiredSessions();
+    const activeSessions = Array.from(this.sessions.values()).filter(
+      (session) => session.userId === user.id
+    ).length;
+    if (activeSessions >= maxSessionsPerUser) {
+      throw new SessionLimitReachedError(user.id, maxSessionsPerUser);
+    }
+
     const sessionId = crypto.randomBytes(32).toString("hex");
     const now = new Date();
     const session: SessionData = {

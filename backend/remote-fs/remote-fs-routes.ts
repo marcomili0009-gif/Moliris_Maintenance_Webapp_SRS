@@ -167,4 +167,170 @@ export function registerRemoteFsRoutes(
       }
     }
   );
+
+  const handleRemoteFolderInspection = async (
+    req: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<FastifyReply> => {
+    const { robotId } = req.params as { robotId: string };
+    const query = (req.query as any) || {};
+    const folderPath = typeof query.path === "string" ? query.path.trim() : "";
+    if (!folderPath) {
+      return reply.status(400).send({
+        code: ErrorCode.REMOTE_FS_ERROR,
+        message: "Percorso della cartella remota da ispezionare mancante.",
+        classification: "recuperabile",
+      });
+    }
+
+    const robot = await robotRepository.findById(robotId);
+    if (!robot) {
+      return reply.status(404).send({
+        code: ErrorCode.MISSING_ROBOT_PARAMS,
+        message: `Robot con identificativo '${robotId}' non trovato nell'anagrafica.`,
+        classification: "richiede_intervento_amministrativo",
+      });
+    }
+
+    const context = sessionManager.createAuthorizedContext(
+      req.molirisSession!,
+      req.molirisUser!,
+      robot.id,
+      roleMapping
+    );
+
+    try {
+      const inspection = await remoteFsService.getRemoteFolderDeletionInfo(context, robot, folderPath);
+      return reply.status(200).send(inspection);
+    } catch (err: any) {
+      if (err instanceof MolirisAppError) {
+        const statusCode =
+          err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+            ? 403
+            : err.userMessage.includes("non trovato") || err.userMessage.includes("non presente")
+              ? 404
+              : err.code === ErrorCode.HOST_UNREACHABLE
+                ? 503
+                : 400;
+        return reply.status(statusCode).send({
+          code: err.code,
+          message: err.userMessage,
+          classification: err.classification,
+        });
+      }
+      return reply.status(500).send({
+        code: ErrorCode.REMOTE_FS_ERROR,
+        message: "Errore durante l'ispezione della cartella remota.",
+        classification: "recuperabile",
+      });
+    }
+  };
+
+  app.get(
+    "/api/robots/:robotId/fs/remote/folder",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.FS_REMOTE_DELETE,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    handleRemoteFolderInspection
+  );
+
+  app.get(
+    "/api/robots/:robotId/fs/remote/folder/inspect",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.FS_REMOTE_DELETE,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    handleRemoteFolderInspection
+  );
+
+  app.delete(
+    "/api/robots/:robotId/fs/remote/folder",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.FS_REMOTE_DELETE,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { robotId } = req.params as { robotId: string };
+      const query = (req.query as any) || {};
+      const folderPath = typeof query.path === "string" ? query.path.trim() : "";
+      const recursive = query.recursive === true || query.recursive === "true";
+      const expectedFileCount = Number(query.expectedFileCount);
+      const expectedDirectoryCount = Number(query.expectedDirectoryCount);
+
+      if (!folderPath) {
+        return reply.status(400).send({
+          code: ErrorCode.REMOTE_FS_ERROR,
+          message: "Percorso della cartella remota da eliminare mancante.",
+          classification: "recuperabile",
+        });
+      }
+      if (!recursive || !Number.isInteger(expectedFileCount) || !Number.isInteger(expectedDirectoryCount)) {
+        return reply.status(400).send({
+          code: ErrorCode.REMOTE_FS_ERROR,
+          message: "Eliminazione ricorsiva non confermata: recapito del preflight mancante.",
+          classification: "recuperabile",
+        });
+      }
+
+      const robot = await robotRepository.findById(robotId);
+      if (!robot) {
+        return reply.status(404).send({
+          code: ErrorCode.MISSING_ROBOT_PARAMS,
+          message: `Robot con identificativo '${robotId}' non trovato nell'anagrafica.`,
+          classification: "richiede_intervento_amministrativo",
+        });
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        robot.id,
+        roleMapping
+      );
+
+      try {
+        await remoteFsService.deleteRemoteFolder(context, robot, folderPath, {
+          recursive: true,
+          expectedFileCount,
+          expectedDirectoryCount,
+        });
+        return reply.status(200).send({
+          success: true,
+          message: `Cartella '${folderPath.split("/").filter(Boolean).pop() || folderPath}' eliminata con successo dal robot.`,
+        });
+      } catch (err: any) {
+        if (err instanceof MolirisAppError) {
+          let statusCode = 400;
+          if (err.code === ErrorCode.INSUFFICIENT_PERMISSIONS) statusCode = 403;
+          else if (err.userMessage.includes("cambiato") || err.userMessage.includes("PREFLIGHT_STALE")) statusCode = 409;
+          else if (err.userMessage.includes("non trovato") || err.userMessage.includes("non presente")) statusCode = 404;
+          else if (err.code === ErrorCode.HOST_UNREACHABLE) statusCode = 503;
+          else if (err.code === ErrorCode.TIMEOUT_ERROR) statusCode = 504;
+          return reply.status(statusCode).send({
+            code: err.code,
+            message: err.userMessage,
+            classification: err.classification,
+          });
+        }
+        return reply.status(500).send({
+          code: ErrorCode.REMOTE_FS_ERROR,
+          message: "Errore durante l'eliminazione della cartella remota.",
+          classification: "recuperabile",
+        });
+      }
+    }
+  );
 }

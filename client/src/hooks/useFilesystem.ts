@@ -29,6 +29,10 @@ function normalizeDirectoryListing(data: any, fallbackPath = "/"): DirectoryList
     modifiedAt: it.modifiedAt || it.mtime || new Date().toISOString(),
     permissions: it.permissions,
     target: it.target,
+    scope: it.scope === "robot" ? "robot" : it.scope === "general" ? "general" : undefined,
+    robotId: typeof it.robotId === "string" ? it.robotId : undefined,
+    displayName: typeof it.displayName === "string" ? it.displayName : undefined,
+    exists: typeof it.exists === "boolean" ? it.exists : undefined,
   }));
 
   return {
@@ -291,6 +295,35 @@ export function useFilesystem() {
     }
   };
 
+  // Delete folder from General Server Archive with preflight-bound recursive support
+  const deleteGeneralFolder = async (
+    folderNameOrPath: string,
+    recursive = true,
+    expectedFileCount = 0,
+    expectedDirectoryCount = 0
+  ): Promise<boolean> => {
+    const targetPath = folderNameOrPath.startsWith("/")
+      ? folderNameOrPath
+      : generalPath.endsWith("/")
+      ? `${generalPath}${folderNameOrPath}`
+      : `${generalPath}/${folderNameOrPath}`;
+    try {
+      const res = await apiClient.delete(
+        `/api/fs/general/folder?path=${encodeURIComponent(targetPath)}&recursive=${recursive ? "true" : "false"}&expectedFileCount=${expectedFileCount}&expectedDirectoryCount=${expectedDirectoryCount}`
+      );
+      if (res.ok) {
+        await loadGeneralDirectory(generalPath);
+        return true;
+      }
+      const errData = await res.json().catch(() => ({}));
+      setGeneralError(ErrorPresenter.formatError(errData));
+      return false;
+    } catch (err) {
+      setGeneralError(ErrorPresenter.formatError(err));
+      return false;
+    }
+  };
+
   // Upload to Server
   const uploadToServer = async (file: File, targetPath: string, overwrite = false): Promise<boolean> => {
     if (!serverRobotId) return false;
@@ -410,6 +443,37 @@ export function useFilesystem() {
     }
   };
 
+  // Delete folder from Server with preflight-bound recursive support
+  const deleteServerFolder = async (
+    robotId: string,
+    folderNameOrPath: string,
+    recursive = true,
+    expectedFileCount = 0,
+    expectedDirectoryCount = 0
+  ): Promise<boolean> => {
+    if (!robotId) return false;
+    const targetPath = folderNameOrPath.startsWith("/")
+      ? folderNameOrPath
+      : serverPath.endsWith("/")
+      ? `${serverPath}${folderNameOrPath}`
+      : `${serverPath}/${folderNameOrPath}`;
+    try {
+      const res = await apiClient.delete(
+        `/api/robots/${encodeURIComponent(robotId)}/fs/server/folder?path=${encodeURIComponent(targetPath)}&recursive=${recursive ? "true" : "false"}&expectedFileCount=${expectedFileCount}&expectedDirectoryCount=${expectedDirectoryCount}`
+      );
+      if (res.ok) {
+        await loadServerDirectory(robotId, serverPath);
+        return true;
+      }
+      const errData = await res.json().catch(() => ({}));
+      setServerError(ErrorPresenter.formatError(errData));
+      return false;
+    } catch (err) {
+      setServerError(ErrorPresenter.formatError(err));
+      return false;
+    }
+  };
+
   // Delete from Remote SFTP
   const deleteFromRemote = async (fileName: string): Promise<boolean> => {
     if (!remoteRobotId) return false;
@@ -426,6 +490,37 @@ export function useFilesystem() {
         setRemoteError(ErrorPresenter.formatError(errData));
         return false;
       }
+    } catch (err) {
+      setRemoteError(ErrorPresenter.formatError(err));
+      return false;
+    }
+  };
+
+  // Delete folder from Remote SFTP with preflight-bound recursive support
+  const deleteRemoteFolder = async (
+    robotId: string,
+    folderNameOrPath: string,
+    recursive = true,
+    expectedFileCount = 0,
+    expectedDirectoryCount = 0
+  ): Promise<boolean> => {
+    if (!robotId) return false;
+    const targetPath = folderNameOrPath.startsWith("/")
+      ? folderNameOrPath
+      : remotePath.endsWith("/")
+      ? `${remotePath}${folderNameOrPath}`
+      : `${remotePath}/${folderNameOrPath}`;
+    try {
+      const res = await apiClient.delete(
+        `/api/robots/${encodeURIComponent(robotId)}/fs/remote/folder?path=${encodeURIComponent(targetPath)}&recursive=${recursive ? "true" : "false"}&expectedFileCount=${expectedFileCount}&expectedDirectoryCount=${expectedDirectoryCount}`
+      );
+      if (res.ok) {
+        await loadRemoteDirectory(robotId, remotePath);
+        return true;
+      }
+      const errData = await res.json().catch(() => ({}));
+      setRemoteError(ErrorPresenter.formatError(errData));
+      return false;
     } catch (err) {
       setRemoteError(ErrorPresenter.formatError(err));
       return false;
@@ -503,6 +598,7 @@ export function useFilesystem() {
     uploadToServer,
     downloadFromServer,
     deleteFromServer,
+    deleteServerFolder,
     transferServerToRemote,
 
     generalPath,
@@ -516,6 +612,7 @@ export function useFilesystem() {
     uploadToGeneral,
     downloadFromGeneral,
     deleteFromGeneral,
+    deleteGeneralFolder,
     clearGeneralError: () => setGeneralError(null),
 
     remoteRobotId,
@@ -529,6 +626,7 @@ export function useFilesystem() {
     uploadToRemote,
     downloadFromRemote,
     deleteFromRemote,
+    deleteRemoteFolder,
     transferRemoteToServer,
     cleanupRobotTemp,
 

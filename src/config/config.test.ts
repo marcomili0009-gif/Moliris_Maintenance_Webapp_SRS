@@ -20,7 +20,8 @@ console.log("--> Esecuzione test unitari Modulo di Configurazione (SRS §2)...")
 // TEST 1: Caricamento corretto dei valori di default se omessi
 // =========================================================================
 {
-  const config = loadConfig({ env: {}, overrides: {} });
+  const defaultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "moliris-config-defaults-"));
+  const config = loadConfig({ env: {}, overrides: {}, cwd: defaultsDir });
 
   assert.strictEqual(config.sessionInactivityTimeoutMinutes, 30, "Default sessionInactivityTimeoutMinutes deve essere 30");
   assert.strictEqual(config.sshTerminalActiveTimeoutMinutes, 60, "Default sshTerminalActiveTimeoutMinutes deve essere 60");
@@ -37,11 +38,12 @@ console.log("--> Esecuzione test unitari Modulo di Configurazione (SRS §2)...")
 
   assert.strictEqual(config.maxFileUploadBytes, 3 * 1024 * 1024 * 1024, "Default maxFileUploadBytes deve essere 3 GB");
   assert.strictEqual(config.futureExtensions.maxFleetRobots, 100, "Default maxFleetRobots deve essere 100");
-  assert.strictEqual(config.futureExtensions.maxSessionsPerAccount, 3, "Default maxSessionsPerAccount deve essere 3");
+  assert.strictEqual(config.futureExtensions.maxSessionsPerAccount, 1, "Default maxSessionsPerAccount deve essere 1");
   assert.deepStrictEqual(config.futureExtensions.customSettings, {}, "Default customSettings deve essere un oggetto vuoto");
 
   assert(Object.isFrozen(config), "L'oggetto configurazione deve essere immutabile (frozen)");
 
+  fs.rmSync(defaultsDir, { recursive: true, force: true });
   console.log("  PASS: Test 1 - Caricamento corretto dei valori di default se omessi.");
 }
 
@@ -225,6 +227,52 @@ console.log("--> Esecuzione test unitari Modulo di Configurazione (SRS §2)...")
 
   fs.rmSync(tmpDir, { recursive: true, force: true });
   console.log("  PASS: Test 3 - Gestione file mancante, JSON corrotto ed esempio valido.");
+}
+
+// =========================================================================
+// TEST 3d: Ricerca del config runtime e fallback sicuro all'esempio
+// =========================================================================
+{
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "moliris-config-discovery-"));
+  const configDir = path.join(tmpDir, "config");
+  fs.mkdirSync(configDir);
+  const examplePath = path.join(tmpDir, "config.example.json");
+  const rootConfigPath = path.join(tmpDir, "config.json");
+  const nestedConfigPath = path.join(configDir, "config.json");
+  const configWithTimeout = (minutes: number) => JSON.stringify({ sessionInactivityTimeoutMinutes: minutes });
+
+  fs.writeFileSync(examplePath, configWithTimeout(17));
+  fs.writeFileSync(rootConfigPath, configWithTimeout(45));
+  fs.writeFileSync(nestedConfigPath, configWithTimeout(31));
+
+  assert.strictEqual(
+    loadConfig({ env: {}, cwd: tmpDir }).sessionInactivityTimeoutMinutes,
+    31,
+    "config/config.json deve avere precedenza"
+  );
+
+  fs.unlinkSync(nestedConfigPath);
+  assert.strictEqual(
+    loadConfig({ env: {}, cwd: tmpDir }).sessionInactivityTimeoutMinutes,
+    45,
+    "config.json deve essere usato quando config/config.json manca"
+  );
+
+  fs.unlinkSync(rootConfigPath);
+  assert.strictEqual(
+    loadConfig({ env: {}, cwd: tmpDir }).sessionInactivityTimeoutMinutes,
+    17,
+    "config.example.json deve essere usato come fallback sicuro"
+  );
+
+  assert.throws(
+    () => loadConfig({ env: {}, cwd: tmpDir, configPath: path.join(tmpDir, "missing.json") }),
+    (err: any) => err instanceof ConfigError && err.code === "CONFIG_FILE_NOT_FOUND",
+    "Un file indicato esplicitamente mancante deve continuare a fallire"
+  );
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+  console.log("  PASS: Test 3d - Ricerca config runtime, fallback all'esempio e path esplicito fail-closed.");
 }
 
 // =========================================================================

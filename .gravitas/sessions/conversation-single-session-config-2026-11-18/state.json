@@ -1,0 +1,27 @@
+{
+  "task_id": "single-session-config-2026-11-18",
+  "session_key": "conversation-single-session-config-2026-11-18",
+  "contract": "./contract.json",
+  "phase": "verify",
+  "completed_criteria": ["AC1", "AC2", "AC3"],
+  "pending_criteria": [],
+  "files_touched": [
+    "src/config/index.ts",
+    "src/config/schema.ts",
+    "src/config/config.test.ts",
+    "backend/auth/session-manager.ts",
+    "backend/auth/auth-routes.ts",
+    "backend/auth/auth.test.ts",
+    "backend/server.ts",
+    "backend/server.test.ts",
+    "client/src/hooks/useAuth.ts",
+    "client/src/views/LoginView.tsx",
+    "client/react-frontend.test.ts"
+  ],
+  "known_failures": [
+    "Project-wide npm run typecheck still reports unrelated existing errors in backend/transfer/transfer-service.ts and backend/transfer/transfer.test.ts.",
+    "The full client E2E intermittently fails the unrelated terminal newline assertion; the focused session-conflict browser validator passes."
+  ],
+  "last_successful_action": "Gravitas validators for AC1, AC2, and AC3 passed; Gravitas evidence ledger verified; client typecheck and git diff --check passed.",
+  "next_action": "none - requested criteria verified"
+}

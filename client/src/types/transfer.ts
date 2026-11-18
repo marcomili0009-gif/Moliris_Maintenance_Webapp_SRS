@@ -6,7 +6,14 @@ export type TransferDirection =
   | "SERVER_TO_CLIENT"
   | "ROBOT_TO_CLIENT";
 
-export type TransferStatus = "IN_PROGRESS" | "COMPLETED" | "FAILED" | "CANCELLED";
+export type TransferStatus =
+  | "QUEUED"
+  | "IN_PROGRESS"
+  | "INTEGRITY_CHECKING"
+  | "COMPLETED"
+  | "FAILED"
+  | "CANCELLED"
+  | "INTEGRITY_FAILED";
 
 export interface TransferProgress {
   transferId: string;
@@ -31,6 +38,48 @@ export interface BulkConflict {
   targetName: string;
   filename: string;
   targetPath: string;
+}
+
+export interface BulkDestinations {
+  server?: { robotId: string; subPath: string };
+  robots?: Array<{ robotId: string; remotePath: string }>;
+}
+
+export interface BulkTargetDescriptor {
+  type: "server" | "robot";
+  robotId: string;
+  directory?: string;
+}
+
+/** Traduce le destinazioni UI nel contratto atomico usato dal backend bulk. */
+export function buildBulkTargets(destinations: BulkDestinations): BulkTargetDescriptor[] {
+  const targets: BulkTargetDescriptor[] = [];
+  if (destinations.server) {
+    targets.push({
+      type: "server",
+      robotId: destinations.server.robotId,
+      directory: destinations.server.subPath,
+    });
+  }
+  for (const robot of destinations.robots || []) {
+    targets.push({
+      type: "robot",
+      robotId: robot.robotId,
+      directory: robot.remotePath,
+    });
+  }
+  return targets;
+}
+
+/** Determina se il passo Sorgente contiene una selezione valida. */
+export function hasBulkSourceSelection(
+  sourceType: "computer" | "general" | "server_robot" | "remote_robot",
+  computerFiles: Array<{ name: string; size?: number }>,
+  selectedServerFiles: string[]
+): boolean {
+  return sourceType === "computer"
+    ? computerFiles.length > 0
+    : selectedServerFiles.length > 0;
 }
 
 export interface BulkUploadTargetResult {

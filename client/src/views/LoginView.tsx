@@ -1,14 +1,30 @@
-import React, { useRef } from "react";
+import React, { useRef, useState, useEffect } from "react";
+import { AlertCircle } from "lucide-react";
 import { DoubleSubmitButton } from "../components/common/DoubleSubmitButton.tsx";
+import { Modal } from "../components/common/Modal.tsx";
 
 interface LoginViewProps {
   onLogin: (username: string, password: string) => Promise<boolean>;
   error: string | null;
+  sessionConflict?: string | null;
+  onDismissSessionConflict?: () => void;
 }
 
-export const LoginView: React.FC<LoginViewProps> = ({ onLogin, error }) => {
+export const LoginView: React.FC<LoginViewProps> = ({
+  onLogin,
+  error,
+  sessionConflict,
+  onDismissSessionConflict,
+}) => {
   const usernameRef = useRef<HTMLInputElement | null>(null);
   const passwordRef = useRef<HTMLInputElement | null>(null);
+  const [isConflictOpen, setIsConflictOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (sessionConflict) {
+      setIsConflictOpen(true);
+    }
+  }, [sessionConflict]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -20,6 +36,19 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, error }) => {
     }
 
     await onLogin(currentUsername, currentPassword);
+  };
+
+  const handleCloseConflict = () => {
+    setIsConflictOpen(false);
+    if (usernameRef.current) {
+      usernameRef.current.value = "";
+    }
+    if (passwordRef.current) {
+      passwordRef.current.value = "";
+    }
+    if (onDismissSessionConflict) {
+      onDismissSessionConflict();
+    }
   };
 
   return (
@@ -86,6 +115,42 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, error }) => {
           </section>
         </div>
       </div>
+
+      <Modal
+        id="modal-session-conflict"
+        isOpen={isConflictOpen}
+        onClose={handleCloseConflict}
+        role="alertdialog"
+        ariaLabelledBy="session-conflict-title"
+        title={
+          <div className="d-flex align-items-center gap-2 text-danger">
+            <AlertCircle size={20} />
+            <h3 id="session-conflict-title" className="h5 mb-0 fw-bold">
+              Accesso non consentito
+            </h3>
+          </div>
+        }
+        footer={
+          <button
+            type="button"
+            id="btn-close-session-conflict"
+            className="btn btn-primary"
+            onClick={handleCloseConflict}
+          >
+            Ho capito
+          </button>
+        }
+      >
+        <div className="alert alert-danger d-flex align-items-start gap-2 mb-0" role="alert">
+          <AlertCircle className="flex-shrink-0 text-danger mt-1" size={20} />
+          <div>
+            <p className="mb-0 small">
+              {sessionConflict ||
+                "È già presente una sessione attiva per questo account su un altro dispositivo o finestra del browser. Disconnetti l'altra sessione prima di accedere."}
+            </p>
+          </div>
+        </div>
+      </Modal>
     </main>
   );
 };

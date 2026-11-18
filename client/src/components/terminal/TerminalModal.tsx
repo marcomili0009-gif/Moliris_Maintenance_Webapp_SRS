@@ -27,19 +27,36 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termInstanceRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const fitRef = useRef<() => void>(() => {});
+  const lastSentSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
 
   const { isOpen, robotId, robotName, sessionId, status, error, cols, rows } = terminalState;
+
+  // I callback del parent vengono letti da un ref mutabile: il terminale e il
+  // WebSocket devono essere creati UNA SOLA VOLTA per sessione, non a ogni
+  // render o resize (altrimenti il PTY viene chiuso e la sessione va persa).
+  const callbacksRef = useRef({ onAttachWebSocket, onSendInput, onResize });
+  callbacksRef.current = { onAttachWebSocket, onSendInput, onResize };
+
+  // Ogni nuova sessione (e ogni chiusura) riparte sempre in modalità ridotta.
+  useEffect(() => {
+    setIsExpanded(false);
+  }, [isOpen, sessionId]);
 
   useEffect(() => {
     if (!isOpen || !sessionId || !containerRef.current) return;
 
     const term = new Terminal({
       cursorBlink: true,
+      // Il bridge PTY locale (pipe senza ONLCR) emette solo "\n": senza questa
+      // opzione xterm interpreterebbe il newline senza ritorno a capo,
+      // producendo l'effetto "staircase".
+      convertEol: true,
       cols: cols || 80,
       rows: rows || 24,
       fontFamily: '"DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", Menlo, Monaco, Consolas, "Courier New", monospace',
-      fontSize: 14,
+      fontSize: 12,
       theme: {
         background: "#1e1e1e",
         foreground: "#f0f0f0",
@@ -51,41 +68,38 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
     term.loadAddon(fitAddon);
     fitAddonRef.current = fitAddon;
     termInstanceRef.current = term;
+    lastSentSizeRef.current = null;
 
     containerRef.current.replaceChildren();
     term.open(containerRef.current);
 
-    // Adattamento responsive con ResizeObserver e requestAnimationFrame
+    // Adatta il PTY alle dimensioni reali del contenitore. Invia il resize
+    // solo quando righe/colonne cambiano davvero, per evitare raffiche inutili.
     const performFit = () => {
-      if (fitAddonRef.current && termInstanceRef.current && containerRef.current) {
-        try {
-          fitAddonRef.current.fit();
-          const newCols = termInstanceRef.current.cols;
-          const newRows = termInstanceRef.current.rows;
-          if (newCols && newRows) {
-            onResize(newCols, newRows);
-          }
-        } catch {}
-      }
+      if (!fitAddonRef.current || !termInstanceRef.current) return;
+      try {
+        fitAddonRef.current.fit();
+        const newCols = termInstanceRef.current.cols;
+        const newRows = termInstanceRef.current.rows;
+        const previous = lastSentSizeRef.current;
+        if (newCols && newRows && (previous?.cols !== newCols || previous?.rows !== newRows)) {
+          lastSentSizeRef.current = { cols: newCols, rows: newRows };
+          callbacksRef.current.onResize(newCols, newRows);
+        }
+      } catch {}
     };
+    fitRef.current = performFit;
 
-    // Primo fit immediato e ritardato di un frame per garantire il paint del DOM
-    requestAnimationFrame(() => {
-      performFit();
-    });
-
-    const resizeObserver = new ResizeObserver(() => {
+    const scheduleFit = () => {
       requestAnimationFrame(() => {
         performFit();
       });
-    });
-    resizeObserver.observe(containerRef.current);
+    };
 
-    term.onData((data: string) => {
-      onSendInput(data);
-    });
-
-    onAttachWebSocket(
+    // Aggancia il WebSocket una sola volta per sessione, prima del primo fit:
+    // le dimensioni iniziali vengono accodate dal hook se la socket non è
+    // ancora aperta, e inviate appena possibile.
+    callbacksRef.current.onAttachWebSocket(
       sessionId,
       (data: string | Uint8Array) => {
         term.write(data);
@@ -98,21 +112,48 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
       }
     );
 
+    scheduleFit();
+
+    const resizeObserver = new ResizeObserver(() => {
+      scheduleFit();
+    });
+    resizeObserver.observe(containerRef.current);
+
+    term.onData((data: string) => {
+      callbacksRef.current.onSendInput(data);
+    });
+
     const handleWindowResize = () => {
-      performFit();
+      scheduleFit();
     };
     window.addEventListener("resize", handleWindowResize);
 
     return () => {
       window.removeEventListener("resize", handleWindowResize);
       resizeObserver.disconnect();
+      fitRef.current = () => {};
       try {
         term.dispose();
       } catch {}
       termInstanceRef.current = null;
       fitAddonRef.current = null;
+      lastSentSizeRef.current = null;
     };
-  }, [isOpen, sessionId, onAttachWebSocket, onSendInput, onResize, cols, rows]);
+    // Volutamente NON dipendente da cols/rows né dai callback del parent:
+    // questo effetto governa il ciclo di vita della sessione terminale.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, sessionId]);
+
+  // Il toggle di layout ridimensiona solo il contenitore: la sessione PTY,
+  // il WebSocket e l'istanza xterm restano invariati. Il fit avviene dopo il
+  // paint del nuovo layout.
+  useEffect(() => {
+    if (!isOpen) return;
+    const raf = requestAnimationFrame(() => {
+      fitRef.current();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [isExpanded, isOpen]);
 
   if (!isOpen) return null;
 
@@ -147,22 +188,8 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
               className="btn btn-outline-light btn-sm"
               id="btn-terminal-expand"
               title={isExpanded ? "Ripristina dimensioni normali" : "Espandi a finestra intera"}
-              onClick={() => {
-                const next = !isExpanded;
-                setIsExpanded(next);
-                setTimeout(() => {
-                  if (fitAddonRef.current && termInstanceRef.current && containerRef.current) {
-                    try {
-                      fitAddonRef.current.fit();
-                      const newCols = termInstanceRef.current.cols;
-                      const newRows = termInstanceRef.current.rows;
-                      if (newCols && newRows) {
-                        onResize(newCols, newRows);
-                      }
-                    } catch {}
-                  }
-                }, 60);
-              }}
+              aria-pressed={isExpanded}
+              onClick={() => setIsExpanded((current) => !current)}
             >
               {isExpanded ? "Ripristina" : "Espandi"}
             </button>
@@ -179,7 +206,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
               className="btn-close"
               id="btn-close-terminal"
               onClick={onClose}
-              aria-label="Chiudi"
+              aria-label="Chiudi e chiudi la sessione terminale"
             />
           </div>
         </div>
@@ -190,12 +217,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
           </div>
         )}
 
-        <div
-          className="terminal-body"
-          id="terminal-container"
-          ref={containerRef}
-          style={{ minHeight: "340px", backgroundColor: "#1e1e1e", padding: "8px" }}
-        />
+        <div className="terminal-body" id="terminal-container" ref={containerRef} />
 
         <div className="terminal-footer flex justify-between items-center text-xs text-gray-400 p-2">
           <span id="terminal-footer-info">

@@ -1,6 +1,13 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import { Trash2 } from "lucide-react";
 import type { RobotSummaryDto } from "../../types/fleet.ts";
-import type { BulkConflict, BulkUploadTargetResult } from "../../types/transfer.ts";
+import {
+  buildBulkTargets,
+  hasBulkSourceSelection,
+  type BulkConflict,
+  type BulkDestinations,
+  type BulkUploadTargetResult,
+} from "../../types/transfer.ts";
 import type { FormattedError } from "../../types/error.ts";
 import { DoubleSubmitButton } from "../common/DoubleSubmitButton.tsx";
 import { FolderPickerModal } from "../common/FolderPickerModal.tsx";
@@ -16,27 +23,18 @@ interface BulkUploadModalProps {
   robots: RobotSummaryDto[];
   onPreCheck: (
     files: string[],
-    destinations: {
-      server?: { robotId: string; subPath: string };
-      robots?: Array<{ robotId: string; remotePath: string }>;
-    }
+    destinations: BulkDestinations
   ) => Promise<{ hasConflicts: boolean; conflicts: BulkConflict[]; error?: FormattedError }>;
   onExecuteUpload: (
     files: File[],
-    destinations: {
-      server?: { robotId: string; subPath: string };
-      robots?: Array<{ robotId: string; remotePath: string }>;
-    },
+    destinations: BulkDestinations,
     overwrite?: boolean,
     onProgress?: (percentage: number) => void
   ) => Promise<{ success: boolean; results?: BulkUploadTargetResult[]; error?: FormattedError }>;
   onConflictsDetected: (
     conflicts: BulkConflict[],
     files: File[],
-    destinations: {
-      server?: { robotId: string; subPath: string };
-      robots?: Array<{ robotId: string; remotePath: string }>;
-    }
+    destinations: BulkDestinations
   ) => void;
 }
 
@@ -90,13 +88,15 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
   const [results, setResults] = useState<BulkUploadTargetResult[] | null>(null);
   const [robotToRobotSummary, setRobotToRobotSummary] = useState<any | null>(null);
 
-  // Reset all'apertura
+  // Reset solo alla reale apertura del modal. L'array robots non è una dipendenza:
+  // un refresh della flotta non deve più riportare la sorgente al primo pulsante.
+  const prevIsOpenRef = useRef<boolean>(false);
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !prevIsOpenRef.current) {
       setStep(1);
       setSourceType("computer");
       setComputerFiles([]);
-      setSourceRobotId(robots[0]?.id || "");
+      setSourceRobotId("");
       setSelectedServerFiles([]);
       setSourceAvailableFiles([]);
       setDestType("remote_robots");
@@ -113,7 +113,15 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
       setResults(null);
       setRobotToRobotSummary(null);
     }
-  }, [isOpen, robots]);
+    prevIsOpenRef.current = isOpen;
+  }, [isOpen]);
+
+  // Il robot predefinito è inizializzato solo se manca; non sovrascrive una scelta utente.
+  useEffect(() => {
+    if (isOpen && !sourceRobotId && robots[0]?.id) {
+      setSourceRobotId(robots[0].id);
+    }
+  }, [isOpen, robots, sourceRobotId]);
 
   // Caricamento file per sorgenti server o robot
   useEffect(() => {
@@ -175,10 +183,11 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
   });
 
   // Validazione prima di avanzare di passo
-  const canProceedFromStep1 =
-    sourceType === "computer"
-      ? computerFiles.length > 0
-      : selectedServerFiles.length > 0;
+  const canProceedFromStep1 = hasBulkSourceSelection(
+    sourceType,
+    computerFiles,
+    selectedServerFiles
+  );
 
   const canProceedFromStep3 =
     destType === "general"
@@ -368,28 +377,40 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                 <button
                   type="button"
                   className={`btn btn-sm ${sourceType === "computer" ? "btn-primary" : "btn-outline-secondary"}`}
-                  onClick={() => setSourceType("computer")}
+                  onClick={() => {
+                    setSourceType("computer");
+                    setError(null);
+                  }}
                 >
                   File dal Computer
                 </button>
                 <button
                   type="button"
                   className={`btn btn-sm ${sourceType === "general" ? "btn-primary" : "btn-outline-secondary"}`}
-                  onClick={() => setSourceType("general")}
+                  onClick={() => {
+                    setSourceType("general");
+                    setError(null);
+                  }}
                 >
                   Archivio Generale Server
                 </button>
                 <button
                   type="button"
                   className={`btn btn-sm ${sourceType === "server_robot" ? "btn-primary" : "btn-outline-secondary"}`}
-                  onClick={() => setSourceType("server_robot")}
+                  onClick={() => {
+                    setSourceType("server_robot");
+                    setError(null);
+                  }}
                 >
                   Archivio Server Robot
                 </button>
                 <button
                   type="button"
                   className={`btn btn-sm ${sourceType === "remote_robot" ? "btn-primary" : "btn-outline-secondary"}`}
-                  onClick={() => setSourceType("remote_robot")}
+                  onClick={() => {
+                    setSourceType("remote_robot");
+                    setError(null);
+                  }}
                 >
                   Robot Remoto (Robot &rarr; Robot)
                 </button>
@@ -406,18 +427,43 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                     multiple
                     className="form-control"
                     onChange={(e) => {
-                      if (e.target.files) setComputerFiles(Array.from(e.target.files));
+                      if (e.target.files && e.target.files.length > 0) {
+                        const newFiles = Array.from(e.target.files);
+                        setComputerFiles((prev) => {
+                          const existing = new Set(prev.map((f) => f.name));
+                          const filtered = newFiles.filter((f) => !existing.has(f.name));
+                          return [...prev, ...filtered];
+                        });
+                        setError(null);
+                      }
                     }}
                   />
-                  <div className="small text-secondary mt-1">
+                  <div className="small text-secondary mt-2">
                     {computerFiles.length === 0
                       ? "Nessun file selezionato."
                       : `${computerFiles.length} file selezionati:`}
                   </div>
                   {computerFiles.length > 0 && (
-                    <ul className="small mt-1 mb-0 ps-3" style={{ maxHeight: "100px", overflowY: "auto" }}>
+                    <ul className="list-group list-group-flush small mt-2 mb-0 border rounded bg-white" style={{ maxHeight: "140px", overflowY: "auto" }}>
                       {computerFiles.map((f, i) => (
-                        <li key={i}>{f.name} ({Math.round(f.size / 1024)} KB)</li>
+                        <li key={`${f.name}-${i}`} className="list-group-item d-flex justify-content-between align-items-center py-1 px-3">
+                          <span className="text-truncate me-2" title={f.name}>{f.name}</span>
+                          <div className="d-flex align-items-center gap-2 flex-shrink-0">
+                            <span className="text-muted small">
+                              {Math.round(f.size / 1024) > 0 ? `${Math.round(f.size / 1024)} KB` : `${f.size} B`}
+                            </span>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-link text-danger p-0 ms-1"
+                              title="Rimuovi file"
+                              onClick={() => {
+                                setComputerFiles((prev) => prev.filter((_, idx) => idx !== i));
+                              }}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </li>
                       ))}
                     </ul>
                   )}
@@ -866,7 +912,13 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
               <button
                 type="button"
                 className="btn btn-primary btn-sm"
+                id="btn-bulk-next"
                 onClick={handleNext}
+                disabled={
+                  (step === 1 && !canProceedFromStep1) ||
+                  (step === 3 && !canProceedFromStep3) ||
+                  isTransferring
+                }
               >
                 Avanti &rarr;
               </button>

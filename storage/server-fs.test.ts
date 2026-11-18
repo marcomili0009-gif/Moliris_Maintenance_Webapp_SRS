@@ -214,6 +214,35 @@ const subItems = await serverFsService.listDirectory(contextRobotA, robotA, "sub
 assert(subItems.some(i => i.name === "subfile.txt" && i.type === "file"));
 console.log("  PASS: Navigazione e lettura elementi directory server (RF-SRVFS-002).");
 
+// 7b. Preflight e rimozione ricorsiva sicura di una cartella server
+const deleteContextRobotA: AuthorizedContext = {
+  ...contextRobotA,
+  permissions: new Set([
+    AppPermission.FS_SERVER_NAVIGATE,
+    AppPermission.FS_SERVER_DOWNLOAD,
+    AppPermission.FS_SERVER_UPLOAD,
+    AppPermission.FS_SERVER_DELETE,
+  ]),
+};
+const recursiveFolder = path.join(robotA.serverDirectoryPath, "recursive_delete");
+fs.mkdirSync(path.join(recursiveFolder, "nested"), { recursive: true });
+fs.writeFileSync(path.join(recursiveFolder, "first.txt"), "1");
+fs.writeFileSync(path.join(recursiveFolder, "nested", "second.txt"), "2");
+
+const recursiveInfo = await serverFsService.getRobotFolderDeletionInfo(
+  deleteContextRobotA,
+  robotA,
+  "recursive_delete"
+);
+assert.strictEqual(recursiveInfo.name, "recursive_delete");
+assert.strictEqual(recursiveInfo.fileCount, 2);
+assert.strictEqual(recursiveInfo.directoryCount, 1);
+assert.strictEqual(recursiveInfo.totalCount, 3);
+
+await serverFsService.deleteRobotFolder(deleteContextRobotA, robotA, "recursive_delete", { recursive: true });
+assert.strictEqual(fs.existsSync(recursiveFolder), false, "La cartella e tutto il suo contenuto devono essere eliminati");
+console.log("  PASS: Preflight conteggio e rimozione ricorsiva sicura cartella server verificati.");
+
 // 8. Test RF-SRVFS-003, RF-TRF-011, RNF-FS-003: Predisposizione scrittura e blocco sovrascrittura
 // Scrittura nuovo file riuscita
 const writeStream = await serverFsService.openFileWriteStream(contextRobotA, robotA, "new_file.txt");
@@ -462,10 +491,31 @@ function apiPost(pathUrl: string, token?: string, body?: any): Promise<{ status:
   });
 }
 
-// Eliminazione riuscita
-const resDelete = await apiDelete("/api/robots/robot_A/fs/server/file?path=delete_me.txt", sessionA.sessionId);
+// Eliminazione riuscita: il frontend storico invia /nome-file, che deve essere normalizzato come percorso relativo sicuro
+const resDelete = await apiDelete("/api/robots/robot_A/fs/server/file?path=%2Fdelete_me.txt", sessionA.sessionId);
 assert.strictEqual(resDelete.status, 200);
 assert.strictEqual(fs.existsSync(fileToDelete), false, "Il file deve essere stato eliminato");
+
+// Preflight API e eliminazione ricorsiva di una cartella server
+const apiFolderToDelete = path.join(robotA.serverDirectoryPath, "api_recursive_delete");
+fs.mkdirSync(path.join(apiFolderToDelete, "nested"), { recursive: true });
+fs.writeFileSync(path.join(apiFolderToDelete, "one.txt"), "1");
+fs.writeFileSync(path.join(apiFolderToDelete, "nested", "two.txt"), "2");
+
+const resFolderInfo = await apiGet(
+  "/api/robots/robot_A/fs/server/folder?path=%2Fapi_recursive_delete",
+  sessionA.sessionId
+);
+assert.strictEqual(resFolderInfo.status, 200, "Il preflight della cartella server deve restituire 200");
+assert.strictEqual(resFolderInfo.body.fileCount, 2);
+assert.strictEqual(resFolderInfo.body.directoryCount, 1);
+
+const resFolderDelete = await apiDelete(
+  "/api/robots/robot_A/fs/server/folder?path=%2Fapi_recursive_delete",
+  sessionA.sessionId
+);
+assert.strictEqual(resFolderDelete.status, 200, "L'eliminazione ricorsiva della cartella server deve restituire 200");
+assert.strictEqual(fs.existsSync(apiFolderToDelete), false);
 
 // Eliminazione di file inesistente -> 400 o 404
 const resDelete404 = await apiDelete("/api/robots/robot_A/fs/server/file?path=non_existent.txt", sessionA.sessionId);
@@ -520,6 +570,19 @@ assert.ok(
   "La cartella shared_packages deve essere presente nell'elenco generale"
 );
 
+// La root dell'Archivio Generale è aggregata: include le directory dei robot registrati.
+const robotRootEntry = resGeneralList.body.entries.find(
+  (e: any) => e.scope === "robot" && e.robotId === "robot_A"
+);
+assert.ok(robotRootEntry, "La root aggregata deve includere la directory del robot_A");
+assert.strictEqual(robotRootEntry.name, "operator_a_robot_A", "La directory robot deve usare la regola <username>_<id>");
+assert.strictEqual(robotRootEntry.type, "directory");
+assert.strictEqual(robotRootEntry.exists, true, "La directory del robot_A esiste sul filesystem");
+assert.strictEqual(robotRootEntry.displayName, "Robot robot_A");
+
+const generalSharedEntry = resGeneralList.body.entries.find((e: any) => e.name === "shared_packages");
+assert.strictEqual(generalSharedEntry?.scope, "general", "I contenuti condivisi devono essere marcati con scope general");
+
 // Upload su archivio generale
 const resGeneralUpload = await new Promise<any>((resolve, reject) => {
   const req = https.request(
@@ -560,6 +623,25 @@ assert.strictEqual(resGeneralDownload.body, "TEST_PACKAGE_BINARY_DATA_CONTENT", 
 // Eliminazione da archivio generale
 const resGeneralDelete = await apiDelete("/api/fs/general/file?path=/shared_packages/package_v1.tar.gz", sessionA.sessionId);
 assert.strictEqual(resGeneralDelete.status, 200, "Eliminazione file da archivio generale deve restituire 200");
+
+// Preflight e rimozione ricorsiva anche nell'archivio generale
+const generalRecursive = path.join(serverFsService.getGeneralFsRoot(), "general_recursive_delete");
+fs.mkdirSync(path.join(generalRecursive, "nested"), { recursive: true });
+fs.writeFileSync(path.join(generalRecursive, "one.txt"), "1");
+fs.writeFileSync(path.join(generalRecursive, "nested", "two.txt"), "2");
+const resGeneralFolderInfo = await apiGet(
+  "/api/fs/general/folder?path=%2Fgeneral_recursive_delete",
+  sessionA.sessionId
+);
+assert.strictEqual(resGeneralFolderInfo.status, 200);
+assert.strictEqual(resGeneralFolderInfo.body.fileCount, 2);
+assert.strictEqual(resGeneralFolderInfo.body.directoryCount, 1);
+const resGeneralFolderDelete = await apiDelete(
+  "/api/fs/general/folder?path=%2Fgeneral_recursive_delete",
+  sessionA.sessionId
+);
+assert.strictEqual(resGeneralFolderDelete.status, 200);
+assert.strictEqual(fs.existsSync(generalRecursive), false);
 
 console.log("  PASS: Archivio Generale del Server (navigazione, mkdir, upload, download, delete) verificato (§1, §3, §4).");
 

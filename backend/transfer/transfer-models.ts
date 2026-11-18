@@ -92,6 +92,11 @@ export interface TransferDto {
   };
   startedAt: string; // ISO 8601
   completedAt: string | null; // ISO 8601
+  sourceFile?: string;
+  targetFile?: string;
+  percentage?: number;
+  speedBps?: number;
+  errorMessage?: string;
 }
 
 /**

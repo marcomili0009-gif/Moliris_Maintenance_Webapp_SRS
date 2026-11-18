@@ -6,6 +6,14 @@ export interface FsEntry {
   modifiedAt?: string;
   permissions?: string;
   target?: string;
+  /** Provenienza nella vista aggregata dell'Archivio Generale. */
+  scope?: "general" | "robot";
+  /** ID del robot quando l'entry rappresenta la sua directory dedicata. */
+  robotId?: string;
+  /** Etichetta leggibile del robot (es. "Robot VM 01"). */
+  displayName?: string;
+  /** false se la directory del robot non esiste ancora sul filesystem. */
+  exists?: boolean;
 }
 
 export interface DirectoryListing {

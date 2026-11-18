@@ -1,0 +1,24 @@
+{
+  "task_id": "bulk-fs-transfer-critical-fixes-2026-11-18",
+  "session_key": "conversation-bulk-fs-transfer-2026-11-18",
+  "contract": "./contract.json",
+  "phase": "recon",
+  "completed_criteria": [],
+  "pending_criteria": [
+    "AC1",
+    "AC2",
+    "AC3",
+    "AC4",
+    "AC5",
+    "AC6"
+  ],
+  "files_touched": [],
+  "known_failures": [],
+  "read_files": [],
+  "background_tasks": [],
+  "impact_graph": {},
+  "last_successful_action": null,
+  "next_action": "Write failing regression tests for wizard, deletion and transfer contracts",
+  "created_at": "2026-11-18T10:55:00+00:00",
+  "last_updated": "2026-11-18T10:55:00+00:00"
+}

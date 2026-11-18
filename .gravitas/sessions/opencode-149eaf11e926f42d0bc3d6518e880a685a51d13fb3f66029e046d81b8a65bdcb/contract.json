@@ -1,0 +1,164 @@
+{
+  "mode": "implement",
+  "objective": "Modernizzare la UI e la navigazione della schermata Gestione File e Trasferimenti (tab animati, file manager moderno, archivio generale aggregato, drill-down) e correggere i bug critici del terminale PTY Host Locale/Robot Virtuale: apertura in formato ridotto, espansione senza perdita della sessione, newline senza effetto staircase, chiusura atomica con X, status bar che non taglia l'output.",
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "statement": "La barra dei tab usa un indicatore animato fluido che segue hover e tab attivo senza tagli ai bordi."
+    },
+    {
+      "id": "AC2",
+      "statement": "L'esploratore file di tutte le sezioni usa icone, badge, hover state e toolbar moderni coerenti."
+    },
+    {
+      "id": "AC3",
+      "statement": "Il primo tab e' rinominato 'File sul Server (Robot)'."
+    },
+    {
+      "id": "AC4",
+      "statement": "L'Archivio Generale Server mostra la root aggregata con cartelle robot e contenuti condivisi."
+    },
+    {
+      "id": "AC5",
+      "statement": "Aprire una cartella robot dall'Archivio Generale cambia tab, imposta l'ID robot e carica la directory senza click aggiuntivi."
+    },
+    {
+      "id": "AC6",
+      "statement": "Il comando Torna su dalla root del robot riporta all'Archivio Generale mostrando subito la lista."
+    },
+    {
+      "id": "AC7",
+      "statement": "Il terminale si apre sempre in formato ridotto; l'espansione a schermo intero ridimensiona il PTY senza distruggere la sessione (nessun errore 'Sessione terminale non trovata').",
+      "validators": [
+        "npm-typecheck",
+        "npm-test"
+      ]
+    },
+    {
+      "id": "AC8",
+      "statement": "L'output del terminale interpreta correttamente i newline (convertEol): le righe iniziano a colonna 0, senza effetto staircase.",
+      "validators": [
+        "npm-typecheck",
+        "npm-test"
+      ]
+    },
+    {
+      "id": "AC9",
+      "statement": "La X e il pulsante Disconnetti eseguono la stessa routine atomica: payload di chiusura, chiusura socket, DELETE della sessione PTY e reset del frontend.",
+      "validators": [
+        "npm-typecheck",
+        "npm-test"
+      ]
+    },
+    {
+      "id": "AC10",
+      "statement": "La status bar del terminale non si sovrappone all'output: il body usa flex:1 con min-height:0 e il footer resta visibile in formato ridotto ed espanso.",
+      "validators": [
+        "npm-typecheck",
+        "npm-test"
+      ]
+    },
+    {
+      "id": "AC11",
+      "statement": "I terminali Server e Robot condividono una finestra ampia in linea con il riferimento (circa 74% viewport in larghezza e 79% in altezza, max 1100x540 px), con testo xterm da 12px.",
+      "validators": [
+        "npm-client-typecheck",
+        "npm-client-test"
+      ]
+    },
+    {
+      "id": "AC12",
+      "statement": "Il server Node compilato trova dist/frontend ed espone la root React con asset buildati.",
+      "validators": [
+        "npm-build",
+        "npm-server-test"
+      ]
+    }
+  ],
+  "allowed_write_scope": [
+    "."
+  ],
+  "validators": [
+    {
+      "id": "npm-typecheck",
+      "command": [
+        "npm",
+        "run",
+        "typecheck"
+      ],
+      "criterion_ids": [
+        "AC7",
+        "AC8",
+        "AC9",
+        "AC10"
+      ]
+    },
+    {
+      "id": "npm-test",
+      "command": [
+        "bash",
+        "-c",
+        "set -o pipefail; npm run test 2>&1 | tee .gravitas/npm-test-last.log"
+      ],
+      "criterion_ids": [
+        "AC7",
+        "AC8",
+        "AC9",
+        "AC10"
+      ]
+    },
+    {
+      "id": "npm-client-typecheck",
+      "command": [
+        "npm",
+        "run",
+        "typecheck:client"
+      ],
+      "criterion_ids": [
+        "AC11"
+      ]
+    },
+    {
+      "id": "npm-client-test",
+      "command": [
+        "npm",
+        "run",
+        "test:client"
+      ],
+      "criterion_ids": [
+        "AC11"
+      ]
+    },
+    {
+      "id": "npm-build",
+      "command": [
+        "npm",
+        "run",
+        "build"
+      ],
+      "criterion_ids": [
+        "AC12"
+      ]
+    },
+    {
+      "id": "npm-server-test",
+      "command": [
+        "npx",
+        "tsx",
+        "backend/server.test.ts"
+      ],
+      "criterion_ids": [
+        "AC12"
+      ]
+    }
+  ],
+  "required_validators": [
+    "npm-typecheck",
+    "npm-test"
+  ],
+  "policy": {
+    "uncertainty": "medium",
+    "verification_depth": "impact"
+  },
+  "session_key": "opencode-149eaf11e926f42d0bc3d6518e880a685a51d13fb3f66029e046d81b8a65bdcb"
+}

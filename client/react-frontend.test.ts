@@ -22,6 +22,7 @@ import { ErrorPresenter, ERROR_CATALOG } from "./src/services/error-presenter.ts
 import { StateFormatter } from "./src/services/state-formatter.ts";
 import { ApiClient } from "./src/services/api-client.ts";
 import { filterRobots } from "./src/utils/filterRobots.ts";
+import { buildBulkTargets, hasBulkSourceSelection } from "./src/types/transfer.ts";
 import type { RobotSummaryDto } from "./src/types/fleet.ts";
 
 console.log("--> Esecuzione test E2E React Frontend su Google Chrome CDP...");
@@ -55,6 +56,27 @@ const netError = ErrorPresenter.formatError(new TypeError("Failed to fetch"));
 assert.strictEqual(netError.code, "NETWORK_DISCONNECTED");
 assert.ok(netError.userMessage.includes("VPN Moliris"));
 console.log("  PASS: ErrorPresenter React verifica tutte le categorie §9 con sanitizzazione totale.");
+
+// Test 1b: Wizard Caricamento Massivo - stato sorgente e contratto destinazioni
+const bulkTargets = buildBulkTargets({
+  server: { robotId: "robot_server", subPath: "upload" },
+  robots: [{ robotId: "robot_remote", remotePath: "/data" }],
+});
+assert.deepStrictEqual(bulkTargets, [
+  { type: "server", robotId: "robot_server", directory: "upload" },
+  { type: "robot", robotId: "robot_remote", directory: "/data" },
+]);
+assert.strictEqual(
+  hasBulkSourceSelection("computer", [{ name: "report.pdf", size: 42 } as File], []),
+  true,
+  "Un file selezionato dal computer deve abilitare il passo Destinazione"
+);
+assert.strictEqual(
+  hasBulkSourceSelection("general", [], []),
+  false,
+  "Una sorgente server senza file selezionati non deve abilitare Avanti"
+);
+console.log("  PASS: Wizard Caricamento Massivo mantiene il contratto di selezione e destinazione.");
 
 // Test 2: StateFormatter - Tre stati distinti e assenza di dati (RF-MON-005, §10.2)
 console.log("  -> Test StateFormatter React: verifica rappresentazione distinta dei 3 stati");
@@ -203,6 +225,20 @@ await userRepo.create({
   updatedAt: new Date(),
 });
 
+const blockedUserPassword = "BlockedSession123!";
+const blockedUserHash = await hashPassword(blockedUserPassword);
+const blockedUser = {
+  id: "user_blocked_session",
+  username: "blocked_session",
+  passwordHash: blockedUserHash,
+  roles: ["operatore"],
+  enabled: true,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+await userRepo.create(blockedUser);
+sessionManager.createSession(blockedUser);
+
 await robotRepo.create({
   id: "robot_react_01",
   displayName: "Robot React Alpha",
@@ -226,6 +262,10 @@ await robotRepo.create({
 console.log("  -> Test ApiClient: verifica blocco degli host esterni");
 
 const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+
+const sessionConflictOnly = process.env["SESSION_CONFLICT_ONLY"] === "1";
+// Segnale dedicato per saltare il resto dell'E2E mantenendo attivo il cleanup nel finally.
+const sessionConflictOnlyComplete = new Error("Session-conflict-only frontend test complete.");
 
 try {
   Object.defineProperty(globalThis, "window", {
@@ -317,13 +357,20 @@ await new Promise<void>((resolve, reject) => {
 let cdpMsgId = 1;
 const pendingCdpReplies = new Map<number, (res: any) => void>();
 const networkRequestsMade: string[] = [];
+const networkRequestsWithMethod: Array<{ method: string; url: string }> = [];
 
 cdpWs.onmessage = (event) => {
   try {
     const data = JSON.parse(event.data as string);
     if (data.method === "Network.requestWillBeSent") {
       const reqUrl = data.params?.request?.url;
-      if (reqUrl) networkRequestsMade.push(reqUrl);
+      if (reqUrl) {
+        networkRequestsMade.push(reqUrl);
+        networkRequestsWithMethod.push({
+          method: String(data.params?.request?.method || "GET").toUpperCase(),
+          url: reqUrl,
+        });
+      }
     }
     if (data.id && pendingCdpReplies.has(data.id)) {
       const cb = pendingCdpReplies.get(data.id)!;
@@ -360,12 +407,16 @@ async function evaluateInBrowser<T>(expression: string): Promise<T> {
 try {
   console.log(`  -> Navigazione su ${serverBaseUrl}...`);
   await sendCdpCommand("Page.navigate", { url: serverBaseUrl });
-  await new Promise((r) => setTimeout(r, 1000));
 
-  // Verifica montaggio React e Login Section
-  const isLoginVisible = await evaluateInBrowser<boolean>(
-    "Boolean(document.getElementById('login-section'))"
-  );
+  // Attesa montaggio React e Login Section con retry resiliente
+  let isLoginVisible = false;
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 150));
+    isLoginVisible = await evaluateInBrowser<boolean>(
+      "Boolean(document.getElementById('login-section'))"
+    );
+    if (isLoginVisible) break;
+  }
   assert.strictEqual(isLoginVisible, true, "La schermata di login React deve essere montata e visibile");
 
   // Tentativo di login con credenziali errate (CA-AUTH-002)
@@ -384,6 +435,52 @@ try {
     if (loginErr.includes("non valide")) break;
   }
   assert.ok(loginErr.includes("non valide"), "Deve mostrare messaggio di errore credenziali non valide");
+
+  // Un account già autenticato deve mostrare il dialogo dedicato e azzerare il form alla chiusura.
+  await evaluateInBrowser<void>(`{
+    document.getElementById('username').value = 'blocked_session';
+    document.getElementById('password').value = 'BlockedSession123!';
+    document.getElementById('btn-login').click();
+  }`);
+  let blockedModalVisible = false;
+  for (let i = 0; i < 15; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    blockedModalVisible = await evaluateInBrowser<boolean>(
+      "Boolean(document.getElementById('modal-session-conflict'))"
+    );
+    if (blockedModalVisible) break;
+  }
+  assert.strictEqual(blockedModalVisible, true, "Il conflitto sessione deve aprire una modale dedicata");
+  const blockedDialog = await evaluateInBrowser<{ title: string; message: string; role: string }>(`{
+    const dialog = document.getElementById('modal-session-conflict');
+    ({
+      title: dialog?.querySelector('.modal-header h3')?.textContent || '',
+      message: dialog?.querySelector('.modal-body')?.textContent || '',
+      role: dialog?.getAttribute('role') || '',
+    })
+  }`);
+  assert.strictEqual(blockedDialog.title, "Accesso non consentito");
+  assert.ok(blockedDialog.message.includes(
+    "È già presente una sessione attiva per questo account su un altro dispositivo o finestra del browser. Disconnetti l'altra sessione prima di accedere."
+  ));
+  assert.strictEqual(blockedDialog.role, "alertdialog");
+  assert.strictEqual(
+    await evaluateInBrowser<string>("document.getElementById('login-error')?.textContent || ''"),
+    "",
+    "Il conflitto sessione non deve mostrare il messaggio generico di errore login"
+  );
+  await evaluateInBrowser<void>("document.getElementById('btn-close-session-conflict').click()");
+  const resetLoginForm = await evaluateInBrowser<{ modalClosed: boolean; username: string; password: string }>(`({
+    modalClosed: !Boolean(document.getElementById('modal-session-conflict')),
+    username: document.getElementById('username').value,
+    password: document.getElementById('password').value,
+  })`);
+  assert.deepStrictEqual(resetLoginForm, { modalClosed: true, username: "", password: "" });
+
+  if (sessionConflictOnly) {
+    console.log("  PASS: Session-conflict modal, generic-error suppression, and form reset verified.");
+    throw sessionConflictOnlyComplete;
+  }
 
   // Login con credenziali admin (CA-AUTH-001)
   console.log("  -> Test CA-AUTH-001: Login riuscito come amministratore su React");
@@ -473,6 +570,425 @@ try {
   );
   assert.strictEqual(selectedValue, "robot_react_01", "La selezione dal combobox deve impostare l'ID esatto del robot");
   console.log("  PASS: Rimozione fs-top-selector-bar e funzionamento RobotCombobox verificati.");
+
+  // Test Archivio Generale aggregato e drill-down verso il robot (AC1, AC3, AC4, AC5, AC6)
+  console.log("  -> Test Archivio Generale aggregato, indicatore tab e drill-down robot");
+  // Azzera l'ID robot impostato dal test precedente per verificare il set automatico nel drill-down.
+  await evaluateInBrowser<void>(`
+    const input = document.getElementById('fs-robot-id');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, '');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  `);
+  await new Promise((r) => setTimeout(r, 100));
+  const clearedRobotId = await evaluateInBrowser<string>(
+    "document.getElementById('fs-robot-id').value"
+  );
+  assert.strictEqual(clearedRobotId, "", "L'ID robot deve essere azzerato prima del drill-down");
+
+  await evaluateInBrowser<void>(`
+    document.querySelector('button[data-view="general"]').click();
+  `);
+  await new Promise((r) => setTimeout(r, 500));
+
+  const generalInfo = await evaluateInBrowser<{
+    hasIndicator: boolean;
+    generalSelected: string;
+    hasRobotRow: boolean;
+    label: string;
+    serverTabLabel: string;
+  }>(`{
+    const robotRow = document.querySelector('#fs-general-table-body .fs-row-robot');
+    const serverTab = document.getElementById('btn-tab-fs-server');
+    ({
+      hasIndicator: Boolean(document.querySelector('.fs-tab-indicator')),
+      generalSelected: document.getElementById('btn-tab-general').getAttribute('aria-selected') || '',
+      hasRobotRow: Boolean(robotRow),
+      label: robotRow ? robotRow.textContent || '' : '',
+      serverTabLabel: serverTab ? serverTab.textContent || '' : '',
+    })
+  }`);
+
+  assert.strictEqual(generalInfo.hasIndicator, true, "La barra tab deve avere l'indicatore animato");
+  assert.strictEqual(generalInfo.generalSelected, "true", "Il tab Archivio Generale deve risultare selezionato");
+  assert.strictEqual(generalInfo.hasRobotRow, true, "La root aggregata deve mostrare la directory del robot registrato");
+  assert.ok(generalInfo.label.includes("Robot React Alpha"), "La riga robot deve mostrare il display name");
+  assert.ok(
+    generalInfo.serverTabLabel.includes("File sul Server (Robot)"),
+    "Il primo tab deve essere rinominato 'File sul Server (Robot)'"
+  );
+
+  // AC2: l'esploratore usa icone SVG, badge/toolbar e definisce hover state coerenti.
+  const explorerStyleInfo = await evaluateInBrowser<{
+    hasIconSvg: boolean;
+    hasChip: boolean;
+    hasActionButton: boolean;
+    tabIconCount: number;
+    hasHoverRule: boolean;
+  }>(`{
+    const row = document.querySelector('#fs-general-table-body .fs-row-robot');
+    const selectors = [];
+    const collect = (sheet) => {
+      let rules;
+      try {
+        rules = sheet.cssRules;
+      } catch (error) {
+        return;
+      }
+      for (const rule of Array.from(rules)) {
+        const selector = rule.selectorText;
+        if (selector) selectors.push(selector);
+        const nested = rule.cssRules;
+        if (nested) {
+          for (const child of Array.from(nested)) {
+            const childSelector = child.selectorText;
+            if (childSelector) selectors.push(childSelector);
+          }
+        }
+      }
+    };
+    for (const sheet of Array.from(document.styleSheets)) collect(sheet);
+    ({
+      hasIconSvg: Boolean(row && row.querySelector('.fs-entry-icon svg')),
+      hasChip: Boolean(row && row.querySelector('.fs-chip')),
+      hasActionButton: Boolean(row && row.querySelector('.fs-action')),
+      tabIconCount: document.querySelectorAll('.fs-tab-btn svg').length,
+      hasHoverRule: selectors.some(
+        (selector) => selector.includes('.fs-row:hover') || selector.includes('.fs-entry-button:hover')
+      ),
+    })
+  }`);
+
+  assert.strictEqual(explorerStyleInfo.hasIconSvg, true, "Le righe dell'esploratore devono usare icone SVG");
+  assert.strictEqual(explorerStyleInfo.hasChip, true, "Le righe dell'esploratore devono mostrare badge (chip)");
+  assert.strictEqual(explorerStyleInfo.hasActionButton, true, "Le righe dell'esploratore devono esporre azioni in toolbar");
+  assert.strictEqual(explorerStyleInfo.tabIconCount, 4, "Ogni tab deve avere la propria icona SVG");
+  assert.strictEqual(explorerStyleInfo.hasHoverRule, true, "Il CSS deve definire hover state per righe ed entry");
+
+  // Apertura del robot dall'Archivio Generale: cambio tab + ID + caricamento automatico
+  await evaluateInBrowser<void>(`
+    const button = document.querySelector('#fs-general-table-body .fs-row-robot .fs-entry-button');
+    if (button) button.click();
+  `);
+  await new Promise((r) => setTimeout(r, 700));
+
+  const drillDownInfo = await evaluateInBrowser<{
+    serverSelected: string;
+    robotId: string;
+    bodyText: string;
+    currentPath: string;
+  }>(`({
+    serverSelected: document.getElementById('btn-tab-fs-server').getAttribute('aria-selected') || '',
+    robotId: document.getElementById('fs-robot-id').value,
+    bodyText: (document.getElementById('fs-table-body').textContent || ''),
+    currentPath: (document.getElementById('fs-current-path') || {}).textContent || '',
+  })`);
+
+  assert.strictEqual(drillDownInfo.serverSelected, "true", "Aprire un robot deve selezionare il tab File sul Server (Robot)");
+  assert.strictEqual(drillDownInfo.robotId, "robot_react_01", "L'ID robot deve essere impostato automaticamente");
+  assert.ok(drillDownInfo.bodyText.includes("upload"), "La directory del robot deve essere caricata senza click aggiuntivi");
+
+  // Torna su dalla root del robot: deve riportare all'Archivio Generale con la lista pronta
+  await evaluateInBrowser<void>(`
+    document.getElementById('btn-fs-up').click();
+  `);
+  await new Promise((r) => setTimeout(r, 500));
+
+  const backInfo = await evaluateInBrowser<{ generalSelected: string; generalHasRobotRow: boolean }>(`({
+    generalSelected: document.getElementById('btn-tab-general').getAttribute('aria-selected') || '',
+    generalHasRobotRow: Boolean(document.querySelector('#fs-general-table-body .fs-row-robot')),
+  })`);
+
+  assert.strictEqual(backInfo.generalSelected, "true", "Torna su dalla root del robot deve aprire l'Archivio Generale");
+  assert.strictEqual(backInfo.generalHasRobotRow, true, "L'Archivio Generale deve mostrare subito la lista aggregata");
+  console.log("  PASS: Archivio Generale aggregato, indicatore tab e drill-down robot verificati.");
+
+  // =======================================================================
+  // Terminale PTY (Host Locale): regressioni su resize, newline, chiusura X
+  // =======================================================================
+  console.log("  -> Test Terminale Server: formato ridotto, espansione senza perdita sessione, newline e chiusura atomica");
+
+  await evaluateInBrowser<void>(`
+    document.querySelector('button[data-view="fleet"]').click();
+  `);
+  await new Promise((r) => setTimeout(r, 200));
+
+  // Cattura l'ID sessione PTY dal POST di apertura per verificare poi la
+  // chiusura formale lato backend.
+  await evaluateInBrowser<void>(`{
+    window.__termSessions = [];
+    const origFetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const res = await origFetch(...args);
+      try {
+        const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+        const method = ((args[1] && args[1].method) || 'GET').toUpperCase();
+        if (method === 'POST' && url.includes('/api/server/terminal/sessions')) {
+          res.clone().json().then((d) => {
+            if (d && d.sessionId) window.__termSessions.push(d.sessionId);
+          }).catch(() => {});
+        }
+      } catch (error) {}
+      return res;
+    };
+  }`);
+
+  await evaluateInBrowser<void>(`
+    document.getElementById('btn-server-terminal').click();
+  `);
+
+  let terminalConnected = false;
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    terminalConnected = await evaluateInBrowser<boolean>(`
+      Boolean(document.getElementById('modal-terminal')) &&
+      (document.getElementById('terminal-session-status')?.textContent || '') === 'Connesso'
+    `);
+    if (terminalConnected) break;
+  }
+  assert.strictEqual(terminalConnected, true, "Il terminale server deve aprirsi e connettersi al PTY");
+  // Attende il primo fit (requestAnimationFrame + ResizeObserver) prima di
+  // leggere le coordinate effettive del PTY.
+  await new Promise((r) => setTimeout(r, 500));
+
+  const initialTerminalLayout = await evaluateInBrowser<{
+    expanded: boolean;
+    width: number;
+    height: number;
+    viewportWidth: number;
+    viewportHeight: number;
+    fontSize: string;
+    cols: number;
+    rows: number;
+    footerTop: number;
+    footerBottom: number;
+    bodyBottom: number;
+    winBottom: number;
+  }>(`{
+    const win = document.querySelector('.modal-terminal-window');
+    const body = document.getElementById('terminal-container');
+    const footer = document.querySelector('.terminal-footer');
+    const dims = (document.getElementById('terminal-footer-dims').textContent || '').split('x');
+    const rect = win.getBoundingClientRect();
+    ({
+      expanded: win.classList.contains('terminal-expanded'),
+      width: rect.width,
+      height: rect.height,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      fontSize: getComputedStyle(document.querySelector('.xterm')).fontSize,
+      cols: parseInt(dims[0], 10) || 0,
+      rows: parseInt(dims[1], 10) || 0,
+      footerTop: footer.getBoundingClientRect().top,
+      footerBottom: footer.getBoundingClientRect().bottom,
+      bodyBottom: body.getBoundingClientRect().bottom,
+      winBottom: rect.bottom,
+    })
+  }`);
+
+  assert.strictEqual(initialTerminalLayout.expanded, false, "Il terminale deve aprirsi SEMPRE in modalità ridotta");
+  assert.ok(
+    Math.abs(initialTerminalLayout.width - Math.min(1100, initialTerminalLayout.viewportWidth * 0.74)) <= 3 &&
+      Math.abs(initialTerminalLayout.height - Math.min(540, initialTerminalLayout.viewportHeight * 0.79)) <= 3,
+    "La finestra ridotta deve rispettare le proporzioni ampie del riferimento"
+  );
+  assert.strictEqual(initialTerminalLayout.fontSize, "12px", "Il testo del terminale deve usare un carattere ridotto da 12px");
+  assert.ok(
+    initialTerminalLayout.footerTop >= initialTerminalLayout.bodyBottom - 1,
+    "La status bar deve essere sotto l'area del terminale, senza sovrapporsi alle ultime righe"
+  );
+  assert.ok(initialTerminalLayout.footerBottom <= initialTerminalLayout.winBottom + 1,
+    "La status bar deve restare dentro la finestra del terminale");
+
+  await evaluateInBrowser<void>(`
+    document.getElementById('btn-terminal-expand').click();
+  `);
+  await new Promise((r) => setTimeout(r, 800));
+
+  const expandedTerminalLayout = await evaluateInBrowser<{
+    expanded: boolean;
+    status: string;
+    width: number;
+    height: number;
+    viewportWidth: number;
+    viewportHeight: number;
+    cols: number;
+    rows: number;
+    content: string;
+    footerTop: number;
+    footerBottom: number;
+    bodyBottom: number;
+  }>(`{
+    const win = document.querySelector('.modal-terminal-window');
+    const body = document.getElementById('terminal-container');
+    const footer = document.querySelector('.terminal-footer');
+    const dims = (document.getElementById('terminal-footer-dims').textContent || '').split('x');
+    const rect = win.getBoundingClientRect();
+    ({
+      expanded: win.classList.contains('terminal-expanded'),
+      status: document.getElementById('terminal-session-status').textContent || '',
+      width: rect.width,
+      height: rect.height,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      cols: parseInt(dims[0], 10) || 0,
+      rows: parseInt(dims[1], 10) || 0,
+      content: body.textContent || '',
+      footerTop: footer.getBoundingClientRect().top,
+      footerBottom: footer.getBoundingClientRect().bottom,
+      bodyBottom: body.getBoundingClientRect().bottom,
+    })
+  }`);
+
+  assert.strictEqual(expandedTerminalLayout.expanded, true, "Il pulsante Espandi deve massimizzare la finestra");
+  assert.ok(
+    expandedTerminalLayout.width >= expandedTerminalLayout.viewportWidth - 1 &&
+      expandedTerminalLayout.height >= expandedTerminalLayout.viewportHeight - 1,
+    "In modalità espansa la finestra deve coprire la viewport"
+  );
+  assert.strictEqual(
+    expandedTerminalLayout.status,
+    "Connesso",
+    "L'espansione NON deve distruggere la sessione PTY (nessun 'Sessione non trovata')"
+  );
+  assert.ok(
+    !expandedTerminalLayout.content.includes("Sessione terminale non trovata") &&
+      !expandedTerminalLayout.content.includes("Sessione terminale terminata dal server"),
+    "L'espansione non deve mostrare errori di sessione persa"
+  );
+  assert.ok(
+    expandedTerminalLayout.cols > initialTerminalLayout.cols &&
+      expandedTerminalLayout.rows > initialTerminalLayout.rows,
+    "Dopo l'espansione il fit deve inviare nuove coordinate cols/rows al PTY"
+  );
+  assert.ok(
+    expandedTerminalLayout.footerTop >= expandedTerminalLayout.bodyBottom - 1,
+    "In modalità espansa la status bar non deve tagliare l'output del terminale"
+  );
+  assert.ok(
+    expandedTerminalLayout.footerBottom <= expandedTerminalLayout.viewportHeight + 1,
+    "In modalità espansa la status bar deve restare visibile nella viewport"
+  );
+
+  // Newline: il bridge PTY locale emette "\n"; xterm con convertEol deve
+  // riportare il cursore a colonna 0 a ogni riga (nessun effetto staircase).
+  await evaluateInBrowser<void>(`
+    const textarea = document.querySelector('#terminal-container .xterm-helper-textarea');
+    if (textarea) textarea.focus();
+  `);
+  await sendCdpCommand("Input.insertText", {
+    text: "printf '%s_%s\\n%s_%s\\n%s_%s\\n' ALPHA LINE BETA LINE GAMMA LINE",
+  });
+  await sendCdpCommand("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  await sendCdpCommand("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  await new Promise((r) => setTimeout(r, 1200));
+
+  const newlineRows = await evaluateInBrowser<{
+    hasAlpha: boolean;
+    hasBeta: boolean;
+    hasGamma: boolean;
+    hasPrompt: boolean;
+    alphaLine: string;
+    betaLine: string;
+    gammaLine: string;
+  }>(`{
+    const rows = Array.from(document.querySelectorAll('#terminal-container .xterm-rows > div'))
+      .map((row) => row.textContent || '');
+    const alpha = rows.filter((row) => row.includes('ALPHA_LINE'));
+    const beta = rows.filter((row) => row.includes('BETA_LINE'));
+    const gamma = rows.filter((row) => row.includes('GAMMA_LINE'));
+    ({
+      hasAlpha: alpha.length > 0,
+      hasBeta: beta.length > 0,
+      hasGamma: gamma.length > 0,
+      hasPrompt: rows.some((row) => row.includes('$') || row.includes('#')),
+      alphaLine: alpha[0] || '',
+      betaLine: beta[0] || '',
+      gammaLine: gamma[0] || '',
+    })
+  }`);
+
+  assert.strictEqual(newlineRows.hasAlpha && newlineRows.hasBeta && newlineRows.hasGamma, true,
+    "Il comando di test deve produrre le tre righe ALPHA/BETA/GAMMA nel terminale");
+  assert.strictEqual(newlineRows.hasPrompt, true, "Il terminale deve mostrare il prompt bash");
+  for (const [marker, line] of [
+    ["ALPHA_LINE", newlineRows.alphaLine],
+    ["BETA_LINE", newlineRows.betaLine],
+    ["GAMMA_LINE", newlineRows.gammaLine],
+  ] as const) {
+    assert.strictEqual(
+      line,
+      marker,
+      `La riga '${marker}' deve iniziare a colonna 0 (niente staircase): "${line}"`
+    );
+  }
+
+  // Ripristino dimensioni ridotte: la sessione deve restare viva.
+  await evaluateInBrowser<void>(`
+    document.getElementById('btn-terminal-expand').click();
+  `);
+  await new Promise((r) => setTimeout(r, 500));
+  const restoredTerminal = await evaluateInBrowser<{ expanded: boolean; status: string; cols: number }>(`{
+    const win = document.querySelector('.modal-terminal-window');
+    const dims = (document.getElementById('terminal-footer-dims').textContent || '').split('x');
+    ({
+      expanded: win.classList.contains('terminal-expanded'),
+      status: document.getElementById('terminal-session-status').textContent || '',
+      cols: parseInt(dims[0], 10) || 0,
+    })
+  }`);
+  assert.strictEqual(restoredTerminal.expanded, false, "Ripristina deve tornare alla finestra ridotta");
+  assert.strictEqual(restoredTerminal.status, "Connesso", "Il ripristino non deve interrompere la sessione PTY");
+  assert.ok(
+    restoredTerminal.cols < expandedTerminalLayout.cols,
+    "Il ripristino deve ricalcolare e reinviare le dimensioni ridotte"
+  );
+
+  const capturedSessions = await evaluateInBrowser<string[]>("window.__termSessions || []");
+  assert.ok(capturedSessions.length >= 1 && capturedSessions[0], "Il test deve catturare l'ID della sessione PTY aperta");
+  const ptySessionId = capturedSessions[0];
+
+  // Chiusura con la "X": stessa routine atomica del pulsante Disconnetti.
+  await evaluateInBrowser<void>(`
+    document.getElementById('btn-close-terminal').click();
+  `);
+  await new Promise((r) => setTimeout(r, 500));
+  const terminalClosed = await evaluateInBrowser<boolean>(
+    "!Boolean(document.getElementById('modal-terminal'))"
+  );
+  assert.strictEqual(terminalClosed, true, "Il click sulla X deve chiudere il pannello del terminale");
+
+  const issuedDisconnect = networkRequestsWithMethod.some(
+    (req) => req.method === "DELETE" && req.url.includes(`/api/terminal/sessions/${ptySessionId}`)
+  );
+  assert.strictEqual(
+    issuedDisconnect,
+    true,
+    "La X deve inviare la richiesta formale di chiusura sessione PTY (DELETE)"
+  );
+
+  const deleteAfterClose = await evaluateInBrowser<number>(`(async () => {
+    const res = await fetch('/api/terminal/sessions/${ptySessionId}', { method: 'DELETE' });
+    return res.status;
+  })()`);
+  assert.strictEqual(
+    deleteAfterClose,
+    404,
+    "Dopo la X la sessione PTY non deve più esistere sul backend (nessuna sessione orfana)"
+  );
+  console.log("  PASS: Terminale server ridotto/espanso senza perdita sessione, newline a colonna 0, X con chiusura PTY verificata.");
 
   await evaluateInBrowser<void>(`
     document.querySelector('button[data-view="fleet"]').click();
@@ -583,6 +1099,10 @@ try {
   console.log("  PASS: Il browser non ha inviato alcuna richiesta verso host di robot; tutte le chiamate passano da Fastify.");
 
   console.log("  PASS: Test E2E React completato con successo su Google Chrome!");
+} catch (error) {
+  if (error !== sessionConflictOnlyComplete) {
+    throw error;
+  }
 } finally {
   cdpWs.close();
   try {

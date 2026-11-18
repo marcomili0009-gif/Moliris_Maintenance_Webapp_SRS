@@ -1788,10 +1788,10 @@ export class TransferService {
 
   public listTransfers(context: AuthorizedContext, robotId?: string): TransferDto[] {
     const list: TransferDto[] = [];
+    const isAdmin = Array.isArray(context.roles) && context.roles.some((r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore");
     for (const record of Array.from(this.transfers.values())) {
       if (robotId && record.robotId !== robotId) continue;
-      // Visibile solo al titolare o a chi è autorizzato per quel robot
-      if (record.userId === context.userId || context.targetRobotId === record.robotId) {
+      if (isAdmin || record.userId === context.userId || context.targetRobotId === record.robotId || !context.targetRobotId) {
         list.push(this.toDto(record));
       }
     }
@@ -1826,6 +1826,11 @@ export class TransferService {
       integrityVerification: record.integrityVerification,
       startedAt: record.startedAt.toISOString(),
       completedAt: record.completedAt ? record.completedAt.toISOString() : null,
+      sourceFile: record.filename || record.sourcePath,
+      targetFile: record.destinationPath ? path.basename(record.destinationPath) : record.filename,
+      percentage: percent ?? 0,
+      speedBps: record.speedBytesPerSec || 0,
+      errorMessage: record.error || undefined,
     };
   }
 
@@ -2279,6 +2284,28 @@ export class TransferService {
     });
   }
 
+  private async recordAuditFailure(record: TransferRecord, err: any): Promise<void> {
+    try {
+      await this.auditRepository.record({
+        userId: record.userId,
+        operation: AuditOperation.TRANSFER_FAILURE,
+        robotId: record.robotId,
+        outcome: "FAILURE",
+        timestamp: record.completedAt || new Date(),
+        details: {
+          transferId: record.transferId,
+          direction: record.direction,
+          filename: record.filename,
+          error: record.error || err?.message || String(err),
+        },
+      });
+    } catch {}
+  }
+
+  private async recordAuditComplete(record: TransferRecord): Promise<void> {
+    await this.recordAuditSuccess(record);
+  }
+
   private async recordSecurityViolation(username: string, robotId: string, reason: string): Promise<void> {
     try {
       await this.auditRepository.record({
@@ -2481,7 +2508,39 @@ export class TransferService {
             const transferId = crypto.randomUUID();
             const tempPartPath = path.join(tempDir, `bulk_${transferId}.part`);
 
-            // Stream da staging a tempPartPath con calcolo sha256
+            const startTime = Date.now();
+            const record: TransferRecord = {
+              transferId,
+              userId: context.userId,
+              userSessionId: context.sessionId || "session-system",
+              robotId: robot.id,
+              direction: TransferDirection.CLIENT_TO_SERVER,
+              sourcePath: staged.stagingPath,
+              destinationPath: finalPath,
+              tempDestinationPath: tempPartPath,
+              filename: safeFilename,
+              totalBytes: staged.sizeBytes,
+              transferredBytes: 0,
+              status: TransferStatus.IN_PROGRESS,
+              speedBytesPerSec: 0,
+              etaSeconds: null,
+              startedAt: new Date(),
+              completedAt: undefined,
+              error: null,
+              checksumAlgorithm: this.checksumAlgorithm.name,
+              lastProgressUpdateAt: startTime,
+              lastBytesAtUpdate: 0,
+              abortController: new AbortController(),
+              cleanupHandlers: [
+                async () => {
+                  try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
+                },
+              ],
+            };
+            this.transfers.set(transferId, record);
+            await this.recordAuditStart(record);
+
+            // Stream da staging a tempPartPath con calcolo sha256 e tracciamento in tempo reale
             const hash = crypto.createHash("sha256");
             let writtenBytes = 0;
             const readStream = fs.createReadStream(staged.stagingPath);
@@ -2492,18 +2551,42 @@ export class TransferService {
                 const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
                 hash.update(buf);
                 writtenBytes += buf.length;
+                record.transferredBytes = writtenBytes;
+                const elapsedSec = Math.max(0.001, (Date.now() - startTime) / 1000);
+                record.speedBytesPerSec = Math.round(writtenBytes / elapsedSec);
+                if (record.totalBytes && record.speedBytesPerSec > 0) {
+                  const remaining = Math.max(0, record.totalBytes - writtenBytes);
+                  record.etaSeconds = Math.ceil(remaining / record.speedBytesPerSec);
+                }
+                record.lastProgressUpdateAt = Date.now();
               });
-              readStream.on("error", reject);
-              writeStream.on("error", reject);
+              readStream.on("error", (err) => {
+                record.status = TransferStatus.FAILED;
+                record.error = err.message;
+                reject(err);
+              });
+              writeStream.on("error", (err) => {
+                record.status = TransferStatus.FAILED;
+                record.error = err.message;
+                reject(err);
+              });
               writeStream.on("finish", () => resolve());
               readStream.pipe(writeStream);
             }).catch(async (err) => {
+              record.status = TransferStatus.FAILED;
+              record.error = err.message;
+              record.completedAt = new Date();
+              await this.recordAuditFailure(record, err);
               try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
               throw err;
             });
 
             const computedHash = hash.digest("hex");
             if (computedHash !== staged.sha256) {
+              record.status = TransferStatus.INTEGRITY_FAILED;
+              record.error = "Checksum non corrispondente durante il salvataggio sul server.";
+              record.completedAt = new Date();
+              await this.recordAuditFailure(record, new Error(record.error));
               try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
               throw new MolirisAppError(
                 ErrorCode.INTEGRITY_CHECK_FAILED,
@@ -2516,6 +2599,12 @@ export class TransferService {
 
             // Sostituzione atomica via rename
             await fs.promises.rename(tempPartPath, finalPath);
+
+            record.status = TransferStatus.COMPLETED;
+            record.completedAt = new Date();
+            record.transferredBytes = writtenBytes;
+            record.computedChecksum = computedHash;
+            await this.recordAuditComplete(record);
 
             fileTargetResults.push({
               target,
@@ -2538,6 +2627,7 @@ export class TransferService {
         } else if (target.type === "robot") {
           let managedConn: ManagedRobotConnection | null = null;
           let tempRemotePartPath = "";
+          let record: TransferRecord | null = null;
           try {
             this.assertRobotAccessible(robot);
             this.assertAuthorized(context, robot, [AppPermission.FS_REMOTE_UPLOAD]);
@@ -2577,6 +2667,35 @@ export class TransferService {
               `.tmp_moliris_${transferId}.part`
             );
 
+            const startTime = Date.now();
+            const targetRecord: TransferRecord = {
+              transferId,
+              userId: context.userId,
+              userSessionId: context.sessionId || "session-system",
+              robotId: robot.id,
+              direction: TransferDirection.CLIENT_TO_ROBOT,
+              sourcePath: staged.stagingPath,
+              destinationPath: finalRemotePath,
+              tempDestinationPath: tempRemotePartPath,
+              filename: safeFilename,
+              totalBytes: staged.sizeBytes,
+              transferredBytes: 0,
+              status: TransferStatus.IN_PROGRESS,
+              speedBytesPerSec: 0,
+              etaSeconds: null,
+              startedAt: new Date(),
+              completedAt: undefined,
+              error: null,
+              checksumAlgorithm: this.checksumAlgorithm.name,
+              lastProgressUpdateAt: startTime,
+              lastBytesAtUpdate: 0,
+              abortController: new AbortController(),
+              cleanupHandlers: [],
+            };
+            record = targetRecord;
+            this.transfers.set(transferId, targetRecord);
+            await this.recordAuditStart(targetRecord);
+
             const hash = crypto.createHash("sha256");
             let writtenBytes = 0;
             const readStream = fs.createReadStream(staged.stagingPath);
@@ -2590,12 +2709,40 @@ export class TransferService {
                 const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
                 hash.update(buf);
                 writtenBytes += buf.length;
+                if (record) {
+                  record.transferredBytes = writtenBytes;
+                  const elapsedSec = Math.max(0.001, (Date.now() - startTime) / 1000);
+                  record.speedBytesPerSec = Math.round(writtenBytes / elapsedSec);
+                  if (record.totalBytes && record.speedBytesPerSec > 0) {
+                    const remaining = Math.max(0, record.totalBytes - writtenBytes);
+                    record.etaSeconds = Math.ceil(remaining / record.speedBytesPerSec);
+                  }
+                  record.lastProgressUpdateAt = Date.now();
+                }
               });
-              readStream.on("error", reject);
-              remoteWriteStream.on("error", reject);
+              readStream.on("error", (err) => {
+                if (record) {
+                  record.status = TransferStatus.FAILED;
+                  record.error = err.message;
+                }
+                reject(err);
+              });
+              remoteWriteStream.on("error", (err) => {
+                if (record) {
+                  record.status = TransferStatus.FAILED;
+                  record.error = err.message;
+                }
+                reject(err);
+              });
               remoteWriteStream.on("finish", () => resolve());
               readStream.pipe(remoteWriteStream);
             }).catch(async (err) => {
+              if (record) {
+                record.status = TransferStatus.FAILED;
+                record.error = err.message;
+                record.completedAt = new Date();
+                await this.recordAuditFailure(record, err);
+              }
               try {
                 await new Promise<void>((res) => sftp.unlink(tempRemotePartPath, () => res()));
               } catch {}
@@ -2604,6 +2751,12 @@ export class TransferService {
 
             const computedHash = hash.digest("hex");
             if (computedHash !== staged.sha256) {
+              if (record) {
+                record.status = TransferStatus.INTEGRITY_FAILED;
+                record.error = "Checksum non corrispondente durante il trasferimento al robot.";
+                record.completedAt = new Date();
+                await this.recordAuditFailure(record, new Error(record.error));
+              }
               try {
                 await new Promise<void>((res) => sftp.unlink(tempRemotePartPath, () => res()));
               } catch {}
@@ -2621,6 +2774,14 @@ export class TransferService {
               });
             });
 
+            if (record) {
+              record.status = TransferStatus.COMPLETED;
+              record.completedAt = new Date();
+              record.transferredBytes = writtenBytes;
+              record.computedChecksum = computedHash;
+              await this.recordAuditComplete(record);
+            }
+
             fileTargetResults.push({
               target,
               success: true,
@@ -2630,6 +2791,12 @@ export class TransferService {
             });
             completed++;
           } catch (err: any) {
+            if (record) {
+              record.status = TransferStatus.FAILED;
+              record.error = err.userMessage || err.message;
+              record.completedAt = new Date();
+              await this.recordAuditFailure(record, err).catch(() => {});
+            }
             if (tempRemotePartPath && managedConn) {
               try {
                 const sftp = await managedConn.getSftpClient();

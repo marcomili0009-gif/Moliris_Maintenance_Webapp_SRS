@@ -350,20 +350,25 @@ body {
 }
 
 /* Stili Finestra Terminale Remoto PTY (RF-SSH-003, RNF-UX-004) */
+/* Il terminale si apre SEMPRE in formato ridotto; l'espansione è opt-in. */
 .modal-terminal-window {
-  max-width: 1400px;
-  width: 85vw;
-  height: 70vh;
+  max-width: min(1100px, 92vw);
+  width: min(1100px, 74vw);
+  height: min(540px, 79vh);
+  max-height: 90vh;
   background-color: #1e1e1e;
   color: #f1f1f1;
   border-radius: 8px;
   display: flex;
   flex-direction: column;
+  /* Sovrascrive l'overflow-y:auto di .modal-content: qui il layout è flex e
+     nessun elemento deve scorrere sopra la status bar inferiore. */
   overflow: hidden;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
 
 .terminal-modal-header {
+  flex: 0 0 auto;
   background-color: #252526;
   border-bottom: 1px solid #333;
   padding: 0.75rem 1.25rem;
@@ -388,12 +393,17 @@ body {
   gap: 0.75rem;
 }
 
+/* Area utile del PTY: occupa tutto lo spazio residuo fra header e status bar.
+   min-height:0 è indispensabile perché un flex item con contenuto (canvas
+   xterm) non imponga la propria altezza minima e sfori sul footer. */
 .terminal-body {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 8px;
   background-color: #1e1e1e;
   overflow: hidden;
   position: relative;
+  display: flex;
 }
 
 .terminal-modal-window .terminal-body,
@@ -406,7 +416,11 @@ body {
 }
 
 .terminal-body .xterm {
+  width: 100%;
   height: 100%;
+  min-height: 0;
+  min-width: 0;
+  font-size: 12px;
 }
 
 /* Nasconde rigorosamente la textarea di supporto xterm evitando il box bianco (§11, screenshot bug) */
@@ -438,12 +452,16 @@ body {
   z-index: 1060 !important;
 }
 
+/* Nessuna altezza fissa: il corpo continua a occupare solo lo spazio libero
+   tra header e status bar, anche a schermo intero. */
 .modal-terminal-window.terminal-expanded .terminal-body {
-  height: calc(100vh - 110px) !important;
   flex: 1 1 auto !important;
+  height: auto !important;
+  min-height: 0 !important;
 }
 
 .terminal-footer {
+  flex: 0 0 auto;
   background-color: #252526;
   border-top: 1px solid #333;
   padding: 0.4rem 1.25rem;
@@ -452,6 +470,26 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+@media (max-width: 640px) {
+  .terminal-modal-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .terminal-header-actions {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .modal-terminal-window {
+    width: 96vw;
+    max-width: 96vw;
+    height: min(420px, 78vh);
+  }
 }
 
 /* MODULO TRASFERIMENTI FILE (RF-TRF-001..014) */
@@ -537,104 +575,290 @@ body {
   gap: 0.5rem;
 }
 
-/* Stili Filesystem Browser (Server e Remoto) */
+/* ==========================================================================
+   Filesystem Browser moderno (Server, Archivio Generale, Remoto)
+   ========================================================================== */
 .fs-browser-card {
   margin-top: 1rem;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 1.15rem 1.25rem 1.35rem;
+  box-shadow: 0 18px 40px -34px rgba(15, 23, 42, 0.6);
 }
 
 .fs-section-toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 1.25rem;
-  padding-bottom: 0.75rem;
-  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 1.1rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid #eef2f7;
   flex-wrap: wrap;
   gap: 0.75rem;
 }
 
 .fs-section-toolbar h2 {
   font-size: 1.25rem;
-  font-weight: 600;
-  color: var(--text-color);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #0f172a;
   margin: 0;
 }
 
+/* --- Tab bar con indicatore animato -------------------------------------- */
 .fs-tab-bar {
+  position: relative;
   display: flex;
-  gap: 0.5rem;
-  border-bottom: 2px solid var(--border-color);
-  margin-bottom: 1.5rem;
+  align-items: stretch;
+  gap: 0.2rem;
+  padding: 0.3rem;
+  margin-bottom: 1.25rem;
+  border: 1px solid #e5eaf2;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+.fs-tab-bar::-webkit-scrollbar {
+  height: 6px;
+}
+
+.fs-tab-bar::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 999px;
+}
+
+.fs-tab-indicator {
+  position: absolute;
+  top: 0.3rem;
+  bottom: 0.3rem;
+  left: 0;
+  border-radius: 9px;
+  background: #ffffff;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.06),
+    0 8px 20px -12px rgba(13, 110, 253, 0.55),
+    inset 0 0 0 1px rgba(13, 110, 253, 0.14);
+  border-bottom: 2px solid var(--bs-primary);
+  transition:
+    transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+    width 0.25s ease,
+    opacity 0.15s ease;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.fs-tab-active-text {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--bs-primary);
 }
 
 .fs-tab-btn {
-  background: none;
-  border: none;
-  border-bottom: 3px solid transparent;
-  padding: 0.75rem 1.25rem;
-  font-size: 0.95rem;
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+  padding: 0.6rem 0.95rem;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #64748b;
+  font-size: 0.9rem;
   font-weight: 600;
-  color: var(--text-muted);
+  line-height: 1.2;
+  white-space: nowrap;
   cursor: pointer;
-  transition: all 0.2s ease;
-  margin-bottom: -2px;
+  transition: color 0.18s ease;
 }
 
 .fs-tab-btn:hover {
-  color: var(--primary-color);
-  background-color: var(--bs-light);
+  color: #0f172a;
 }
 
 .fs-tab-btn.active {
-  color: var(--primary-color);
-  border-bottom-color: var(--primary-color);
-  background-color: #ffffff;
+  color: var(--bs-primary);
 }
 
+.fs-tab-btn:focus-visible {
+  outline: 2px solid var(--bs-primary);
+  outline-offset: -2px;
+}
+
+.fs-tab-btn svg {
+  opacity: 0.7;
+  flex: 0 0 auto;
+}
+
+.fs-tab-btn.active svg {
+  opacity: 1;
+}
+
+.fs-tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.fs-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.4rem;
+  height: 1.2rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #475569;
+  font-size: 0.68rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+.fs-tab-btn.active .fs-tab-count {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+/* --- Intestazione contesto ------------------------------------------------ */
 .fs-context-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
   margin-bottom: 1rem;
 }
 
+.fs-context-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.fs-context-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #eff6ff, #e0e7ff);
+  color: #1d4ed8;
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.12);
+}
+
 .fs-context-header h3 {
-  font-size: 1.15rem;
-  font-weight: 600;
-  color: #1e293b;
-  margin-bottom: 0.25rem;
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #0f172a;
+  margin: 0 0 0.2rem;
 }
 
 .fs-subtitle {
-  font-size: 0.85rem;
+  display: block;
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.45;
   color: #64748b;
 }
 
+.fs-context-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.fs-stat strong {
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
+.fs-stat-divider {
+  width: 1px;
+  height: 14px;
+  background: #cbd5e1;
+}
+
+/* --- Selettore robot ------------------------------------------------------ */
 .fs-robot-selector-bar {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.85rem 1.15rem;
-  background-color: #f8fafc;
+  padding: 0.8rem 1rem;
+  background: #f8fafc;
   border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  margin-bottom: 1rem;
+  border-radius: 12px;
+  margin-bottom: 0.85rem;
   flex-wrap: wrap;
 }
 
 .fs-robot-selector-bar .form-label {
-  font-size: 0.9rem;
-  font-weight: 600;
+  font-size: 0.85rem;
+  font-weight: 700;
   color: #475569;
   margin-bottom: 0;
   white-space: nowrap;
+}
+
+.fs-combobox-wrapper {
+  min-width: 260px;
+  max-width: 420px;
+  flex: 1 1 300px;
 }
 
 .fs-robot-selector-bar .form-control,
 .fs-robot-selector-bar .btn,
 .fs-control-btn {
   height: 38px;
-  font-size: 0.88rem;
+  font-size: 0.86rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 0.4rem;
+}
+
+.fs-selected-robot {
+  display: inline-flex;
+  align-items: center;
+  max-width: 220px;
+  padding: 0.22rem 0.6rem;
+  border-radius: 999px;
+  background: #eef2ff;
+  border: 1px solid #e0e7ff;
+  color: #4338ca;
+  font-size: 0.74rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fs-spin {
+  animation: fs-spin 0.9s linear infinite;
+}
+
+@keyframes fs-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .fs-item-link {
@@ -647,35 +871,488 @@ body {
   font-family: monospace;
 }
 
+/* --- Barra di navigazione e breadcrumb ----------------------------------- */
 .fs-navigation-bar {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  background-color: #f8fafc;
-  padding: 0.6rem 1rem;
-  border-radius: 6px;
+  gap: 0.7rem;
+  background: #ffffff;
+  padding: 0.55rem 0.7rem;
+  border-radius: 12px;
   margin-bottom: 1rem;
   border: 1px solid #e2e8f0;
   min-height: 48px;
   flex-wrap: wrap;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
 
 .fs-navigation-bar .btn {
-  height: 34px;
-  font-size: 0.84rem;
   display: inline-flex;
   align-items: center;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.fs-nav-btn {
+  height: 32px;
+}
+
+.fs-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.fs-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  height: 32px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .fs-breadcrumb {
-  font-family: monospace;
-  color: var(--text-color);
+  display: flex;
+  align-items: center;
+  gap: 0.05rem;
+  flex-wrap: wrap;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  color: #475569;
 }
 
+.fs-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 24ch;
+  padding: 0.22rem 0.45rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #475569;
+  font: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.fs-crumb:hover {
+  background: #eef4ff;
+  color: var(--bs-primary);
+}
+
+.fs-crumb-root {
+  color: #334155;
+  font-weight: 700;
+}
+
+.fs-crumb-current {
+  color: #0f172a;
+  font-weight: 700;
+  background: #f1f5f9;
+  cursor: default;
+}
+
+.fs-crumb-separator {
+  color: #94a3b8;
+  flex: 0 0 auto;
+}
+
+.fs-error-banner {
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+  border-radius: 10px;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.84rem;
+  margin-bottom: 0.85rem;
+}
+
+.fs-error-banner.hidden {
+  display: none;
+}
+
+/* --- Tabella file --------------------------------------------------------- */
 .fs-table-container {
   overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #ffffff;
 }
 
+.fs-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.87rem;
+}
+
+.fs-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0.65rem 1rem;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  color: #64748b;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.fs-col-actions,
+.fs-cell-actions {
+  text-align: right;
+}
+
+.fs-col-size {
+  width: 130px;
+}
+
+.fs-col-date {
+  width: 170px;
+}
+
+.fs-table tbody td {
+  padding: 0.58rem 1rem;
+  border-bottom: 1px solid #eef2f7;
+  vertical-align: middle;
+}
+
+.fs-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.fs-row {
+  transition: background-color 0.16s ease;
+}
+
+.fs-row:hover {
+  background: #f8fbff;
+}
+
+.fs-entry {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.fs-entry-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border-radius: 9px;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.04);
+}
+
+.fs-entry-icon.is-dir {
+  background: linear-gradient(135deg, #eff6ff, #dbeafe);
+  color: #2563eb;
+}
+
+.fs-entry-icon.is-file {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.fs-entry-icon.is-robot {
+  background: linear-gradient(135deg, #dbeafe, #ede9fe);
+  color: #4338ca;
+}
+
+.fs-entry-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.fs-entry-name {
+  display: block;
+  max-width: 54ch;
+  color: #0f172a;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fs-entry-button {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.1rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fs-entry-button:hover .fs-entry-label {
+  color: var(--bs-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.fs-entry-button:focus-visible {
+  outline: 2px solid var(--bs-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.fs-entry-dir-slash {
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.fs-entry-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.fs-entry-subtitle {
+  font-size: 0.73rem;
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fs-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.08rem 0.42rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  line-height: 1.35;
+}
+
+.fs-chip-ext {
+  background: #eff6ff;
+  border-color: #dbeafe;
+  color: #1d4ed8;
+}
+
+.fs-chip-robot {
+  background: #eef2ff;
+  border-color: #e0e7ff;
+  color: #4338ca;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.fs-chip-link {
+  background: #fff7ed;
+  border-color: #fed7aa;
+  color: #c2410c;
+}
+
+.fs-chip-missing {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #b91c1c;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.fs-size {
+  color: #475569;
+  font-variant-numeric: tabular-nums;
+}
+
+.fs-size-dir {
+  color: #cbd5e1;
+}
+
+.fs-date {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.fs-date-day {
+  color: #334155;
+  font-size: 0.82rem;
+}
+
+.fs-date-time {
+  color: #94a3b8;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.fs-actions-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.fs-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.55rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #475569;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.fs-action:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+
+.fs-action:focus-visible {
+  outline: 2px solid var(--bs-primary);
+  outline-offset: 1px;
+}
+
+.fs-action-open {
+  background: #f8fbff;
+  border-color: #dbeafe;
+  color: #1d4ed8;
+}
+
+.fs-action-open:hover {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1e40af;
+}
+
+.fs-action-primary {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+
+.fs-action-primary:hover {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1e40af;
+}
+
+.fs-action-danger {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #b91c1c;
+}
+
+.fs-action-danger:hover {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #991b1b;
+}
+
+/* --- Stati vuoti e skeleton ---------------------------------------------- */
+.fs-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 2.4rem 1rem;
+  text-align: center;
+}
+
+.fs-empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 0.25rem;
+  border-radius: 14px;
+  background: #f1f5f9;
+  color: #94a3b8;
+}
+
+.fs-empty-title {
+  margin: 0;
+  color: #334155;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.fs-empty-hint {
+  max-width: 48ch;
+  margin: 0;
+  color: #94a3b8;
+  font-size: 0.8rem;
+}
+
+.fs-skeleton {
+  display: block;
+  height: 0.8rem;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #eef2f7 25%, #e2e8f0 37%, #eef2f7 63%);
+  background-size: 400% 100%;
+  animation: fs-shimmer 1.3s ease infinite;
+}
+
+.fs-skeleton-name {
+  width: min(340px, 60%);
+}
+
+.fs-skeleton-size {
+  width: 70px;
+}
+
+.fs-skeleton-date {
+  width: 120px;
+}
+
+.fs-skeleton-action {
+  width: 150px;
+  margin-left: auto;
+}
+
+@keyframes fs-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: 0 0;
+  }
+}
+
+/* Compatibilità con pannelli legacy (es. TransfersPanel) */
 .fs-item-dir {
   cursor: pointer;
   color: var(--primary-color);
@@ -690,6 +1367,65 @@ body {
   text-align: center;
   color: var(--text-muted);
   padding: 2rem;
+}
+
+/* --- Responsive ----------------------------------------------------------- */
+@media (max-width: 900px) {
+  .fs-col-date,
+  .fs-cell-date {
+    display: none;
+  }
+
+  .fs-col-size {
+    width: 100px;
+  }
+
+  .fs-entry-name {
+    max-width: 38ch;
+  }
+}
+
+@media (max-width: 640px) {
+  .fs-browser-card {
+    padding: 1rem;
+  }
+
+  .fs-context-stats {
+    display: none;
+  }
+
+  .fs-actions {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .fs-entry-name {
+    max-width: 30ch;
+  }
+
+  .fs-action span {
+    display: none;
+  }
+
+  .fs-action {
+    padding: 0.35rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fs-tab-indicator,
+  .fs-tab-btn,
+  .fs-row,
+  .fs-action,
+  .fs-crumb,
+  .fs-tab-count {
+    transition: none !important;
+  }
+
+  .fs-skeleton,
+  .fs-spin {
+    animation: none !important;
+  }
 }
 
 /* Badges e stati (compatibilità con StatusBadge) */

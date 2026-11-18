@@ -435,11 +435,11 @@ export function registerTransferRoutes(
     "/api/robots/:robotId/transfers",
     {
       preHandler: [
-  authMiddleware.requirePermission(
-    AppPermission.FLEET_VIEW,
-    (req) => (req.params as any).robotId
-  ),
-],
+        authMiddleware.requirePermission(
+          AppPermission.FLEET_VIEW,
+          (req) => (req.params as any).robotId
+        ),
+      ],
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { robotId } = req.params as { robotId: string };
@@ -452,6 +452,148 @@ export function registerTransferRoutes(
 
       const list = transferService.listTransfers(context, robotId);
       return reply.status(200).send(list);
+    }
+  );
+
+  /**
+   * Elenco globale dei trasferimenti con conteggio attivi (§3)
+   */
+  app.get(
+    "/api/transfers",
+    {
+      preHandler: [(req, reply) => authMiddleware.authenticate(req, reply)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        undefined,
+        roleMapping
+      );
+
+      const list = transferService.listTransfers(context);
+      const activeCount = list.filter((t) => t.status === "IN_PROGRESS").length;
+
+      if ((req.query as any)?.envelope === "true" || (req.query as any)?.summary === "true") {
+        return reply.status(200).send({
+          transfers: list,
+          activeCount,
+          totalCount: list.length,
+        });
+      }
+
+      reply.header("x-active-count", String(activeCount));
+      reply.header("x-total-count", String(list.length));
+      return reply.status(200).send(list);
+    }
+  );
+
+  /**
+   * Elenco dei soli trasferimenti attivi (IN_PROGRESS) per widget e polling rapido
+   */
+  app.get(
+    "/api/transfers/active",
+    {
+      preHandler: [(req, reply) => authMiddleware.authenticate(req, reply)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        undefined,
+        roleMapping
+      );
+
+      const allList = transferService.listTransfers(context);
+      const activeList = allList.filter((t) => t.status === "IN_PROGRESS");
+
+      return reply.status(200).send({
+        transfers: activeList,
+        activeCount: activeList.length,
+        totalCount: allList.length,
+      });
+    }
+  );
+
+  /**
+   * Storico recente globale: include trasferimenti attivi, completati, falliti e annullati.
+   */
+  app.get(
+    "/api/transfers/recent",
+    {
+      preHandler: [(req, reply) => authMiddleware.authenticate(req, reply)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        undefined,
+        roleMapping
+      );
+
+      const list = transferService.listTransfers(context);
+      const activeCount = list.filter((t) => t.status === "IN_PROGRESS").length;
+      return reply.status(200).send({
+        transfers: list,
+        activeCount,
+        totalCount: list.length,
+      });
+    }
+  );
+
+  /**
+   * Stream SSE delle snapshot dei trasferimenti. Ogni snapshot include lo storico
+   * recente così il client può ripristinare la lista anche dopo un reload.
+   */
+  app.get(
+    "/api/transfers/stream",
+    {
+      preHandler: [(req, reply) => authMiddleware.authenticate(req, reply)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        undefined,
+        roleMapping
+      );
+
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+
+      let closed = false;
+      const sendSnapshot = () => {
+        if (closed || reply.raw.destroyed) return;
+        const list = transferService.listTransfers(context);
+        const payload = {
+          transfers: list,
+          activeCount: list.filter((t) => t.status === "IN_PROGRESS").length,
+          totalCount: list.length,
+          timestamp: new Date().toISOString(),
+        };
+        reply.raw.write(`event: snapshot\ndata: ${JSON.stringify(payload)}\n\n`);
+      };
+
+      sendSnapshot();
+      if ((req.query as any)?.once === "1") {
+        reply.raw.end();
+        return reply;
+      }
+
+      const interval = setInterval(sendSnapshot, 1000);
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        clearInterval(interval);
+      };
+      req.raw.on("close", close);
+      reply.raw.on("close", close);
+      return reply;
     }
   );
 

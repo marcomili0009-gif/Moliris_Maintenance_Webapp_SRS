@@ -2,7 +2,11 @@
 
 import { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
 import crypto from "crypto";
-import { type SessionManager } from "./session-manager.ts";
+import {
+  SessionLimitReachedError,
+  type SessionData,
+  type SessionManager,
+} from "./session-manager.ts";
 import { type UserRepository } from "./user-repository.ts";
 import { type AuditRepository } from "../../storage/audit-repository.ts";
 import { AuditOperation } from "../../storage/audit-models.ts";
@@ -122,7 +126,31 @@ export function registerAuthRoutes(
     // Se l'utente ha subito un reset password, assicuriamo che la nuova sessione sia temporalmente
     // strettamente successiva al reset (createdAt > passwordChangedAt), garantendo l'autenticazione valida
     // anche nell'eventualità remota di login nello stesso millisecondo.
-    let session = sessionManager.createSession(user);
+    let session: SessionData;
+    try {
+      session = sessionManager.createSession(
+        user,
+        app.appConfig.futureExtensions.maxSessionsPerAccount
+      );
+    } catch (error) {
+      if (!(error instanceof SessionLimitReachedError)) {
+        throw error;
+      }
+
+      await auditRepository.record({
+        userId: user.username,
+        operation: AuditOperation.AUTH_LOGIN,
+        outcome: "FAILURE",
+        timestamp: new Date(),
+        details: { reason: ErrorCode.SESSION_ALREADY_ACTIVE },
+      });
+
+      return reply.status(409).send({
+        success: false,
+        code: ErrorCode.SESSION_ALREADY_ACTIVE,
+        message: "Sessione già aperta da questo utente su un altro dispositivo o browser.",
+      });
+    }
     if (user.passwordChangedAt) {
       const resetMs = new Date(user.passwordChangedAt).getTime();
       const sessionMs = new Date(session.createdAt).getTime();

@@ -1,0 +1,73 @@
+{
+  "mode": "implement",
+  "objective": "Caricare la configurazione runtime e imporre una singola sessione attiva per account.",
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "statement": "La configurazione JSON viene caricata con precedenza esplicita, fallback validato e parametri runtime esposti tramite endpoint pubblico ristretto.",
+      "validators": ["config-regressions", "server-config-regressions"]
+    },
+    {
+      "id": "AC2",
+      "statement": "Il limite di sessioni per account è atomico e configurabile; logout e scadenza rilasciano lo slot, con conflitto HTTP strutturato.",
+      "validators": ["auth-session-regressions"]
+    },
+    {
+      "id": "AC3",
+      "statement": "Il frontend usa il timeout configurato e presenta il modal di conflitto richiesto senza errore generico, resettando il form alla chiusura.",
+      "validators": ["frontend-build", "frontend-session-regressions"]
+    }
+  ],
+  "allowed_write_scope": [
+    "src/config/index.ts",
+    "src/config/schema.ts",
+    "src/config/config.test.ts",
+    "backend/auth/session-manager.ts",
+    "backend/auth/auth-routes.ts",
+    "backend/auth/auth.test.ts",
+    "backend/server.ts",
+    "backend/server.test.ts",
+    "client/src/hooks/useAuth.ts",
+    "client/src/views/LoginView.tsx",
+    "client/react-frontend.test.ts"
+  ],
+  "validators": [
+    {
+      "id": "config-regressions",
+      "command": ["npx", "tsx", "src/config/config.test.ts"],
+      "criterion_ids": ["AC1"]
+    },
+    {
+      "id": "server-config-regressions",
+      "command": ["npx", "tsx", "backend/server.test.ts"],
+      "criterion_ids": ["AC1"]
+    },
+    {
+      "id": "auth-session-regressions",
+      "command": ["npx", "tsx", "backend/auth/auth.test.ts"],
+      "criterion_ids": ["AC2"]
+    },
+    {
+      "id": "frontend-build",
+      "command": ["npm", "run", "build:client"],
+      "criterion_ids": ["AC3"]
+    },
+    {
+      "id": "frontend-session-regressions",
+      "command": ["env", "MOLIRIS_AUTH_SESSION_ONLY=1", "npx", "tsx", "client/react-frontend.test.ts"],
+      "criterion_ids": ["AC3"]
+    }
+  ],
+  "required_validators": [
+    "config-regressions",
+    "server-config-regressions",
+    "auth-session-regressions",
+    "frontend-build",
+    "frontend-session-regressions"
+  ],
+  "policy": {
+    "uncertainty": "medium",
+    "verification_depth": "impact"
+  },
+  "session_key": "conversation-single-session-config-2026-11-18"
+}

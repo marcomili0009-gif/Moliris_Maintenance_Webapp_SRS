@@ -97,9 +97,21 @@ const adminUser: any = {
   updatedAt: new Date(),
 };
 
+const singleSessionPassword = "SingleSession123!";
+const singleSessionUser: UserEntity = {
+  id: "user_single_session",
+  username: "single_session_test",
+  passwordHash: await hashPassword(singleSessionPassword),
+  roles: ["operatore"],
+  enabled: true,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
 await userRepo.create(operatorUser);
 await userRepo.create(restrictedUser);
 await userRepo.create(adminUser);
+await userRepo.create(singleSessionUser);
 
 // 1. Test unitari Hashing Password Sicuro (RNF-SEC-002)
 assert(await verifyPassword("Operatore123!", operatorHash), "Verifica password corretta fallita");
@@ -203,6 +215,55 @@ assert(String(validLoginRes.headers["set-cookie"]).includes("HttpOnly"));
 assert(String(validLoginRes.headers["set-cookie"]).includes("Path=/"));
 assert(!String(validLoginRes.headers["set-cookie"]).toLowerCase().includes("domain="), "Il cookie __Host- non deve avere Domain");
 console.log("  PASS: Login con credenziali valide e cookie sicuro (CA-AUTH-001) superato.");
+
+// Il limite per account deve essere atomico anche con due login simultanei, e deve
+// liberare lo slot al logout o alla scadenza per inattività.
+const simultaneousLogins = await Promise.all([
+  makeHttpsRequest("POST", "/api/auth/login", {
+    username: singleSessionUser.username,
+    password: singleSessionPassword,
+  }),
+  makeHttpsRequest("POST", "/api/auth/login", {
+    username: singleSessionUser.username,
+    password: singleSessionPassword,
+  }),
+]);
+assert.deepStrictEqual(
+  simultaneousLogins.map((res) => res.status).sort(),
+  [200, 409],
+  "Due login simultanei per lo stesso account devono produrre un successo e un conflitto"
+);
+const activeLogin = simultaneousLogins.find((res) => res.status === 200)!;
+const blockedLogin = simultaneousLogins.find((res) => res.status === 409)!;
+const singleSessionToken = String(activeLogin.headers["set-cookie"]).match(/__Host-moliris_session=([^;]+)/)?.[1];
+assert(singleSessionToken, "Il login vincente deve ricevere una sessione");
+assert.deepStrictEqual(blockedLogin.body, {
+  success: false,
+  code: "SESSION_ALREADY_ACTIVE",
+  message: "Sessione già aperta da questo utente su un altro dispositivo o browser.",
+});
+
+const releaseSessionRes = await makeHttpsRequest(
+  "POST",
+  "/api/auth/logout",
+  undefined,
+  singleSessionToken
+);
+assert.strictEqual(releaseSessionRes.status, 200, "Il logout deve liberare la sessione attiva");
+const loginAfterLogoutRes = await makeHttpsRequest("POST", "/api/auth/login", {
+  username: singleSessionUser.username,
+  password: singleSessionPassword,
+});
+assert.strictEqual(loginAfterLogoutRes.status, 200, "Un nuovo login deve riuscire dopo il logout");
+const expiringSessionToken = String(loginAfterLogoutRes.headers["set-cookie"]).match(/__Host-moliris_session=([^;]+)/)?.[1];
+assert(expiringSessionToken, "Il login dopo il logout deve rilasciare una sessione");
+sessionManager._simulateInactivity(expiringSessionToken, 31);
+const loginAfterExpiryRes = await makeHttpsRequest("POST", "/api/auth/login", {
+  username: singleSessionUser.username,
+  password: singleSessionPassword,
+});
+assert.strictEqual(loginAfterExpiryRes.status, 200, "La scadenza inattività deve liberare lo slot di login");
+console.log("  PASS: Login concorrenti atomici, conflitto SESSION_ALREADY_ACTIVE, logout e scadenza sessione.");
 
 // CA-AUTH-002: Credenziali non valide -> nessun accesso
 const badPasswordRes = await makeHttpsRequest("POST", "/api/auth/login", {

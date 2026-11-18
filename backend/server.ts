@@ -50,6 +50,14 @@ import { type TelemetryRepository, MongoTelemetryRepository, InMemoryTelemetryRe
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+export function resolveFrontendDistDir(serverDirectory = __dirname): string {
+  const candidates = [
+    path.resolve(serverDirectory, "../dist/frontend"),
+    path.resolve(serverDirectory, "../frontend"),
+  ];
+  return candidates.find((candidate) => fs.existsSync(path.join(candidate, "index.html"))) ?? candidates[0];
+}
+
 export interface ServerDependencies {
   sessionManager?: SessionManager;
   userRepository?: UserRepository;
@@ -97,6 +105,20 @@ export function createServer(
   // Registrazione e validazione configurazione dell'applicazione conforme all'SRS §2
   const appConfig = deps.appConfig || loadConfig();
   registerAppConfig(app, appConfig);
+
+  app.get("/api/config/public", async (_request, reply) => {
+    return reply.status(200).send({
+      sessionInactivityTimeoutMinutes: appConfig.sessionInactivityTimeoutMinutes,
+      sshTerminalActiveTimeoutMinutes: appConfig.sshTerminalActiveTimeoutMinutes,
+      maxConcurrentWebUsers: appConfig.maxConcurrentWebUsers,
+      maxConcurrentTerminalsPerRobot: appConfig.maxConcurrentTerminalsPerRobot,
+      maxSessionsPerAccount: appConfig.futureExtensions.maxSessionsPerAccount,
+      bulkUploadConfig: {
+        maxConcurrentFiles: appConfig.bulkUploadConfig.maxConcurrentFiles,
+        chunkSizeBytes: appConfig.bulkUploadConfig.chunkSizeBytes,
+      },
+    });
+  });
 
   // Intestazioni difensive globali per il frontend.
   app.addHook("onSend", async (_request, reply, payload) => {
@@ -155,7 +177,10 @@ export function createServer(
   });
 
   // Dipendenze di autenticazione e sicurezza
-  const sessionManager = deps.sessionManager || new SessionManager(config.inactiveSessionTimeoutMinutes, config.sessionAbsoluteMaxMinutes);
+  const sessionManager = deps.sessionManager || new SessionManager(
+    appConfig.sessionInactivityTimeoutMinutes,
+    config.sessionAbsoluteMaxMinutes
+  );
   const userRepository = deps.userRepository || new InMemoryUserRepository();
   const auditRepository = deps.auditRepository || new InMemoryAuditRepository();
   const roleMapping = deps.roleMapping || DEFAULT_ROLE_PERMISSIONS;
@@ -223,7 +248,12 @@ export function createServer(
     connectionManager,
     sessionManager,
     roleMapping,
-    logger
+    logger,
+    undefined,
+    {
+      maxConcurrentPerRobot: appConfig.maxConcurrentTerminalsPerRobot,
+      sessionTimeoutMinutes: appConfig.sshTerminalActiveTimeoutMinutes,
+    }
   );
 
   const fleetService = deps.fleetService || new FleetService(
@@ -375,7 +405,7 @@ export function createServer(
   });
 
   // Servizio statico del frontend client React compatibile Google Chrome (§2.5, §5.1, RNF-UX-002/003)
-  const distFrontendDir = path.resolve(__dirname, "../dist/frontend");
+  const distFrontendDir = resolveFrontendDistDir();
 
   app.get("/", async (_request, reply) => {
     const indexPath = path.join(distFrontendDir, "index.html");

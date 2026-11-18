@@ -23,6 +23,7 @@ export const ErrorCode = {
   DB_PERSISTENCE_ERROR: "DB_PERSISTENCE_ERROR",
   DB_FS_SYNC_ERROR: "DB_FS_SYNC_ERROR",
   SECURITY_VIOLATION: "SECURITY_VIOLATION",
+  SESSION_ALREADY_ACTIVE: "SESSION_ALREADY_ACTIVE",
 } as const;
 
 export type ErrorCode = typeof ErrorCode[keyof typeof ErrorCode];
@@ -128,6 +129,11 @@ export const ERROR_CATALOG: Record<ErrorCode, AppErrorDefinition> = {
     code: ErrorCode.SECURITY_VIOLATION,
     userMessage: "Violazione delle regole di sicurezza rilevata: accesso a risorse riservate bloccato.",
     classification: "richiede_intervento_amministrativo",
+  },
+  [ErrorCode.SESSION_ALREADY_ACTIVE]: {
+    code: ErrorCode.SESSION_ALREADY_ACTIVE,
+    userMessage: "Una sessione è già attiva per questo account.",
+    classification: "recuperabile",
   },
 };
 

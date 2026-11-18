@@ -23,11 +23,41 @@ import {
 } from "./terminal-models.ts";
 import { type TerminalConcurrencyLimits, DEFAULT_TERMINAL_LIMITS } from "./terminal-limits.ts";
 
+export interface ProcessPtyModes {
+  opost?: boolean;
+  onlcr?: boolean;
+  echo?: boolean;
+}
+
 export class ProcessPtyChannel extends EventEmitter {
-  constructor(private proc: any) {
+  public readonly modes: { opost: boolean; onlcr: boolean; echo: boolean };
+
+  constructor(
+    private proc: any,
+    modes?: ProcessPtyModes
+  ) {
     super();
-    this.proc.stdout?.on("data", (chunk: any) => this.emit("data", chunk));
-    this.proc.stderr?.on("data", (chunk: any) => this.emit("data", chunk));
+    this.modes = {
+      opost: modes?.opost ?? true,
+      onlcr: modes?.onlcr ?? true,
+      echo: modes?.echo ?? true,
+    };
+
+    const processChunk = (chunk: any) => {
+      if (this.modes.opost && this.modes.onlcr) {
+        if (Buffer.isBuffer(chunk)) {
+          const str = chunk.toString("utf-8");
+          const converted = str.replace(/(?<!\r)\n/g, "\r\n");
+          return Buffer.from(converted, "utf-8");
+        } else if (typeof chunk === "string") {
+          return chunk.replace(/(?<!\r)\n/g, "\r\n");
+        }
+      }
+      return chunk;
+    };
+
+    this.proc.stdout?.on("data", (chunk: any) => this.emit("data", processChunk(chunk)));
+    this.proc.stderr?.on("data", (chunk: any) => this.emit("data", processChunk(chunk)));
     this.proc.on("exit", (code: any) => this.emit("exit", code));
     this.proc.on("close", (code: any) => this.emit("close", code));
     this.proc.on("error", (err: any) => this.emit("error", err));
@@ -42,8 +72,17 @@ export class ProcessPtyChannel extends EventEmitter {
 
   public setWindow(rows: number, cols: number, _height?: number, _width?: number): void {
     try {
-      if ((this.proc.stdin as any)?.setWindow) {
+      if (typeof (this.proc.stdin as any)?.setWindow === "function") {
         (this.proc.stdin as any).setWindow(rows, cols);
+      }
+      if (this.proc.stdout) {
+        (this.proc.stdout as any).columns = cols;
+        (this.proc.stdout as any).rows = rows;
+      }
+      if (typeof this.proc.kill === "function" && this.proc.pid && !this.proc.killed) {
+        try {
+          this.proc.kill("SIGWINCH");
+        } catch {}
       }
     } catch {}
   }
@@ -528,7 +567,7 @@ export class TerminalService {
     const cols = initialDimensions?.cols || 80;
     const rows = initialDimensions?.rows || 24;
 
-    const proc = spawn("/bin/bash", ["-i"], {
+    const proc = spawn("script", ["-q", "-c", "/bin/bash", "/dev/null"], {
       env: {
         ...process.env,
         TERM: "xterm-256color",
@@ -537,7 +576,7 @@ export class TerminalService {
       },
     });
 
-    const ptyChannel = new ProcessPtyChannel(proc);
+    const ptyChannel = new ProcessPtyChannel(proc, { opost: true, onlcr: true, echo: true });
 
     const authorizedContext = this.sessionManager.createAuthorizedContext(
       sessionData,
@@ -576,7 +615,7 @@ export class TerminalService {
 
     await this.auditRepository.record({
       userId: user.username,
-      operation: AuditOperation.TERMINAL_OPEN,
+      operation: AuditOperation.SERVER_TERMINAL_OPEN,
       robotId: "server",
       outcome: "SUCCESS",
       timestamp: new Date(),
@@ -714,16 +753,29 @@ export class TerminalService {
       if (text.startsWith("{") && text.endsWith("}")) {
         try {
           const parsed = JSON.parse(text);
-          if (parsed.type === "resize" && typeof parsed.cols === "number" && typeof parsed.rows === "number") {
-            session.cols = parsed.cols;
-            session.rows = parsed.rows;
-            try {
-              session.ptyChannel.setWindow(parsed.rows, parsed.cols, 0, 0);
-            } catch {}
+          if (parsed.type === "resize") {
+            const cols = Number(parsed.cols);
+            const rows = Number(parsed.rows);
+            if (Number.isFinite(cols) && Number.isFinite(rows) && cols > 0 && rows > 0) {
+              const safeCols = Math.max(1, Math.min(500, Math.floor(cols)));
+              const safeRows = Math.max(1, Math.min(200, Math.floor(rows)));
+              session.cols = safeCols;
+              session.rows = safeRows;
+              try {
+                if (session.ptyChannel && typeof session.ptyChannel.setWindow === "function") {
+                  session.ptyChannel.setWindow(safeRows, safeCols, 0, 0);
+                }
+              } catch (resizeErr) {
+                this.logger.warn("Errore non critico durante setWindow del terminale:", {
+                  sessionId,
+                  error: redactSensitiveData(String(resizeErr)),
+                });
+              }
+            }
             return;
           }
           if (parsed.type === "close") {
-            this.closeSessionSafely(sessionId, "USER_EXPLICIT");
+            this.closeSessionSafely(sessionId, "USER_EXPLICIT", "Chiusura sessione richiesta esplicitamente dal client.");
             return;
           }
           if (parsed.type === "input" && typeof parsed.data === "string") {
@@ -872,8 +924,8 @@ export class TerminalService {
 
     // 2. Chiusura del canale PTY
     try {
-      session.ptyChannel.end();
-      session.ptyChannel.destroy();
+      if (typeof session.ptyChannel?.end === "function") session.ptyChannel.end();
+      if (typeof session.ptyChannel?.destroy === "function") session.ptyChannel.destroy();
     } catch {}
 
     // 3. Rilascio garantito della connessione gestita SSH (RNF-REL-005) o del processo locale
@@ -882,17 +934,36 @@ export class TerminalService {
         await session.managedConnection.close();
       }
       if (session.localProcess) {
-        session.localProcess.kill("SIGTERM");
+        try {
+          session.localProcess.kill("SIGTERM");
+        } catch {}
+        setTimeout(() => {
+          try {
+            if (session.localProcess && !session.localProcess.killed) {
+              session.localProcess.kill("SIGKILL");
+            }
+          } catch {}
+        }, 500).unref?.();
       }
     } catch {}
 
     session.state = "closed";
 
     // STEP 8 – Registrazione Audit di chiusura con causa (RNF-SEC-009, §10.4)
-    // Nessun contenuto digitato né output del terminale viene mai salvato nei log o audit (RNF-SEC-002)
+    // SERVER_TERMINAL_CLOSE per server, TERMINAL_DISCONNECT per disconnessioni, TERMINAL_CLOSE altrimenti
+    const isServerTerminal = session.robotId === "server";
+    let auditOp: AuditOperation;
+    if (isServerTerminal) {
+      auditOp = AuditOperation.SERVER_TERMINAL_CLOSE;
+    } else if (reason === "CLIENT_DISCONNECT" || reason === "TERMINAL_DISCONNECT") {
+      auditOp = AuditOperation.TERMINAL_DISCONNECT;
+    } else {
+      auditOp = AuditOperation.TERMINAL_CLOSE;
+    }
+
     await this.auditRepository.record({
       userId: session.username,
-      operation: AuditOperation.TERMINAL_CLOSE,
+      operation: auditOp,
       robotId: session.robotId,
       outcome: "SUCCESS",
       timestamp: new Date(),

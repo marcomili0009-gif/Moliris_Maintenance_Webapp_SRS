@@ -69,6 +69,9 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
           : [];
         const dirList: FolderItem[] = rawEntries
           .filter((e) => e.type === "directory")
+          // Nella root aggregata le directory dei robot non appartengono
+          // all'archivio condiviso: non sono destinazioni valide per questo selettore.
+          .filter((e) => scope !== "general" || e.scope !== "robot")
           .map((e) => ({ name: e.name, type: "directory" }));
         setFolders(dirList);
         setCurrentPath(data.path || data.currentPath || path);
