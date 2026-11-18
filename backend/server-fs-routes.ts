@@ -95,6 +95,147 @@ export function registerServerFsRoutes(
   );
 
   /**
+   * Navigazione delle sole directory del filesystem server per modale «Gestione File» (Prompt Correttivo #2)
+   */
+  app.get(
+    "/api/robots/:robotId/fs/server/directories",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+          },
+        },
+      },
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.FS_SERVER_NAVIGATE,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { robotId } = req.params as { robotId: string };
+      const query = (req.query as any) || {};
+      const rawPath = typeof query.path === "string" ? query.path.trim() : "";
+
+      let robot = await robotRepository.findById(robotId);
+      if (!robot) {
+        robot = await robotRepository.findByServerDirectory(robotId);
+      }
+      if (!robot) {
+        const notFoundDef = ERROR_CATALOG[ErrorCode.SERVER_DIR_INACCESSIBLE];
+        return reply.status(404).send({
+          code: notFoundDef.code,
+          message: "Robot specificato non trovato nell'anagrafica.",
+          classification: notFoundDef.classification,
+        });
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        robot.id,
+        roleMapping
+      );
+
+      try {
+        const listing = await serverFsService.listDirectories(context, robot, rawPath);
+        return reply.status(200).send(listing);
+      } catch (err: any) {
+        if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
+          const status = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : 400;
+          return reply.status(status).send({
+            code: err.code,
+            message: err.userMessage,
+            classification: err.classification,
+          });
+        }
+        return reply.status(500).send({
+          code: ErrorCode.SERVER_DIR_INACCESSIBLE,
+          message: ERROR_CATALOG[ErrorCode.SERVER_DIR_INACCESSIBLE].userMessage,
+          classification: "richiede_intervento_amministrativo",
+        });
+      }
+    }
+  );
+
+  /**
+   * Verifica di un percorso server per modale «Gestione File» (Prompt Correttivo #2)
+   */
+  app.post(
+    "/api/robots/:robotId/fs/server/verify-path",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["path"],
+          properties: {
+            path: { type: "string" },
+          },
+        },
+      },
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.FS_SERVER_NAVIGATE,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { robotId } = req.params as { robotId: string };
+      const body = (req.body as any) || {};
+      const candidatePath = typeof body.path === "string" ? body.path : "";
+
+      let robot = await robotRepository.findById(robotId);
+      if (!robot) {
+        robot = await robotRepository.findByServerDirectory(robotId);
+      }
+      if (!robot) {
+        const notFoundDef = ERROR_CATALOG[ErrorCode.SERVER_DIR_INACCESSIBLE];
+        return reply.status(404).send({
+          code: notFoundDef.code,
+          message: "Robot specificato non trovato nell'anagrafica.",
+          classification: notFoundDef.classification,
+        });
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        robot.id,
+        roleMapping
+      );
+
+      try {
+        const result = await serverFsService.verifyPath(context, robot, candidatePath);
+        return reply.status(200).send(result);
+      } catch (err: any) {
+        if (err instanceof MolirisAppError) {
+          const statusCode = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : 400;
+          return reply.status(statusCode).send({
+            valid: false,
+            exists: false,
+            isDirectory: false,
+            isWritable: false,
+            resolvedPath: candidatePath,
+            error: err.userMessage,
+          });
+        }
+        return reply.status(500).send({
+          valid: false,
+          exists: false,
+          isDirectory: false,
+          isWritable: false,
+          resolvedPath: candidatePath,
+          error: "Errore interno durante la verifica del percorso server.",
+        });
+      }
+    }
+  );
+
+  /**
    * Download file dal filesystem server del robot (RF-SRVFS-004, RF-TRF-001)
    */
   app.get(

@@ -563,6 +563,40 @@ assert.strictEqual(resGeneralDelete.status, 200, "Eliminazione file da archivio 
 
 console.log("  PASS: Archivio Generale del Server (navigazione, mkdir, upload, download, delete) verificato (§1, §3, §4).");
 
+// Test Prompt Correttivo #2: GET /api/robots/:robotId/fs/server/directories
+const resServerDirs = await apiGet(`/api/robots/${robotA.id}/fs/server/directories?path=/`, sessionA.sessionId);
+assert.strictEqual(resServerDirs.status, 200);
+assert.strictEqual(resServerDirs.body.robotId, robotA.id);
+assert.strictEqual(resServerDirs.body.currentPath, "/");
+assert.ok(Array.isArray(resServerDirs.body.directories));
+assert.ok(resServerDirs.body.directories.some((d: any) => d.name === "logs"));
+assert.ok(resServerDirs.body.directories.some((d: any) => d.name === "telemetry"));
+
+// Test Prompt Correttivo #2: POST /api/robots/:robotId/fs/server/verify-path (valido)
+const resServerVerifyValid = await apiPost(`/api/robots/${robotA.id}/fs/server/verify-path`, sessionA.sessionId, { path: "/logs" });
+assert.strictEqual(resServerVerifyValid.status, 200);
+assert.strictEqual(resServerVerifyValid.body.valid, true);
+assert.strictEqual(resServerVerifyValid.body.exists, true);
+assert.strictEqual(resServerVerifyValid.body.isDirectory, true);
+assert.strictEqual(resServerVerifyValid.body.isWritable, true);
+assert.strictEqual(resServerVerifyValid.body.error, null);
+
+// Test Prompt Correttivo #2: POST /api/robots/:robotId/fs/server/verify-path (cartella inesistente)
+const resServerVerifyNonExist = await apiPost(`/api/robots/${robotA.id}/fs/server/verify-path`, sessionA.sessionId, { path: "/cartella_inesistente" });
+assert.strictEqual(resServerVerifyNonExist.status, 200);
+assert.strictEqual(resServerVerifyNonExist.body.valid, true);
+assert.strictEqual(resServerVerifyNonExist.body.exists, false);
+assert.strictEqual(resServerVerifyNonExist.body.isWritable, false);
+assert.ok(resServerVerifyNonExist.body.error && resServerVerifyNonExist.body.error.includes("non esiste"));
+
+// Test Prompt Correttivo #2: POST /api/robots/:robotId/fs/server/verify-path (path traversal bloccato)
+const resServerVerifyTraversal = await apiPost(`/api/robots/${robotA.id}/fs/server/verify-path`, sessionA.sessionId, { path: "/../../etc" });
+assert.strictEqual(resServerVerifyTraversal.status, 200);
+assert.strictEqual(resServerVerifyTraversal.body.valid, false);
+assert.strictEqual(resServerVerifyTraversal.body.isWritable, false);
+
+console.log("  PASS: Endpoint REST /api/robots/:robotId/fs/server/directories e verify-path (Prompt Correttivo #2) verificati.");
+
 await testApp.close();
 fs.rmSync(tlsDir, { recursive: true, force: true });
 console.log("  PASS: Endpoint REST /api/robots/:robotId/fs/server/list verificato con RBAC e sicurezza.");

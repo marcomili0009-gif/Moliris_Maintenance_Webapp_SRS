@@ -1,5 +1,5 @@
 import React, { useRef, useState } from "react";
-import type { DirectoryListing } from "../../types/filesystem.ts";
+import type { DirectoryListing, FsEntry } from "../../types/filesystem.ts";
 import type { FormattedError } from "../../types/error.ts";
 import type { RobotSummaryDto } from "../../types/fleet.ts";
 import { FsTable } from "./FsTable.tsx";
@@ -20,7 +20,7 @@ interface ServerFsPanelProps {
   onCreateFolder?: (name: string) => Promise<{ success: boolean; error?: string }>;
   onUpload: (file: File) => void;
   onDownload: (fileName: string) => void;
-  onTransferToRemote: (fileName: string) => void;
+  onTransferToRemote: (fileName: string, entry?: FsEntry) => void;
   onDelete: (fileName: string) => void;
 }
 

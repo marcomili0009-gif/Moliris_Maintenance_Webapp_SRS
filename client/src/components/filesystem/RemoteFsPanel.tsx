@@ -1,5 +1,5 @@
 import React, { useRef } from "react";
-import type { DirectoryListing } from "../../types/filesystem.ts";
+import type { DirectoryListing, FsEntry } from "../../types/filesystem.ts";
 import type { FormattedError } from "../../types/error.ts";
 import type { RobotSummaryDto } from "../../types/fleet.ts";
 import { FsTable } from "./FsTable.tsx";
@@ -18,7 +18,7 @@ interface RemoteFsPanelProps {
   onNavigateDir: (dirName: string) => void;
   onUpload: (file: File) => void;
   onDownload: (fileName: string) => void;
-  onTransferToServer: (fileName: string) => void;
+  onTransferToServer: (fileName: string, entry?: FsEntry) => void;
   onDelete: (fileName: string) => void;
 }
 
@@ -151,7 +151,7 @@ export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
         onDownload={onDownload}
         onTransfer={onTransferToServer}
         onDelete={onDelete}
-        transferActionLabel="Copia su Server"
+        transferActionLabel="Invia al server"
       />
     </div>
   );

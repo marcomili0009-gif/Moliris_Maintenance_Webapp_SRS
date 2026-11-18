@@ -24,4 +24,5 @@ dev-certs/
 server-fs/
 robots-storage/
 backup-imports/
+.gravitas/
 .DS_Store

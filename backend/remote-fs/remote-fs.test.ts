@@ -995,8 +995,87 @@ const userNoNavigate: UserEntity = {
   });
   assert.strictEqual(delMissingPathRes.statusCode, 400);
 
+  // 9. Test GET /api/robots/:robotId/fs/remote/directories (Prompt Correttivo #2)
+  const listDirsRes = await server.inject({
+    method: "GET",
+    url: "/api/robots/robot_api_fs/fs/remote/directories?path=/home/operator",
+    headers: {
+      cookie: `__Host-moliris_session=${authSession.sessionId}`,
+    },
+  });
+  assert.strictEqual(listDirsRes.statusCode, 200);
+  const listDirsBody = JSON.parse(listDirsRes.body);
+  assert.strictEqual(listDirsBody.robotId, "robot_api_fs");
+  assert.strictEqual(listDirsBody.currentPath, "/home/operator");
+  assert.strictEqual(listDirsBody.parentPath, "/home");
+  assert.ok(Array.isArray(listDirsBody.directories));
+  assert.ok(listDirsBody.directories.some((d: any) => d.name === "subfolder"));
+  // Deve escludere file regolari
+  assert.ok(!listDirsBody.directories.some((d: any) => d.name === "testfile.txt"));
+
+  // 10. Test GET directories con utente senza permesso -> 403
+  const listDirsNoPermRes = await server.inject({
+    method: "GET",
+    url: "/api/robots/robot_api_fs/fs/remote/directories?path=/home/operator",
+    headers: {
+      cookie: `__Host-moliris_session=${noPermSession.sessionId}`,
+    },
+  });
+  assert.strictEqual(listDirsNoPermRes.statusCode, 403);
+
+  // 11. Test POST /api/robots/:robotId/fs/remote/verify-path: cartella esistente e valida
+  const verifyValidRes = await server.inject({
+    method: "POST",
+    url: "/api/robots/robot_api_fs/fs/remote/verify-path",
+    headers: {
+      cookie: `__Host-moliris_session=${authSession.sessionId}`,
+      origin: "http://localhost",
+    },
+    payload: { path: "/home/operator/subfolder" },
+  });
+  assert.strictEqual(verifyValidRes.statusCode, 200);
+  const verifyValidBody = JSON.parse(verifyValidRes.body);
+  assert.strictEqual(verifyValidBody.valid, true);
+  assert.strictEqual(verifyValidBody.exists, true);
+  assert.strictEqual(verifyValidBody.isDirectory, true);
+  assert.strictEqual(verifyValidBody.isWritable, true);
+  assert.strictEqual(verifyValidBody.error, null);
+
+  // 12. Test POST verify-path: cartella inesistente
+  const verifyNonExistRes = await server.inject({
+    method: "POST",
+    url: "/api/robots/robot_api_fs/fs/remote/verify-path",
+    headers: {
+      cookie: `__Host-moliris_session=${authSession.sessionId}`,
+      origin: "http://localhost",
+    },
+    payload: { path: "/home/operator/cartella_inesistente_xyz" },
+  });
+  assert.strictEqual(verifyNonExistRes.statusCode, 200);
+  const verifyNonExistBody = JSON.parse(verifyNonExistRes.body);
+  assert.strictEqual(verifyNonExistBody.valid, true);
+  assert.strictEqual(verifyNonExistBody.exists, false);
+  assert.strictEqual(verifyNonExistBody.isDirectory, false);
+  assert.strictEqual(verifyNonExistBody.isWritable, false);
+  assert.ok(verifyNonExistBody.error && verifyNonExistBody.error.includes("non esiste"));
+
+  // 13. Test POST verify-path: percorso non assoluto o con byte nullo
+  const verifyInvalidRes = await server.inject({
+    method: "POST",
+    url: "/api/robots/robot_api_fs/fs/remote/verify-path",
+    headers: {
+      cookie: `__Host-moliris_session=${authSession.sessionId}`,
+      origin: "http://localhost",
+    },
+    payload: { path: "percorso/relativo" },
+  });
+  assert.strictEqual(verifyInvalidRes.statusCode, 200);
+  const verifyInvalidBody = JSON.parse(verifyInvalidRes.body);
+  assert.strictEqual(verifyInvalidBody.valid, false);
+  assert.strictEqual(verifyInvalidBody.isWritable, false);
+
   await server.close();
-  console.log("  PASS: Endpoint REST /api/robots/:robotId/fs/remote/list e /file (DELETE) con RBAC e gestione parametri.");
+  console.log("  PASS: Endpoint REST /api/robots/:robotId/fs/remote/directories e verify-path (Prompt Correttivo #2) con RBAC e validazione.");
 }
 
 // Chiusura test server SSH e pulizia

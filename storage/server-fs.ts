@@ -810,6 +810,257 @@ export class ServerFilesystemService {
   }
 
   /**
+   * Navigazione delle sole directory del filesystem server per modale Gestione File (Prompt Correttivo #2)
+   */
+  public async listDirectories(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    relativeSubPath?: string
+  ): Promise<{
+    robotId: string;
+    currentPath: string;
+    parentPath: string | null;
+    directories: Array<{ name: string; path: string }>;
+  }> {
+    this.assertAuthorizedContext(context, robot, AppPermission.FS_SERVER_NAVIGATE);
+
+    const isOp = this.isOperator(context);
+    const rawPath = typeof relativeSubPath === "string" ? relativeSubPath.trim() : "";
+    const cleanSub = rawPath === "/" || rawPath === "\\" || rawPath === "." ? "" : rawPath.replace(/^[/\\]+/, "");
+    const isRoot = !cleanSub;
+
+    if (isOp && !isRoot) {
+      this.assertOperatorAccess(context, cleanSub, "LIST_DIRECTORIES");
+    }
+
+    const robotDir = path.resolve(robot.serverDirectoryPath);
+    if (!fs.existsSync(robotDir)) {
+      await this.ensureRobotDirectory(robot);
+    }
+
+    const targetDir = await this.resolveRobotPath(robot, isRoot ? "" : cleanSub);
+
+    if (!fs.existsSync(targetDir)) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso specificato non trovato.");
+    }
+
+    const stat = await fs.promises.stat(targetDir);
+    if (!stat.isDirectory()) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Il percorso specificato non è una directory.");
+    }
+
+    const entries = await fs.promises.readdir(targetDir, { withFileTypes: true });
+    const directories: Array<{ name: string; path: string }> = [];
+
+    for (const entry of entries) {
+      if (entry.name === ".tmp" || entry.name === ".moliris_tmp" || entry.name.startsWith(".")) {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        const entryRelative = cleanSub ? path.posix.join(cleanSub, entry.name) : entry.name;
+        if (isOp && isRoot && this.operatorAllowedPaths && this.operatorAllowedPaths.length > 0 && !this.operatorAllowedPaths.includes(entry.name)) {
+          continue;
+        }
+        if (isOp && !isRoot && !this.isPathAllowedForOperator(entryRelative)) {
+          continue;
+        }
+
+        directories.push({
+          name: entry.name,
+          path: "/" + entryRelative,
+        });
+      }
+    }
+
+    directories.sort((a, b) => a.name.localeCompare(b.name));
+    const currentPath = cleanSub ? "/" + cleanSub : "/";
+    const parentPath = currentPath === "/" ? null : (path.posix.dirname(currentPath) === "" ? "/" : path.posix.dirname(currentPath));
+
+    return {
+      robotId: robot.id,
+      currentPath,
+      parentPath,
+      directories,
+    };
+  }
+
+  /**
+   * Verifica validità, esistenza e scrivibilità di un percorso server per modale Gestione File (Prompt Correttivo #2)
+   */
+  public async verifyPath(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    candidatePath: string
+  ): Promise<{
+    valid: boolean;
+    exists: boolean;
+    isDirectory: boolean;
+    isWritable: boolean;
+    resolvedPath: string;
+    error: string | null;
+  }> {
+    if (context.targetRobotId && context.targetRobotId !== robot.id) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: "",
+        error: "Accesso non autorizzato per il robot selezionato.",
+      };
+    }
+
+    if (!context.permissions.has(AppPermission.FS_SERVER_NAVIGATE)) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: "",
+        error: "Permesso insufficiente per verificare il percorso server.",
+      };
+    }
+
+    if (!candidatePath || typeof candidatePath !== "string" || !candidatePath.trim()) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: "",
+        error: "Percorso non specificato.",
+      };
+    }
+
+    const trimmed = candidatePath.trim();
+    if (trimmed.includes("\0")) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: "",
+        error: "Percorso non valido: contiene caratteri nulli o non ammessi.",
+      };
+    }
+
+    if (trimmed.length > 4096) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: "",
+        error: "Percorso non valido: lunghezza superiore a 4096 caratteri.",
+      };
+    }
+
+    if (!trimmed.startsWith("/")) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: "",
+        error: "Il percorso deve essere assoluto (iniziare con '/').",
+      };
+    }
+
+    // Verifica sequenze di traversal esplicite
+    if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(trimmed) || /%2e%2e/i.test(trimmed)) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: trimmed,
+        error: "Percorso non consentito: attraversamento directory non autorizzato.",
+      };
+    }
+
+    const norm = path.posix.normalize(trimmed);
+    const subPath = norm === "/" ? "" : norm.replace(/^[/\\]+/, "");
+
+    // Controllo restrizioni operatore
+    if (this.isOperator(context) && subPath && !this.isPathAllowedForOperator(subPath)) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: norm,
+        error: "Accesso non consentito: la cartella richiesta è esterna ai percorsi autorizzati per l'operatore.",
+      };
+    }
+
+    let physicalPath: string;
+    try {
+      physicalPath = await this.resolveRobotPath(robot, subPath);
+    } catch (err: any) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: norm,
+        error: err.userMessage || "Percorso server non valido o riservato.",
+      };
+    }
+
+    if (!fs.existsSync(physicalPath)) {
+      return {
+        valid: true,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: norm,
+        error: "La cartella specificata non esiste sul server.",
+      };
+    }
+
+    try {
+      const stat = await fs.promises.stat(physicalPath);
+      if (!stat.isDirectory()) {
+        return {
+          valid: true,
+          exists: true,
+          isDirectory: false,
+          isWritable: false,
+          resolvedPath: norm,
+          error: "Il percorso specificato non è una directory.",
+        };
+      }
+
+      let isWritable = false;
+      try {
+        await fs.promises.access(physicalPath, fs.constants.W_OK);
+        isWritable = true;
+      } catch {
+        isWritable = false;
+      }
+
+      return {
+        valid: true,
+        exists: true,
+        isDirectory: true,
+        isWritable,
+        resolvedPath: norm,
+        error: isWritable ? null : "Permesso di scrittura negato nella cartella specificata.",
+      };
+    } catch (err: any) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: norm,
+        error: "Errore durante la lettura dello stato della cartella server.",
+      };
+    }
+  }
+
+  /**
    * Predisposizione per lo streaming in lettura (RF-SRVFS-004, Prompt 10).
    * Restituisce un Readable stream del file verificato.
    */

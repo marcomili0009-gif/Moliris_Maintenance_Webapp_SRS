@@ -8,7 +8,7 @@ interface FsTableProps {
   emptyMessage?: string;
   onNavigateDir: (dirName: string) => void;
   onDownload: (fileName: string) => void;
-  onTransfer?: (fileName: string) => void;
+  onTransfer?: (fileName: string, entry?: FsEntry) => void;
   onDelete: (fileName: string) => void;
   transferActionLabel?: string;
 }
@@ -86,7 +86,7 @@ export const FsTable: React.FC<FsTableProps> = ({
                               type="button"
                               className="btn btn-primary btn-sm"
                               title={transferActionLabel}
-                              onClick={() => onTransfer(entry.name)}
+                              onClick={() => onTransfer(entry.name, entry)}
                             >
                               {transferActionLabel}
                             </button>

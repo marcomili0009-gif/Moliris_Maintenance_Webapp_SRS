@@ -222,6 +222,10 @@ await robotRepo.create({
   updatedAt: new Date(),
 });
 
+// Fixture file per test trasferimento file
+fs.mkdirSync(path.join(serverFsRoot, "operator_react"), { recursive: true });
+fs.writeFileSync(path.join(serverFsRoot, "operator_react", "sample_file.txt"), "Dati di test");
+
 // TEST SICUREZZA APICLIENT
 console.log("  -> Test ApiClient: verifica blocco degli host esterni");
 
@@ -473,6 +477,100 @@ try {
   );
   assert.strictEqual(selectedValue, "robot_react_01", "La selezione dal combobox deve impostare l'ID esatto del robot");
   console.log("  PASS: Rimozione fs-top-selector-bar e funzionamento RobotCombobox verificati.");
+
+  // Test Prompt Correttivo #2: Modale «Gestione File» alla selezione di «Invia al Robot»
+  console.log("  -> Test Prompt Correttivo #2: Apertura e funzionamento modale Gestione File");
+  await evaluateInBrowser<void>(`
+    document.getElementById('btn-fs-load').click();
+  `);
+  await new Promise((r) => setTimeout(r, 400));
+
+  // Verifica presenza della riga con sample_file.txt e pulsante «Invia al Robot»
+  const hasSampleFile = await evaluateInBrowser<boolean>(`
+    document.getElementById('fs-table-body')?.textContent?.includes('sample_file.txt') || false
+  `);
+  assert.strictEqual(hasSampleFile, true, "La tabella server deve contenere 'sample_file.txt'");
+
+  // Clic su «Invia al Robot»
+  await evaluateInBrowser<void>(`{
+    const rows = Array.from(document.querySelectorAll('#fs-table-body tr'));
+    for (const r of rows) {
+      if (r.textContent.includes('sample_file.txt')) {
+        const btn = Array.from(r.querySelectorAll('button')).find(b => b.textContent.includes('Invia al Robot'));
+        if (btn) btn.click();
+        break;
+      }
+    }
+  }`);
+  await new Promise((r) => setTimeout(r, 200));
+
+  // Verifica apertura modale Gestione File
+  const modalInfo = await evaluateInBrowser<{
+    isOpen: boolean;
+    title: string;
+    sourceName: string;
+    hasManualInput: boolean;
+    inputVal: string;
+    hasConfirmBtn: boolean;
+    hasCancelBtn: boolean;
+  }>(`{
+    const m = document.getElementById('modal-file-management');
+    ({
+      isOpen: Boolean(m),
+      title: document.getElementById('file-management-title')?.textContent || '',
+      sourceName: document.getElementById('file-mgmt-source-name')?.textContent || '',
+      hasManualInput: Boolean(document.getElementById('input-manual-path')),
+      inputVal: (document.getElementById('input-manual-path'))?.value || '',
+      hasConfirmBtn: Boolean(document.getElementById('btn-file-management-confirm')),
+      hasCancelBtn: Boolean(document.getElementById('btn-file-management-cancel')),
+    })
+  }`);
+
+  assert.strictEqual(modalInfo.isOpen, true, "La modale 'Gestione File' deve essere aperta");
+  assert.ok(modalInfo.title.includes("Gestione File"), "Il titolo deve essere 'Gestione File'");
+  assert.strictEqual(modalInfo.sourceName, "sample_file.txt", "Deve mostrare il nome del file selezionato");
+  assert.strictEqual(modalInfo.hasManualInput, true, "Il campo percorso manuale deve essere presente");
+  assert.strictEqual(modalInfo.inputVal, "/", "Il percorso iniziale deve essere '/'");
+  assert.strictEqual(modalInfo.hasConfirmBtn, true, "Il pulsante Conferma deve essere presente");
+  assert.strictEqual(modalInfo.hasCancelBtn, true, "Il pulsante Annulla deve essere presente");
+
+  // Test validazione real-time inserimento manuale (percorso non assoluto)
+  await evaluateInBrowser<void>(`{
+    const inp = document.getElementById('input-manual-path');
+    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    if (nativeSetter) {
+      nativeSetter.call(inp, 'cartella_relativa_non_valida');
+    } else {
+      inp.value = 'cartella_relativa_non_valida';
+    }
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+  }`);
+  await new Promise((r) => setTimeout(r, 200));
+
+  const validationState = await evaluateInBrowser<{ hasClientErr: boolean; errText: string; isConfirmDisabled: boolean }>(`{
+    const errEl = document.getElementById('feedback-client-error');
+    const confirmBtn = document.getElementById('btn-file-management-confirm');
+    ({
+      hasClientErr: Boolean(errEl),
+      errText: errEl?.textContent || '',
+      isConfirmDisabled: Boolean(confirmBtn?.disabled),
+    })
+  }`);
+  assert.strictEqual(validationState.hasClientErr, true, "Deve mostrare l'errore di validazione per percorso non assoluto");
+  assert.ok(validationState.errText.includes("assoluto"), "Il messaggio deve indicare che il percorso deve essere assoluto");
+  assert.strictEqual(validationState.isConfirmDisabled, true, "Il pulsante Conferma deve essere disabilitato con percorso non valido");
+
+  // Chiusura tramite pulsante Annulla
+  await evaluateInBrowser<void>(`
+    document.getElementById('btn-file-management-cancel').click();
+  `);
+  await new Promise((r) => setTimeout(r, 100));
+
+  const isModalClosed = await evaluateInBrowser<boolean>(
+    "!Boolean(document.getElementById('modal-file-management'))"
+  );
+  assert.strictEqual(isModalClosed, true, "La modale deve chiudersi al click su Annulla");
+  console.log("  PASS: Modale Gestione File (apertura, metadati, validazione real-time e chiusura) verificata con successo.");
 
   await evaluateInBrowser<void>(`
     document.querySelector('button[data-view="fleet"]').click();

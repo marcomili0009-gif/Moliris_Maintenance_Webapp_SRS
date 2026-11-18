@@ -18,6 +18,8 @@ import {
   type RemoteFileItemDto,
   type RemoteFileItemType,
   type RemoteDirectoryListingDto,
+  type RemoteDirectoriesListingDto,
+  type PathVerificationDto,
   type RemoteWriteStreamOptions,
   type RemoteReadStreamHandle,
   type RemoteWriteStreamHandle,
@@ -605,6 +607,258 @@ export class RemoteFilesystemService {
     } finally {
       // Rilascio garantito della connessione (RNF-REL-005)
       await managedConn.close();
+    }
+  }
+
+  /**
+   * Navigazione sole directory remote per modale Gestione File (Prompt Correttivo #2).
+   */
+  public async listDirectories(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    requestedPath?: string
+  ): Promise<RemoteDirectoriesListingDto> {
+    if (context.targetRobotId && context.targetRobotId !== robot.id) {
+      await this.recordSecurityViolation(
+        context.username,
+        robot.id,
+        "CROSS_ROBOT_ACCESS_ATTEMPT",
+        { contextRobotId: context.targetRobotId, targetRobotId: robot.id }
+      );
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Operazione non consentita: contesto autorizzato per un robot differente (${context.targetRobotId} != ${robot.id}).`
+      );
+    }
+
+    if (!context.permissions.has(AppPermission.FS_REMOTE_NAVIGATE)) {
+      await this.recordSecurityViolation(
+        context.username,
+        robot.id,
+        "PERMISSION_DENIED_FS_REMOTE_NAVIGATE"
+      );
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Utente '${context.username}' non autorizzato alla navigazione remota del robot '${robot.id}'.`
+      );
+    }
+
+    this.assertRobotAccessible(robot);
+
+    const managedConn = await this.connectionManager.acquireConnection(context.username, robot);
+    try {
+      const sftp = await managedConn.getSftpClient();
+      const targetPath = await this.resolveAndValidatePath(requestedPath, context, robot, sftp);
+
+      const rawEntries = await new Promise<any[]>((resolve, reject) => {
+        sftp.readdir(targetPath, (err, list) => {
+          if (err) return reject(this.mapSftpError(err, targetPath, robot.id));
+          resolve(list || []);
+        });
+      });
+
+      const directories: Array<{ name: string; path: string }> = [];
+      for (const entry of rawEntries) {
+        if (entry.filename === "." || entry.filename === "..") continue;
+        const attrs = entry.attrs;
+        let isDir = false;
+        if (typeof attrs?.isDirectory === "function" && attrs.isDirectory()) {
+          isDir = true;
+        } else if (typeof attrs?.isSymbolicLink === "function" && attrs.isSymbolicLink()) {
+          isDir = entry.longname && entry.longname.startsWith("d");
+        } else if (entry.longname && entry.longname.startsWith("d")) {
+          isDir = true;
+        }
+
+        if (isDir) {
+          directories.push({
+            name: entry.filename,
+            path: path.posix.join(targetPath, entry.filename),
+          });
+        }
+      }
+
+      directories.sort((a, b) => a.name.localeCompare(b.name));
+      const parentPath = targetPath === "/" ? null : path.posix.dirname(targetPath);
+
+      return {
+        robotId: robot.id,
+        currentPath: targetPath,
+        parentPath,
+        directories,
+      };
+    } finally {
+      await managedConn.close();
+    }
+  }
+
+  /**
+   * Verifica esistenza e scrivibilità di un percorso remoto per modale Gestione File (Prompt Correttivo #2).
+   */
+  public async verifyPath(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    targetPathCandidate: string
+  ): Promise<PathVerificationDto> {
+    if (context.targetRobotId && context.targetRobotId !== robot.id) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: "",
+        error: "Accesso non autorizzato per il robot selezionato.",
+      };
+    }
+
+    if (!context.permissions.has(AppPermission.FS_REMOTE_NAVIGATE)) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: "",
+        error: "Permesso insufficiente per verificare il percorso remoto.",
+      };
+    }
+
+    if (!targetPathCandidate || typeof targetPathCandidate !== "string" || !targetPathCandidate.trim()) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: "",
+        error: "Percorso non specificato.",
+      };
+    }
+
+    const trimmed = targetPathCandidate.trim();
+    if (trimmed.includes("\0")) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: "",
+        error: "Percorso non valido: contiene caratteri nulli o non ammessi.",
+      };
+    }
+
+    if (trimmed.length > 4096) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: "",
+        error: "Percorso non valido: lunghezza superiore a 4096 caratteri.",
+      };
+    }
+
+    if (!trimmed.startsWith("/")) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: "",
+        error: "Il percorso deve essere assoluto (iniziare con '/').",
+      };
+    }
+
+    let managedConn: any = null;
+    try {
+      this.assertRobotAccessible(robot);
+      managedConn = await this.connectionManager.acquireConnection(context.username, robot);
+      const sftp = await managedConn.getSftpClient();
+
+      let resolvedPath: string;
+      try {
+        resolvedPath = await this.resolveAndValidatePath(trimmed, context, robot, sftp);
+      } catch (valErr: any) {
+        return {
+          valid: false,
+          exists: false,
+          isDirectory: false,
+          isWritable: false,
+          resolvedPath: path.posix.normalize(trimmed),
+          error: valErr.userMessage || "Percorso non consentito dalle restrizioni configurate.",
+        };
+      }
+
+      // Verifica esistenza e tipo tramite sftp.stat
+      const stat = await new Promise<any>((resolve) => {
+        sftp.stat(resolvedPath, (err: any, res: any) => resolve(err ? null : res));
+      });
+
+      if (!stat) {
+        return {
+          valid: true,
+          exists: false,
+          isDirectory: false,
+          isWritable: false,
+          resolvedPath,
+          error: "La cartella remota specificata non esiste sul robot.",
+        };
+      }
+
+      const isDir = Boolean(
+        typeof stat.isDirectory === "function"
+          ? stat.isDirectory()
+          : (stat.mode && (stat.mode & 0o170000) === 0o040000)
+      );
+
+      if (!isDir) {
+        return {
+          valid: true,
+          exists: true,
+          isDirectory: false,
+          isWritable: false,
+          resolvedPath,
+          error: "Il percorso specificato non è una directory.",
+        };
+      }
+
+      // Verifica scrivibilità tramite test di scrittura effettivo o bit permessi
+      let isWritable = false;
+      const probeName = path.posix.join(resolvedPath, `.probe_perm_${Date.now()}`);
+      try {
+        await new Promise<void>((resolve, reject) => {
+          sftp.open(probeName, "w", (err: any, handle: any) => {
+            if (err) return reject(err);
+            sftp.close(handle, () => {
+              sftp.unlink(probeName, () => resolve());
+            });
+          });
+        });
+        isWritable = true;
+      } catch {
+        // Fallback: controllo mode bit se probe non consentito
+        isWritable = Boolean(stat.mode && (stat.mode & 0o222) !== 0);
+      }
+
+      return {
+        valid: true,
+        exists: true,
+        isDirectory: true,
+        isWritable,
+        resolvedPath,
+        error: isWritable ? null : "Permesso di scrittura negato nella cartella specificata.",
+      };
+    } catch (err: any) {
+      return {
+        valid: false,
+        exists: false,
+        isDirectory: false,
+        isWritable: false,
+        resolvedPath: path.posix.normalize(trimmed),
+        error: err.userMessage || err.message || "Errore durante la verifica del percorso remoto.",
+      };
+    } finally {
+      if (managedConn) {
+        try { await managedConn.close(); } catch {}
+      }
     }
   }
 

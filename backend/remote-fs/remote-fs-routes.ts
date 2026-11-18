@@ -91,6 +91,152 @@ export function registerRemoteFsRoutes(
   );
 
   /**
+   * Navigazione delle sole directory remote per modale «Gestione File» (Prompt Correttivo #2)
+   */
+  app.get(
+    "/api/robots/:robotId/fs/remote/directories",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+          },
+        },
+      },
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.FS_REMOTE_NAVIGATE,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { robotId } = req.params as { robotId: string };
+      const query = (req.query as any) || {};
+      const requestedPath = typeof query.path === "string" ? query.path : undefined;
+
+      const robot = await robotRepository.findById(robotId);
+      if (!robot) {
+        const errDef = ERROR_CATALOG[ErrorCode.MISSING_ROBOT_PARAMS];
+        return reply.status(404).send({
+          code: errDef.code,
+          message: `Robot con identificativo '${robotId}' non trovato nell'anagrafica.`,
+          classification: errDef.classification,
+        });
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        robot.id,
+        roleMapping
+      );
+
+      try {
+        const listing = await remoteFsService.listDirectories(context, robot, requestedPath);
+        return reply.status(200).send(listing);
+      } catch (err: any) {
+        if (err instanceof MolirisAppError) {
+          let statusCode = 400;
+          if (err.code === ErrorCode.INSUFFICIENT_PERMISSIONS) {
+            statusCode = 403;
+          } else if (err.code === ErrorCode.HOST_UNREACHABLE) {
+            statusCode = 503;
+          } else if (err.code === ErrorCode.TIMEOUT_ERROR) {
+            statusCode = 504;
+          } else if (err.userMessage.includes("non presente") || err.userMessage.includes("non trovato")) {
+            statusCode = 404;
+          }
+
+          return reply.status(statusCode).send({
+            code: err.code,
+            message: err.userMessage,
+            classification: err.classification,
+          });
+        }
+
+        return reply.status(500).send({
+          code: ErrorCode.REMOTE_FS_ERROR,
+          message: ERROR_CATALOG[ErrorCode.REMOTE_FS_ERROR].userMessage,
+          classification: "recuperabile",
+        });
+      }
+    }
+  );
+
+  /**
+   * Verifica di un percorso remoto per modale «Gestione File» (Prompt Correttivo #2)
+   */
+  app.post(
+    "/api/robots/:robotId/fs/remote/verify-path",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["path"],
+          properties: {
+            path: { type: "string" },
+          },
+        },
+      },
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.FS_REMOTE_NAVIGATE,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { robotId } = req.params as { robotId: string };
+      const body = (req.body as any) || {};
+      const candidatePath = typeof body.path === "string" ? body.path : "";
+
+      const robot = await robotRepository.findById(robotId);
+      if (!robot) {
+        const errDef = ERROR_CATALOG[ErrorCode.MISSING_ROBOT_PARAMS];
+        return reply.status(404).send({
+          code: errDef.code,
+          message: `Robot con identificativo '${robotId}' non trovato nell'anagrafica.`,
+          classification: errDef.classification,
+        });
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        robot.id,
+        roleMapping
+      );
+
+      try {
+        const result = await remoteFsService.verifyPath(context, robot, candidatePath);
+        return reply.status(200).send(result);
+      } catch (err: any) {
+        if (err instanceof MolirisAppError) {
+          const statusCode = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : 400;
+          return reply.status(statusCode).send({
+            valid: false,
+            exists: false,
+            isDirectory: false,
+            isWritable: false,
+            resolvedPath: candidatePath,
+            error: err.userMessage,
+          });
+        }
+        return reply.status(500).send({
+          valid: false,
+          exists: false,
+          isDirectory: false,
+          isWritable: false,
+          resolvedPath: candidatePath,
+          error: "Errore interno durante la verifica del percorso remoto.",
+        });
+      }
+    }
+  );
+
+  /**
    * Eliminazione controllata di un file sul filesystem remoto del robot (RF-FS-007, RNF-FS-003, RF-ROB-013)
    */
   app.delete(
