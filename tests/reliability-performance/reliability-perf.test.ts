@@ -568,6 +568,7 @@ for (const dev of diverseDevices) {
   const regResult = await fleetService.registerRobot(testUser, {
     id: dev.id,
     displayName: dev.displayName,
+    customerName: "Cliente Performance",
     remoteUsername: dev.remoteUsername,
     host: dev.host,
     sshPort: dev.sshPort,

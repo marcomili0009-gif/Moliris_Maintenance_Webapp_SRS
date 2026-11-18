@@ -128,6 +128,7 @@ try {
     const reg1 = await envPerHost.fleetService.registerRobot(adminUser, {
       id: "robot-ph-01",
       displayName: "Rover 1",
+      customerName: "Cliente Security",
       remoteUsername: "operator_user",
       host: "192.168.1.10",
       sshPort: 22,
@@ -141,6 +142,7 @@ try {
     const reg2 = await envPerHost.fleetService.registerRobot(adminUser, {
       id: "robot-ph-02",
       displayName: "Rover 2",
+      customerName: "Cliente Security",
       remoteUsername: "operator_user",
       host: "192.168.1.20",
       sshPort: 22,
@@ -154,6 +156,7 @@ try {
     const reg3 = await envPerHost.fleetService.registerRobot(adminUser, {
       id: "robot-ph-03",
       displayName: "Rover 3 Duplicate Device",
+      customerName: "Cliente Security",
       remoteUsername: "operator_user",
       host: "192.168.1.10",
       sshPort: 22,
@@ -171,6 +174,7 @@ try {
     const regGlob1 = await envGlobale.fleetService.registerRobot(adminUser, {
       id: "robot-gl-01",
       displayName: "Rover Global 1",
+      customerName: "Cliente Security",
       remoteUsername: "global_op",
       host: "10.0.0.1",
       sshPort: 22,
@@ -183,6 +187,7 @@ try {
     const regGlob2 = await envGlobale.fleetService.registerRobot(adminUser, {
       id: "robot-gl-02",
       displayName: "Rover Global 2",
+      customerName: "Cliente Security",
       remoteUsername: "global_op", // Duplicato globale su host diverso
       host: "10.0.0.2",
       sshPort: 22,
@@ -206,6 +211,7 @@ try {
     const regA = await fleetService.registerRobot(adminUser, {
       id: "amr01",
       displayName: "AMR Warehouse 01",
+      customerName: "Cliente Security",
       remoteUsername: "operator",
       host: "192.168.10.1",
       sshPort: 22,
@@ -218,6 +224,7 @@ try {
     const regB = await fleetService.registerRobot(adminUser, {
       id: "amr02",
       displayName: "AMR Warehouse 02",
+      customerName: "Cliente Security",
       remoteUsername: "operator",
       host: "192.168.10.2",
       sshPort: 22,
@@ -257,6 +264,7 @@ try {
       const res = await fleetService.registerRobot(adminUser, {
         id: badId,
         displayName: "Bad Underscore ID",
+        customerName: "Cliente Security",
         remoteUsername: "operator",
         host: "127.0.0.1",
         sshPort: 22,
@@ -274,6 +282,7 @@ try {
       const res = await fleetService.registerRobot(adminUser, {
         id: invId,
         displayName: "Invalid ID",
+        customerName: "Cliente Security",
         remoteUsername: "operator",
         host: "127.0.0.1",
         sshPort: 22,
@@ -290,6 +299,7 @@ try {
     const validRes = await fleetService.registerRobot(adminUser, {
       id: validId,
       displayName: "Valid ID Robot",
+      customerName: "Cliente Security",
       remoteUsername: "operator",
       host: "127.0.0.1",
       sshPort: 22,
@@ -313,6 +323,7 @@ try {
     await fleetService.registerRobot(adminUser, {
       id: "robot-old",
       displayName: "Old Robot",
+      customerName: "Cliente Security",
       remoteUsername: "operator_dev",
       host: "192.168.100.5",
       sshPort: 22,
@@ -339,6 +350,7 @@ try {
     const reuseOldIdRes = await fleetService.registerRobot(adminUser, {
       id: "robot-old", // Già usato in passato
       displayName: "Attempt Reusing Old ID",
+      customerName: "Cliente Security",
       remoteUsername: "operator_dev",
       host: "192.168.100.5",
       sshPort: 22,
@@ -353,6 +365,7 @@ try {
     const newReg = await fleetService.registerRobot(adminUser, {
       id: "robot-new",
       displayName: "New Robot for Same Device",
+      customerName: "Cliente Security",
       remoteUsername: "operator_dev",
       host: "192.168.100.5", // Stesso host/porta del rimosso
       sshPort: 22,
@@ -435,6 +448,7 @@ try {
     const regRes = await fleetService.registerRobot(adminUser, {
       id: "robot-pre-01",
       displayName: "Robot Preexisting Dir",
+      customerName: "Cliente Security",
       remoteUsername: "pre_user",
       host: "192.168.1.55",
       sshPort: 22,
@@ -493,6 +507,7 @@ try {
       return await fleetService.registerRobot(adminUser, {
         id: `rob-${Math.random().toString(36).substring(2, 8)}`,
         displayName: "Username Test",
+        customerName: "Cliente Security",
         remoteUsername: u,
         host: "127.0.0.1",
         sshPort: 22,
@@ -576,6 +591,7 @@ try {
     const reg = await fleetService.registerRobot(adminUser, {
       id: "robot-tmp-test",
       displayName: "Robot Tmp Test",
+      customerName: "Cliente Security",
       remoteUsername: "tmp_user",
       host: "127.0.0.1",
       sshPort: 22,
@@ -638,6 +654,7 @@ try {
     await fleetService.registerRobot(adminUser, {
       id: "robot-persist",
       displayName: "Robot To Persist",
+      customerName: "Cliente Security",
       remoteUsername: "persist_user",
       host: "192.168.10.10",
       sshPort: 22,
@@ -662,6 +679,7 @@ try {
     await fleetService.registerRobot(adminUser, {
       id: "robot-offline-list",
       displayName: "Robot Offline List",
+      customerName: "Cliente Security",
       remoteUsername: "offline_user",
       host: "192.0.2.1", // IP non raggiungibile
       sshPort: 22,
@@ -689,6 +707,7 @@ try {
     const reg = await fleetService.registerRobot(adminUser, {
       id: "robot-dto-sec",
       displayName: "Robot DTO Security",
+      customerName: "Cliente Security",
       remoteUsername: "dto_user",
       host: "127.0.0.1",
       sshPort: 22,
@@ -738,6 +757,7 @@ try {
     const regResult = await fleetService.registerRobot(adminUser, {
       id: "robot-strict-fail",
       displayName: "Robot Strict Fail",
+      customerName: "Cliente Security",
       remoteUsername: "strict_fail_user",
       host: "192.0.2.1", // IP TEST-NET non raggiungibile
       sshPort: 22,
@@ -775,6 +795,7 @@ try {
     const regResult = await fleetService.registerRobot(adminUser, {
       id: "robot-dir-reject",
       displayName: "Robot Dir Reject",
+      customerName: "Cliente Security",
       remoteUsername: "dir_reject_user",
       host: "127.0.0.1",
       sshPort: 22,

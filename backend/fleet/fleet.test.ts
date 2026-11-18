@@ -187,6 +187,7 @@ try {
     const result = await service.registerRobot(adminUser, {
       id: "robot-01",
       displayName: "Moliris Rover 1",
+      customerName: "Cliente 1",
       remoteUsername: "moliris_op",
       host: "127.0.0.1",
       sshPort: testServerPort,
@@ -243,6 +244,7 @@ try {
     assert(result.validationErrors["host"], "Errore su host non valido");
     assert(result.validationErrors["password"], "Errore su password mancante per auth password");
     assert(result.validationErrors["hostKeyVerification"], "Errore su verifica chiave host incompleta");
+    assert(result.validationErrors["customerName"], "Errore su cliente mancante");
 
     // Nessun effetto collaterale sul repository
     const list = await repo.list();
@@ -259,6 +261,7 @@ try {
     const strictResult = await strictService.registerRobot(adminUser, {
       id: "robot-strict-fail",
       displayName: "Robot Strict Test",
+      customerName: "Cliente Strict",
       remoteUsername: "moliris_op",
       host: "127.0.0.1",
       sshPort: testServerPort,
@@ -280,6 +283,7 @@ try {
     const deferredResult = await deferredService.registerRobot(adminUser, {
       id: "robot-deferred-ok",
       displayName: "Robot Deferred Test",
+      customerName: "Cliente Deferred",
       remoteUsername: "moliris_op_def",
       host: "127.0.0.1",
       sshPort: testServerPort,
@@ -314,6 +318,7 @@ try {
     const result = await service.registerRobot(adminUser, {
       id: "robot-dir-01",
       displayName: "Robot Dir Test",
+      customerName: "Cliente Dir",
       remoteUsername: "robot_dir_user",
       host: "127.0.0.1",
       sshPort: testServerPort,
@@ -350,6 +355,7 @@ try {
     const result = await service.registerRobot(adminUser, {
       id: "robot-existing-01",
       displayName: "Robot Existing Dir",
+      customerName: "Cliente Existing",
       remoteUsername: "existing_user",
       host: "127.0.0.1",
       sshPort: testServerPort,
@@ -376,6 +382,7 @@ try {
     await service.registerRobot(adminUser, {
       id: "robot-dup-01",
       displayName: "Robot Dup 1",
+      customerName: "Cliente Dup 1",
       remoteUsername: "dup_user",
       host: "127.0.0.1",
       sshPort: testServerPort,
@@ -391,6 +398,7 @@ try {
     const resDupId = await service.registerRobot(adminUser, {
       id: "robot-dup-01",
       displayName: "Robot Dup 2",
+      customerName: "Cliente Dup 2",
       remoteUsername: "other_user",
       host: "127.0.0.1",
       sshPort: testServerPort,
@@ -408,6 +416,7 @@ try {
     const resDupUser = await service.registerRobot(adminUser, {
       id: "robot-dup-02",
       displayName: "Robot Dup 3",
+      customerName: "Cliente Dup 3",
       remoteUsername: "dup_user",
       host: "127.0.0.1",
       sshPort: testServerPort,
@@ -435,6 +444,7 @@ try {
     const res = await service.registerRobot(adminUser, {
       id: "robot-fail-dir",
       displayName: "Robot Unwritable Dir",
+      customerName: "Cliente Fail Dir",
       remoteUsername: "unwritable_user",
       host: "127.0.0.1",
       sshPort: testServerPort,
@@ -469,6 +479,7 @@ try {
       async () => await service.registerRobot(adminUser, {
         id: "robot-rollback-01",
         displayName: "Robot Rollback Test",
+        customerName: "Cliente Rollback",
         remoteUsername: "rollback_test_user",
         host: "127.0.0.1",
         sshPort: testServerPort,
@@ -499,6 +510,7 @@ try {
     const resTraversal = await service.registerRobot(adminUser, {
       id: "robot-traversal",
       displayName: "Robot Traversal",
+      customerName: "Cliente Traversal",
       remoteUsername: "traversal_user",
       host: "127.0.0.1",
       sshPort: testServerPort,
@@ -524,6 +536,7 @@ try {
     await service.registerRobot(adminUser, {
       id: "robot-feat-01",
       displayName: "Robot Features Test",
+      customerName: "Cliente Feat",
       remoteUsername: "feat_user",
       host: "127.0.0.1",
       sshPort: testServerPort,
@@ -558,6 +571,7 @@ try {
     await service.registerRobot(adminUser, {
       id: "robot-remove-01",
       displayName: "Robot To Remove",
+      customerName: "Cliente Remove",
       remoteUsername: "remove_user",
       host: "127.0.0.1",
       sshPort: testServerPort,
@@ -616,6 +630,7 @@ try {
     await service.registerRobot(adminUser, {
       id: "robot-unreach-01",
       displayName: "Robot Irraggiungibile",
+      customerName: "Cliente Unreach",
       remoteUsername: "unreach_user",
       host: "192.0.2.1", // Non instradabile
       sshPort: 22,
@@ -643,6 +658,7 @@ try {
     await service.registerRobot(adminUser, {
       id: "robot-ammesso",
       displayName: "Robot Ammesso",
+      customerName: "Cliente Ammesso",
       remoteUsername: "ammesso_user",
       host: "127.0.0.1",
       sshPort: testServerPort,
@@ -657,6 +673,7 @@ try {
     await service.registerRobot(adminUser, {
       id: "robot-negato",
       displayName: "Robot Negato",
+      customerName: "Cliente Negato",
       remoteUsername: "negato_user",
       host: "127.0.0.1",
       sshPort: testServerPort,
@@ -697,6 +714,7 @@ try {
     await service.registerRobot(adminUser, {
       id: "robot-reverify-01",
       displayName: "Robot Re-Verify",
+      customerName: "Cliente Reverify",
       remoteUsername: "reverif_user",
       host: "127.0.0.1",
       sshPort: testServerPort,
@@ -797,8 +815,20 @@ try {
     assert.strictEqual(summaryRobot.customerName, "Ferrari Corse");
     assert.strictEqual(summaryRobot.plantName, "Maranello Reparto Corse");
 
-    // 4. Gestione dei campi mancanti o non validi
-    // 4a. Campi mancanti durante creazione -> campi undefined / non valorizzati
+    // 4. Gestione dei campi cliente e impianto durante la creazione (Requisiti Gestione Robot e Impianti)
+    // Caso 1: Cliente non selezionato -> Creazione bloccata
+    const valNoClient = await service.validateRegistrationInput({
+      id: "robot-val-no-client",
+      displayName: "Robot No Client",
+      remoteUsername: "op_no_cli_val",
+      host: "127.0.0.1",
+      sshAuthMethod: "password",
+      password: "ValidPass123!",
+      hostKeyVerification: { strictHostKeyChecking: true, fingerprint: serverFingerprintInfo.sha256Hex },
+    });
+    assert.strictEqual(valNoClient.valid, false, "Validazione deve fallire senza cliente");
+    assert.strictEqual(valNoClient.errors["customerName"], "Il cliente è obbligatorio.");
+
     const robotNoClient = await service.registerRobot(adminUser, {
       id: "robot-rf05-no-client",
       displayName: "Robot Senza Cliente",
@@ -812,8 +842,62 @@ try {
         strictHostKeyChecking: true,
       },
     });
-    assert.strictEqual(robotNoClient.robot?.customerName, undefined);
-    assert.strictEqual(robotNoClient.robot?.plantName, undefined);
+    assert.strictEqual(robotNoClient.outcome, "registrazione_rifiutata", "Creazione bloccata se cliente assente");
+    assert.strictEqual(robotNoClient.validationErrors?.["customerName"], "Il cliente è obbligatorio.");
+
+    // Caso 2: Cliente selezionato, impianto vuoto -> Creazione consentita
+    const robotWithClientNoPlant = await service.registerRobot(adminUser, {
+      id: "robot-rf05-no-plant",
+      displayName: "Robot Senza Impianto",
+      remoteUsername: "op_no_plant",
+      host: "127.0.0.1",
+      sshPort: testServerPort,
+      sshAuthMethod: "password",
+      password: "ValidPass123!",
+      hostKeyVerification: {
+        fingerprint: serverFingerprintInfo.sha256Hex,
+        strictHostKeyChecking: true,
+      },
+      customerName: "Ferrari S.p.A.",
+      plantName: "", // Impianto vuoto
+    });
+    assert.strictEqual(robotWithClientNoPlant.outcome, "registrazione_completata", "Creazione consentita con impianto vuoto");
+    assert.strictEqual(robotWithClientNoPlant.robot?.customerName, "Ferrari S.p.A.");
+    assert.strictEqual(robotWithClientNoPlant.robot?.plantName, undefined, "plantName deve essere undefined");
+    assert.strictEqual(robotWithClientNoPlant.robot?.plantId, undefined, "plantId deve essere undefined");
+
+    // Caso 3: Cliente selezionato, impianto compilato -> Creazione consentita
+    const robotWithClientAndPlant = await service.registerRobot(adminUser, {
+      id: "robot-rf05-with-plant",
+      displayName: "Robot Con Impianto",
+      remoteUsername: "op_with_plant",
+      host: "127.0.0.1",
+      sshPort: testServerPort,
+      sshAuthMethod: "password",
+      password: "ValidPass123!",
+      hostKeyVerification: {
+        fingerprint: serverFingerprintInfo.sha256Hex,
+        strictHostKeyChecking: true,
+      },
+      customerName: "Ferrari S.p.A.",
+      plantName: "Maranello Assemblaggio",
+    });
+    assert.strictEqual(robotWithClientAndPlant.outcome, "registrazione_completata", "Creazione consentita con cliente e impianto");
+    assert.strictEqual(robotWithClientAndPlant.robot?.customerName, "Ferrari S.p.A.");
+    assert.strictEqual(robotWithClientAndPlant.robot?.plantName, "Maranello Assemblaggio");
+    assert.ok(robotWithClientAndPlant.robot?.plantId, "plantId deve essere valorizzato");
+
+    // Caso 4: Robot salvato senza impianto -> Nessun errore di validazione, salvataggio o visualizzazione
+    const fetchedNoPlant = await service.getRobotDetail(adminUser, "robot-rf05-no-plant");
+    assert.strictEqual(fetchedNoPlant.robot.customerName, "Ferrari S.p.A.");
+    assert.strictEqual(fetchedNoPlant.robot.plantName, undefined);
+    assert.strictEqual(fetchedNoPlant.robot.plantId, undefined);
+
+    const fleetCheck = await service.listFleet(adminUser);
+    const summaryNoPlant = fleetCheck.find(r => r.id === "robot-rf05-no-plant");
+    assert.ok(summaryNoPlant, "Robot salvato senza impianto presente nella lista flotta");
+    assert.strictEqual(summaryNoPlant.customerName, "Ferrari S.p.A.");
+    assert.strictEqual(summaryNoPlant.plantName, undefined);
 
     // 4b. Validazione campi non validi (null byte, tipo non stringa, lunghezza eccessiva)
     const valResult1 = await service.validateRegistrationInput({

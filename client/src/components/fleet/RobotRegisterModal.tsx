@@ -52,6 +52,7 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
     if (!id.trim()) errors["id"] = "L'identificativo interno è obbligatorio.";
     if (id.includes("_")) errors["id"] = "L'ID non può contenere il carattere underscore (_).";
     if (!remoteUsername.trim()) errors["remoteUsername"] = "Lo username remoto è obbligatorio.";
+    if (!customerName.trim()) errors["customerName"] = "Il nome cliente è obbligatorio.";
     if (!host.trim()) errors["host"] = "L'hostname o indirizzo IP è obbligatorio.";
     if (!sshPort || sshPort < 1 || sshPort > 65535) errors["sshPort"] = "La porta SSH deve essere compresa tra 1 e 65535.";
 
@@ -180,15 +181,21 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
               </div>
 
               <div className="form-group">
-                <label htmlFor="reg-customerName">Nome Cliente (opzionale):</label>
+                <label htmlFor="reg-customerName">
+                  Nome Cliente <span className="required">*</span>:
+                </label>
                 <input
                   type="text"
                   id="reg-customerName"
                   name="customerName"
+                  required
                   placeholder="es. Acme Industries"
                   value={customerName}
                   onChange={(e) => setCustomerName(e.target.value)}
                 />
+                <div className="field-error" id="err-customerName">
+                  {fieldErrors["customerName"]}
+                </div>
               </div>
 
               <div className="form-group">
@@ -201,6 +208,9 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
                   value={plantName}
                   onChange={(e) => setPlantName(e.target.value)}
                 />
+                <div className="field-error" id="err-plantName">
+                  {fieldErrors["plantName"]}
+                </div>
               </div>
 
               <div className="form-group">

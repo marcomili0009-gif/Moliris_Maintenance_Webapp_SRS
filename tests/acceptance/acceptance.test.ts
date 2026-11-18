@@ -387,6 +387,7 @@ console.log("  [2/6] Collaudo Sezione CA-ROB (Anagrafica e Registrazione Flotta)
   const val = await fleetService.validateRegistrationInput({} as any);
   assert.strictEqual(val.valid, false);
   assert.ok(Object.keys(val.errors).length >= 4, "CA-ROB-002: Tutti i campi mancanti segnalati contemporaneamente");
+  assert.ok(val.errors["customerName"], "CA-ROB-002: Campo cliente obbligatorio segnalato");
   console.log("    PASS: CA-ROB-002 - Validazione cumulativa di tutti i parametri obbligatori.");
 }
 
@@ -396,6 +397,7 @@ console.log("  [2/6] Collaudo Sezione CA-ROB (Anagrafica e Registrazione Flotta)
 const reg1 = await fleetService.registerRobot(adminUser, {
   id: "robot-collaudo-01",
   displayName: "Robot Collaudo Alfa",
+  customerName: "Cliente Collaudo",
   remoteUsername: "operator_alfa",
   host: "127.0.0.1",
   sshPort: sftpPort,
@@ -419,6 +421,7 @@ console.log("    PASS: CA-ROB-005 - Preservazione dei dati e idempotenza.");
 const dupId = await fleetService.registerRobot(adminUser, {
   id: "robot-collaudo-01", // Duplicato
   displayName: "Robot Duplicato ID",
+  customerName: "Cliente Collaudo",
   remoteUsername: "operator_beta",
   host: "127.0.0.1",
   sshPort: sftpPort,
@@ -432,6 +435,7 @@ assert.ok(dupId.validationErrors?.id, "Errore su ID duplicato segnalato");
 const dupUsername = await fleetService.registerRobot(adminUser, {
   id: "robot-collaudo-dup-user",
   displayName: "Robot Duplicato Username",
+  customerName: "Cliente Collaudo",
   remoteUsername: "operator_alfa", // Duplicato sullo stesso dispositivo (host e porta)
   host: "127.0.0.1",
   sshPort: sftpPort,
@@ -446,6 +450,7 @@ assert.ok(dupUsername.validationErrors?.remoteUsername, "Errore su username dupl
 const underscoreIdReg = await fleetService.registerRobot(adminUser, {
   id: "robot_underscore_id",
   displayName: "Robot Underscore ID",
+  customerName: "Cliente Collaudo",
   remoteUsername: "operator_gamma",
   host: "127.0.0.1",
   sshPort: sftpPort,
@@ -463,6 +468,7 @@ console.log("    PASS: CA-ROB-006 - Rifiuto duplicati su identificativo e userna
 const badPathReg = await fleetService.registerRobot(adminUser, {
   id: "robot-bad-path",
   displayName: "Robot Bad Path",
+  customerName: "Cliente Collaudo",
   remoteUsername: "../../etc",
   host: "127.0.0.1",
   sshPort: 9999,

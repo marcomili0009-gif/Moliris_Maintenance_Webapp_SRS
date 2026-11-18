@@ -95,8 +95,9 @@ export function useFleet(isAuthenticated: boolean) {
         await loadFleet();
         return { outcome: data.outcome };
       } else {
-        if (data.fieldErrors) {
-          return { fieldErrors: data.fieldErrors, error: ErrorPresenter.formatError(data) };
+        const fieldErrors = data.fieldErrors || data.validationErrors;
+        if (fieldErrors) {
+          return { fieldErrors, error: ErrorPresenter.formatError(data) };
         }
         return { error: ErrorPresenter.formatError(data) };
       }

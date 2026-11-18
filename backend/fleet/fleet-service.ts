@@ -420,13 +420,19 @@ export class FleetService {
       }
     }
 
-    // 10. Validazione dati Cliente e Impianto (RF-05)
-    if (input.customerName !== undefined && input.customerName !== null) {
-      if (typeof input.customerName !== "string") {
+    // 10. Validazione dati Cliente e Impianto
+    const rawCustomer = input.customerName ?? (input as any).clientName;
+    const hasClientId = typeof input.clientId === "string" && input.clientId.trim().length > 0;
+    const hasCustomerName = typeof rawCustomer === "string" && rawCustomer.trim().length > 0;
+
+    if (!hasCustomerName && !hasClientId) {
+      errors["customerName"] = "Il cliente è obbligatorio.";
+    } else if (rawCustomer !== undefined && rawCustomer !== null) {
+      if (typeof rawCustomer !== "string") {
         errors["customerName"] = "Il nome cliente deve essere una stringa.";
-      } else if (input.customerName.includes("\0")) {
+      } else if (rawCustomer.includes("\0")) {
         errors["customerName"] = "Il nome cliente contiene caratteri non validi.";
-      } else if (input.customerName.trim().length > 100) {
+      } else if (rawCustomer.trim().length > 100) {
         errors["customerName"] = "Il nome cliente non può superare 100 caratteri.";
       }
     }
@@ -539,28 +545,30 @@ export class FleetService {
       };
     }
 
-    // Risoluzione entità collegate Cliente e Impianto (RF-05)
+    // Risoluzione entità collegate Cliente e Impianto
     let clientId = input.clientId;
-    let customerName = input.customerName?.trim();
+    let customerName = input.customerName?.trim() || (input as any).clientName?.trim();
     if (customerName) {
       const client = await this.clientRepository.findOrCreate(customerName);
       clientId = client.id;
       customerName = client.name;
+    } else if (clientId) {
+      const client = await this.clientRepository.findById(clientId);
+      if (client) {
+        customerName = client.name;
+      }
     }
 
     let plantId = input.plantId;
     let plantName = input.plantName?.trim();
     if (plantName) {
-      let effectiveClientId = clientId;
-      if (!effectiveClientId) {
-        const defaultClient = await this.clientRepository.findOrCreate("Cliente Predefinito");
-        effectiveClientId = defaultClient.id;
-        clientId = defaultClient.id;
-        customerName = defaultClient.name;
-      }
+      const effectiveClientId = clientId!;
       const plant = await this.plantRepository.findOrCreate(effectiveClientId, plantName);
       plantId = plant.id;
       plantName = plant.name;
+    } else {
+      plantId = undefined;
+      plantName = undefined;
     }
 
     // Costruzione bozza entità robot per i controlli di connessione e persistenza
