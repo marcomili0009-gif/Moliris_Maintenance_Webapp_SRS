@@ -1,6 +1,6 @@
 import React, { useRef } from "react";
 import { Radio, RefreshCw, UploadCloud } from "lucide-react";
-import type { DirectoryListing } from "../../types/filesystem.ts";
+import type { DirectoryListing, FsEntry } from "../../types/filesystem.ts";
 import type { FormattedError } from "../../types/error.ts";
 import type { RobotSummaryDto } from "../../types/fleet.ts";
 import { FsTable } from "./FsTable.tsx";
@@ -21,7 +21,7 @@ interface RemoteFsPanelProps {
   onNavigatePath?: (path: string) => void;
   onUpload: (file: File) => void;
   onDownload: (fileName: string) => void;
-  onTransferToServer: (fileName: string) => void;
+  onTransferToServer: (fileName: string, entry?: FsEntry) => void;
   onDelete: (fileName: string) => void;
   onDeleteFolder?: (folderName: string) => void;
 }

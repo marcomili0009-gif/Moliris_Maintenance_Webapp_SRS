@@ -72,3 +72,33 @@ export interface RemoteWriteStreamHandle {
   stream: Writable;
   cleanup: () => Promise<void>;
 }
+
+/**
+ * Elemento directory per navigazione modale Gestione File (Prompt Correttivo #2)
+ */
+export interface DirectoryItemDto {
+  name: string;
+  path: string;
+}
+
+/**
+ * Risultato navigazione sole cartelle per modale Gestione File
+ */
+export interface RemoteDirectoriesListingDto {
+  robotId: string;
+  currentPath: string;
+  parentPath: string | null;
+  directories: DirectoryItemDto[];
+}
+
+/**
+ * Risultato verifica validità e scrivibilità percorso (Prompt Correttivo #2)
+ */
+export interface PathVerificationDto {
+  valid: boolean;
+  exists: boolean;
+  isDirectory: boolean;
+  isWritable: boolean;
+  resolvedPath: string;
+  error: string | null;
+}

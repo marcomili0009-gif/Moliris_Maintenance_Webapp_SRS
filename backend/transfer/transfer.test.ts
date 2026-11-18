@@ -491,7 +491,37 @@ fs.writeFileSync(validPreexistingServerPath, "VALID_SERVER_PREEXISTING_DATA_ORIG
   const localDownloadedPath = path.join(testRobot.serverDirectoryPath, "downloaded_from_robot.txt");
   assert.strictEqual(fs.readFileSync(localDownloadedPath, "utf-8"), "Dati telemetrici robot\n");
 
-  console.log("  PASS: CA-FS-003 - Trasferimenti Server ↔ Robot in entrambe le direzioni verificati.");
+  // C. Test Prompt Correttivo #2: Trasferimento specificando una directory di destinazione
+  mockRemoteFs["/home/operator"]["custom_dir"] = { type: "directory", size: 0, mtime: 1700000000 };
+  mockRemoteFs["/home/operator/custom_dir"] = {};
+
+  // Server -> Robot verso directory remota
+  const srvToRobDirDto = await transferService.executeServerRobotTransfer(contextAuth, testRobot, {
+    direction: "SERVER_TO_ROBOT",
+    serverRelativePath: "from_server_to_robot.bin",
+    remotePath: "/home/operator/custom_dir",
+    overwrite: true,
+  });
+  assert.strictEqual(srvToRobDirDto.status, TransferStatus.COMPLETED);
+  assert.strictEqual(srvToRobDirDto.destinationPath, "/home/operator/custom_dir/from_server_to_robot.bin");
+  const writtenInCustomDir = mockRemoteFs["/home/operator/custom_dir"]?.["from_server_to_robot.bin"];
+  assert.ok(writtenInCustomDir, "Il file deve essere stato salvato dentro la cartella remota indicata");
+
+  // Robot -> Server verso cartella server
+  const serverLogsDir = path.join(testRobot.serverDirectoryPath, "logs");
+  if (!fs.existsSync(serverLogsDir)) fs.mkdirSync(serverLogsDir, { recursive: true });
+
+  const robToSrvDirDto = await transferService.executeServerRobotTransfer(contextAuth, testRobot, {
+    direction: "ROBOT_TO_SERVER",
+    serverRelativePath: "/logs",
+    remotePath: "/home/operator/robot_log.txt",
+    overwrite: true,
+  });
+  assert.strictEqual(robToSrvDirDto.status, TransferStatus.COMPLETED);
+  const localInLogsPath = path.join(serverLogsDir, "robot_log.txt");
+  assert.ok(fs.existsSync(localInLogsPath), "Il file deve essere stato salvato nella cartella logs del server");
+
+  console.log("  PASS: CA-FS-003 - Trasferimenti Server ↔ Robot in entrambe le direzioni e verso directory specifiche (Prompt Correttivo #2) verificati.");
 }
 
 // =========================================================================

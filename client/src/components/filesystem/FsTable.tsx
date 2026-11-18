@@ -27,7 +27,7 @@ interface FsTableProps {
   /** Invocato quando l'utente apre una directory di robot dall'Archivio Generale aggregato. */
   onOpenRobot?: (robotId: string) => void;
   onDownload: (fileName: string) => void;
-  onTransfer?: (fileName: string) => void;
+  onTransfer?: (fileName: string, entry?: FsEntry) => void;
   onDelete: (fileName: string) => void;
   onDeleteFolder?: (folderName: string) => void;
   transferActionLabel?: string;
@@ -290,7 +290,7 @@ export const FsTable: React.FC<FsTableProps> = ({
                             type="button"
                             className="fs-action fs-action-primary"
                             title={transferActionLabel}
-                            onClick={() => onTransfer(entry.name)}
+                            onClick={() => onTransfer(entry.name, entry)}
                           >
                             <Send size={14} strokeWidth={2} aria-hidden="true" />
                             <span>{transferActionLabel}</span>

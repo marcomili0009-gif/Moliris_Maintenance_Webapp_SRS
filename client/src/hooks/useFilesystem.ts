@@ -528,11 +528,17 @@ export function useFilesystem() {
   };
 
   // Transfer Server -> Remote SFTP
-  const transferServerToRemote = async (fileName: string, overwrite = false): Promise<boolean> => {
+  const transferServerToRemote = async (
+    fileName: string,
+    targetRemotePath?: string,
+    overwrite = false
+  ): Promise<boolean> => {
     if (!serverRobotId) return false;
     const cleanServerPath = serverPath === "/" ? "" : serverPath.replace(/^\//, "");
     const serverRelativePath = cleanServerPath ? `${cleanServerPath}/${fileName}` : fileName;
-    const remotePath = `/${fileName}`;
+    const remotePath = targetRemotePath
+      ? (targetRemotePath.endsWith("/") ? `${targetRemotePath}${fileName}` : targetRemotePath)
+      : `/${fileName}`;
     try {
       const res = await apiClient.post(
         `/api/robots/${encodeURIComponent(serverRobotId)}/transfers/server-robot`,
@@ -552,11 +558,21 @@ export function useFilesystem() {
   };
 
   // Transfer Remote SFTP -> Server
-  const transferRemoteToServer = async (fileName: string, overwrite = false): Promise<boolean> => {
+  const transferRemoteToServer = async (
+    fileName: string,
+    targetServerPath?: string,
+    overwrite = false
+  ): Promise<boolean> => {
     if (!remoteRobotId) return false;
     const remotePathClean = remotePath.endsWith("/") ? `${remotePath}${fileName}` : `${remotePath}/${fileName}`;
-    const cleanServerPath = serverPath === "/" ? "" : serverPath.replace(/^\//, "");
-    const serverRelativePath = cleanServerPath ? `${cleanServerPath}/${fileName}` : fileName;
+    let serverRelativePath: string;
+    if (targetServerPath) {
+      const cleanTarget = targetServerPath === "/" ? "" : targetServerPath.replace(/^\//, "");
+      serverRelativePath = cleanTarget ? `${cleanTarget}/${fileName}` : fileName;
+    } else {
+      const cleanServerPath = serverPath === "/" ? "" : serverPath.replace(/^\//, "");
+      serverRelativePath = cleanServerPath ? `${cleanServerPath}/${fileName}` : fileName;
+    }
     try {
       const res = await apiClient.post(
         `/api/robots/${encodeURIComponent(remoteRobotId)}/transfers/server-robot`,

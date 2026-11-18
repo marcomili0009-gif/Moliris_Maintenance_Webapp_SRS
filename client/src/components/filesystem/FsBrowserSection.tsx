@@ -4,7 +4,7 @@ import { GeneralFsPanel } from "./GeneralFsPanel.tsx";
 import { RemoteFsPanel } from "./RemoteFsPanel.tsx";
 import { TransfersPanel } from "./TransfersPanel.tsx";
 import { FsTabBar, type FsSubTab } from "./FsTabBar.tsx";
-import type { DirectoryListing } from "../../types/filesystem.ts";
+import type { DirectoryListing, FsEntry } from "../../types/filesystem.ts";
 import type { TransferProgress } from "../../types/transfer.ts";
 import type { FormattedError } from "../../types/error.ts";
 import type { RobotSummaryDto } from "../../types/fleet.ts";
@@ -31,7 +31,7 @@ interface FsBrowserSectionProps {
   onCreateServerFolder?: (name: string) => Promise<{ success: boolean; error?: string }>;
   onServerUpload: (file: File) => void;
   onServerDownload: (fileName: string) => void;
-  onServerTransferToRemote: (fileName: string) => void;
+  onServerTransferToRemote: (fileName: string, entry?: FsEntry) => void;
   onServerDelete: (fileName: string) => void;
   onServerDeleteFolder?: (folderName: string) => void;
 
@@ -64,7 +64,7 @@ interface FsBrowserSectionProps {
   onRemoteNavigatePath?: (path: string) => void;
   onRemoteUpload: (file: File) => void;
   onRemoteDownload: (fileName: string) => void;
-  onRemoteTransferToServer: (fileName: string) => void;
+  onRemoteTransferToServer: (fileName: string, entry?: FsEntry) => void;
   onRemoteDelete: (fileName: string) => void;
   onRemoteDeleteFolder?: (folderName: string) => void;
 

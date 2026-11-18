@@ -25,3 +25,17 @@ export interface DirectoryListing {
   totalCount: number;
   isTruncated: boolean;
 }
+
+export interface DirectoryItem {
+  name: string;
+  path: string;
+}
+
+export interface PathVerificationResult {
+  valid: boolean;
+  exists: boolean;
+  isDirectory: boolean;
+  isWritable: boolean;
+  resolvedPath: string;
+  error: string | null;
+}

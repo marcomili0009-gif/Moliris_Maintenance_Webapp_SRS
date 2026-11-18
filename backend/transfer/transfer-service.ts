@@ -532,30 +532,46 @@ export class TransferService {
       await this.processPendingCleanupsForRobot(robot.id, sftp);
       const finalResolvedRemote = await this.remoteFsService.resolveAndValidatePath(req.remotePath, context, robot, sftp);
 
-      // Controllo anti-corsa TOCTOU preventivo prima dell'avvio della scrittura (Problema A3)
-      const initialExists = await new Promise<boolean>((resolve) => {
-        sftp.stat(finalResolvedRemote, (err: any) => resolve(!err));
+      // Risoluzione destinazione finale: se punta a una cartella, accoda il nome del file sorgente
+      const initialStat = await new Promise<any>((resolve) => {
+        sftp.stat(finalResolvedRemote, (err: any, st: any) => resolve(err ? null : st));
       });
+      const isDir = Boolean(
+        initialStat &&
+          (typeof initialStat.isDirectory === "function"
+            ? initialStat.isDirectory()
+            : (initialStat.mode && (initialStat.mode & 0o170000) === 0o040000))
+      );
+      const finalTargetRemote = (isDir || req.remotePath.endsWith("/"))
+        ? path.posix.join(finalResolvedRemote, filename)
+        : finalResolvedRemote;
+
+      // Controllo anti-corsa TOCTOU preventivo prima dell'avvio della scrittura (Problema A3)
+      const initialExists = isDir
+        ? await new Promise<boolean>((resolve) => {
+            sftp.stat(finalTargetRemote, (err: any) => resolve(!err));
+          })
+        : Boolean(initialStat);
       if (initialExists) {
         const policy = this.config.transferOverwritePolicy || "richiedi_conferma";
         if (policy === "rifiuta") {
           throw new MolirisAppError(
             ErrorCode.REMOTE_FS_ERROR,
-            `File remoto finale già esistente: ${finalResolvedRemote}`,
+            `File remoto finale già esistente: ${finalTargetRemote}`,
             "File di destinazione sul robot già esistente. Sovrascrittura categoricamente non consentita dalla politica di sistema."
           );
         }
         if (policy !== "sovrascrivi" && req.overwrite !== true) {
           throw new MolirisAppError(
             ErrorCode.REMOTE_FS_ERROR,
-            `File remoto finale già esistente: ${finalResolvedRemote}`,
+            `File remoto finale già esistente: ${finalTargetRemote}`,
             "File di destinazione sul robot già esistente. Sovrascrittura non consentita senza conferma esplicita."
           );
         }
       }
 
       // Controllo preventivo spazio su disco robot (Problema A4)
-      const remoteTargetDir = path.posix.dirname(finalResolvedRemote);
+      const remoteTargetDir = path.posix.dirname(finalTargetRemote);
       await this.checkRobotDiskSpace(sftp, remoteTargetDir, stat.size, robot.id);
 
       const remoteTempPath = path.posix.join(
@@ -589,7 +605,7 @@ export class TransferService {
         direction: TransferDirection.SERVER_TO_ROBOT,
         filename,
         sourcePath: req.serverRelativePath,
-        destinationPath: req.remotePath,
+        destinationPath: finalTargetRemote,
         tempDestinationPath: remoteTempPath,
         totalBytes: stat.size,
         transferredBytes: startOffset,
@@ -680,7 +696,7 @@ export class TransferService {
       }
 
       // 3. Sostituzione atomica e controllo anti-corsa TOCTOU prima della promozione sulla STESSA sftp
-      await this.promoteRemoteTempFile(sftp, remoteTempPath, finalResolvedRemote, req.overwrite === true, robot.id);
+      await this.promoteRemoteTempFile(sftp, remoteTempPath, finalTargetRemote, req.overwrite === true, robot.id);
 
       record.integrityLabel = isReadback
         ? "completato — digest + dimensione verificata e readback remoto"
@@ -745,7 +761,8 @@ export class TransferService {
       targetServerRelative = safeFilename;
     } else {
       const norm = path.posix.normalize(req.serverRelativePath.trim());
-      const fullCandidate = path.resolve(robot.serverDirectoryPath, norm);
+      const stripped = norm === "/" ? "" : norm.replace(/^[/\\]+/, "");
+      const fullCandidate = path.resolve(robot.serverDirectoryPath, stripped);
       const expectedPrefix = robot.serverDirectoryPath.endsWith(path.sep)
         ? robot.serverDirectoryPath
         : robot.serverDirectoryPath + path.sep;
@@ -757,9 +774,9 @@ export class TransferService {
         );
       }
       if (norm.endsWith("/") || (fs.existsSync(fullCandidate) && fs.statSync(fullCandidate).isDirectory())) {
-        targetServerRelative = path.posix.join(norm, safeFilename);
+        targetServerRelative = stripped ? path.posix.join(stripped, safeFilename) : safeFilename;
       } else {
-        targetServerRelative = norm;
+        targetServerRelative = stripped || safeFilename;
       }
     }
 
@@ -1576,6 +1593,8 @@ export class TransferService {
         transferId: record.transferId,
         direction: record.direction,
         filename: record.filename,
+        sourcePath: record.sourcePath,
+        destinationPath: record.destinationPath,
         errorCode,
         cancelled: false,
       },
@@ -2262,6 +2281,8 @@ export class TransferService {
         transferId: record.transferId,
         direction: record.direction,
         filename: record.filename,
+        sourcePath: record.sourcePath,
+        destinationPath: record.destinationPath,
         totalBytes: record.totalBytes,
       },
     });
@@ -2278,6 +2299,8 @@ export class TransferService {
         transferId: record.transferId,
         direction: record.direction,
         filename: record.filename,
+        sourcePath: record.sourcePath,
+        destinationPath: record.destinationPath,
         transferredBytes: record.transferredBytes,
         checksum: record.computedChecksum,
       },

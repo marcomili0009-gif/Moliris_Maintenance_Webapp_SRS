@@ -8,6 +8,7 @@ import { RobotRegisterModal } from "../components/fleet/RobotRegisterModal.tsx";
 import { RobotEditModal } from "../components/fleet/RobotEditModal.tsx";
 import { RegistrationOutcomeModal } from "../components/fleet/RegistrationOutcomeModal.tsx";
 import { FsBrowserSection } from "../components/filesystem/FsBrowserSection.tsx";
+import { FileManagementModal } from "../components/filesystem/FileManagementModal.tsx";
 import { TerminalModal } from "../components/terminal/TerminalModal.tsx";
 import { BulkUploadModal } from "../components/bulk/BulkUploadModal.tsx";
 import { BulkConflictsModal } from "../components/bulk/BulkConflictsModal.tsx";
@@ -120,6 +121,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setDeleteTarget(null);
     setDeleteFolderTarget(null);
     setBulkConflicts(null);
+    setFileManagementTarget(null);
     // Rimuove eventuali classi o stili residui sul body per garantire piena interattività
     if (typeof document !== "undefined") {
       document.body.classList.remove("modal-open");
@@ -160,6 +162,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   // Delete folder confirm modal state with backend inspection
   const [deleteFolderTarget, setDeleteFolderTarget] = useState<DeleteFolderTarget | null>(null);
+
+  // File management transfer modal state (Prompt Correttivo #2)
+  const [fileManagementTarget, setFileManagementTarget] = useState<{
+    fileName: string;
+    fileSize?: number;
+    sourceType: "server" | "remote";
+    robotId: string;
+    robotName?: string;
+    initialPath: string;
+  } | null>(null);
 
   // Bulk conflicts state
   const [bulkConflicts, setBulkConflicts] = useState<{
@@ -364,7 +376,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               fs.uploadToServer(file, fs.serverPath);
             }}
             onServerDownload={fs.downloadFromServer}
-            onServerTransferToRemote={(fileName) => fs.transferServerToRemote(fileName)}
+            onServerTransferToRemote={(fileName, entry) => {
+              const r = fleet.robots.find((item) => item.id === fs.serverRobotId);
+              setFileManagementTarget({
+                fileName,
+                fileSize: entry?.size,
+                sourceType: "server",
+                robotId: fs.serverRobotId,
+                robotName: r?.displayName,
+                initialPath: "/",
+              });
+            }}
             onServerDelete={(fileName) => setDeleteTarget({ fileName, targetType: "server" })}
             onServerDeleteFolder={(folderName) =>
               setDeleteFolderTarget({
@@ -416,7 +438,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               fs.uploadToRemote(file, fs.remotePath);
             }}
             onRemoteDownload={fs.downloadFromRemote}
-            onRemoteTransferToServer={(fileName) => fs.transferRemoteToServer(fileName)}
+            onRemoteTransferToServer={(fileName, entry) => {
+              const r = fleet.robots.find((item) => item.id === fs.remoteRobotId);
+              setFileManagementTarget({
+                fileName,
+                fileSize: entry?.size,
+                sourceType: "remote",
+                robotId: fs.remoteRobotId,
+                robotName: r?.displayName,
+                initialPath: "/",
+              });
+            }}
             onRemoteDelete={(fileName) => setDeleteTarget({ fileName, targetType: "remote" })}
 
             transfers={transfers.transfers}
@@ -533,6 +565,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         onClose={() => setDeleteFolderTarget(null)}
         onConfirm={handleConfirmDeleteFolder}
       />
+
+      {/* Modal Gestione File - Selezione Percorso Trasferimento (Prompt Correttivo #2) */}
+      {fileManagementTarget && (
+        <FileManagementModal
+          isOpen={Boolean(fileManagementTarget)}
+          onClose={() => setFileManagementTarget(null)}
+          sourceFileName={fileManagementTarget.fileName}
+          sourceFileSize={fileManagementTarget.fileSize}
+          sourceType={fileManagementTarget.sourceType}
+          robotId={fileManagementTarget.robotId}
+          robotName={fileManagementTarget.robotName}
+          initialPath={fileManagementTarget.initialPath}
+          onConfirm={async (destinationPath) => {
+            if (fileManagementTarget.sourceType === "server") {
+              const success = await fs.transferServerToRemote(fileManagementTarget.fileName, destinationPath);
+              if (success) {
+                await transfers.loadTransfers();
+              }
+              return success;
+            } else {
+              const success = await fs.transferRemoteToServer(fileManagementTarget.fileName, destinationPath);
+              if (success) {
+                await transfers.loadTransfers();
+              }
+              return success;
+            }
+          }}
+        />
+      )}
     </section>
   );
 };
