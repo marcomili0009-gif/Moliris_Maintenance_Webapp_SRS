@@ -2,6 +2,16 @@ import React from "react";
 import type { TransferProgress } from "../../types/transfer.ts";
 import { StateFormatter } from "../../services/state-formatter.ts";
 
+const STATUS_LABELS: Record<string, string> = {
+  QUEUED: "In coda",
+  IN_PROGRESS: "In corso",
+  INTEGRITY_CHECKING: "Verifica integrità",
+  COMPLETED: "Completato",
+  FAILED: "Fallito",
+  CANCELLED: "Annullato",
+  INTEGRITY_FAILED: "Integrità fallita",
+};
+
 interface TransfersPanelProps {
   transfers: TransferProgress[];
   loading: boolean;
@@ -58,13 +68,16 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
               </thead>
               <tbody id="transfers-list">
                 {transfers.map((trf) => {
+                  const isQueued = trf.status === "QUEUED";
                   const isInProgress = trf.status === "IN_PROGRESS";
-                  const isFailed = trf.status === "FAILED";
+                  const isIntegrityChecking = trf.status === "INTEGRITY_CHECKING";
+                  const isActive = isQueued || isInProgress || isIntegrityChecking;
+                  const isFailed = trf.status === "FAILED" || trf.status === "INTEGRITY_FAILED";
                   const isCancelled = trf.status === "CANCELLED";
                   const isCompleted = trf.status === "COMPLETED";
 
                   let statusClass = "badge-attivo";
-                  if (isInProgress) statusClass = "badge-avviso";
+                  if (isActive) statusClass = "badge-avviso";
                   else if (isFailed || isCancelled) statusClass = "badge-errore";
 
                   return (
@@ -96,6 +109,8 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                                 ? "bg-success"
                                 : isCancelled
                                 ? "bg-secondary"
+                                : isQueued
+                                ? "bg-warning progress-bar-striped"
                                 : "bg-primary progress-bar-striped progress-bar-animated"
                             }`}
                             role="progressbar"
@@ -111,7 +126,11 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                       </td>
 
                       <td>
-                        {isInProgress ? (
+                        {isQueued ? (
+                          <span className="text-muted text-xs">In attesa di uno slot libero</span>
+                        ) : isIntegrityChecking ? (
+                          <span className="text-muted text-xs">Verifica integrità in corso</span>
+                        ) : isInProgress ? (
                           <div className="text-xs">
                             <div className="fw-semibold">{StateFormatter.formatBytes(trf.speedBps)}/s</div>
                             <div className="text-muted">ETA: {trf.etaSeconds !== null ? `${trf.etaSeconds}s` : "—"}</div>
@@ -123,12 +142,12 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
 
                       <td>
                         <span className={`badge-status ${statusClass}`}>
-                          {trf.status}
+                          {STATUS_LABELS[trf.status] || trf.status}
                         </span>
                       </td>
 
                       <td className="text-end">
-                        {isInProgress && (
+                        {isActive && (
                           <button
                             type="button"
                             className="btn btn-outline-danger btn-sm py-0.5 px-2 text-xs"

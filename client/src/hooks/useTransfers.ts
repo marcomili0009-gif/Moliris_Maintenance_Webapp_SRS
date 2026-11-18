@@ -130,13 +130,16 @@ export function useTransfers(isAuthenticated: boolean) {
     onProgress?: (percentage: number) => void
   ): Promise<{ success: boolean; results?: BulkUploadTargetResult[]; error?: FormattedError }> => {
     const formData = new FormData();
-    files.forEach((file) => {
-      formData.append("files", file);
-    });
+    // I metadati precedono i file: il backend può associare a ogni file la
+    // dimensione dichiarata e mostrare la percentuale già durante l'upload.
     formData.append("targets", JSON.stringify(buildBulkTargets(destinations)));
     if (overwrite) {
       formData.append("overwrite", "true");
     }
+    formData.append("fileSizes", JSON.stringify(files.map((file) => file.size)));
+    files.forEach((file) => {
+      formData.append("files", file);
+    });
 
     try {
       if (onProgress) onProgress(10);
@@ -157,8 +160,11 @@ export function useTransfers(isAuthenticated: boolean) {
               : [{ filename: fileResult.filename, reason: targetResult.error || "Trasferimento non riuscito" }],
           }))
         );
+        const anyFailure =
+          data.success === false ||
+          (data.summary && Number(data.summary.failed) > 0);
         return {
-          success: true,
+          success: !anyFailure,
           results,
         };
       } else {
@@ -182,7 +188,7 @@ export function useTransfers(isAuthenticated: boolean) {
     }
 
     void loadTransfers();
-    const source = new EventSource("/api/transfers/stream");
+    const source = new EventSource("/api/transfers/stream", { withCredentials: true });
     const handleSnapshot = (event: MessageEvent) => {
       try {
         const payload = JSON.parse(event.data);
@@ -207,7 +213,9 @@ export function useTransfers(isAuthenticated: boolean) {
     };
   }, [fetchTransfers, isAuthenticated, loadTransfers]);
 
-  const activeCount = transfers.filter((t) => t.status === "IN_PROGRESS").length;
+  const activeCount = transfers.filter(
+    (t) => t.status === "QUEUED" || t.status === "IN_PROGRESS" || t.status === "INTEGRITY_CHECKING"
+  ).length;
 
   return {
     transfers,

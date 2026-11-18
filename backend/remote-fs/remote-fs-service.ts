@@ -165,6 +165,7 @@ export class PipelinedSftpReadStream extends Readable {
   private eofReached = false;
   private isReading = false;
   private isClosing = false;
+  private ended = false;
   private openError: Error | null = null;
 
   constructor(
@@ -202,6 +203,7 @@ export class PipelinedSftpReadStream extends Readable {
   }
 
   _read(size: number): void {
+    if (this.ended) return;
     if (!this.handle) {
       if (this.openError) {
         this.destroy(this.openError);
@@ -214,6 +216,8 @@ export class PipelinedSftpReadStream extends Readable {
   }
 
   private _drainAndPrefetch(): void {
+    if (this.ended) return;
+
     while (this.pendingChunks.has(this.emitPos)) {
       const chunk = this.pendingChunks.get(this.emitPos)!;
       this.pendingChunks.delete(this.emitPos);
@@ -225,18 +229,23 @@ export class PipelinedSftpReadStream extends Readable {
       }
     }
 
-    if (this.eofReached && this.pendingChunks.size === 0) {
-      this.push(null);
-      this._closeHandle();
-      return;
-    }
-    if (this.fileSize !== undefined && this.fileSize !== null && this.emitPos >= this.fileSize) {
-      this.push(null);
-      this._closeHandle();
+    const reachedEof =
+      this.eofReached ||
+      (this.fileSize !== undefined && this.fileSize !== null && this.emitPos >= this.fileSize);
+
+    if (reachedEof) {
+      // Non chiudere l'handle finché ci sono READ ancora in volo: una chiusura
+      // anticipata farebbe fallire le callback pendenti e troncherebbe il
+      // download (errore intermittente robot → server / robot → client).
+      if (this.pendingChunks.size === 0 && this.inFlight === 0) {
+        this.ended = true;
+        this.push(null);
+        this._closeHandle();
+      }
       return;
     }
 
-    if (!this.isReading || this.eofReached) {
+    if (!this.isReading) {
       return;
     }
 

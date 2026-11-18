@@ -331,7 +331,8 @@ export function createServer(
     robotRepository,
     sessionManager,
     authMiddleware,
-    roleMapping
+    roleMapping,
+    transferService
   );
 
   // Registrazione endpoint gestione flotta (RF-ROB-001..014)

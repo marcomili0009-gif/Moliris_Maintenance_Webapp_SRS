@@ -7,7 +7,7 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import { pipeline, type Readable, type Writable } from "stream";
+import { PassThrough, pipeline, type Readable, type Writable } from "stream";
 import { type SystemConfiguration } from "../../config/configuration.ts";
 import { type RobotEntity } from "../../storage/robot-models.ts";
 import { type RobotRepository } from "../../storage/robot-repository.ts";
@@ -69,13 +69,22 @@ export class TransferService {
   private activeCountByRobot: Map<string, number> = new Map();
   private activeCountServer: number = 0;
 
-  // Coda per politica di attesa (se configurata MOLIRIS_TRANSFER_CONCURRENCY_POLICY=coda)
-  private waitQueue: (() => void)[] = [];
+  // Coda per politica di attesa (se configurata MOLIRIS_TRANSFER_CONCURRENCY_POLICY=coda).
+  // Ogni voce è annullabile: un trasferimento in coda può essere cancellato senza
+  // restare bloccato in attesa di uno slot che non gli verrà mai assegnato.
+  private waitQueue: Array<{
+    resolve: () => void;
+    reject: (err: Error) => void;
+    signal?: AbortSignal;
+    onAbort?: () => void;
+  }> = [];
 
   // Registro pulizie in sospeso per robot temporaneamente irraggiungibili (Problema A2 punto d)
   private pendingCleanups: Array<{ robotId: string; remoteTempPath: string; createdAt: Date }> = [];
   private hourlyCleanupTimer: NodeJS.Timeout | null = null;
   private recordEvictionTimer: NodeJS.Timeout | null = null;
+
+  private static readonly GENERAL_SERVER_ID = "server";
 
   private static readonly TERMINAL_STATUSES: ReadonlySet<TransferStatus> = new Set<TransferStatus>([
     TransferStatus.COMPLETED,
@@ -151,6 +160,58 @@ export class TransferService {
     return this.config.transferChunkSizeBytes || 2 * 1024 * 1024;
   }
 
+  /**
+   * Costruisce un record di trasferimento con stato iniziale QUEUED.
+   * Il record viene inserito nel registro PRIMA di attendere uno slot di
+   * concorrenza, così un trasferimento in coda è subito visibile al frontend
+   * (RF-TRF-006, RF-TRF-012, Problema 1).
+   */
+  private buildTransferRecord(args: {
+    transferId?: string;
+    userId: string;
+    userSessionId: string;
+    robotId: string;
+    direction: TransferDirection;
+    filename: string;
+    sourcePath: string;
+    destinationPath: string;
+    tempDestinationPath?: string;
+    totalBytes?: number | null;
+    initialBytes?: number;
+    expectedChecksum?: string;
+    checksumAlgorithm?: string;
+  }): TransferRecord {
+    const initialBytes = args.initialBytes ?? 0;
+    return {
+      transferId: args.transferId || crypto.randomUUID(),
+      userId: args.userId,
+      userSessionId: args.userSessionId,
+      robotId: args.robotId,
+      direction: args.direction,
+      filename: args.filename,
+      sourcePath: args.sourcePath,
+      destinationPath: args.destinationPath,
+      tempDestinationPath: args.tempDestinationPath,
+      totalBytes: args.totalBytes ?? null,
+      transferredBytes: initialBytes,
+      speedBytesPerSec: null,
+      etaSeconds: null,
+      status: TransferStatus.QUEUED,
+      error: null,
+      expectedChecksum: args.expectedChecksum,
+      checksumAlgorithm: args.checksumAlgorithm || this.checksumAlgorithm.name,
+      startedAt: new Date(),
+      lastProgressUpdateAt: Date.now(),
+      lastBytesAtUpdate: initialBytes,
+      abortController: new AbortController(),
+      cleanupHandlers: [],
+    };
+  }
+
+  private isTerminalRecord(record: TransferRecord): boolean {
+    return TransferService.TERMINAL_STATUSES.has(record.status);
+  }
+
   private acquireDestinationLock(lockKey: string): void {
     if (this.activeDestinationLocks.has(lockKey)) {
       throw new MolirisAppError(
@@ -203,44 +264,36 @@ export class TransferService {
     // 3. Verifica quota e dimensione massima se configurate (§11.1, RNF-MNT-001)
     this.checkMaxFileSize(totalBytes);
 
-    // 4. Acquisizione slot concorrenza (RF-TRF-012, RNF-PERF-003, CA-TRF-007)
-    await this.acquireTransferSlot(context.userId, robot.id);
+    const transferId = crypto.randomUUID();
+    const tempDir = await this.serverFsService.ensureTempDirectory(robot);
+    const tempFilePath = path.join(tempDir, `transfer_${transferId}.tmp`);
+
+    // Il record è registrato SUBITO, con stato QUEUED, prima di attendere uno
+    // slot di concorrenza: la coda è visibile al frontend (Problema 1).
+    const record = this.buildTransferRecord({
+      transferId,
+      userId: context.userId,
+      userSessionId: context.sessionId,
+      robotId: robot.id,
+      direction: TransferDirection.CLIENT_TO_SERVER,
+      filename: safeFilename,
+      sourcePath: safeFilename,
+      destinationPath: targetRelative,
+      tempDestinationPath: tempFilePath,
+      totalBytes: totalBytes || null,
+      expectedChecksum: options?.expectedChecksum,
+    });
+    this.transfers.set(transferId, record);
 
     const destLockKey = `server:${robot.id}:${targetRelative}`;
-    this.acquireDestinationLock(destLockKey);
-
-    let record: TransferRecord | null = null;
+    let slotAcquired = false;
+    let lockAcquired = false;
     try {
-      const transferId = crypto.randomUUID();
-      const tempDir = await this.serverFsService.ensureTempDirectory(robot);
-      const tempFilePath = path.join(tempDir, `transfer_${transferId}.tmp`);
-
-      record = {
-        transferId,
-        userId: context.userId,
-        userSessionId: context.sessionId,
-        robotId: robot.id,
-        direction: TransferDirection.CLIENT_TO_SERVER,
-        filename: safeFilename,
-        sourcePath: safeFilename,
-        destinationPath: targetRelative,
-        tempDestinationPath: tempFilePath,
-        totalBytes: totalBytes || null,
-        transferredBytes: 0,
-        speedBytesPerSec: null,
-        etaSeconds: null,
-        status: TransferStatus.IN_PROGRESS,
-        error: null,
-        expectedChecksum: options?.expectedChecksum,
-        checksumAlgorithm: this.checksumAlgorithm.name,
-        startedAt: new Date(),
-        lastProgressUpdateAt: Date.now(),
-        lastBytesAtUpdate: 0,
-        abortController: new AbortController(),
-        cleanupHandlers: [],
-      };
-
-      this.transfers.set(transferId, record);
+      await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
+      slotAcquired = true;
+      record.status = TransferStatus.IN_PROGRESS;
+      this.acquireDestinationLock(destLockKey);
+      lockAcquired = true;
       await this.recordAuditStart(record);
 
       const tempWriteStream = fs.createWriteStream(tempFilePath, {
@@ -260,7 +313,7 @@ export class TransferService {
         options?.expectedChecksum
       );
 
-      // 1. Verifica integrità base (Problema A1 punto a): confronto dimensione finale del file su disco
+      // 1. Verifica integrità base: confronto dimensione finale del file su disco
       const finalStat = await fs.promises.stat(tempFilePath);
       if (finalStat.size !== record.transferredBytes) {
         try { await fs.promises.unlink(tempFilePath); } catch {}
@@ -272,7 +325,7 @@ export class TransferService {
         );
       }
 
-      // 2. Verifica estesa readback opzionale (Problema A1 punto b, MOLIRIS_TRANSFER_VERIFY_MODE=readback)
+      // 2. Verifica estesa readback opzionale
       if (this.config.transferVerifyMode === "readback") {
         const readbackDigest = await this.computeLocalFileDigest(tempFilePath);
         if (readbackDigest.toLowerCase() !== (record.computedChecksum || "").toLowerCase()) {
@@ -286,7 +339,7 @@ export class TransferService {
         }
       }
 
-      // 3. Controllo anti-corsa TOCTOU prima della promozione (Problema A3)
+      // 3. Controllo anti-corsa TOCTOU prima della promozione
       await this.checkServerOverwritePolicy(finalServerPath, options);
 
       // Spostamento atomico sul file di destinazione definitivo (RF-TRF-009, CA-TRF-005)
@@ -312,19 +365,129 @@ export class TransferService {
 
       return this.toDto(record);
     } catch (err: any) {
-      if (record) {
-        await this.handleTransferFailure(record, err);
-      }
+      await this.handleTransferFailure(record, err);
       if (err instanceof MolirisAppError) throw err;
       throw new MolirisAppError(
-        (record?.errorCode as any) || ErrorCode.TRANSFER_INTERRUPTED,
+        (record.errorCode as any) || ErrorCode.TRANSFER_INTERRUPTED,
         err.message || "Trasferimento interrotto prima del completamento.",
-        record?.error || "Trasferimento file interrotto prima del completamento."
+        record.error || "Trasferimento file interrotto prima del completamento."
       );
     } finally {
-      this.releaseDestinationLock(destLockKey);
-      this.releaseTransferSlot(context.userId, robot.id);
+      if (lockAcquired) this.releaseDestinationLock(destLockKey);
+      if (slotAcquired) this.releaseTransferSlot(context.userId, robot.id);
     }
+  }
+
+  /**
+   * Costruisce il pipeline di download con tracking, checksum e gestione affidabile
+   * della chiusura. Il trasferimento viene marcato COMPLETED solo quando il flusso
+   * è stato letto fino in fondo e la dimensione coincide; una disconnessione del
+   * browser (close prematuro) lo marca FAILED e libera lo slot (Problema 2).
+   */
+  private createTrackedDownloadStream(args: {
+    record: TransferRecord;
+    sourceStream: Readable;
+    releaseSlot: () => void;
+    cleanupSource: () => Promise<void>;
+    integrityLabel: string;
+  }): Readable {
+    const { record, sourceStream, releaseSlot, cleanupSource, integrityLabel } = args;
+    const progressTracker = new ProgressTrackerStream({
+      totalBytes: record.totalBytes,
+      idleTimeoutMs: this.config.transferIdleTimeoutMs,
+      highWaterMark: this.getChunkSize(),
+      onProgress: (snap) => this.updateProgress(record, snap),
+      onIdleTimeout: () => record.abortController.abort(),
+    });
+    const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm, this.getChunkSize());
+    const outStream = new PassThrough({ highWaterMark: this.getChunkSize() });
+
+    let settled = false;
+    let released = false;
+    const releaseOnce = () => {
+      if (released) return;
+      released = true;
+      releaseSlot();
+    };
+    const removeAbortListener = () => {
+      record.abortController.signal.removeEventListener("abort", abortHandler);
+    };
+    const abortHandler = () => {
+      const abortErr = new MolirisAppError(
+        ErrorCode.TRANSFER_INTERRUPTED,
+        "Download annullato o interrotto."
+      );
+      try { sourceStream.destroy(abortErr); } catch {}
+      try { outStream.destroy(abortErr); } catch {}
+    };
+    record.abortController.signal.addEventListener("abort", abortHandler, { once: true });
+
+    const finishSuccess = async () => {
+      if (settled) return;
+      settled = true;
+      removeAbortListener();
+      const expectedTotal = record.totalBytes;
+      if (expectedTotal !== null && expectedTotal !== undefined && record.transferredBytes !== expectedTotal) {
+        record.status = TransferStatus.INTEGRITY_FAILED;
+        await this.handleTransferFailure(
+          record,
+          new MolirisAppError(
+            ErrorCode.INTEGRITY_CHECK_FAILED,
+            `Download incompleto: ricevuti ${record.transferredBytes} byte su ${expectedTotal}`,
+            "Verifica di integrità del file trasferito fallita."
+          )
+        );
+      } else {
+        record.computedChecksum = checksumStream.getDigest() || undefined;
+        record.integrityLabel = integrityLabel;
+        record.integrityVerification = {
+          verified: true,
+          mode: "stream",
+          label: integrityLabel,
+        };
+        record.status = TransferStatus.COMPLETED;
+        record.completedAt = new Date();
+        await this.recordAuditSuccess(record);
+      }
+      await cleanupSource();
+      releaseOnce();
+    };
+
+    const finishFailure = async (err: any) => {
+      if (settled) return;
+      settled = true;
+      removeAbortListener();
+      await this.handleTransferFailure(record, err);
+      await cleanupSource();
+      releaseOnce();
+    };
+
+    pipeline(sourceStream, progressTracker, checksumStream, outStream, (err) => {
+      if (err) {
+        void finishFailure(err);
+      } else {
+        void finishSuccess();
+      }
+    });
+
+    // Il consumo completo dello stream da parte del client è il segnale più
+    // affidabile di successo; 'close' può arrivare subito dopo 'end'.
+    outStream.once("end", () => {
+      void finishSuccess();
+    });
+
+    outStream.once("close", () => {
+      if (!settled && !outStream.readableEnded) {
+        void finishFailure(
+          new MolirisAppError(
+            ErrorCode.TRANSFER_INTERRUPTED,
+            "Download interrotto prima del completamento (client disconnesso)."
+          )
+        );
+      }
+    });
+
+    return outStream;
   }
 
   /**
@@ -356,92 +519,52 @@ export class TransferService {
       );
     }
 
-    await this.acquireTransferSlot(context.userId, robot.id);
+    const filename = path.basename(targetPath);
+    const record = this.buildTransferRecord({
+      userId: context.userId,
+      userSessionId: context.sessionId,
+      robotId: robot.id,
+      direction: TransferDirection.SERVER_TO_CLIENT,
+      filename,
+      sourcePath: relativeFilePath,
+      destinationPath: filename,
+      totalBytes: stat.size,
+    });
+    this.transfers.set(record.transferId, record);
 
-    let slotReleased = false;
+    let slotAcquired = false;
+    let released = false;
     const releaseSlot = () => {
-      if (!slotReleased) {
-        slotReleased = true;
-        this.releaseTransferSlot(context.userId, robot.id);
-      }
+      if (released) return;
+      released = true;
+      if (slotAcquired) this.releaseTransferSlot(context.userId, robot.id);
     };
 
-    let record: TransferRecord | null = null;
     try {
-      const transferId = crypto.randomUUID();
-      const filename = path.basename(targetPath);
-
-      record = {
-        transferId,
-        userId: context.userId,
-        userSessionId: context.sessionId,
-        robotId: robot.id,
-        direction: TransferDirection.SERVER_TO_CLIENT,
-        filename,
-        sourcePath: relativeFilePath,
-        destinationPath: filename,
-        totalBytes: stat.size,
-        transferredBytes: 0,
-        speedBytesPerSec: null,
-        etaSeconds: null,
-        status: TransferStatus.IN_PROGRESS,
-        error: null,
-        checksumAlgorithm: this.checksumAlgorithm.name,
-        startedAt: new Date(),
-        lastProgressUpdateAt: Date.now(),
-        lastBytesAtUpdate: 0,
-        abortController: new AbortController(),
-        cleanupHandlers: [],
-      };
-
-      this.transfers.set(transferId, record);
+      await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
+      slotAcquired = true;
+      record.status = TransferStatus.IN_PROGRESS;
       await this.recordAuditStart(record);
 
       const rawStream = fs.createReadStream(targetPath, {
         highWaterMark: this.getChunkSize(),
       });
 
-      const progressTracker = new ProgressTrackerStream({
-        totalBytes: stat.size,
-        idleTimeoutMs: this.config.transferIdleTimeoutMs,
-        highWaterMark: this.getChunkSize(),
-        onProgress: (snap) => this.updateProgress(record!, snap),
-        onIdleTimeout: () => {
-          this.handleTransferFailure(record!, new MolirisAppError(ErrorCode.TIMEOUT_ERROR, "Timeout inattività download superato."));
-        },
-      });
-
-      const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm, this.getChunkSize());
-
-      record.cleanupHandlers.push(async () => {
+      let sourceCleaned = false;
+      const cleanupSource = async () => {
+        if (sourceCleaned) return;
+        sourceCleaned = true;
         try { rawStream.destroy(); } catch {}
-      });
+      };
+      record.cleanupHandlers.push(cleanupSource);
 
-      // Pipelining dello stream di lettura con tracking avanzamento e digest checksum
-      const outStream = rawStream.pipe(progressTracker).pipe(checksumStream);
-
-      outStream.on("finish", async () => {
-        record!.status = TransferStatus.COMPLETED;
-        record!.completedAt = new Date();
-        record!.computedChecksum = checksumStream.getDigest() || undefined;
-        // Etichetta specifica download browser (Problema A1 punto c): MAI "verificato end-to-end"
-        record!.integrityLabel = "completato — integrità verificata solo lato server";
-        record!.integrityVerification = {
-          verified: true,
-          mode: "stream",
-          label: record!.integrityLabel,
-        };
-        await this.recordAuditSuccess(record!);
-        releaseSlot();
-      });
-
-      outStream.on("error", async (err: any) => {
-        await this.handleTransferFailure(record!, err);
-        releaseSlot();
-      });
-
-      outStream.on("close", () => {
-        releaseSlot();
+      const outStream = this.createTrackedDownloadStream({
+        record,
+        sourceStream: rawStream,
+        releaseSlot,
+        cleanupSource,
+        // Etichetta specifica download browser: MAI "verificato end-to-end"
+        integrityLabel: "completato — integrità verificata solo lato server",
       });
 
       return {
@@ -450,9 +573,15 @@ export class TransferService {
         filename,
         totalBytes: stat.size,
       };
-    } catch (err) {
+    } catch (err: any) {
       releaseSlot();
-      throw err;
+      await this.handleTransferFailure(record, err);
+      if (err instanceof MolirisAppError) throw err;
+      throw new MolirisAppError(
+        ErrorCode.TRANSFER_INTERRUPTED,
+        err.message || "Download interrotto prima del completamento.",
+        "Trasferimento file interrotto prima del completamento."
+      );
     }
   }
 
@@ -515,16 +644,32 @@ export class TransferService {
 
     this.checkMaxFileSize(stat.size);
 
-    await this.acquireTransferSlot(context.userId, robot.id);
+    const filename = path.basename(sourceServerPath);
+    // Record visibile già in coda, prima dello slot e dell'handshake SSH.
+    const record = this.buildTransferRecord({
+      userId: context.userId,
+      userSessionId: context.sessionId,
+      robotId: robot.id,
+      direction: TransferDirection.SERVER_TO_ROBOT,
+      filename,
+      sourcePath: req.serverRelativePath,
+      destinationPath: req.remotePath || filename,
+      totalBytes: stat.size,
+      expectedChecksum: req.expectedChecksum,
+    });
+    this.transfers.set(record.transferId, record);
 
     const destLockKey = `robot:${robot.id}:${req.remotePath}`;
-    this.acquireDestinationLock(destLockKey);
-
+    let slotAcquired = false;
+    let lockAcquired = false;
     let managedConn: ManagedRobotConnection | null = null;
-    let record: TransferRecord | null = null;
     try {
-      const transferId = crypto.randomUUID();
-      const filename = path.basename(sourceServerPath);
+      await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
+      slotAcquired = true;
+      record.status = TransferStatus.IN_PROGRESS;
+      this.acquireDestinationLock(destLockKey);
+      lockAcquired = true;
+      await this.recordAuditStart(record);
 
       // Riutilizzo di UNA sola connessione SSH/SFTP per l'intero ciclo del trasferimento (§6.6, RNF-PERF-001)
       managedConn = await this.connectionManager.acquireConnection(context.username, robot);
@@ -542,9 +687,10 @@ export class TransferService {
             ? initialStat.isDirectory()
             : (initialStat.mode && (initialStat.mode & 0o170000) === 0o040000))
       );
-      const finalTargetRemote = (isDir || req.remotePath.endsWith("/"))
+      const finalTargetRemote = (isDir || (req.remotePath || "").endsWith("/"))
         ? path.posix.join(finalResolvedRemote, filename)
         : finalResolvedRemote;
+      record.destinationPath = finalTargetRemote;
 
       // Controllo anti-corsa TOCTOU preventivo prima dell'avvio della scrittura (Problema A3)
       const initialExists = isDir
@@ -576,8 +722,9 @@ export class TransferService {
 
       const remoteTempPath = path.posix.join(
         remoteTargetDir,
-        `.tmp_moliris_${transferId}.tmp`
+        `.tmp_moliris_${record.transferId}.tmp`
       );
+      record.tempDestinationPath = remoteTempPath;
 
       // RF-TRF-010: Ripresa trasferimenti interrotti (opzionale se abilitata)
       let startOffset = 0;
@@ -589,6 +736,8 @@ export class TransferService {
         if (existingTempStat && existingTempStat.size > 0 && existingTempStat.size < stat.size) {
           startOffset = existingTempStat.size;
           writeFlags = "a";
+          record.transferredBytes = startOffset;
+          record.lastBytesAtUpdate = startOffset;
           this.logger.info("Ripresa trasferimento server->robot attivata (RF-TRF-010)", {
             robotId: robot.id,
             offset: startOffset,
@@ -596,34 +745,6 @@ export class TransferService {
           });
         }
       }
-
-      record = {
-        transferId,
-        userId: context.userId,
-        userSessionId: context.sessionId,
-        robotId: robot.id,
-        direction: TransferDirection.SERVER_TO_ROBOT,
-        filename,
-        sourcePath: req.serverRelativePath,
-        destinationPath: finalTargetRemote,
-        tempDestinationPath: remoteTempPath,
-        totalBytes: stat.size,
-        transferredBytes: startOffset,
-        speedBytesPerSec: null,
-        etaSeconds: null,
-        status: TransferStatus.IN_PROGRESS,
-        error: null,
-        expectedChecksum: req.expectedChecksum,
-        checksumAlgorithm: this.checksumAlgorithm.name,
-        startedAt: new Date(),
-        lastProgressUpdateAt: Date.now(),
-        lastBytesAtUpdate: startOffset,
-        abortController: new AbortController(),
-        cleanupHandlers: [],
-      };
-
-      this.transfers.set(transferId, record);
-      await this.recordAuditStart(record);
 
       const localReadStream = fs.createReadStream(sourceServerPath, {
         start: startOffset,
@@ -713,21 +834,19 @@ export class TransferService {
 
       return this.toDto(record);
     } catch (err: any) {
-      if (record) {
-        await this.handleTransferFailure(record, err);
-      }
+      await this.handleTransferFailure(record, err);
       if (err instanceof MolirisAppError) throw err;
       throw new MolirisAppError(
-        (record?.errorCode as any) || ErrorCode.TRANSFER_INTERRUPTED,
+        (record.errorCode as any) || ErrorCode.TRANSFER_INTERRUPTED,
         err.message || "Trasferimento interrotto prima del completamento.",
-        record?.error || "Trasferimento file interrotto prima del completamento."
+        record.error || "Trasferimento file interrotto prima del completamento."
       );
     } finally {
       if (managedConn) {
         try { await managedConn.close(); } catch {}
       }
-      this.releaseDestinationLock(destLockKey);
-      this.releaseTransferSlot(context.userId, robot.id);
+      if (lockAcquired) this.releaseDestinationLock(destLockKey);
+      if (slotAcquired) this.releaseTransferSlot(context.userId, robot.id);
     }
   }
 
@@ -742,18 +861,6 @@ export class TransferService {
       AppPermission.FS_REMOTE_DOWNLOAD,
       AppPermission.FS_SERVER_UPLOAD,
     ]);
-
-    // Risoluzione e controllo metadati file sorgente sul robot (Prompt 9, RF-FS-004)
-    const remoteStats = await this.remoteFsService.getRemoteFileStats(context, robot, req.remotePath);
-    if (remoteStats.type === "directory") {
-      throw new MolirisAppError(
-        ErrorCode.REMOTE_FS_ERROR,
-        `Il percorso remoto è una directory: ${req.remotePath}`,
-        "Impossibile trasferire una directory."
-      );
-    }
-
-    this.checkMaxFileSize(remoteStats.size);
 
     const safeFilename = path.basename(req.remotePath);
     let targetServerRelative: string;
@@ -782,24 +889,54 @@ export class TransferService {
 
     const finalServerPath = await this.serverFsService.resolveRobotPath(robot, targetServerRelative);
 
-    // Controllo sovrascrittura preventiva server (§11.5, RF-TRF-011, Problema A3)
-    await this.checkServerOverwritePolicy(finalServerPath, req);
-
-    // Controllo preventivo spazio su server (RF-TRF-014, Problema A4)
-    if (remoteStats.size && remoteStats.size > 0) {
-      await this.checkServerDiskSpace(path.dirname(finalServerPath), remoteStats.size);
-    }
-
-    await this.acquireTransferSlot(context.userId, robot.id);
+    // Record visibile già in coda, prima dello slot e della connessione SFTP.
+    const record = this.buildTransferRecord({
+      userId: context.userId,
+      userSessionId: context.sessionId,
+      robotId: robot.id,
+      direction: TransferDirection.ROBOT_TO_SERVER,
+      filename: safeFilename,
+      sourcePath: req.remotePath,
+      destinationPath: targetServerRelative,
+      totalBytes: null,
+      expectedChecksum: req.expectedChecksum,
+    });
+    this.transfers.set(record.transferId, record);
 
     const destLockKey = `server:${robot.id}:${targetServerRelative}`;
-    this.acquireDestinationLock(destLockKey);
-
-    let record: TransferRecord | null = null;
+    let slotAcquired = false;
+    let lockAcquired = false;
     try {
-      const transferId = crypto.randomUUID();
+      await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
+      slotAcquired = true;
+      record.status = TransferStatus.IN_PROGRESS;
+      this.acquireDestinationLock(destLockKey);
+      lockAcquired = true;
+      await this.recordAuditStart(record);
+
+      // Risoluzione e controllo metadati file sorgente sul robot (Prompt 9, RF-FS-004)
+      const remoteStats = await this.remoteFsService.getRemoteFileStats(context, robot, req.remotePath);
+      if (remoteStats.type === "directory") {
+        throw new MolirisAppError(
+          ErrorCode.REMOTE_FS_ERROR,
+          `Il percorso remoto è una directory: ${req.remotePath}`,
+          "Impossibile trasferire una directory."
+        );
+      }
+      record.totalBytes = remoteStats.size;
+      this.checkMaxFileSize(remoteStats.size);
+
+      // Controllo sovrascrittura preventiva server (§11.5, RF-TRF-011, Problema A3)
+      await this.checkServerOverwritePolicy(finalServerPath, req);
+
+      // Controllo preventivo spazio su server (RF-TRF-014, Problema A4)
+      if (remoteStats.size && remoteStats.size > 0) {
+        await this.checkServerDiskSpace(path.dirname(finalServerPath), remoteStats.size);
+      }
+
       const tempDir = await this.serverFsService.ensureTempDirectory(robot);
-      const tempFilePath = path.join(tempDir, `transfer_${transferId}.tmp`);
+      const tempFilePath = path.join(tempDir, `transfer_${record.transferId}.tmp`);
+      record.tempDestinationPath = tempFilePath;
 
       // RF-TRF-010: Ripresa trasferimenti interrotti (se abilitata)
       let startOffset = 0;
@@ -809,6 +946,8 @@ export class TransferService {
         if (existingStat.size > 0 && remoteStats.size !== null && existingStat.size < remoteStats.size) {
           startOffset = existingStat.size;
           writeFlags = "a";
+          record.transferredBytes = startOffset;
+          record.lastBytesAtUpdate = startOffset;
           this.logger.info("Ripresa trasferimento robot->server attivata (RF-TRF-010)", {
             robotId: robot.id,
             offset: startOffset,
@@ -816,34 +955,6 @@ export class TransferService {
           });
         }
       }
-
-      record = {
-        transferId,
-        userId: context.userId,
-        userSessionId: context.sessionId,
-        robotId: robot.id,
-        direction: TransferDirection.ROBOT_TO_SERVER,
-        filename: safeFilename,
-        sourcePath: req.remotePath,
-        destinationPath: targetServerRelative,
-        tempDestinationPath: tempFilePath,
-        totalBytes: remoteStats.size,
-        transferredBytes: startOffset,
-        speedBytesPerSec: null,
-        etaSeconds: null,
-        status: TransferStatus.IN_PROGRESS,
-        error: null,
-        expectedChecksum: req.expectedChecksum,
-        checksumAlgorithm: this.checksumAlgorithm.name,
-        startedAt: new Date(),
-        lastProgressUpdateAt: Date.now(),
-        lastBytesAtUpdate: startOffset,
-        abortController: new AbortController(),
-        cleanupHandlers: [],
-      };
-
-      this.transfers.set(transferId, record);
-      await this.recordAuditStart(record);
 
       let remoteReadHandle: any = null;
       const tempWriteStream = fs.createWriteStream(tempFilePath, {
@@ -877,7 +988,7 @@ export class TransferService {
       await remoteReadHandle.cleanup();
       remoteReadHandle = null;
 
-      // 1. Verifica integrità base (Problema A1 punto a): confronto dimensione file su disco
+      // 1. Verifica integrità base: confronto dimensione file su disco
       const finalStat = await fs.promises.stat(tempFilePath);
       if (finalStat.size !== record.transferredBytes) {
         try { await fs.promises.unlink(tempFilePath); } catch {}
@@ -889,7 +1000,7 @@ export class TransferService {
         );
       }
 
-      // 2. Verifica estesa readback opzionale (Problema A1 punto b)
+      // 2. Verifica estesa readback opzionale
       const isReadback = this.config.transferVerifyMode === "readback";
       if (isReadback) {
         const readbackDigest = await this.computeLocalFileDigest(tempFilePath);
@@ -904,7 +1015,7 @@ export class TransferService {
         }
       }
 
-      // 3. Controllo anti-corsa TOCTOU subito prima della promozione (Problema A3)
+      // 3. Controllo anti-corsa TOCTOU subito prima della promozione
       await this.checkServerOverwritePolicy(finalServerPath, req);
 
       // Spostamento atomico sulla destinazione server definitiva (RF-TRF-009, CA-TRF-005)
@@ -929,18 +1040,16 @@ export class TransferService {
 
       return this.toDto(record);
     } catch (err: any) {
-      if (record) {
-        await this.handleTransferFailure(record, err);
-      }
+      await this.handleTransferFailure(record, err);
       if (err instanceof MolirisAppError) throw err;
       throw new MolirisAppError(
-        (record?.errorCode as any) || ErrorCode.TRANSFER_INTERRUPTED,
+        (record.errorCode as any) || ErrorCode.TRANSFER_INTERRUPTED,
         err.message || "Trasferimento interrotto prima del completamento.",
-        record?.error || "Trasferimento file interrotto prima del completamento."
+        record.error || "Trasferimento file interrotto prima del completamento."
       );
     } finally {
-      this.releaseDestinationLock(destLockKey);
-      this.releaseTransferSlot(context.userId, robot.id);
+      if (lockAcquired) this.releaseDestinationLock(destLockKey);
+      if (slotAcquired) this.releaseTransferSlot(context.userId, robot.id);
     }
   }
 
@@ -971,15 +1080,33 @@ export class TransferService {
     const safeFilename = this.sanitizeFilename(filename);
     this.checkMaxFileSize(totalBytes);
 
-    await this.acquireTransferSlot(context.userId, robot.id);
+    const displayDirectory = remoteDirectoryPath === "." ? "" : remoteDirectoryPath;
+    const displayDestination = path.posix.join(displayDirectory, safeFilename);
+    // Record visibile già in coda, prima dello slot e dell'handshake SSH.
+    const record = this.buildTransferRecord({
+      userId: context.userId,
+      userSessionId: context.sessionId,
+      robotId: robot.id,
+      direction: TransferDirection.CLIENT_TO_ROBOT,
+      filename: safeFilename,
+      sourcePath: safeFilename,
+      destinationPath: displayDestination,
+      totalBytes: totalBytes || null,
+      expectedChecksum: options?.expectedChecksum,
+    });
+    this.transfers.set(record.transferId, record);
 
-    const destLockKey = `robot:${robot.id}:${remoteDirectoryPath}/${safeFilename}`;
-    this.acquireDestinationLock(destLockKey);
-
+    const destLockKey = `robot:${robot.id}:${displayDirectory}/${safeFilename}`;
+    let slotAcquired = false;
+    let lockAcquired = false;
     let managedConn: ManagedRobotConnection | null = null;
-    let record: TransferRecord | null = null;
     try {
-      const transferId = crypto.randomUUID();
+      await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
+      slotAcquired = true;
+      record.status = TransferStatus.IN_PROGRESS;
+      this.acquireDestinationLock(destLockKey);
+      lockAcquired = true;
+      await this.recordAuditStart(record);
 
       // Riutilizzo di UNA sola connessione SSH/SFTP per l'intero ciclo del caricamento client->robot (§6.7, RNF-PERF-001)
       managedConn = await this.connectionManager.acquireConnection(context.username, robot);
@@ -993,6 +1120,7 @@ export class TransferService {
         robot,
         sftp
       );
+      record.destinationPath = finalResolvedRemote;
 
       // Controllo anti-corsa TOCTOU preventivo prima dell'avvio dello streaming (Problema A3)
       const initialExists = await new Promise<boolean>((resolve) => {
@@ -1025,36 +1153,9 @@ export class TransferService {
       const remoteTargetDir = path.posix.dirname(finalResolvedRemote);
       const remoteTempPath = path.posix.join(
         remoteTargetDir,
-        `.tmp_moliris_${transferId}.tmp`
+        `.tmp_moliris_${record.transferId}.tmp`
       );
-
-      record = {
-        transferId,
-        userId: context.userId,
-        userSessionId: context.sessionId,
-        robotId: robot.id,
-        direction: TransferDirection.CLIENT_TO_ROBOT,
-        filename: safeFilename,
-        sourcePath: safeFilename,
-        destinationPath: finalResolvedRemote,
-        tempDestinationPath: remoteTempPath,
-        totalBytes: totalBytes || null,
-        transferredBytes: 0,
-        speedBytesPerSec: null,
-        etaSeconds: null,
-        status: TransferStatus.IN_PROGRESS,
-        error: null,
-        expectedChecksum: options?.expectedChecksum,
-        checksumAlgorithm: this.checksumAlgorithm.name,
-        startedAt: new Date(),
-        lastProgressUpdateAt: Date.now(),
-        lastBytesAtUpdate: 0,
-        abortController: new AbortController(),
-        cleanupHandlers: [],
-      };
-
-      this.transfers.set(transferId, record);
-      await this.recordAuditStart(record);
+      record.tempDestinationPath = remoteTempPath;
 
       const remoteWriteStream = typeof (sftp as any).open === "function"
         ? new PipelinedSftpWriteStream(sftp, remoteTempPath, {
@@ -1137,21 +1238,19 @@ export class TransferService {
 
       return this.toDto(record);
     } catch (err: any) {
-      if (record) {
-        await this.handleTransferFailure(record, err);
-      }
+      await this.handleTransferFailure(record, err);
       if (err instanceof MolirisAppError) throw err;
       throw new MolirisAppError(
-        (record?.errorCode as any) || ErrorCode.TRANSFER_INTERRUPTED,
+        (record.errorCode as any) || ErrorCode.TRANSFER_INTERRUPTED,
         err.message || "Trasferimento interrotto prima del completamento.",
-        record?.error || "Trasferimento file interrotto prima del completamento."
+        record.error || "Trasferimento file interrotto prima del completamento."
       );
     } finally {
       if (managedConn) {
         try { await managedConn.close(); } catch {}
       }
-      this.releaseDestinationLock(destLockKey);
-      this.releaseTransferSlot(context.userId, robot.id);
+      if (lockAcquired) this.releaseDestinationLock(destLockKey);
+      if (slotAcquired) this.releaseTransferSlot(context.userId, robot.id);
     }
   }
 
@@ -1179,96 +1278,53 @@ export class TransferService {
       );
     }
 
-    await this.acquireTransferSlot(context.userId, robot.id);
+    const filename = path.basename(remoteFilePath);
+    const record = this.buildTransferRecord({
+      userId: context.userId,
+      userSessionId: context.sessionId,
+      robotId: robot.id,
+      direction: TransferDirection.ROBOT_TO_CLIENT,
+      filename,
+      sourcePath: remoteFilePath,
+      destinationPath: filename,
+      totalBytes: stats.size,
+    });
+    this.transfers.set(record.transferId, record);
 
-    let slotReleased = false;
+    let slotAcquired = false;
+    let released = false;
     const releaseSlot = () => {
-      if (!slotReleased) {
-        slotReleased = true;
-        this.releaseTransferSlot(context.userId, robot.id);
-      }
+      if (released) return;
+      released = true;
+      if (slotAcquired) this.releaseTransferSlot(context.userId, robot.id);
     };
 
-    let record: TransferRecord | null = null;
     let remoteReadHandle: any = null;
     try {
-      const transferId = crypto.randomUUID();
-      const filename = path.basename(remoteFilePath);
-
-      record = {
-        transferId,
-        userId: context.userId,
-        userSessionId: context.sessionId,
-        robotId: robot.id,
-        direction: TransferDirection.ROBOT_TO_CLIENT,
-        filename,
-        sourcePath: remoteFilePath,
-        destinationPath: filename,
-        totalBytes: stats.size,
-        transferredBytes: 0,
-        speedBytesPerSec: null,
-        etaSeconds: null,
-        status: TransferStatus.IN_PROGRESS,
-        error: null,
-        checksumAlgorithm: this.checksumAlgorithm.name,
-        startedAt: new Date(),
-        lastProgressUpdateAt: Date.now(),
-        lastBytesAtUpdate: 0,
-        abortController: new AbortController(),
-        cleanupHandlers: [],
-      };
-
-      this.transfers.set(transferId, record);
+      await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
+      slotAcquired = true;
+      record.status = TransferStatus.IN_PROGRESS;
       await this.recordAuditStart(record);
 
       remoteReadHandle = await this.remoteFsService.openRemoteReadStream(context, robot, remoteFilePath);
 
-      const progressTracker = new ProgressTrackerStream({
-        totalBytes: stats.size,
-        idleTimeoutMs: this.config.transferIdleTimeoutMs,
-        highWaterMark: this.getChunkSize(),
-        onProgress: (snap) => this.updateProgress(record!, snap),
-        onIdleTimeout: () => {
-          this.handleTransferFailure(record!, new MolirisAppError(ErrorCode.TIMEOUT_ERROR, "Timeout inattività download superato."));
-        },
-      });
-
-      const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm, this.getChunkSize());
-
-      record.cleanupHandlers.push(async () => {
+      let sourceCleaned = false;
+      const cleanupSource = async () => {
+        if (sourceCleaned) return;
+        sourceCleaned = true;
         if (remoteReadHandle) {
           try { await remoteReadHandle.cleanup(); } catch {}
+          remoteReadHandle = null;
         }
-      });
+      };
+      record.cleanupHandlers.push(cleanupSource);
 
-      const outStream = remoteReadHandle.stream.pipe(progressTracker).pipe(checksumStream);
-
-      outStream.on("finish", async () => {
-        record!.status = TransferStatus.COMPLETED;
-        record!.completedAt = new Date();
-        record!.computedChecksum = checksumStream.getDigest() || undefined;
-        record!.integrityLabel = "completato — integrità verificata solo lato server";
-        record!.integrityVerification = {
-          verified: true,
-          mode: "stream",
-          label: record!.integrityLabel,
-        };
-        await this.recordAuditSuccess(record!);
-        await remoteReadHandle.cleanup();
-        releaseSlot();
-      });
-
-      outStream.on("error", async (err: any) => {
-        record!.integrityLabel = "integrità non verificata";
-        await this.handleTransferFailure(record!, err);
-        if (remoteReadHandle) {
-          try { await remoteReadHandle.cleanup(); } catch {}
-        }
-        releaseSlot();
-      });
-
-      outStream.on("close", () => {
-        releaseSlot();
+      const outStream = this.createTrackedDownloadStream({
+        record,
+        sourceStream: remoteReadHandle.stream,
+        releaseSlot,
+        cleanupSource,
+        integrityLabel: "completato — integrità verificata solo lato server",
       });
 
       return {
@@ -1277,12 +1333,339 @@ export class TransferService {
         filename,
         totalBytes: stats.size,
       };
-    } catch (err) {
+    } catch (err: any) {
       if (remoteReadHandle) {
         try { await remoteReadHandle.cleanup(); } catch {}
       }
       releaseSlot();
-      throw err;
+      await this.handleTransferFailure(record, err);
+      if (err instanceof MolirisAppError) throw err;
+      throw new MolirisAppError(
+        ErrorCode.TRANSFER_INTERRUPTED,
+        err.message || "Download interrotto prima del completamento.",
+        "Trasferimento file interrotto prima del completamento."
+      );
+    }
+  }
+
+  // =========================================================================
+  // DIREZIONE A-bis: Computer ↔ Archivio Generale del Server (§6.5, RF-TRF-001)
+  // =========================================================================
+
+  /**
+   * Upload dall'Archivio Generale del server (Computer → Server) con lo stesso
+   * ciclo di vita degli altri trasferimenti: record visibile, streaming,
+   * checksum, scrittura su file temporaneo e rename atomico.
+   */
+  public async executeGeneralUpload(
+    context: AuthorizedContext,
+    relativeFilePath: string,
+    incomingStream: Readable,
+    options?: TransferExecutionOptions,
+    totalBytes?: number | null
+  ): Promise<TransferDto> {
+    if (!context.permissions.has(AppPermission.FS_SERVER_UPLOAD)) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Utente '${context.username}' non autorizzato al caricamento nell'archivio generale.`,
+        "Operazione non consentita: autorizzazioni insufficienti per il trasferimento file."
+      );
+    }
+
+    // Non normalizzare prima della validazione: resolveGeneralPath deve poter
+    // vedere e rifiutare esplicitamente eventuali sequenze "..".
+    const safeRelative = relativeFilePath.replace(/^[/\\]+/, "");
+    const filename = path.basename(safeRelative);
+    const finalPath = await this.serverFsService.resolveGeneralPath(safeRelative);
+
+    await this.checkServerOverwritePolicy(finalPath, options);
+
+    this.checkMaxFileSize(totalBytes);
+    if (totalBytes && totalBytes > 0) {
+      await this.checkServerDiskSpace(path.dirname(finalPath), totalBytes);
+    }
+
+    const record = this.buildTransferRecord({
+      userId: context.userId,
+      userSessionId: context.sessionId,
+      robotId: TransferService.GENERAL_SERVER_ID,
+      direction: TransferDirection.CLIENT_TO_SERVER,
+      filename,
+      sourcePath: filename,
+      destinationPath: safeRelative,
+      totalBytes: totalBytes || null,
+      expectedChecksum: options?.expectedChecksum,
+    });
+    this.transfers.set(record.transferId, record);
+
+    await fs.promises.mkdir(path.dirname(finalPath), { recursive: true, mode: 0o750 });
+    const tempFilePath = path.join(
+      path.dirname(finalPath),
+      `.tmp_moliris_${record.transferId}.tmp`
+    );
+    record.tempDestinationPath = tempFilePath;
+    const destLockKey = `general:${safeRelative}`;
+    let slotAcquired = false;
+    let lockAcquired = false;
+
+    try {
+      await this.acquireTransferSlot(context.userId, TransferService.GENERAL_SERVER_ID, record.abortController.signal);
+      slotAcquired = true;
+      record.status = TransferStatus.IN_PROGRESS;
+      this.acquireDestinationLock(destLockKey);
+      lockAcquired = true;
+      await this.recordAuditStart(record);
+
+      const tempWriteStream = fs.createWriteStream(tempFilePath, {
+        mode: 0o700,
+        flags: "w",
+        highWaterMark: this.getChunkSize(),
+      });
+      record.cleanupHandlers.push(async () => {
+        try { tempWriteStream.destroy(); } catch {}
+        try { if (fs.existsSync(tempFilePath)) await fs.promises.unlink(tempFilePath); } catch {}
+      });
+
+      await this.streamWithTrackingAndChecksum(
+        incomingStream,
+        tempWriteStream,
+        record,
+        options?.expectedChecksum
+      );
+
+      const finalStat = await fs.promises.stat(tempFilePath);
+      if (finalStat.size !== record.transferredBytes) {
+        try { await fs.promises.unlink(tempFilePath); } catch {}
+        record.status = TransferStatus.INTEGRITY_FAILED;
+        throw new MolirisAppError(
+          ErrorCode.INTEGRITY_CHECK_FAILED,
+          `Verifica integrità fallita: dimensione su disco (${finalStat.size}) diversa dai byte trasferiti (${record.transferredBytes})`,
+          "Verifica di integrità del file trasferito fallita."
+        );
+      }
+
+      if (this.config.transferVerifyMode === "readback") {
+        const readbackDigest = await this.computeLocalFileDigest(tempFilePath);
+        if (readbackDigest.toLowerCase() !== (record.computedChecksum || "").toLowerCase()) {
+          try { await fs.promises.unlink(tempFilePath); } catch {}
+          record.status = TransferStatus.INTEGRITY_FAILED;
+          throw new MolirisAppError(
+            ErrorCode.INTEGRITY_CHECK_FAILED,
+            "Verifica integrità readback fallita sull'archivio generale.",
+            "Verifica di integrità del file trasferito fallita."
+          );
+        }
+      }
+
+      // Ricontrollo TOCTOU e promozione atomica (RF-TRF-009, CA-TRF-005)
+      await this.checkServerOverwritePolicy(finalPath, options);
+      await fs.promises.mkdir(path.dirname(finalPath), { recursive: true, mode: 0o750 });
+      await fs.promises.rename(tempFilePath, finalPath);
+
+      const isReadback = this.config.transferVerifyMode === "readback";
+      record.integrityLabel = isReadback
+        ? "completato — digest + dimensione verificata e readback locale"
+        : "completato — digest + dimensione verificata";
+      record.integrityVerification = {
+        verified: true,
+        mode: isReadback ? "readback" : "stream",
+        label: record.integrityLabel,
+      };
+      record.status = TransferStatus.COMPLETED;
+      record.completedAt = new Date();
+      await this.recordAuditSuccess(record);
+
+      return this.toDto(record);
+    } catch (err: any) {
+      await this.handleTransferFailure(record, err);
+      if (err instanceof MolirisAppError) throw err;
+      throw new MolirisAppError(
+        (record.errorCode as any) || ErrorCode.TRANSFER_INTERRUPTED,
+        err.message || "Trasferimento interrotto prima del completamento.",
+        record.error || "Trasferimento file interrotto prima del completamento."
+      );
+    } finally {
+      if (lockAcquired) this.releaseDestinationLock(destLockKey);
+      if (slotAcquired) this.releaseTransferSlot(context.userId, TransferService.GENERAL_SERVER_ID);
+    }
+  }
+
+  /**
+   * Preflight di un download dal filesystem server: verifica esistenza,
+   * tipo e permessi senza creare un record né aprire lo stream. Consente al
+   * frontend di mostrare un errore comprensibile prima del download diretto.
+   */
+  public async inspectServerDownload(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    relativeFilePath: string
+  ): Promise<{ filename: string; totalBytes: number }> {
+    this.assertAuthorized(context, robot, [AppPermission.FS_SERVER_DOWNLOAD]);
+    this.assertRobotNotDisabled(robot);
+    const targetPath = await this.serverFsService.resolveRobotPath(robot, relativeFilePath);
+    if (!fs.existsSync(targetPath)) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `File non trovato sul server: ${targetPath}`,
+        "Il file richiesto non è presente sul server."
+      );
+    }
+    const stat = await fs.promises.stat(targetPath);
+    if (!stat.isFile()) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Il percorso specificato non è un file regolare: ${targetPath}`,
+        "Il percorso richiesto non è un file regolare."
+      );
+    }
+    return { filename: path.basename(targetPath), totalBytes: stat.size };
+  }
+
+  /**
+   * Preflight di un download dal robot: verifica metadati e tipo senza aprire
+   * il flusso verso il browser.
+   */
+  public async inspectRobotDownload(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    remoteFilePath: string
+  ): Promise<{ filename: string; totalBytes: number | null }> {
+    this.assertRobotAccessible(robot);
+    this.assertAuthorized(context, robot, [
+      AppPermission.TRANSFER_CLIENT_ROBOT,
+      AppPermission.FS_REMOTE_DOWNLOAD,
+    ]);
+    const stats = await this.remoteFsService.getRemoteFileStats(context, robot, remoteFilePath);
+    if (stats.type === "directory") {
+      throw new MolirisAppError(
+        ErrorCode.REMOTE_FS_ERROR,
+        `Il percorso remoto è una directory: ${remoteFilePath}`,
+        "Impossibile scaricare una directory."
+      );
+    }
+    return { filename: path.posix.basename(remoteFilePath), totalBytes: stats.size };
+  }
+
+  /**
+   * Preflight di un download dall'Archivio Generale del server.
+   */
+  public async inspectGeneralDownload(
+    context: AuthorizedContext,
+    relativeFilePath: string
+  ): Promise<{ filename: string; totalBytes: number }> {
+    if (!context.permissions.has(AppPermission.FS_SERVER_DOWNLOAD)) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Utente '${context.username}' non autorizzato allo scaricamento dall'archivio generale.`,
+        "Operazione non consentita: autorizzazioni insufficienti per il trasferimento file."
+      );
+    }
+    const finalPath = await this.serverFsService.resolveGeneralPath(relativeFilePath);
+    if (!fs.existsSync(finalPath)) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `File non trovato nell'archivio generale: ${finalPath}`,
+        "Il file richiesto non è presente nell'archivio generale."
+      );
+    }
+    const stat = await fs.promises.stat(finalPath);
+    if (!stat.isFile()) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Il percorso non è un file regolare: ${finalPath}`,
+        "Il percorso richiesto non è un file regolare."
+      );
+    }
+    return { filename: path.basename(finalPath), totalBytes: stat.size };
+  }
+
+  /**
+   * Download dall'Archivio Generale del server (Server → Computer) con tracking
+   * e rilevamento delle interruzioni del client.
+   */
+  public async openGeneralDownload(
+    context: AuthorizedContext,
+    relativeFilePath: string
+  ): Promise<{ stream: Readable; transferDto: TransferDto; filename: string; totalBytes: number }> {
+    if (!context.permissions.has(AppPermission.FS_SERVER_DOWNLOAD)) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Utente '${context.username}' non autorizzato allo scaricamento dall'archivio generale.`,
+        "Operazione non consentita: autorizzazioni insufficienti per il trasferimento file."
+      );
+    }
+
+    const finalPath = await this.serverFsService.resolveGeneralPath(relativeFilePath);
+    if (!fs.existsSync(finalPath)) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `File non trovato nell'archivio generale: ${finalPath}`,
+        "Il file richiesto non è presente nell'archivio generale."
+      );
+    }
+    const stat = await fs.promises.stat(finalPath);
+    if (!stat.isFile()) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Il percorso non è un file regolare: ${finalPath}`,
+        "Il percorso richiesto non è un file regolare."
+      );
+    }
+
+    const filename = path.basename(finalPath);
+    const record = this.buildTransferRecord({
+      userId: context.userId,
+      userSessionId: context.sessionId,
+      robotId: TransferService.GENERAL_SERVER_ID,
+      direction: TransferDirection.SERVER_TO_CLIENT,
+      filename,
+      sourcePath: relativeFilePath,
+      destinationPath: filename,
+      totalBytes: stat.size,
+    });
+    this.transfers.set(record.transferId, record);
+
+    let slotAcquired = false;
+    let released = false;
+    const releaseSlot = () => {
+      if (released) return;
+      released = true;
+      if (slotAcquired) this.releaseTransferSlot(context.userId, TransferService.GENERAL_SERVER_ID);
+    };
+
+    try {
+      await this.acquireTransferSlot(context.userId, TransferService.GENERAL_SERVER_ID, record.abortController.signal);
+      slotAcquired = true;
+      record.status = TransferStatus.IN_PROGRESS;
+      await this.recordAuditStart(record);
+
+      const rawStream = fs.createReadStream(finalPath, { highWaterMark: this.getChunkSize() });
+      let sourceCleaned = false;
+      const cleanupSource = async () => {
+        if (sourceCleaned) return;
+        sourceCleaned = true;
+        try { rawStream.destroy(); } catch {}
+      };
+      record.cleanupHandlers.push(cleanupSource);
+
+      const outStream = this.createTrackedDownloadStream({
+        record,
+        sourceStream: rawStream,
+        releaseSlot,
+        cleanupSource,
+        integrityLabel: "completato — integrità verificata solo lato server",
+      });
+
+      return { stream: outStream, transferDto: this.toDto(record), filename, totalBytes: stat.size };
+    } catch (err: any) {
+      releaseSlot();
+      await this.handleTransferFailure(record, err);
+      if (err instanceof MolirisAppError) throw err;
+      throw new MolirisAppError(
+        ErrorCode.TRANSFER_INTERRUPTED,
+        err.message || "Download interrotto prima del completamento.",
+        "Trasferimento file interrotto prima del completamento."
+      );
     }
   }
 
@@ -1418,7 +1801,7 @@ export class TransferService {
    */
   public cancelTransfersForUser(userId: string, reason: string): void {
     for (const record of Array.from(this.transfers.values())) {
-      if (record.userId === userId && (record.status === TransferStatus.IN_PROGRESS || record.status === TransferStatus.INTEGRITY_CHECKING)) {
+      if (record.userId === userId && !TransferService.TERMINAL_STATUSES.has(record.status)) {
         this.cancelTransfer(record.transferId, userId, reason).catch(() => {});
       }
     }
@@ -1436,10 +1819,7 @@ export class TransferService {
       if (
         record.userId === userId &&
         record.userSessionId === sessionId &&
-        (
-          record.status === TransferStatus.IN_PROGRESS ||
-          record.status === TransferStatus.INTEGRITY_CHECKING
-        )
+        !TransferService.TERMINAL_STATUSES.has(record.status)
       ) {
         this.cancelTransfer(record.transferId, userId, reason).catch(() => {});
       }
@@ -1471,7 +1851,11 @@ export class TransferService {
     let serverCount = 0;
 
     for (const rec of this.transfers.values()) {
-      if (rec.status === TransferStatus.IN_PROGRESS) {
+      // QUEUED non occupa uno slot; IN_PROGRESS e INTEGRITY_CHECKING sì.
+      if (
+        rec.status === TransferStatus.IN_PROGRESS ||
+        rec.status === TransferStatus.INTEGRITY_CHECKING
+      ) {
         serverCount++;
         userCounts.set(rec.userId, (userCounts.get(rec.userId) || 0) + 1);
         robotCounts.set(rec.robotId, (robotCounts.get(rec.robotId) || 0) + 1);
@@ -1495,28 +1879,42 @@ export class TransferService {
     }
   }
 
-  private async acquireTransferSlot(userId: string, robotId: string): Promise<void> {
-    this.reconcileActiveCounts();
-
-    const userCount = this.activeCountByUser.get(userId) || 0;
-    const robotCount = this.activeCountByRobot.get(robotId) || 0;
-
+  private async acquireTransferSlot(
+    userId: string,
+    robotId: string,
+    signal?: AbortSignal
+  ): Promise<void> {
     const maxPerUser = this.config.maxConcurrentTransfersPerUser;
     const maxPerRobot = this.config.maxConcurrentTransfersPerRobot;
     const maxServer = this.config.maxConcurrentTransfersServer;
 
-    const limitExceeded =
-      (maxPerUser > 0 && userCount >= maxPerUser) ||
-      (maxPerRobot > 0 && robotCount >= maxPerRobot) ||
-      (maxServer > 0 && this.activeCountServer >= maxServer);
+    // Loop: dopo un risveglio dalla coda il limite viene rivalutato, perché
+    // nel frattempo un altro trasferimento può aver occupato lo slot liberato.
+    for (;;) {
+      if (signal?.aborted) {
+        throw new MolirisAppError(
+          ErrorCode.TRANSFER_INTERRUPTED,
+          "Trasferimento annullato mentre era in coda."
+        );
+      }
 
-    if (limitExceeded) {
-      if (this.config.transferConcurrencyQueuePolicy === "coda") {
-        // Accoda la richiesta
-        await new Promise<void>((resolve) => {
-          this.waitQueue.push(resolve);
-        });
-      } else {
+      this.reconcileActiveCounts();
+      const userCount = this.activeCountByUser.get(userId) || 0;
+      const robotCount = this.activeCountByRobot.get(robotId) || 0;
+
+      const limitExceeded =
+        (maxPerUser > 0 && userCount >= maxPerUser) ||
+        (maxPerRobot > 0 && robotCount >= maxPerRobot) ||
+        (maxServer > 0 && this.activeCountServer >= maxServer);
+
+      if (!limitExceeded) {
+        this.activeCountByUser.set(userId, userCount + 1);
+        this.activeCountByRobot.set(robotId, robotCount + 1);
+        this.activeCountServer++;
+        return;
+      }
+
+      if (this.config.transferConcurrencyQueuePolicy !== "coda") {
         // Politica predefinita prudente: rifiuta con messaggio chiaro (RF-TRF-012, CA-TRF-007)
         throw new MolirisAppError(
           ErrorCode.TRANSFER_INTERRUPTED,
@@ -1524,11 +1922,48 @@ export class TransferService {
           "Limite di trasferimenti simultanei raggiunto. Riprovare al termine delle operazioni in corso."
         );
       }
-    }
 
-    this.activeCountByUser.set(userId, userCount + 1);
-    this.activeCountByRobot.set(robotId, robotCount + 1);
-    this.activeCountServer++;
+      // Il record del chiamante è già QUEUED e resta visibile mentre attende.
+      await new Promise<void>((resolve, reject) => {
+        const queue = this.waitQueue;
+        let settled = false;
+        const removeFromQueue = () => {
+          const index = queue.indexOf(entry);
+          if (index >= 0) queue.splice(index, 1);
+        };
+        const cleanup = () => {
+          settled = true;
+          removeFromQueue();
+          signal?.removeEventListener("abort", onAbort);
+        };
+        const onAbort = () => {
+          if (settled) return;
+          cleanup();
+          reject(
+            new MolirisAppError(
+              ErrorCode.TRANSFER_INTERRUPTED,
+              "Trasferimento annullato mentre era in coda."
+            )
+          );
+        };
+        const entry = {
+          signal,
+          onAbort,
+          resolve: () => {
+            if (settled) return;
+            cleanup();
+            resolve();
+          },
+          reject: (err: Error) => {
+            if (settled) return;
+            cleanup();
+            reject(err);
+          },
+        };
+        if (signal) signal.addEventListener("abort", onAbort, { once: true });
+        queue.push(entry);
+      });
+    }
   }
 
   private releaseTransferSlot(userId: string, robotId: string): void {
@@ -1541,9 +1976,12 @@ export class TransferService {
 
     this.reconcileActiveCounts();
 
-    if (this.waitQueue.length > 0) {
-      const next = this.waitQueue.shift();
-      if (next) next();
+    // Risveglia il primo waiter ancora valido; i waiter annullati si sono già rimossi.
+    while (this.waitQueue.length > 0) {
+      const next = this.waitQueue.shift()!;
+      if (next.signal?.aborted) continue;
+      next.resolve();
+      break;
     }
   }
 
@@ -1552,6 +1990,11 @@ export class TransferService {
   // =========================================================================
 
   private async handleTransferFailure(record: TransferRecord, err: any): Promise<void> {
+    // Idempotenza: un errore può essere osservato sia dal callback della pipeline
+    // sia dall'evento close. Non sovrascrivere uno stato terminale già consolidato.
+    if (record.completedAt && TransferService.TERMINAL_STATUSES.has(record.status)) {
+      return;
+    }
     if (record.status !== TransferStatus.INTEGRITY_FAILED && record.status !== TransferStatus.CANCELLED) {
       record.status = TransferStatus.FAILED;
     }
@@ -1576,7 +2019,7 @@ export class TransferService {
       try { await cleanup(); } catch {}
     }
 
-    this.logger.error("Fallimento trasferimento file", err.message || safeUserMsg, {
+    this.logger.error("Fallimento trasferimento file", err?.message || safeUserMsg, {
       transferId: record.transferId,
       direction: record.direction,
       robotId: record.robotId,
@@ -2343,6 +2786,69 @@ export class TransferService {
   }
 
   /**
+   * Registra un trasferimento di staging (browser → server) per un file del
+   * caricamento massivo. Serve a rendere visibile nella pagina Gestione
+   * Trasferimenti anche la fase di ricezione dal browser, che per file grandi
+   * è la più lunga (Problema 1).
+   */
+  public async registerBulkStagingTransfer(
+    context: AuthorizedContext,
+    filename: string,
+    totalBytes: number | null,
+    robotId?: string
+  ): Promise<TransferRecord> {
+    const safeFilename = this.sanitizeFilename(filename);
+    const record = this.buildTransferRecord({
+      userId: context.userId,
+      userSessionId: context.sessionId,
+      robotId: robotId || TransferService.GENERAL_SERVER_ID,
+      direction: TransferDirection.CLIENT_TO_SERVER,
+      filename: safeFilename,
+      sourcePath: safeFilename,
+      destinationPath: safeFilename,
+      totalBytes,
+    });
+    record.status = TransferStatus.IN_PROGRESS;
+    this.transfers.set(record.transferId, record);
+    await this.recordAuditStart(record);
+    return record;
+  }
+
+  public updateBulkStagingTransfer(
+    record: TransferRecord,
+    transferredBytes: number,
+    speedBytesPerSec: number | null,
+    etaSeconds: number | null
+  ): void {
+    record.transferredBytes = transferredBytes;
+    record.speedBytesPerSec = speedBytesPerSec;
+    record.etaSeconds = etaSeconds;
+    record.lastProgressUpdateAt = Date.now();
+    if (record.userSessionId) this.sessionManager.touchSession(record.userSessionId);
+  }
+
+  public async completeBulkStagingTransfer(
+    record: TransferRecord,
+    checksum: string | null
+  ): Promise<void> {
+    if (this.isTerminalRecord(record)) return;
+    record.status = TransferStatus.COMPLETED;
+    record.completedAt = new Date();
+    record.computedChecksum = checksum || undefined;
+    record.integrityLabel = "completato — file ricevuto dal browser e checksum verificato";
+    record.integrityVerification = {
+      verified: true,
+      mode: "stream",
+      label: record.integrityLabel,
+    };
+    await this.recordAuditSuccess(record);
+  }
+
+  public async failBulkStagingTransfer(record: TransferRecord, err: any): Promise<void> {
+    await this.handleTransferFailure(record, err);
+  }
+
+  /**
    * Pre-check preventivo dei conflitti di sovrascrittura per upload massivo multi-target (RF-TRF-009, RF-TRF-011).
    * Verifica le autorizzazioni, il jail dell'operatore e l'esistenza preventiva dei file sulle destinazioni.
    */
@@ -2594,7 +3100,7 @@ export class TransferService {
                 reject(err);
               });
               writeStream.on("finish", () => resolve());
-              readStream.pipe(writeStream);
+              pipeline(readStream, writeStream, (err) => { if (err) reject(err); });
             }).catch(async (err) => {
               record.status = TransferStatus.FAILED;
               record.error = err.message;
@@ -2614,6 +3120,20 @@ export class TransferService {
               throw new MolirisAppError(
                 ErrorCode.INTEGRITY_CHECK_FAILED,
                 "Checksum non corrispondente durante il salvataggio sul server."
+              );
+            }
+
+            // Verifica dimensione su disco prima della promozione (CA-TRF-004)
+            const tempStat = await fs.promises.stat(tempPartPath);
+            if (tempStat.size !== writtenBytes) {
+              record.status = TransferStatus.INTEGRITY_FAILED;
+              record.error = "Dimensione del file temporaneo non corrispondente ai byte ricevuti.";
+              record.completedAt = new Date();
+              await this.recordAuditFailure(record, new Error(record.error));
+              try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
+              throw new MolirisAppError(
+                ErrorCode.INTEGRITY_CHECK_FAILED,
+                `Dimensione su disco (${tempStat.size}) diversa dai byte ricevuti (${writtenBytes})`
               );
             }
 
@@ -2758,7 +3278,7 @@ export class TransferService {
                 reject(err);
               });
               remoteWriteStream.on("finish", () => resolve());
-              readStream.pipe(remoteWriteStream);
+              pipeline(readStream, remoteWriteStream, (err) => { if (err) reject(err); });
             }).catch(async (err) => {
               if (record) {
                 record.status = TransferStatus.FAILED;
@@ -2789,13 +3309,39 @@ export class TransferService {
               );
             }
 
-            // Sostituzione atomica sul robot via SFTP rename
-            await new Promise<void>((resolve, reject) => {
-              sftp.rename(tempRemotePartPath, finalRemotePath, (err) => {
-                if (err) return reject(err);
-                resolve();
+            // Verifica dimensione remota prima della promozione (CA-TRF-004)
+            const remoteTempStat = await new Promise<any>((resolve, reject) => {
+              sftp.stat(tempRemotePartPath, (err: any, st: any) => {
+                if (err) return reject(this.remoteFsService.mapSftpError(err, tempRemotePartPath, robot.id));
+                resolve(st);
               });
             });
+            if (remoteTempStat.size !== writtenBytes) {
+              if (record) {
+                record.status = TransferStatus.INTEGRITY_FAILED;
+                record.error = "Dimensione del file sul robot non corrispondente ai byte inviati.";
+                record.completedAt = new Date();
+                await this.recordAuditFailure(record, new Error(record.error));
+              }
+              try {
+                await new Promise<void>((res) => sftp.unlink(tempRemotePartPath, () => res()));
+              } catch {}
+              throw new MolirisAppError(
+                ErrorCode.INTEGRITY_CHECK_FAILED,
+                `Dimensione sul robot (${remoteTempStat.size}) diversa dai byte inviati (${writtenBytes})`
+              );
+            }
+
+            // Sostituzione atomica e sicura sul robot: se la destinazione esiste,
+            // usa posix-rename quando disponibile e non distrugge il file valido
+            // in caso di errore (CA-TRF-005).
+            await this.promoteRemoteTempFile(
+              sftp,
+              tempRemotePartPath,
+              finalRemotePath,
+              overwrite === true,
+              robot.id
+            );
 
             if (record) {
               record.status = TransferStatus.COMPLETED;
@@ -2849,7 +3395,9 @@ export class TransferService {
     }
 
     return {
-      success: failed === 0,
+      // Un file saltato (conflitto sopraggiunto) non è un successo: il client
+      // non deve presentare l'operazione come completata (CA-TRF-003/005).
+      success: failed === 0 && skipped === 0,
       totalFiles: stagedFiles.length,
       results,
       summary: {
@@ -2996,65 +3544,137 @@ export class TransferService {
       }
 
       let readHandle: any = null;
-      let writeHandle: any = null;
-      let targetRecord: TransferRecord | null = null;
+      let targetManagedConn: ManagedRobotConnection | null = null;
+      let targetSftp: any = null;
+      let writeStream: any = null;
+      let tempDestPath = "";
       const transferId = crypto.randomUUID();
+      const destLockKey = `robot:${targetRobot.id}:${finalDestPath}`;
 
+      const targetRecord = this.buildTransferRecord({
+        transferId,
+        userId: context.userId,
+        userSessionId: context.sessionId,
+        robotId: targetRobot.id,
+        direction: TransferDirection.ROBOT_TO_ROBOT,
+        filename,
+        sourcePath: `robot:${sourceRobot.id}:${sourceRemotePath}`,
+        destinationPath: `robot:${targetRobot.id}:${finalDestPath}`,
+        totalBytes: sourceSize,
+      });
+      this.transfers.set(transferId, targetRecord);
+
+      let lockAcquired = false;
       try {
+        if (
+          sourceRobot.id === targetRobot.id &&
+          path.posix.normalize(sourceRemotePath) === path.posix.normalize(finalDestPath)
+        ) {
+          throw new MolirisAppError(
+            ErrorCode.REMOTE_FS_ERROR,
+            "Sorgente e destinazione coincidono: operazione rifiutata per evitare la distruzione del file.",
+            "Sorgente e destinazione coincidono: scegliere un percorso di destinazione diverso."
+          );
+        }
+
         this.assertAuthorized(context, targetRobot, [AppPermission.FS_REMOTE_UPLOAD]);
+        this.acquireDestinationLock(destLockKey);
+        lockAcquired = true;
+        targetRecord.status = TransferStatus.IN_PROGRESS;
+
+        // Connessione dedicata al robot destinatario, riusata per scrittura,
+        // verifica di dimensione e promozione atomica (CA-TRF-005).
+        targetManagedConn = await this.connectionManager.acquireConnection(context.username, targetRobot);
+        targetSftp = await targetManagedConn.getSftpClient();
+
+        // Validazione del percorso finale (jail operatore, traversal, symlink).
+        const resolvedDestPath = await this.remoteFsService.resolveAndValidatePath(
+          finalDestPath,
+          context,
+          targetRobot,
+          targetSftp
+        );
 
         // Verifica esistenza su target se overwrite non abilitato
         if (!overwrite) {
-          const targetExists = await this.remoteFsService.getRemoteFileStats(context, targetRobot, finalDestPath).then(() => true).catch(() => false);
+          const targetExists = await new Promise<boolean>((resolve) => {
+            targetSftp.stat(resolvedDestPath, (err: any) => resolve(!err));
+          });
           if (targetExists) {
-            results.push({
-              robotId: targetRobotId,
-              destinationPath: finalDestPath,
-              success: false,
-              error: "File già esistente sulla destinazione. Sovrascrittura non autorizzata.",
-            });
-            allTargetsSucceeded = false;
-            continue;
+            throw new MolirisAppError(
+              ErrorCode.REMOTE_FS_ERROR,
+              `File già esistente sulla destinazione: ${resolvedDestPath}`,
+              "File già esistente sulla destinazione. Sovrascrittura non autorizzata."
+            );
           }
         }
 
-        readHandle = await this.remoteFsService.openRemoteReadStream(context, sourceRobot, sourceRemotePath);
-        writeHandle = await this.remoteFsService.openRemoteWriteStream(context, targetRobot, finalDestPath, { overwrite });
+        tempDestPath = path.posix.join(
+          path.posix.dirname(resolvedDestPath),
+          `.tmp_moliris_${transferId}.tmp`
+        );
+        targetRecord.destinationPath = `robot:${targetRobot.id}:${resolvedDestPath}`;
+        targetRecord.tempDestinationPath = tempDestPath;
 
-        targetRecord = {
-          transferId,
-          userId: context.userId,
-          userSessionId: context.sessionId,
-          robotId: targetRobot.id,
-          direction: TransferDirection.ROBOT_TO_ROBOT,
-          filename,
-          sourcePath: `robot:${sourceRobot.id}:${sourceRemotePath}`,
-          destinationPath: `robot:${targetRobot.id}:${finalDestPath}`,
-          tempDestinationPath: (writeHandle as any).tempPath || finalDestPath,
-          totalBytes: sourceSize,
-          transferredBytes: 0,
-          speedBytesPerSec: null,
-          etaSeconds: null,
-          status: TransferStatus.IN_PROGRESS,
-          error: null,
-          checksumAlgorithm: this.checksumAlgorithm.name,
-          startedAt: new Date(),
-          lastProgressUpdateAt: Date.now(),
-          lastBytesAtUpdate: 0,
-          abortController: new AbortController(),
-          cleanupHandlers: [],
-        };
-        this.transfers.set(transferId, targetRecord);
+        readHandle = await this.remoteFsService.openRemoteReadStream(context, sourceRobot, sourceRemotePath);
+        writeStream = new PipelinedSftpWriteStream(targetSftp, tempDestPath, {
+          flags: "w",
+          concurrency: 32,
+          chunkSize: 32768,
+          highWaterMark: this.getChunkSize(),
+        });
+
+        targetRecord.cleanupHandlers.push(async () => {
+          try { readHandle?.stream?.destroy(); } catch {}
+          try { writeStream?.destroy(); } catch {}
+          if (targetSftp && tempDestPath) {
+            try {
+              await new Promise<void>((resolve) => targetSftp.unlink(tempDestPath, () => resolve()));
+            } catch {}
+          }
+        });
+
         await this.recordAuditStart(targetRecord);
 
         // Stream con tracking e checksum
-        await this.streamWithTrackingAndChecksum(readHandle.stream, writeHandle.stream, targetRecord);
+        await this.streamWithTrackingAndChecksum(readHandle.stream, writeStream, targetRecord);
 
         await readHandle.cleanup();
         readHandle = null;
-        await writeHandle.cleanup();
-        writeHandle = null;
 
+        // Verifica dimensione sul robot destinatario prima della promozione.
+        const remoteStat = await new Promise<any>((resolve, reject) => {
+          targetSftp.stat(tempDestPath, (err: any, st: any) => {
+            if (err) return reject(this.remoteFsService.mapSftpError(err, tempDestPath, targetRobot.id));
+            resolve(st);
+          });
+        });
+        if (remoteStat.size !== targetRecord.transferredBytes) {
+          targetRecord.status = TransferStatus.INTEGRITY_FAILED;
+          throw new MolirisAppError(
+            ErrorCode.INTEGRITY_CHECK_FAILED,
+            `Dimensione sul robot destinatario (${remoteStat.size}) diversa dai byte trasferiti (${targetRecord.transferredBytes})`,
+            "Verifica di integrità del file trasferito fallita."
+          );
+        }
+
+        // Promozione atomica: la destinazione finale non viene mai troncata
+        // prima che il file temporaneo sia completo e verificato.
+        await this.promoteRemoteTempFile(
+          targetSftp,
+          tempDestPath,
+          resolvedDestPath,
+          overwrite,
+          targetRobot.id
+        );
+        writeStream = null;
+
+        targetRecord.integrityLabel = "completato — dimensione verificata sul robot destinatario";
+        targetRecord.integrityVerification = {
+          verified: true,
+          mode: "stream",
+          label: targetRecord.integrityLabel,
+        };
         targetRecord.status = TransferStatus.COMPLETED;
         targetRecord.completedAt = new Date();
         await this.recordAuditSuccess(targetRecord);
@@ -3066,37 +3686,28 @@ export class TransferService {
           success: true,
         });
       } catch (err: any) {
-        if (targetRecord) {
-          targetRecord.status = TransferStatus.FAILED;
-          targetRecord.error = err?.message || String(err);
-          await this.auditRepository.record({
-            userId: targetRecord.userId,
-            operation: AuditOperation.TRANSFER_FAILURE,
-            robotId: targetRecord.robotId,
-            outcome: "FAILURE",
-            timestamp: new Date(),
-            details: {
-              transferId: targetRecord.transferId,
-              direction: targetRecord.direction,
-              filename: targetRecord.filename,
-              error: targetRecord.error,
-            },
-          });
-        }
+        await this.handleTransferFailure(targetRecord, err);
         if (readHandle) {
           try { await readHandle.cleanup(); } catch {}
+          readHandle = null;
         }
-        if (writeHandle) {
-          try { await writeHandle.cleanup(); } catch {}
+        if (writeStream) {
+          try { writeStream.destroy(); } catch {}
+          writeStream = null;
         }
         results.push({
           robotId: targetRobotId,
           transferId,
           destinationPath: finalDestPath,
           success: false,
-          error: err?.userMessage || err?.message || "Errore durante il trasferimento.",
+          error: err?.userMessage || targetRecord.error || "Errore durante il trasferimento.",
         });
         allTargetsSucceeded = false;
+      } finally {
+        if (targetManagedConn) {
+          try { await targetManagedConn.close(); } catch {}
+        }
+        if (lockAcquired) this.releaseDestinationLock(destLockKey);
       }
     }
 

@@ -6,6 +6,7 @@ import { type ServerFilesystemService } from "../storage/server-fs.ts";
 import { type RobotRepository } from "../storage/robot-repository.ts";
 import { type AuthMiddleware } from "./auth/auth-middleware.ts";
 import { type SessionManager } from "./auth/session-manager.ts";
+import { type TransferService } from "./transfer/transfer-service.ts";
 import { AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "./auth/permissions.ts";
 import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../errors/app-errors.ts";
 
@@ -15,7 +16,8 @@ export function registerServerFsRoutes(
   robotRepository: RobotRepository,
   sessionManager: SessionManager,
   authMiddleware: AuthMiddleware,
-  roleMapping: RolePermissionMapping = DEFAULT_ROLE_PERMISSIONS
+  roleMapping: RolePermissionMapping = DEFAULT_ROLE_PERMISSIONS,
+  transferService?: TransferService
 ): void {
   /**
    * Navigazione file sul filesystem server del robot (RF-SRVFS-002, RF-SRVFS-005)
@@ -289,6 +291,18 @@ export function registerServerFsRoutes(
       );
 
       try {
+        if (transferService && query.preflight === "1") {
+          const info = await transferService.inspectServerDownload(context, robot, filePath);
+          return reply.status(200).send({ ok: true, ...info });
+        }
+        if (transferService) {
+          const tracked = await transferService.openDownloadServerToClient(context, robot, filePath);
+          reply.header("content-disposition", `attachment; filename="${encodeURIComponent(tracked.filename)}"`);
+          reply.header("content-type", "application/octet-stream");
+          reply.header("content-length", tracked.totalBytes);
+          reply.header("x-transfer-id", tracked.transferDto.transferId);
+          return reply.send(tracked.stream);
+        }
         const stream = await serverFsService.openFileReadStream(context, robot, filePath);
         const fileName = path.basename(filePath);
         reply.header("content-disposition", `attachment; filename="${fileName}"`);
@@ -824,6 +838,18 @@ export function registerServerFsRoutes(
       );
 
       try {
+        if (transferService && query.preflight === "1") {
+          const info = await transferService.inspectGeneralDownload(context, filePath);
+          return reply.status(200).send({ ok: true, ...info });
+        }
+        if (transferService) {
+          const tracked = await transferService.openGeneralDownload(context, filePath);
+          reply.header("content-disposition", `attachment; filename="${encodeURIComponent(tracked.filename)}"`);
+          reply.header("content-type", "application/octet-stream");
+          reply.header("content-length", tracked.totalBytes);
+          reply.header("x-transfer-id", tracked.transferDto.transferId);
+          return reply.send(tracked.stream);
+        }
         const stream = await serverFsService.openGeneralFileReadStream(context, filePath);
         const fileName = path.basename(filePath);
         reply.header("content-disposition", `attachment; filename="${fileName}"`);
@@ -891,6 +917,23 @@ export function registerServerFsRoutes(
             filename = data.filename;
           }
           const filePath = targetSubPath ? `${targetSubPath.replace(/^[/\\]+/, "")}/${filename}` : filename;
+          if (transferService) {
+            const dto = await transferService.executeGeneralUpload(
+              context,
+              filePath,
+              data.file,
+              { overwrite },
+              null
+            );
+            return reply.status(200).send({
+              success: true,
+              message: `File '${filename}' caricato con successo nell'archivio generale.`,
+              filename,
+              path: filePath,
+              transferId: dto.transferId,
+              status: dto.status,
+            });
+          }
           const writeStream = await serverFsService.openGeneralFileWriteStream(context, filePath, { overwrite });
           await new Promise((resolve, reject) => {
             data.file.pipe(writeStream);
@@ -912,6 +955,26 @@ export function registerServerFsRoutes(
             });
           }
           const filePath = targetSubPath ? `${targetSubPath.replace(/^[/\\]+/, "")}/${filename}` : filename;
+          const contentLength = req.headers["content-length"]
+            ? Number.parseInt(String(req.headers["content-length"]), 10)
+            : null;
+          if (transferService) {
+            const dto = await transferService.executeGeneralUpload(
+              context,
+              filePath,
+              req.raw,
+              { overwrite },
+              Number.isFinite(contentLength) ? contentLength : null
+            );
+            return reply.status(200).send({
+              success: true,
+              message: `File '${filename}' caricato con successo nell'archivio generale.`,
+              filename,
+              path: filePath,
+              transferId: dto.transferId,
+              status: dto.status,
+            });
+          }
           const writeStream = await serverFsService.openGeneralFileWriteStream(context, filePath, { overwrite });
           const stream = req.raw;
           await new Promise((resolve, reject) => {

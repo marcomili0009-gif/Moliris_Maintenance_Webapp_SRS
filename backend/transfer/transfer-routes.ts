@@ -8,14 +8,14 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
-import { type Readable } from "stream";
+import { pipeline, type Readable } from "stream";
 import { type TransferService } from "./transfer-service.ts";
 import { type RobotRepository } from "../../storage/robot-repository.ts";
 import { type SessionManager } from "../auth/session-manager.ts";
 import { type AuthMiddleware } from "../auth/auth-middleware.ts";
 import { AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "../auth/permissions.ts";
 import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
-import { type StartServerRobotTransferRequest } from "./transfer-models.ts";
+import { type StartServerRobotTransferRequest, isActiveTransferStatus } from "./transfer-models.ts";
 import { type BulkPreCheckRequest, type BulkTarget } from "./bulk-transfer-models.ts";
 
 export function registerTransferRoutes(
@@ -302,6 +302,10 @@ export function registerTransferRoutes(
       );
 
       try {
+        if (query.preflight === "1") {
+          const info = await transferService.inspectServerDownload(context, robot, relativePath);
+          return reply.status(200).send({ ok: true, ...info });
+        }
         const { stream, filename, totalBytes, transferDto } =
           await transferService.openDownloadServerToClient(context, robot, relativePath);
 
@@ -411,6 +415,10 @@ export function registerTransferRoutes(
       );
 
       try {
+        if (query.preflight === "1") {
+          const info = await transferService.inspectRobotDownload(context, robot, remoteFilePath);
+          return reply.status(200).send({ ok: true, ...info });
+        }
         const { stream, filename, totalBytes, transferDto } =
           await transferService.openDownloadRobotToClient(context, robot, remoteFilePath);
 
@@ -472,7 +480,7 @@ export function registerTransferRoutes(
       );
 
       const list = transferService.listTransfers(context);
-      const activeCount = list.filter((t) => t.status === "IN_PROGRESS").length;
+      const activeCount = list.filter((t) => isActiveTransferStatus(t.status)).length;
 
       if ((req.query as any)?.envelope === "true" || (req.query as any)?.summary === "true") {
         return reply.status(200).send({
@@ -505,7 +513,7 @@ export function registerTransferRoutes(
       );
 
       const allList = transferService.listTransfers(context);
-      const activeList = allList.filter((t) => t.status === "IN_PROGRESS");
+      const activeList = allList.filter((t) => isActiveTransferStatus(t.status));
 
       return reply.status(200).send({
         transfers: activeList,
@@ -532,7 +540,7 @@ export function registerTransferRoutes(
       );
 
       const list = transferService.listTransfers(context);
-      const activeCount = list.filter((t) => t.status === "IN_PROGRESS").length;
+      const activeCount = list.filter((t) => isActiveTransferStatus(t.status)).length;
       return reply.status(200).send({
         transfers: list,
         activeCount,
@@ -572,7 +580,7 @@ export function registerTransferRoutes(
         const list = transferService.listTransfers(context);
         const payload = {
           transfers: list,
-          activeCount: list.filter((t) => t.status === "IN_PROGRESS").length,
+          activeCount: list.filter((t) => isActiveTransferStatus(t.status)).length,
           totalCount: list.length,
           timestamp: new Date().toISOString(),
         };
@@ -771,6 +779,8 @@ export function registerTransferRoutes(
 
       let targets: BulkTarget[] = [];
       let overwrite = false;
+      let declaredFileSizes: number[] = [];
+      const stagingRecords: any[] = [];
       const stagedFiles: Array<{
         filename: string;
         stagingPath: string;
@@ -800,36 +810,77 @@ export function registerTransferRoutes(
             const stagingPath = path.join(stagingDir, `staging_${uploadSessionId}_${fileIndex}.part`);
             stagingPaths.push(stagingPath);
 
+            const declaredSize = declaredFileSizes[fileIndex - 1];
+            const stagingRecord = await transferService.registerBulkStagingTransfer(
+              context,
+              safeFilename,
+              Number.isFinite(declaredSize) ? declaredSize : null,
+              targets[0]?.robotId
+            );
+            stagingRecord.tempDestinationPath = stagingPath;
+            stagingRecords.push(stagingRecord);
+
             const hash = crypto.createHash("sha256");
             let totalBytes = 0;
+            let speedWindowBytes = 0;
+            let speedWindowStartedAt = Date.now();
             const writeStream = fs.createWriteStream(stagingPath, { mode: 0o600 });
 
-            await new Promise<void>((resolve, reject) => {
-              part.file.on("data", (chunk: Buffer | string) => {
-                const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-                hash.update(buf);
-                totalBytes += buf.length;
+            try {
+              await new Promise<void>((resolve, reject) => {
+                part.file.on("data", (chunk: Buffer | string) => {
+                  const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                  hash.update(buf);
+                  totalBytes += buf.length;
+
+                  // Avanzamento in tempo reale della ricezione browser → server.
+                  const now = Date.now();
+                  const elapsed = now - speedWindowStartedAt;
+                  if (elapsed >= 200) {
+                    const speed = Math.round(((totalBytes - speedWindowBytes) / elapsed) * 1000);
+                    const total = stagingRecord.totalBytes;
+                    const eta = total && speed > 0
+                      ? Math.max(0, Math.ceil((total - totalBytes) / speed))
+                      : null;
+                    transferService.updateBulkStagingTransfer(stagingRecord, totalBytes, speed, eta);
+                    speedWindowBytes = totalBytes;
+                    speedWindowStartedAt = now;
+                  }
+                });
+                pipeline(part.file, writeStream, (err) => {
+                  if (err) reject(err);
+                  else resolve();
+                });
               });
-              part.file.on("error", reject);
-              writeStream.on("error", reject);
-              writeStream.on("finish", () => resolve());
-              part.file.pipe(writeStream);
-            });
+            } catch (streamErr: any) {
+              await transferService.failBulkStagingTransfer(stagingRecord, streamErr);
+              throw streamErr;
+            }
 
             if (part.file.truncated) {
+              await transferService.failBulkStagingTransfer(
+                stagingRecord,
+                new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Un file supera la dimensione massima consentita.")
+              );
               throw new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Un file supera la dimensione massima consentita.");
             }
             totalStagedBytes += totalBytes;
             const maxUploadBytes = (req.server as any).appConfig.maxFileUploadBytes as number;
             if (totalStagedBytes > maxUploadBytes) {
+              await transferService.failBulkStagingTransfer(
+                stagingRecord,
+                new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "La dimensione totale dei file supera il limite consentito.")
+              );
               throw new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "La dimensione totale dei file supera il limite consentito.");
             }
 
+            const sha256 = hash.digest("hex");
+            await transferService.completeBulkStagingTransfer(stagingRecord, sha256);
             stagedFiles.push({
               filename: safeFilename,
               stagingPath,
               sizeBytes: totalBytes,
-              sha256: hash.digest("hex"),
+              sha256,
             });
           } else if (part.type === "field") {
             if (part.fieldname === "targets") {
@@ -840,6 +891,15 @@ export function registerTransferRoutes(
               }
             } else if (part.fieldname === "overwrite") {
               overwrite = part.value === "true" || part.value === true;
+            } else if (part.fieldname === "fileSizes") {
+              try {
+                const parsed = typeof part.value === "string" ? JSON.parse(part.value) : part.value;
+                if (Array.isArray(parsed)) {
+                  declaredFileSizes = parsed.map((n: any) => Number(n)).filter((n: number) => Number.isFinite(n) && n >= 0);
+                }
+              } catch {
+                // Metadato opzionale: se malformato la percentuale resta non disponibile.
+              }
             }
           }
         }
@@ -881,6 +941,11 @@ export function registerTransferRoutes(
 
         return reply.status(200).send(bulkResponse);
       } catch (err: any) {
+        for (const rec of stagingRecords) {
+          if (rec.status === "IN_PROGRESS" || rec.status === "QUEUED") {
+            await transferService.failBulkStagingTransfer(rec, err);
+          }
+        }
         return handleRouteError(reply, err);
       } finally {
         for (const s of stagingPaths) {

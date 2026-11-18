@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { apiClient } from "../services/api-client.ts";
 import { ErrorPresenter } from "../services/error-presenter.ts";
-import { triggerDownload } from "../utils/download.ts";
+import { triggerStreamingDownload } from "../utils/download.ts";
 import type { DirectoryListing, FsEntry } from "../types/filesystem.ts";
 import type { FormattedError } from "../types/error.ts";
 
@@ -56,7 +56,9 @@ export function useFilesystem() {
 
   // Remote SFTP state
   const [remoteRobotId, setRemoteRobotIdState] = useState<string>("");
-  const [remotePath, setRemotePath] = useState<string>("/");
+  // Vuoto = directory iniziale dell'account SFTP (home), risolta dal backend.
+  // Evita di operare sulla radice "/" dove l'utente robot non ha permessi di scrittura.
+  const [remotePath, setRemotePath] = useState<string>("");
   const [remoteListing, setRemoteListing] = useState<DirectoryListing | null>(null);
   const [remoteLoading, setRemoteLoading] = useState<boolean>(false);
   const [remoteError, setRemoteError] = useState<FormattedError | null>(null);
@@ -78,7 +80,7 @@ export function useFilesystem() {
     setRemoteRobotIdState(id);
     setRemoteListing(null);
     setRemoteError(null);
-    setRemotePath("/");
+    setRemotePath("");
   }, []);
 
   // Load Server Directory
@@ -107,7 +109,7 @@ export function useFilesystem() {
   }, []);
 
   // Load Remote SFTP Directory
-  const loadRemoteDirectory = useCallback(async (robotId: string, path = "/") => {
+  const loadRemoteDirectory = useCallback(async (robotId: string, path = "") => {
     if (!robotId) return;
     setRemoteLoading(true);
     setRemoteError(null);
@@ -260,15 +262,17 @@ export function useFilesystem() {
   const downloadFromGeneral = async (fileName: string) => {
     const filePath = generalPath.endsWith("/") ? `${generalPath}${fileName}` : `${generalPath}/${fileName}`;
     try {
-      const res = await apiClient.get(
-        `/api/fs/general/download?path=${encodeURIComponent(filePath)}`
-      );
-      if (res.ok) {
-        triggerDownload(await res.blob(), fileName);
-      } else {
-        const errData = await res.json().catch(() => ({}));
+      const url = `/api/fs/general/download?path=${encodeURIComponent(filePath)}`;
+      apiClient.assertLocalBackendEndpoint(url);
+      const preflight = await apiClient.get(`${url}&preflight=1`);
+      if (!preflight.ok) {
+        const errData = await preflight.json().catch(() => ({}));
         setGeneralError(ErrorPresenter.formatError(errData));
+        return;
       }
+      // Download progressivo: il browser scrive direttamente su disco, senza
+      // caricare l'intero file in memoria (file fino a 3 GB).
+      triggerStreamingDownload(url);
     } catch (err) {
       setGeneralError(ErrorPresenter.formatError(err));
     }
@@ -388,15 +392,15 @@ export function useFilesystem() {
     if (!serverRobotId) return;
     const filePath = serverPath.endsWith("/") ? `${serverPath}${fileName}` : `${serverPath}/${fileName}`;
     try {
-      const res = await apiClient.get(
-        `/api/robots/${encodeURIComponent(serverRobotId)}/transfers/client-server/download?path=${encodeURIComponent(filePath)}`
-      );
-      if (res.ok) {
-        triggerDownload(await res.blob(), fileName);
-      } else {
-        const errData = await res.json().catch(() => ({}));
+      const url = `/api/robots/${encodeURIComponent(serverRobotId)}/transfers/client-server/download?path=${encodeURIComponent(filePath)}`;
+      apiClient.assertLocalBackendEndpoint(url);
+      const preflight = await apiClient.get(`${url}&preflight=1`);
+      if (!preflight.ok) {
+        const errData = await preflight.json().catch(() => ({}));
         setServerError(ErrorPresenter.formatError(errData));
+        return;
       }
+      triggerStreamingDownload(url);
     } catch (err) {
       setServerError(ErrorPresenter.formatError(err));
     }
@@ -405,17 +409,19 @@ export function useFilesystem() {
   // Download from Remote SFTP
   const downloadFromRemote = async (fileName: string) => {
     if (!remoteRobotId) return;
-    const filePath = remotePath.endsWith("/") ? `${remotePath}${fileName}` : `${remotePath}/${fileName}`;
+    const filePath = remotePath
+      ? (remotePath.endsWith("/") ? `${remotePath}${fileName}` : `${remotePath}/${fileName}`)
+      : fileName;
     try {
-      const res = await apiClient.get(
-        `/api/robots/${encodeURIComponent(remoteRobotId)}/transfers/client-robot/download?path=${encodeURIComponent(filePath)}`
-      );
-      if (res.ok) {
-        triggerDownload(await res.blob(), fileName);
-      } else {
-        const errData = await res.json().catch(() => ({}));
+      const url = `/api/robots/${encodeURIComponent(remoteRobotId)}/transfers/client-robot/download?path=${encodeURIComponent(filePath)}`;
+      apiClient.assertLocalBackendEndpoint(url);
+      const preflight = await apiClient.get(`${url}&preflight=1`);
+      if (!preflight.ok) {
+        const errData = await preflight.json().catch(() => ({}));
         setRemoteError(ErrorPresenter.formatError(errData));
+        return;
       }
+      triggerStreamingDownload(url);
     } catch (err) {
       setRemoteError(ErrorPresenter.formatError(err));
     }
@@ -538,7 +544,7 @@ export function useFilesystem() {
     const serverRelativePath = cleanServerPath ? `${cleanServerPath}/${fileName}` : fileName;
     const remotePath = targetRemotePath
       ? (targetRemotePath.endsWith("/") ? `${targetRemotePath}${fileName}` : targetRemotePath)
-      : `/${fileName}`;
+      : fileName;
     try {
       const res = await apiClient.post(
         `/api/robots/${encodeURIComponent(serverRobotId)}/transfers/server-robot`,
@@ -564,7 +570,9 @@ export function useFilesystem() {
     overwrite = false
   ): Promise<boolean> => {
     if (!remoteRobotId) return false;
-    const remotePathClean = remotePath.endsWith("/") ? `${remotePath}${fileName}` : `${remotePath}/${fileName}`;
+    const remotePathClean = remotePath
+      ? (remotePath.endsWith("/") ? `${remotePath}${fileName}` : `${remotePath}/${fileName}`)
+      : fileName;
     let serverRelativePath: string;
     if (targetServerPath) {
       const cleanTarget = targetServerPath === "/" ? "" : targetServerPath.replace(/^\//, "");

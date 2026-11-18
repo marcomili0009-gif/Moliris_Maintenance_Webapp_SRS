@@ -41,6 +41,20 @@ export const TransferStatus = {
 export type TransferStatus = (typeof TransferStatus)[keyof typeof TransferStatus];
 
 /**
+ * Stati "attivi" (non terminali) che devono essere sempre visibili nella pagina
+ * Gestione Trasferimenti: coda, trasferimento in corso e verifica di integrità.
+ */
+export const ACTIVE_TRANSFER_STATUSES: ReadonlySet<TransferStatus> = new Set<TransferStatus>([
+  TransferStatus.QUEUED,
+  TransferStatus.IN_PROGRESS,
+  TransferStatus.INTEGRITY_CHECKING,
+]);
+
+export function isActiveTransferStatus(status: TransferStatus): boolean {
+  return ACTIVE_TRANSFER_STATUSES.has(status);
+}
+
+/**
  * Interfaccia isolata per gli algoritmi di checksum (scelta aperta §11.5, RF-TRF-008)
  */
 export interface IChecksumAlgorithm {
