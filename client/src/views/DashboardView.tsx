@@ -342,7 +342,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {(() => {
         const isSessionWarning = Boolean(idleWarningInfo?.active || idleWarning);
         const isTerminalWarning = !isSessionWarning && Boolean(terminal.terminalIdleWarning);
-        const isWarningModalOpen = isSessionWarning || isTerminalWarning;
+        const isWarningModalOpen = !isSessionWarning && isTerminalWarning;
 
         const warningContext: "sessione" | "terminale" = isSessionWarning ? "sessione" : "terminale";
         const warningRemainingSeconds = isSessionWarning

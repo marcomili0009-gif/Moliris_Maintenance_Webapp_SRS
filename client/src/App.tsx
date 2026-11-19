@@ -4,7 +4,7 @@ import { LoginView } from "./views/LoginView.tsx";
 import { DashboardView } from "./views/DashboardView.tsx";
 import { LogsView } from "./views/LogsView.tsx";
 import { AppNavbar } from "./components/common/AppNavbar.tsx";
-import { InactivityWarningModal } from "./components/common/InactivityWarningModal.tsx";
+import { IdleWarningModal } from "./components/common/IdleWarningModal.tsx";
 import "./styles.css";
 
 export const App: React.FC = () => {
@@ -88,13 +88,14 @@ export const App: React.FC = () => {
           onActiveMainViewChange={(v) => setActiveMainView(v)}
         />
       )}
-      {isAuthenticated && (isIdleWarningOpen || Boolean(idleWarningInfo?.active)) && (
-        <InactivityWarningModal
-          isOpen={isIdleWarningOpen || Boolean(idleWarningInfo?.active)}
-          remainingMinutes={
-            idleRemainingMinutes ||
-            (idleWarningInfo ? Math.max(1, Math.ceil(idleWarningInfo.remainingSeconds / 60)) : 5)
+      {isAuthenticated && (isIdleWarningOpen || Boolean(idleWarningInfo?.active || idleWarning)) && (
+        <IdleWarningModal
+          isOpen={isIdleWarningOpen || Boolean(idleWarningInfo?.active || idleWarning)}
+          context="sessione"
+          remainingSeconds={
+            idleWarningInfo?.remainingSeconds ?? (idleRemainingMinutes * 60)
           }
+          message={idleWarningInfo?.message || idleWarning || undefined}
           onConfirm={confirmActivity || confirmSession}
           onLogout={logout}
         />
