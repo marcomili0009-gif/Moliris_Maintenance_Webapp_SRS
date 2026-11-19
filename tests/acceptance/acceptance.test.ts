@@ -117,8 +117,11 @@ const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) =>
         let handleCounter = 0;
 
         sftp.on("REALPATH", (reqid, p) => sftp.name(reqid, [{ filename: p || "/" }]));
-        sftp.on("STAT", (reqid, p) => {
+        const handleStatAcceptance = (reqid: number, p: string) => {
           const normP = path.posix.normalize(p || "");
+          if (normP === "/remote" || normP === "/" || normP === "." || normP === "/home" || normP === "/home/robots") {
+            return sftp.attrs(reqid, { mode: 0o040755, size: 4096, atime: 100, mtime: 100 } as any);
+          }
           if (writtenFiles.has(normP)) {
             const buf = writtenFiles.get(normP)!;
             return sftp.attrs(reqid, { mode: 0o100644, size: buf.length, atime: 100, mtime: 100 } as any);
@@ -127,18 +130,9 @@ const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) =>
             return sftp.status(reqid, 2 /* SSH_FX_NO_SUCH_FILE */);
           }
           sftp.attrs(reqid, { mode: 0o100644, size: 1024 * 1024, atime: 100, mtime: 100 } as any);
-        });
-        sftp.on("LSTAT", (reqid, p) => {
-          const normP = path.posix.normalize(p || "");
-          if (writtenFiles.has(normP)) {
-            const buf = writtenFiles.get(normP)!;
-            return sftp.attrs(reqid, { mode: 0o100644, size: buf.length, atime: 100, mtime: 100 } as any);
-          }
-          if (normP === "/remote/collaudo_dest.txt" || normP === "/remote/client_to_robot.bin" || normP.includes(".tmp_moliris_")) {
-            return sftp.status(reqid, 2 /* SSH_FX_NO_SUCH_FILE */);
-          }
-          sftp.attrs(reqid, { mode: 0o100644, size: 1024 * 1024, atime: 100, mtime: 100 } as any);
-        });
+        };
+        sftp.on("STAT", handleStatAcceptance);
+        sftp.on("LSTAT", handleStatAcceptance);
         sftp.on("OPEN", (reqid, filename, flags) => {
           const hId = `mock_h_${++handleCounter}`;
           const norm = path.posix.normalize(filename);

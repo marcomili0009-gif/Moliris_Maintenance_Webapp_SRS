@@ -121,6 +121,19 @@ class MockSftpClient {
   }
 
   public stat(p: string, callback: (err: any, stats?: any) => void) {
+    if (p === "." || p === "/" || p === "" || p === "/remote") {
+      return callback(null, {
+        size: 4096,
+        mode: 0o040755,
+        isFile: () => false,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        isSocket: () => false,
+        isCharacterDevice: () => false,
+        isBlockDevice: () => false,
+        isFIFO: () => false,
+      });
+    }
     const file = this.files.get(p);
     if (!file) {
       return callback(Object.assign(new Error("No such file"), { code: 2 }));
@@ -176,6 +189,47 @@ class MockSftpClient {
   public realpath(p: string, callback: (err: any, res?: string) => void) {
     callback(null, path.resolve(p));
   }
+
+  public openFiles = new Map<string, { path: string; chunks: Buffer[] }>();
+
+  public read(handle: any, buf: Buffer, offset: number, length: number, position: number, callback: (err: any, bytesRead: number, buffer: Buffer) => void) {
+    const entry = this.openFiles.get(handle?.toString());
+    const file = entry ? this.files.get(entry.path) : null;
+    if (!file) {
+      return callback(new Error("File not found"), 0, buf);
+    }
+    const available = Math.max(0, file.content.length - position);
+    const bytesToRead = Math.min(length, available);
+    if (bytesToRead > 0) {
+      file.content.copy(buf, offset, position, position + bytesToRead);
+    }
+    callback(null, bytesToRead, buf);
+  }
+
+  public write(handle: any, buf: Buffer, offset: number, length: number, position: number, callback: (err?: any) => void) {
+    const cb = typeof position === "function" ? position : callback;
+    const entry = this.openFiles.get(handle?.toString());
+    if (entry) {
+      entry.chunks.push(Buffer.from(buf.subarray(offset, offset + length)));
+    }
+    if (typeof cb === "function") cb(null);
+  }
+
+  public open(p: string, flags: string, ...rest: any[]) {
+    const cb = rest[rest.length - 1];
+    const handle = Buffer.from("mock_handle_" + Math.random());
+    this.openFiles.set(handle.toString(), { path: p, chunks: [] });
+    if (typeof cb === "function") cb(null, handle);
+  }
+
+  public close(handle: any, callback: (err?: any) => void) {
+    const entry = this.openFiles.get(handle?.toString());
+    if (entry) {
+      this.files.set(entry.path, { content: Buffer.concat(entry.chunks), mode: 0o100644 });
+      this.openFiles.delete(handle.toString());
+    }
+    if (typeof callback === "function") callback(null);
+  }
 }
 
 let mockSftp = new MockSftpClient();
@@ -217,6 +271,14 @@ console.log("  -> Test A1: Verifica discrepanza dimensione genera INTEGRITY_CHEC
 
   // Simuliamo un MockSftp che tronca i file scritti a metà (50 byte invece di 100)
   const corruptSftp = new MockSftpClient();
+  corruptSftp.close = (handle: any, callback: (err?: any) => void) => {
+    const entry = corruptSftp.openFiles.get(handle?.toString());
+    if (entry) {
+      corruptSftp.files.set(entry.path, { content: Buffer.alloc(50, 0x41), mode: 0o100644 });
+      corruptSftp.openFiles.delete(handle?.toString());
+    }
+    if (typeof callback === "function") callback(null);
+  };
   corruptSftp.createWriteStream = (targetPath: string) => {
     const stream = new Writable({
       write: (_chunk: any, _enc: any, cb: any) => cb(),
@@ -271,6 +333,17 @@ console.log("  -> Test A1: Modalità readback rileva corruzione digest e assegna
 
   // Simuliamo un mock SFTP che scrive la stessa dimensione ma con byte alterati
   const digestCorruptSftp = new MockSftpClient();
+  digestCorruptSftp.close = (handle: any, callback: (err?: any) => void) => {
+    const entry = digestCorruptSftp.openFiles.get(handle?.toString());
+    if (entry) {
+      digestCorruptSftp.files.set(entry.path, {
+        content: Buffer.from("DATI_ALTERATI_X_CORRUPT"), // stessa lunghezza (23 byte)
+        mode: 0o100644,
+      });
+      digestCorruptSftp.openFiles.delete(handle?.toString());
+    }
+    if (typeof callback === "function") callback(null);
+  };
   digestCorruptSftp.createWriteStream = (targetPath: string) => {
     const stream = new Writable({
       write: (_chunk: any, _enc: any, cb: any) => cb(),
@@ -381,6 +454,15 @@ console.log("  -> Test A3: Controllo anti-corsa TOCTOU");
   fs.writeFileSync(serverFilePath, Buffer.from("DATI_TOCTOU"));
 
   // Simuliamo che il file appaia su destinazione DURANTE il trasferimento
+  toctouSftp.close = (handle: any, callback: (err?: any) => void) => {
+    const entry = toctouSftp.openFiles.get(handle?.toString());
+    if (entry) {
+      toctouSftp.files.set(entry.path, { content: Buffer.from("DATI_TOCTOU"), mode: 0o100644 });
+      toctouSftp.files.set("toctou_dest.bin", { content: Buffer.from("FILE_CREATO_DA_ALTRO"), mode: 0o100644 });
+      toctouSftp.openFiles.delete(handle?.toString());
+    }
+    if (typeof callback === "function") callback(null);
+  };
   toctouSftp.createWriteStream = (targetPath: string) => {
     const stream = new Writable({
       write: (_c: any, _e: any, cb: any) => cb(),

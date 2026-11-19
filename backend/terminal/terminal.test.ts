@@ -1062,16 +1062,41 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   const resetMsg = sentMessages.find((m) => m.type === "terminal_idle_reset");
   assert.ok(resetMsg, "L'input dell'utente deve azzerare l'avviso con messaggio terminal_idle_reset");
 
+  // 4b. Test azione Conferma (CONFIRM) via messaggio WebSocket confirm_idle (Prompt #4)
+  const afterResetTime = termSession.lastActivityAt.getTime();
+  termService.checkIdleSessions(afterResetTime + 11 * 60 * 1000); // Entra di nuovo in warning
+  assert.strictEqual(sentMessages.filter((m) => m.type === "terminal_idle_warning").length > 0, true);
+
+  mockWs.emit("message", JSON.stringify({ type: "confirm_idle" }));
+  assert.strictEqual(sentMessages.filter((m) => m.type === "terminal_idle_reset").length >= 2, true);
+
+  // 4c. Test Sospensione inattività terminale durante trasferimenti attivi (Prompt #4)
+  let activeTransfersRunning = 1;
+  termService.setActiveTransferChecker(() => activeTransfersRunning);
+  const afterConfirmTime = termSession.lastActivityAt.getTime();
+  termService.checkIdleSessions(afterConfirmTime + 16 * 60 * 1000); // 16 minuti dopo: oltre il timeout
+  assert.strictEqual(termService.getActiveSessionCount(), 1, "Il terminale non deve chiudersi se ci sono trasferimenti attivi");
+
+  // Disattivazione trasferimenti: il timer riparte dal valore di default
+  activeTransfersRunning = 0;
+  const resumeTime = termSession.lastActivityAt.getTime();
+
   // 5. Scadenza effettiva dopo 15 minuti di inattività e rilascio risorse
-  const newBaseTime = termSession.lastActivityAt.getTime();
-  termService.checkIdleSessions(newBaseTime + 15 * 60 * 1000 + 1000);
+  termService.checkIdleSessions(resumeTime + 15 * 60 * 1000 + 1000);
 
   assert.strictEqual(termService.getActiveSessionCount(), 0, "Alla scadenza la sessione deve essere rimossa (0 sessioni attive)");
   const closedMsg = sentMessages.find((m) => m.type === "session_closed" && m.reason === "IDLE_TIMEOUT");
   assert.ok(closedMsg, "Alla scadenza deve essere notificato session_closed con reason IDLE_TIMEOUT");
 
+  // Verifica eventi di audit per il terminale
+  const termAuditEvents = await auditRepo.query();
+  assert.ok(termAuditEvents.some((l) => l.operation === AuditOperation.SESSION_IDLE_CONFIRM && l.details?.context === "terminale"), "Audit SESSION_IDLE_CONFIRM terminale");
+  assert.ok(termAuditEvents.some((l) => l.operation === AuditOperation.SESSION_IDLE_WARNING && l.details?.context === "terminale"), "Audit SESSION_IDLE_WARNING terminale");
+  assert.ok(termAuditEvents.some((l) => l.operation === AuditOperation.SESSION_TRANSFER_SUSPEND && l.details?.context === "terminale"), "Audit SESSION_TRANSFER_SUSPEND terminale");
+  assert.ok(termAuditEvents.some((l) => l.operation === AuditOperation.SESSION_IDLE_TIMEOUT && l.details?.context === "terminale"), "Audit SESSION_IDLE_TIMEOUT terminale");
+
   termService.dispose();
-  console.log("  PASS: RF-01 - Timeout inattività terminale 15m, avviso a 5m con countdown 5..1, reset e rilascio ordinato.");
+  console.log("  PASS: RF-01 - Timeout inattività terminale 15m, avviso a 5m con countdown 5..1, reset, confirm_idle, sospensione trasferimenti e rilascio ordinato.");
 }
 
 // =========================================================================

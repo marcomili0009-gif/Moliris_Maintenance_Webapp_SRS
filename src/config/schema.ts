@@ -84,6 +84,16 @@ export const AppConfigSchema = z.object({
     .default(30),
 
   /**
+   * Preavviso inattività sessione web app in minuti (default: 5)
+   */
+  sessionInactivityWarningMinutes: z
+    .number({ message: "sessionInactivityWarningMinutes deve essere un numero" })
+    .int("sessionInactivityWarningMinutes deve essere un intero")
+    .min(1, "sessionInactivityWarningMinutes deve essere almeno 1 minuto")
+    .max(1439, "sessionInactivityWarningMinutes non può superare 1439 min")
+    .default(5),
+
+  /**
    * 2. Timeout massimo attività sessione terminale SSH (watchdog timer) in minuti (default: 60)
    */
   sshTerminalActiveTimeoutMinutes: z
@@ -92,6 +102,16 @@ export const AppConfigSchema = z.object({
     .min(1, "sshTerminalActiveTimeoutMinutes deve essere almeno 1 minuto")
     .max(1440, "sshTerminalActiveTimeoutMinutes non può superare 24 ore (1440 min)")
     .default(60),
+
+  /**
+   * Preavviso inattività sessione terminale SSH in minuti (default: 5)
+   */
+  sshTerminalWarningMinutes: z
+    .number({ message: "sshTerminalWarningMinutes deve essere un numero" })
+    .int("sshTerminalWarningMinutes deve essere un intero")
+    .min(1, "sshTerminalWarningMinutes deve essere almeno 1 minuto")
+    .max(1439, "sshTerminalWarningMinutes non può superare 1439 min")
+    .default(5),
 
   /**
    * 3. Numero massimo di utenti concorrenti ammessi alla web app (default: 10)

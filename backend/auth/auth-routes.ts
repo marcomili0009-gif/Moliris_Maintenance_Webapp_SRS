@@ -186,11 +186,15 @@ export function registerAuthRoutes(
   });
 
   /**
-   * Endpoint di Logout (RF-AUTH-004)
-   * Invalida la sessione lato server e ripulisce il cookie.
+   * Endpoint di Logout (RF-AUTH-004, Prompt #4)
+   * Invalida la sessione lato server, registra l'audit con eventuale contesto e ripulisce il cookie.
    */
   app.post("/api/auth/logout", async (req: FastifyRequest, reply: FastifyReply) => {
     const sessionId = authMiddleware.extractSessionId(req);
+    const body = (req.body as any) || {};
+    const context = body.context === "terminale" ? "terminale" : "sessione";
+    const reason = typeof body.reason === "string" ? body.reason : "MANUAL_LOGOUT";
+
     if (sessionId) {
       const session = sessionManager.getSession(sessionId);
       const username = session ? session.username : "unknown";
@@ -201,6 +205,7 @@ export function registerAuthRoutes(
         operation: AuditOperation.AUTH_LOGOUT,
         outcome: "SUCCESS",
         timestamp: new Date(),
+        details: { context, reason },
       });
     }
 
@@ -214,6 +219,63 @@ export function registerAuthRoutes(
       message: "Sessione terminata con successo.",
     });
   });
+
+  /**
+   * Endpoint di Conferma Inattività (Prompt #4 - Azione CONFIRM)
+   * Rinnova la sessione lato server azzerando il timer di inattività e traccia l'audit.
+   */
+  app.post(
+    "/api/auth/session/confirm",
+    { preHandler: [authMiddleware.authenticate.bind(authMiddleware)] },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const session = req.molirisSession!;
+      const user = req.molirisUser!;
+      const body = (req.body as any) || {};
+      const context = body.context === "terminale" ? "terminale" : "sessione";
+
+      sessionManager.touchSession(session.sessionId);
+
+      await auditRepository.record({
+        userId: user.username,
+        operation: AuditOperation.SESSION_IDLE_CONFIRM,
+        outcome: "SUCCESS",
+        timestamp: new Date(),
+        details: { context, action: "CONFIRM" },
+      });
+
+      return reply.status(200).send({
+        success: true,
+        message: "Sessione rinnovata con successo.",
+      });
+    }
+  );
+
+  /**
+   * Endpoint di notifica avviso inattività (Prompt #4 - Avviso mostrato)
+   * Traccia nell'audit log che l'utente ha visualizzato il pop-up di avviso prima della scadenza.
+   */
+  app.post(
+    "/api/auth/session/warning",
+    { preHandler: [authMiddleware.authenticate.bind(authMiddleware)] },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const user = req.molirisUser!;
+      const body = (req.body as any) || {};
+      const context = body.context === "terminale" ? "terminale" : "sessione";
+      const remainingSeconds = typeof body.remainingSeconds === "number" ? body.remainingSeconds : undefined;
+
+      await auditRepository.record({
+        userId: user.username,
+        operation: AuditOperation.SESSION_IDLE_WARNING,
+        outcome: "SUCCESS",
+        timestamp: new Date(),
+        details: { context, action: "WARNING_SHOWN", remainingSeconds },
+      });
+
+      return reply.status(200).send({
+        success: true,
+      });
+    }
+  );
 
   /**
    * Endpoint per ottenere il profilo dell'utente autenticato (RF-AUTH-003)

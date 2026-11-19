@@ -14,3 +14,11 @@ export interface AuthSessionResponse {
   token?: string;
   expiresInMinutes?: number;
 }
+
+export interface IdleWarningInfo {
+  active: boolean;
+  context: "sessione" | "terminale";
+  remainingSeconds: number;
+  message?: string;
+  targetName?: string;
+}

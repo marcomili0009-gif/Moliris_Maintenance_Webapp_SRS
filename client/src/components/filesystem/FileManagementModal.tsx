@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import type { User } from "../../types/auth.ts";
 import { apiClient } from "../../services/api-client.ts";
 import { ErrorPresenter } from "../../services/error-presenter.ts";
 import { StateFormatter } from "../../services/state-formatter.ts";
@@ -6,6 +7,7 @@ import type { DirectoryItem, PathVerificationResult } from "../../types/filesyst
 import type { TransferStartResult } from "../../types/transfer.ts";
 
 export interface FileManagementModalProps {
+  user?: User | null;
   isOpen: boolean;
   onClose: () => void;
   /** Avvia il trasferimento verso la cartella scelta; la modale si chiude solo se `ok`. */
@@ -36,8 +38,8 @@ const isPathAllowedForUser = (candidate: string, allowedRoots: string[]): boolea
 };
 
 const normalizeClientPath = (raw: string): string => {
-  let p = raw.trim().replace(/\\/g, "/");
-  if (!p) return "";
+  let p = (raw || "/").trim().replace(/\\/g, "/");
+  if (!p) return "/";
   if (!p.startsWith("/")) p = "/" + p;
   p = p.replace(/\/\.(?=\/|$)/g, "").replace(/\/+/g, "/");
   if (p.length > 1) p = p.replace(/\/+$/, "");
@@ -45,6 +47,7 @@ const normalizeClientPath = (raw: string): string => {
 };
 
 export const FileManagementModal: React.FC<FileManagementModalProps> = ({
+  user,
   isOpen,
   onClose,
   onConfirm,
@@ -53,18 +56,20 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
   sourceType,
   robotId,
   robotName,
-  initialPath = "",
+  initialPath = "/",
   isOperator = false,
   allowedPaths,
 }) => {
+  const effectiveIsOperator = isOperator || (user?.roles.includes("operatore") ?? false);
+  const effectiveAllowedPaths = allowedPaths ?? user?.allowedPaths;
   const modalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Valori "volatili" letti solo all'apertura: non devono rilanciare il caricamento se cambiano.
   const initialPathRef = useRef(initialPath);
   initialPathRef.current = initialPath;
-  const operatorRootsRef = useRef<string[] | undefined>(isOperator ? allowedPaths : undefined);
-  operatorRootsRef.current = isOperator ? allowedPaths : undefined;
+  const operatorRootsRef = useRef<string[] | undefined>(effectiveIsOperator ? effectiveAllowedPaths : undefined);
+  operatorRootsRef.current = effectiveIsOperator ? effectiveAllowedPaths : undefined;
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -92,6 +97,9 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
     if (!p || p.trim() === "") return "Il percorso non può essere vuoto.";
     if (p.includes("\0")) return "Il percorso contiene byte nulli o caratteri non consentiti.";
     if (p.length > 4096) return "La lunghezza del percorso supera il limite di 4096 caratteri.";
+    if (!p.trim().startsWith("/")) {
+      return "Il percorso deve essere assoluto (iniziare con '/').";
+    }
     if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(p) || /%2e%2e/i.test(p)) {
       return "Attraversamento directory ('..') non consentito.";
     }
@@ -286,7 +294,7 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
     const val = e.target.value;
     setManualPath(val);
     setSubmitError(null);
-    setClientValidationError(val.trim() ? validateSyntax(normalizeClientPath(val)) : null);
+    setClientValidationError(validateSyntax(val));
   };
 
   const manualNormalized = normalizeClientPath(manualPath);

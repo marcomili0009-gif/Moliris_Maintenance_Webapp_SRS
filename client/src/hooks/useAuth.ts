@@ -1,19 +1,26 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { apiClient } from "../services/api-client.ts";
 import { ErrorPresenter } from "../services/error-presenter.ts";
-import type { User } from "../types/auth.ts";
+import type { User, IdleWarningInfo } from "../types/auth.ts";
 
-export function useAuth() {
+export function useAuth(activeTransfersCount: number = 0) {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [sessionConflict, setSessionConflict] = useState<string | null>(null);
   const [idleWarning, setIdleWarning] = useState<string | null>(null);
+  const [idleWarningInfo, setIdleWarningInfo] = useState<IdleWarningInfo | null>(null);
   const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(30);
+  const [sessionWarningMinutes, setSessionWarningMinutes] = useState(5);
+  const [internalActiveTransfers, setInternalActiveTransfers] = useState<number>(activeTransfersCount);
 
   const lastActivityRef = useRef<number>(Date.now());
   const idleCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const hasReportedWarningRef = useRef<boolean>(false);
+  const effectiveActiveTransfers = Math.max(activeTransfersCount, internalActiveTransfers);
+  const activeTransfersCountRef = useRef<number>(effectiveActiveTransfers);
+  activeTransfersCountRef.current = effectiveActiveTransfers;
 
   const checkCurrentUser = useCallback(async () => {
     try {
@@ -61,6 +68,10 @@ export function useAuth() {
       setCurrentUser(data.user);
       setIsAuthenticated(true);
       lastActivityRef.current = Date.now();
+      hasReportedWarningRef.current = false;
+      try {
+        localStorage.setItem("moliris_last_activity", String(Date.now()));
+      } catch {}
       return true;
     } catch (err: any) {
       const formatted = ErrorPresenter.formatError(err);
@@ -69,28 +80,85 @@ export function useAuth() {
     }
   };
 
-  const logout = async (): Promise<void> => {
+  const logout = useCallback(async (context: "sessione" | "terminale" = "sessione"): Promise<void> => {
     try {
-      await apiClient.post("/api/auth/logout", {});
+      await apiClient.post("/api/auth/logout", {
+        context,
+        reason: "MANUAL_LOGOUT",
+      });
+    } catch {}
+    try {
+      localStorage.setItem(
+        "moliris_idle_action",
+        JSON.stringify({ type: "LOGOUT", timestamp: Date.now() })
+      );
     } catch {}
     setCurrentUser(null);
     setIsAuthenticated(false);
     setIdleWarning(null);
-  };
+    setIdleWarningInfo(null);
+    hasReportedWarningRef.current = false;
+  }, []);
+
+  const confirmSession = useCallback(async (): Promise<void> => {
+    try {
+      await apiClient.post("/api/auth/session/confirm", { context: "sessione" });
+    } catch {}
+    lastActivityRef.current = Date.now();
+    hasReportedWarningRef.current = false;
+    setIdleWarning(null);
+    setIdleWarningInfo(null);
+    try {
+      localStorage.setItem("moliris_last_activity", String(Date.now()));
+      localStorage.setItem(
+        "moliris_idle_action",
+        JSON.stringify({ type: "CONFIRM", timestamp: Date.now() })
+      );
+    } catch {}
+  }, []);
 
   const dismissIdleWarning = () => {
     setIdleWarning(null);
+    setIdleWarningInfo(null);
   };
 
   // Qualified activity updates
   const touchActivity = useCallback(() => {
     lastActivityRef.current = Date.now();
+    if (hasReportedWarningRef.current) {
+      hasReportedWarningRef.current = false;
+      setIdleWarning(null);
+      setIdleWarningInfo(null);
+    }
   }, []);
+
+  // Monitoraggio transizione trasferimenti attivi (Prompt #4)
+  // Al termine del trasferimento (successo, errore o annullamento) il timer riparte dal valore predefinito
+  const prevActiveTransfersRef = useRef<number>(effectiveActiveTransfers);
+  useEffect(() => {
+    if (prevActiveTransfersRef.current > 0 && effectiveActiveTransfers === 0) {
+      lastActivityRef.current = Date.now();
+      hasReportedWarningRef.current = false;
+      setIdleWarning(null);
+      setIdleWarningInfo(null);
+      try {
+        localStorage.setItem("moliris_last_activity", String(Date.now()));
+      } catch {}
+    } else if (effectiveActiveTransfers > 0) {
+      lastActivityRef.current = Date.now();
+      setIdleWarning(null);
+      setIdleWarningInfo(null);
+      hasReportedWarningRef.current = false;
+    }
+    prevActiveTransfersRef.current = effectiveActiveTransfers;
+  }, [effectiveActiveTransfers]);
 
   useEffect(() => {
     apiClient.onSessionExpired(() => {
       setCurrentUser(null);
       setIsAuthenticated(false);
+      setIdleWarning(null);
+      setIdleWarningInfo(null);
     });
 
     apiClient.onQualifiedActivity(() => {
@@ -99,6 +167,111 @@ export function useAuth() {
 
     checkCurrentUser();
   }, [checkCurrentUser, touchActivity]);
+
+  // Sincronizzazione multi-scheda via StorageEvent (Prompt #4)
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === "moliris_idle_action" && e.newValue) {
+        try {
+          const action = JSON.parse(e.newValue);
+          if (action.type === "LOGOUT") {
+            setCurrentUser(null);
+            setIsAuthenticated(false);
+            setIdleWarning(null);
+            setIdleWarningInfo(null);
+          } else if (action.type === "CONFIRM") {
+            lastActivityRef.current = Date.now();
+            hasReportedWarningRef.current = false;
+            setIdleWarning(null);
+            setIdleWarningInfo(null);
+          }
+        } catch {}
+      } else if (e.key === "moliris_last_activity" && e.newValue) {
+        const val = Number(e.newValue);
+        if (!isNaN(val) && val > lastActivityRef.current) {
+          lastActivityRef.current = val;
+          const timeoutMs = sessionTimeoutMinutes * 60 * 1000;
+          const warningWindowMs = sessionWarningMinutes * 60 * 1000;
+          if (Date.now() - val < timeoutMs - warningWindowMs) {
+            setIdleWarning(null);
+            setIdleWarningInfo(null);
+            hasReportedWarningRef.current = false;
+          }
+        }
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, [sessionTimeoutMinutes, sessionWarningMinutes]);
+
+  // Gestione scheda in background / visibilità (Prompt #4)
+  useEffect(() => {
+    const handleVisibilityOrFocus = () => {
+      if (!isAuthenticated) return;
+      const now = Date.now();
+      if (activeTransfersCountRef.current > 0) {
+        lastActivityRef.current = now;
+        return;
+      }
+      const timeoutMs = sessionTimeoutMinutes * 60 * 1000;
+      const warningWindowMs = sessionWarningMinutes * 60 * 1000;
+      const elapsedMs = now - lastActivityRef.current;
+
+      if (elapsedMs >= timeoutMs) {
+        apiClient.notifySessionExpired();
+        setIdleWarning(null);
+        setIdleWarningInfo(null);
+      } else if (elapsedMs >= timeoutMs - warningWindowMs) {
+        const remainingSeconds = Math.max(1, Math.ceil((timeoutMs - elapsedMs) / 1000));
+        const remainingMinutes = Math.max(1, Math.ceil(remainingSeconds / 60));
+        setIdleWarning(
+          `La sessione scadrà per inattività tra ${remainingMinutes} minuto/i. Eseguire un'azione per mantenerla attiva.`
+        );
+        setIdleWarningInfo({
+          active: true,
+          context: "sessione",
+          remainingSeconds,
+          message: `La sessione applicativa scadrà per inattività tra ${remainingMinutes} minut${remainingMinutes === 1 ? "o" : "i"}.`,
+        });
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+    window.addEventListener("focus", handleVisibilityOrFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+      window.removeEventListener("focus", handleVisibilityOrFocus);
+    };
+  }, [isAuthenticated, sessionTimeoutMinutes, sessionWarningMinutes]);
+
+  // Tracciamento interazioni utente per attività qualificata (throttled)
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let lastThrottledTime = 0;
+    const handleUserInteraction = () => {
+      const now = Date.now();
+      if (now - lastThrottledTime > 5000) {
+        lastThrottledTime = now;
+        touchActivity();
+        try {
+          localStorage.setItem("moliris_last_activity", String(now));
+        } catch {}
+      }
+    };
+
+    window.addEventListener("mousedown", handleUserInteraction);
+    window.addEventListener("keydown", handleUserInteraction);
+    window.addEventListener("touchstart", handleUserInteraction);
+    window.addEventListener("scroll", handleUserInteraction);
+
+    return () => {
+      window.removeEventListener("mousedown", handleUserInteraction);
+      window.removeEventListener("keydown", handleUserInteraction);
+      window.removeEventListener("touchstart", handleUserInteraction);
+      window.removeEventListener("scroll", handleUserInteraction);
+    };
+  }, [isAuthenticated, touchActivity]);
 
   useEffect(() => {
     let cancelled = false;
@@ -115,15 +288,19 @@ export function useAuth() {
           typeof config !== "object" ||
           config === null ||
           !("sessionInactivityTimeoutMinutes" in config) ||
-          typeof config.sessionInactivityTimeoutMinutes !== "number" ||
-          !Number.isInteger(config.sessionInactivityTimeoutMinutes) ||
-          config.sessionInactivityTimeoutMinutes < 1
+          typeof (config as any).sessionInactivityTimeoutMinutes !== "number" ||
+          !Number.isInteger((config as any).sessionInactivityTimeoutMinutes) ||
+          (config as any).sessionInactivityTimeoutMinutes < 1
         ) {
           throw new Error("La configurazione pubblica contiene un timeout sessione non valido.");
         }
 
         if (!cancelled) {
-          setSessionTimeoutMinutes(config.sessionInactivityTimeoutMinutes);
+          const cfg = config as any;
+          setSessionTimeoutMinutes(cfg.sessionInactivityTimeoutMinutes);
+          if (typeof cfg.sessionInactivityWarningMinutes === "number" && cfg.sessionInactivityWarningMinutes > 0) {
+            setSessionWarningMinutes(cfg.sessionInactivityWarningMinutes);
+          }
         }
       } catch (error) {
         if (!cancelled) {
@@ -138,34 +315,82 @@ export function useAuth() {
     };
   }, []);
 
-  // Watchdog timer inattività (SRS §2, §6.1, RF-AUTH-006)
+  // Watchdog timer inattività (SRS §2, §6.1, RF-AUTH-006, Prompt #4)
   useEffect(() => {
     if (!isAuthenticated) {
       if (idleCheckIntervalRef.current) clearInterval(idleCheckIntervalRef.current);
       return;
     }
 
-    // Controlla ogni minuto
-    idleCheckIntervalRef.current = setInterval(() => {
+    const runIdleCheck = () => {
       const now = Date.now();
-      const elapsedMinutes = (now - lastActivityRef.current) / (1000 * 60);
+      // Sospensione inattività se vi sono trasferimenti in corso (Prompt #4)
+      if (activeTransfersCountRef.current > 0) {
+        lastActivityRef.current = now;
+        if (idleWarningInfo) {
+          setIdleWarning(null);
+          setIdleWarningInfo(null);
+          hasReportedWarningRef.current = false;
+        }
+        return;
+      }
 
-      const warningAtMinutes = Math.max(0, sessionTimeoutMinutes - 5);
-      if (elapsedMinutes >= warningAtMinutes && elapsedMinutes < sessionTimeoutMinutes) {
-        const remainingMinutes = Math.max(1, Math.ceil(sessionTimeoutMinutes - elapsedMinutes));
+      const timeoutMs = sessionTimeoutMinutes * 60 * 1000;
+      const warningWindowMs = sessionWarningMinutes * 60 * 1000;
+      const elapsedMs = now - lastActivityRef.current;
+
+      if (elapsedMs >= timeoutMs) {
+        apiClient.notifySessionExpired();
+        setIdleWarning(null);
+        setIdleWarningInfo(null);
+        hasReportedWarningRef.current = false;
+      } else if (elapsedMs >= timeoutMs - warningWindowMs) {
+        const remainingSeconds = Math.max(1, Math.ceil((timeoutMs - elapsedMs) / 1000));
+        const remainingMinutes = Math.max(1, Math.ceil(remainingSeconds / 60));
         setIdleWarning(
           `La sessione scadrà per inattività tra ${remainingMinutes} minuto/i. Eseguire un'azione per mantenerla attiva.`
         );
-      } else if (elapsedMinutes >= sessionTimeoutMinutes) {
-        apiClient.notifySessionExpired();
-        setIdleWarning(null);
+        setIdleWarningInfo({
+          active: true,
+          context: "sessione",
+          remainingSeconds,
+          message: `La sessione applicativa scadrà per inattività tra ${remainingMinutes} minut${remainingMinutes === 1 ? "o" : "i"}.`,
+        });
+
+        if (!hasReportedWarningRef.current) {
+          hasReportedWarningRef.current = true;
+          void apiClient.post("/api/auth/session/warning", {
+            context: "sessione",
+            remainingSeconds,
+          }).catch(() => undefined);
+        }
+      } else {
+        if (idleWarningInfo) {
+          setIdleWarning(null);
+          setIdleWarningInfo(null);
+          hasReportedWarningRef.current = false;
+        }
       }
-    }, 60000);
+    };
+
+    if (typeof window !== "undefined") {
+      (window as any)._molirisSimulateInactivity = (inactiveMinutes: number) => {
+        lastActivityRef.current = Date.now() - inactiveMinutes * 60 * 1000;
+        runIdleCheck();
+      };
+    }
+
+    const checkIntervalMs =
+      typeof window !== "undefined" && (window as any).MOLIRIS_IDLE_CHECK_INTERVAL_MS
+        ? (window as any).MOLIRIS_IDLE_CHECK_INTERVAL_MS
+        : 1000;
+
+    idleCheckIntervalRef.current = setInterval(runIdleCheck, checkIntervalMs);
 
     return () => {
       if (idleCheckIntervalRef.current) clearInterval(idleCheckIntervalRef.current);
     };
-  }, [isAuthenticated, sessionTimeoutMinutes]);
+  }, [isAuthenticated, sessionTimeoutMinutes, sessionWarningMinutes, idleWarningInfo]);
 
   const isAdmin = currentUser?.roles.includes("amministratore") ?? false;
   const isOperator = currentUser?.roles.includes("operatore") ?? false;
@@ -177,11 +402,14 @@ export function useAuth() {
     loginError,
     sessionConflict,
     idleWarning,
+    idleWarningInfo,
     isAdmin,
     isOperator,
     login,
     logout,
+    confirmSession,
     dismissIdleWarning,
+    setActiveTransfersCount: setInternalActiveTransfers,
     dismissSessionConflict: () => {
       setSessionConflict(null);
       setLoginError(null);

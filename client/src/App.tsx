@@ -13,10 +13,13 @@ export const App: React.FC = () => {
     loginError,
     sessionConflict,
     idleWarning,
+    idleWarningInfo,
     login,
     logout,
+    confirmSession,
     dismissIdleWarning,
     dismissSessionConflict,
+    setActiveTransfersCount,
   } = useAuth();
 
   const [activeMainView, setActiveMainView] = useState<"fleet" | "files">("fleet");
@@ -69,7 +72,10 @@ export const App: React.FC = () => {
           user={currentUser}
           onLogout={logout}
           idleWarning={idleWarning}
+          idleWarningInfo={idleWarningInfo}
+          onConfirmSession={confirmSession}
           onDismissIdleWarning={dismissIdleWarning}
+          setActiveTransfersCount={setActiveTransfersCount}
           goHomeTrigger={goHomeTrigger}
           activeMainView={activeMainView}
           onActiveMainViewChange={setActiveMainView}

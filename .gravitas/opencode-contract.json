@@ -1,58 +1,58 @@
 {
   "mode": "implement",
-  "objective": "Modernizzare la UI e la navigazione della schermata Gestione File e Trasferimenti (tab animati, file manager moderno, archivio generale aggregato, drill-down) e correggere i bug critici del terminale PTY Host Locale/Robot Virtuale: apertura in formato ridotto, espansione senza perdita della sessione, newline senza effetto staircase, chiusura atomica con X, status bar che non taglia l'output.",
+  "objective": "Prompt Correttivo #4: Gestione avvisi di inattività e sessione (Terminale e Sessione Generale), pop-up con Conferma ed Esci, sospensione durante trasferimenti attivi, coerenza client-server, sincronizzazione multi-scheda e audit trail.",
   "acceptance_criteria": [
     {
       "id": "AC1",
-      "statement": "La barra dei tab usa un indicatore animato fluido che segue hover e tab attivo senza tagli ai bordi."
+      "statement": "Parametri di timeout e preavviso configurabili e validati all'avvio nel config e schema per sessione e terminale.",
+      "validators": [
+        "npm-typecheck",
+        "npm-test"
+      ]
     },
     {
       "id": "AC2",
-      "statement": "L'esploratore file di tutte le sezioni usa icone, badge, hover state e toolbar moderni coerenti."
+      "statement": "Pop-up modale di avviso inattività con conto alla rovescia, testi in italiano, opzioni Conferma ed Esci, gestione distintiva di Terminale e Sessione senza sovrapposizioni e con accessibilità.",
+      "validators": [
+        "npm-typecheck",
+        "npm-test"
+      ]
     },
     {
       "id": "AC3",
-      "statement": "Il primo tab e' rinominato 'File sul Server (Robot)'."
+      "statement": "Azione Conferma rinnova la sessione lato server e resetta il timer corrispondente ripartendo dal valore predefinito; azione Esci effettua logout immediato con chiusura risorse.",
+      "validators": [
+        "npm-typecheck",
+        "npm-test"
+      ]
     },
     {
       "id": "AC4",
-      "statement": "L'Archivio Generale Server mostra la root aggregata con cartelle robot e contenuti condivisi."
+      "statement": "Eccezione trasferimenti in corso: la sessione non scade per inattività se ci sono trasferimenti attivi; al termine il timer riparte dal valore di default; trasferimenti concorrenti gestiti con registro/contatore sia lato client che lato server.",
+      "validators": [
+        "npm-typecheck",
+        "npm-test"
+      ]
     },
     {
       "id": "AC5",
-      "statement": "Aprire una cartella robot dall'Archivio Generale cambia tab, imposta l'ID robot e carica la directory senza click aggiuntivi."
+      "statement": "Coerenza client-server, sincronizzazione multi-scheda e calcolo scadenze con timestamp per gestire schede in background.",
+      "validators": [
+        "npm-typecheck",
+        "npm-test"
+      ]
     },
     {
       "id": "AC6",
-      "statement": "Il comando Torna su dalla root del robot riporta all'Archivio Generale mostrando subito la lista."
+      "statement": "Registrazione eventi di audit: avviso mostrato, conferma, logout manuale, scadenza automatica e sospensione per trasferimento con utente e contesto.",
+      "validators": [
+        "npm-typecheck",
+        "npm-test"
+      ]
     },
     {
       "id": "AC7",
-      "statement": "Il terminale si apre sempre in formato ridotto; l'espansione a schermo intero ridimensiona il PTY senza distruggere la sessione (nessun errore 'Sessione terminale non trovata').",
-      "validators": [
-        "npm-typecheck",
-        "npm-test"
-      ]
-    },
-    {
-      "id": "AC8",
-      "statement": "L'output del terminale interpreta correttamente i newline (convertEol): le righe iniziano a colonna 0, senza effetto staircase.",
-      "validators": [
-        "npm-typecheck",
-        "npm-test"
-      ]
-    },
-    {
-      "id": "AC9",
-      "statement": "La X e il pulsante Disconnetti eseguono la stessa routine atomica: payload di chiusura, chiusura socket, DELETE della sessione PTY e reset del frontend.",
-      "validators": [
-        "npm-typecheck",
-        "npm-test"
-      ]
-    },
-    {
-      "id": "AC10",
-      "statement": "La status bar del terminale non si sovrappone all'output: il body usa flex:1 con min-height:0 e il footer resta visibile in formato ridotto ed espanso.",
+      "statement": "Nessuna regressione: tutti i 35 criteri CA e i 18 obiettivi continuano a passare.",
       "validators": [
         "npm-typecheck",
         "npm-test"
@@ -71,10 +71,13 @@
         "typecheck"
       ],
       "criterion_ids": [
-        "AC7",
-        "AC8",
-        "AC9",
-        "AC10"
+        "AC1",
+        "AC2",
+        "AC3",
+        "AC4",
+        "AC5",
+        "AC6",
+        "AC7"
       ]
     },
     {
@@ -85,10 +88,13 @@
         "set -o pipefail; npm run test 2>&1 | tee .gravitas/npm-test-last.log"
       ],
       "criterion_ids": [
-        "AC7",
-        "AC8",
-        "AC9",
-        "AC10"
+        "AC1",
+        "AC2",
+        "AC3",
+        "AC4",
+        "AC5",
+        "AC6",
+        "AC7"
       ]
     }
   ],
@@ -97,7 +103,7 @@
     "npm-test"
   ],
   "policy": {
-    "uncertainty": "medium",
-    "verification_depth": "impact"
+    "uncertainty": "low",
+    "risk": "medium"
   }
 }

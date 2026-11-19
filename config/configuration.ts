@@ -30,6 +30,7 @@ export interface SystemConfiguration {
 
   // 8. Parametri di sicurezza e sessione (RNF-MNT-001, RF-AUTH-006, §11.6, RNF-SEC-001)
   inactiveSessionTimeoutMinutes: number;
+  sessionInactivityWarningMinutes?: number;
   sessionAbsoluteMaxMinutes?: number; // MOLIRIS_SESSION_ABSOLUTE_MAX_MIN (obbligatorio in production)
   tlsCertPath: string; // Riferimento sicuro senza contenere segreti (RNF-SEC-002)
   tlsKeyPath: string;  // Riferimento sicuro senza contenere segreti (RNF-SEC-002)
@@ -74,6 +75,7 @@ export interface SystemConfiguration {
 
   // 19. Parametri per sessioni di terminale remoto [opzionali] (§5.4, §6.4 passo 7, §11.6, §11.7, RNF-PERF-003)
   terminalSessionTimeoutMinutes?: number;
+  terminalSessionWarningMinutes?: number;
   maxConcurrentTerminalSessionsServer?: number;
   maxConcurrentTerminalSessionsPerUser?: number;
   maxConcurrentTerminalSessionsPerRobot?: number;
@@ -133,6 +135,7 @@ export const SystemConfigSchema = z.object({
   tempFileRetentionMinutes: z.number().int().min(1, "tempFileRetentionMinutes deve essere >= 1"),
   stateFilePaths: z.array(z.string().min(1)).min(1, "stateFilePaths deve contenere almeno un percorso"),
   inactiveSessionTimeoutMinutes: z.number().int().min(1, "inactiveSessionTimeoutMinutes deve essere >= 1"),
+  sessionInactivityWarningMinutes: z.number().int().min(1).max(1439).optional(),
   sessionAbsoluteMaxMinutes: z.number().int().min(1).max(1440).optional(),
   tlsCertPath: z.string().min(1, "tlsCertPath non può essere vuoto"),
   tlsKeyPath: z.string().min(1, "tlsKeyPath non può essere vuoto"),
@@ -150,6 +153,7 @@ export const SystemConfigSchema = z.object({
   activeSessionPolicyOnDisable: z.enum(["chiudi_immediatamente", "lascia_terminare"]).optional(),
   staleDataThresholdSeconds: z.number().int().min(1).optional(),
   terminalSessionTimeoutMinutes: z.number().int().min(1).optional(),
+  terminalSessionWarningMinutes: z.number().int().min(1).max(1439).optional(),
   maxConcurrentTerminalSessionsServer: z.number().int().min(1).max(20).optional(),
   maxConcurrentTerminalSessionsPerUser: z.number().int().min(1).optional(),
   maxConcurrentTerminalSessionsPerRobot: z.number().int().min(1).optional(),
@@ -214,6 +218,9 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
   const stateFilePaths = rawStatePaths ? rawStatePaths.split(",").map(p => p.trim()).filter(Boolean) : [];
 
   const inactiveSessionTimeoutMinutes = requireNumber("MOLIRIS_SESSION_TIMEOUT_MIN");
+  const sessionInactivityWarningMinutes = env["MOLIRIS_SESSION_WARNING_MIN"] && !isNaN(Number(env["MOLIRIS_SESSION_WARNING_MIN"]))
+    ? Number(env["MOLIRIS_SESSION_WARNING_MIN"])
+    : 5;
   const tlsCertPath = requireString("MOLIRIS_TLS_CERT_PATH");
   const tlsKeyPath = requireString("MOLIRIS_TLS_KEY_PATH");
   const auditLogRetentionDays = requireNumber("MOLIRIS_AUDIT_RETENTION_DAYS");
@@ -344,6 +351,10 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
   const terminalSessionTimeoutMinutes = env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"] && !isNaN(Number(env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"]))
     ? Number(env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"])
     : 15;
+
+  const terminalSessionWarningMinutes = env["MOLIRIS_TERMINAL_WARNING_MIN"] && !isNaN(Number(env["MOLIRIS_TERMINAL_WARNING_MIN"]))
+    ? Number(env["MOLIRIS_TERMINAL_WARNING_MIN"])
+    : 5;
 
   const maxConcurrentTerminalSessionsServer = env["MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"] && !isNaN(Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"]))
     ? Number(env["MOLIRIS_MAX_TERMINAL_SESSIONS_SERVER"])
@@ -499,6 +510,7 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     tempFileRetentionMinutes,
     stateFilePaths,
     inactiveSessionTimeoutMinutes,
+    sessionInactivityWarningMinutes,
     sessionAbsoluteMaxMinutes,
     tlsCertPath,
     tlsKeyPath,
@@ -516,6 +528,7 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     activeSessionPolicyOnDisable,
     staleDataThresholdSeconds,
     terminalSessionTimeoutMinutes,
+    terminalSessionWarningMinutes,
     maxConcurrentTerminalSessionsServer,
     maxConcurrentTerminalSessionsPerUser,
     maxConcurrentTerminalSessionsPerRobot,

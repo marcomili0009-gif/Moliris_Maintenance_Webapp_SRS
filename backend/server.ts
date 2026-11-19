@@ -11,6 +11,7 @@ import { MolirisLogger } from "../logging/logger.ts";
 import { SessionManager } from "./auth/session-manager.ts";
 import { type UserRepository, InMemoryUserRepository, MongoUserRepository } from "./auth/user-repository.ts";
 import { type AuditRepository, InMemoryAuditRepository, MongoAuditRepository } from "../storage/audit-repository.ts";
+import { AuditOperation } from "../storage/audit-models.ts";
 import { type RobotRepository, InMemoryRobotRepository, MongoRobotRepository } from "../storage/robot-repository.ts";
 import {
   type ClientRepository,
@@ -108,14 +109,23 @@ export function createServer(
 
   app.get("/api/config/public", async (_request, reply) => {
     return reply.status(200).send({
-      sessionInactivityTimeoutMinutes: appConfig.sessionInactivityTimeoutMinutes,
-      sshTerminalActiveTimeoutMinutes: appConfig.sshTerminalActiveTimeoutMinutes,
-      maxConcurrentWebUsers: appConfig.maxConcurrentWebUsers,
-      maxConcurrentTerminalsPerRobot: appConfig.maxConcurrentTerminalsPerRobot,
-      maxSessionsPerAccount: appConfig.futureExtensions.maxSessionsPerAccount,
+      sessionInactivityTimeoutMinutes:
+        (appConfig as any).sessionInactivityTimeoutMinutes ??
+        (appConfig as any).inactiveSessionTimeoutMinutes ??
+        30,
+      sessionInactivityWarningMinutes: (appConfig as any).sessionInactivityWarningMinutes ?? 5,
+      sshTerminalActiveTimeoutMinutes:
+        (appConfig as any).sshTerminalActiveTimeoutMinutes ?? 15,
+      terminalSessionWarningMinutes:
+        (appConfig as any).sshTerminalWarningMinutes ??
+        (appConfig as any).terminalSessionWarningMinutes ??
+        5,
+      maxConcurrentWebUsers: (appConfig as any).maxConcurrentWebUsers ?? 5,
+      maxConcurrentTerminalsPerRobot: (appConfig as any).maxConcurrentTerminalsPerRobot ?? 1,
+      maxSessionsPerAccount: (appConfig as any).futureExtensions?.maxSessionsPerAccount ?? 1,
       bulkUploadConfig: {
-        maxConcurrentFiles: appConfig.bulkUploadConfig.maxConcurrentFiles,
-        chunkSizeBytes: appConfig.bulkUploadConfig.chunkSizeBytes,
+        maxConcurrentFiles: (appConfig as any).bulkUploadConfig?.maxConcurrentFiles ?? 5,
+        chunkSizeBytes: (appConfig as any).bulkUploadConfig?.chunkSizeBytes ?? 1024 * 1024,
       },
     });
   });
@@ -313,6 +323,35 @@ export function createServer(
     undefined,
     connectionManager
   );
+
+  // Collegamento verificatore trasferimenti attivi per terminalService (Prompt #4)
+  terminalService.setActiveTransferChecker((sessionId, userId) => {
+    const bySession = sessionId ? transferService.getActiveTransfersCountForSession(sessionId) : 0;
+    if (bySession > 0) return bySession;
+    return userId ? transferService.getActiveTransfersCountForUser(userId) : 0;
+  });
+
+  // Tracciamento audit per scadenza automatica sessione e sospensione per trasferimenti (Prompt #4)
+  sessionManager.onSessionExpired((session, reason) => {
+    auditRepository.record({
+      userId: session.username,
+      operation: AuditOperation.SESSION_IDLE_TIMEOUT,
+      outcome: "SUCCESS",
+      timestamp: new Date(),
+      details: { context: "sessione", reason },
+    }).catch(() => {});
+  });
+
+  sessionManager.onSessionSuspendedForTransfer((sessionId, userId, activeTransfers, context) => {
+    const session = sessionManager.getSession(sessionId);
+    auditRepository.record({
+      userId: session?.username || userId,
+      operation: AuditOperation.SESSION_TRANSFER_SUSPEND,
+      outcome: "SUCCESS",
+      timestamp: new Date(),
+      details: { context, activeTransfers, reason: "Inactivity timeout suspended due to active file transfers" },
+    }).catch(() => {});
+  });
 
   // Registrazione endpoint di autenticazione e autorizzazione (RF-AUTH-001..006)
   registerAuthRoutes(

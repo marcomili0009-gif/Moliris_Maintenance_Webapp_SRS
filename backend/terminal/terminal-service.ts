@@ -137,6 +137,11 @@ export class TerminalService {
   private robotGenerations = new Map<string, number>();
   private serverGeneration = 0;
   private idleCheckTimer: NodeJS.Timeout | null = null;
+  private activeTransferChecker: ((sessionId?: string, userId?: string) => number) | null = null;
+
+  public setActiveTransferChecker(checker: (sessionId?: string, userId?: string) => number): void {
+    this.activeTransferChecker = checker;
+  }
 
   constructor(
     config: SystemConfiguration,
@@ -193,19 +198,71 @@ export class TerminalService {
 
   public checkIdleSessions(now: number = Date.now()): void {
     const timeoutMs = this.limits.sessionTimeoutMinutes * 60 * 1000;
-    const warningWindowMs = 5 * 60 * 1000; // 5 minuti prima della scadenza
+    const warningMinutes = this.config.terminalSessionWarningMinutes ?? 5;
+    const warningWindowMs = warningMinutes * 60 * 1000;
 
     for (const session of Array.from(this.activeSessions.values())) {
+      // Eccezione trasferimenti in corso (Prompt #4): se vi sono trasferimenti attivi, l'inattività viene sospesa
+      const activeTransfers = this.activeTransferChecker
+        ? this.activeTransferChecker(session.authorizedContext?.sessionId, session.userId)
+        : 0;
+
+      if (activeTransfers > 0) {
+        session.lastActivityAt = new Date(now);
+        if ((session as any).lastWarningMinute !== undefined) {
+          delete (session as any).lastWarningMinute;
+          delete (session as any).hasLoggedWarning;
+          if (session.webSocket && session.webSocket.readyState === 1 /* OPEN */) {
+            try {
+              session.webSocket.send(JSON.stringify({ type: "terminal_idle_reset" }));
+            } catch {}
+          }
+        }
+        if (!(session as any).hasLoggedTransferSuspend) {
+          (session as any).hasLoggedTransferSuspend = true;
+          this.auditRepository.record({
+            userId: session.username,
+            robotId: session.robotId,
+            operation: AuditOperation.SESSION_TRANSFER_SUSPEND,
+            outcome: "SUCCESS",
+            timestamp: new Date(now),
+            details: { context: "terminale", activeTransfers, sessionId: session.sessionId },
+          }).catch(() => {});
+        }
+        continue;
+      } else {
+        delete (session as any).hasLoggedTransferSuspend;
+      }
+
       const idleMs = now - session.lastActivityAt.getTime();
       const remainingMs = timeoutMs - idleMs;
 
       if (remainingMs <= 0) {
+        this.auditRepository.record({
+          userId: session.username,
+          robotId: session.robotId,
+          operation: AuditOperation.SESSION_IDLE_TIMEOUT,
+          outcome: "SUCCESS",
+          timestamp: new Date(now),
+          details: { context: "terminale", sessionId: session.sessionId, robotId: session.robotId },
+        }).catch(() => {});
         this.closeSessionSafely(session.sessionId, "IDLE_TIMEOUT", "Timeout inattività terminale superato (15 minuti).");
       } else if (remainingMs <= warningWindowMs) {
         // RF-01: Notifica pop-up con countdown aggiornato a ogni minuto (5, 4, 3, 2, 1)
         const remainingMinutes = Math.max(1, Math.ceil(remainingMs / 60000));
         if ((session as any).lastWarningMinute !== remainingMinutes) {
           (session as any).lastWarningMinute = remainingMinutes;
+          if (!(session as any).hasLoggedWarning) {
+            (session as any).hasLoggedWarning = true;
+            this.auditRepository.record({
+              userId: session.username,
+              robotId: session.robotId,
+              operation: AuditOperation.SESSION_IDLE_WARNING,
+              outcome: "SUCCESS",
+              timestamp: new Date(now),
+              details: { context: "terminale", remainingMinutes, sessionId: session.sessionId, robotId: session.robotId },
+            }).catch(() => {});
+          }
           if (session.webSocket && session.webSocket.readyState === 1 /* OPEN */) {
             try {
               session.webSocket.send(
@@ -214,6 +271,8 @@ export class TerminalService {
                   remainingMinutes,
                   remainingSeconds: Math.ceil(remainingMs / 1000),
                   message: `Il terminale SSH verrà chiuso per inattività tra ${remainingMinutes} minut${remainingMinutes === 1 ? "o" : "i"}.`,
+                  context: "terminale",
+                  robotId: session.robotId,
                 })
               );
             } catch {}
@@ -753,6 +812,28 @@ export class TerminalService {
       if (text.startsWith("{") && text.endsWith("}")) {
         try {
           const parsed = JSON.parse(text);
+          if (parsed.type === "confirm_idle" || parsed.type === "idle_confirm") {
+            session.lastActivityAt = new Date();
+            delete (session as any).lastWarningMinute;
+            delete (session as any).hasLoggedWarning;
+            if (socket.readyState === 1 /* OPEN */) {
+              try {
+                socket.send(JSON.stringify({ type: "terminal_idle_reset" }));
+              } catch {}
+            }
+            if (session.authorizedContext?.sessionId) {
+              this.sessionManager.touchSession(session.authorizedContext.sessionId);
+            }
+            this.auditRepository.record({
+              userId: session.username,
+              robotId: session.robotId,
+              operation: AuditOperation.SESSION_IDLE_CONFIRM,
+              outcome: "SUCCESS",
+              timestamp: new Date(),
+              details: { context: "terminale", action: "CONFIRM", sessionId: session.sessionId },
+            }).catch(() => {});
+            return;
+          }
           if (parsed.type === "resize") {
             const cols = Number(parsed.cols);
             const rows = Number(parsed.rows);

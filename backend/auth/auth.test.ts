@@ -428,6 +428,78 @@ console.log("  PASS: Limitazione tentativi di login e intestazione Retry-After."
 }
 
 // =========================================================================
+// TEST PROMPT #4: Conferma inattività (CONFIRM), Logout (DELETE), sospensione per trasferimenti e audit
+// =========================================================================
+{
+  // 1. Creazione sessione operatore per test Prompt #4 (evitando collisioni con il rate-limiter IP)
+  const opSess = sessionManager.createSession(operatorUser);
+  const opToken = opSess.sessionId;
+  assert.ok(opToken);
+
+  // 2. Simula avanzamento inattività a 26 minuti (nella finestra di preavviso a 5m dalla scadenza dei 30m)
+  sessionManager._simulateInactivity(opToken, 26);
+
+  // 3. Notifica avviso mostrato (POST /api/auth/session/warning)
+  const warnRes = await makeHttpsRequest("POST", "/api/auth/session/warning", { context: "sessione", remainingSeconds: 240 }, opToken);
+  assert.strictEqual(warnRes.status, 200);
+
+  // 4. Conferma (CONFIRM) via POST /api/auth/session/confirm: azzera il timer e rinnova la sessione lato server
+  const confirmRes = await makeHttpsRequest("POST", "/api/auth/session/confirm", { context: "sessione" }, opToken);
+  assert.strictEqual(confirmRes.status, 200);
+  assert.strictEqual(confirmRes.body.success, true);
+
+  // 5. La sessione deve essere ancora pienamente valida anche dopo la scadenza originaria
+  const stillValidRes = await makeHttpsRequest("GET", "/api/auth/me", undefined, opToken);
+  assert.strictEqual(stillValidRes.status, 200, "Sessione confermata deve rimanere valida");
+
+  // 6. Test Eccezione Trasferimenti Attivi: con 2 trasferimenti concorrenti in corso, l'inattività viene sospesa
+  let activeTransfersCount = 2;
+  sessionManager.setActiveTransferChecker((sId) => sId === opToken ? activeTransfersCount : 0);
+
+  // Avanza il tempo oltre i 30 minuti di inattività (es. 35 minuti)
+  sessionManager._simulateInactivity(opToken, 35);
+  sessionManager.purgeExpiredSessions();
+
+  // La sessione non deve essere scaduta poiché il trasferimento è attivo
+  const transferProtectedRes = await makeHttpsRequest("GET", "/api/auth/me", undefined, opToken);
+  assert.strictEqual(transferProtectedRes.status, 200, "Sessione con trasferimenti attivi non deve scadere");
+
+  // Al termine dei trasferimenti (conteggio a 0), l'inattività riparte dal valore di default
+  activeTransfersCount = 0;
+  sessionManager.touchSession(opToken); // simulato dal completamento del trasferimento
+
+  // Ora avanza nuovamente a 31 minuti: deve scadere normalmente
+  sessionManager._simulateInactivity(opToken, 31);
+  sessionManager.purgeExpiredSessions();
+  const nowExpiredRes = await makeHttpsRequest("GET", "/api/auth/me", undefined, opToken);
+  assert.strictEqual(nowExpiredRes.status, 401, "Terminati i trasferimenti, l'inattività decorre normalmente");
+
+  // 7. Test Esci (DELETE) su nuova sessione: logout immediato
+  const opSess2 = sessionManager.createSession(operatorUser);
+  const opToken2 = opSess2.sessionId;
+  assert.ok(opToken2);
+
+  const deleteRes = await makeHttpsRequest("POST", "/api/auth/logout", { context: "sessione", reason: "DELETE_BUTTON" }, opToken2);
+  assert.strictEqual(deleteRes.status, 200);
+  const afterDeleteRes = await makeHttpsRequest("GET", "/api/auth/me", undefined, opToken2);
+  assert.strictEqual(afterDeleteRes.status, 401, "Logout esplicito da pop-up deve invalidare immediatamente la sessione");
+
+  // 8. Verifica eventi di audit per Prompt #4
+  const auditLogs = await auditRepo.query();
+  const hasConfirmAudit = auditLogs.some((l) => l.operation === AuditOperation.SESSION_IDLE_CONFIRM && l.details?.context === "sessione");
+  const hasWarningAudit = auditLogs.some((l) => l.operation === AuditOperation.SESSION_IDLE_WARNING && l.details?.context === "sessione");
+  const hasSuspendAudit = auditLogs.some((l) => l.operation === AuditOperation.SESSION_TRANSFER_SUSPEND && l.details?.context === "sessione");
+  const hasTimeoutAudit = auditLogs.some((l) => l.operation === AuditOperation.SESSION_IDLE_TIMEOUT && l.details?.context === "sessione");
+
+  assert.ok(hasConfirmAudit, "Manca evento audit SESSION_IDLE_CONFIRM");
+  assert.ok(hasWarningAudit, "Manca evento audit SESSION_IDLE_WARNING");
+  assert.ok(hasSuspendAudit, "Manca evento audit SESSION_TRANSFER_SUSPEND");
+  assert.ok(hasTimeoutAudit, "Manca evento audit SESSION_IDLE_TIMEOUT");
+
+  console.log("  PASS: Prompt #4 - Avvisi inattività, CONFIRM, DELETE, sospensione trasferimenti e audit log verificati.");
+}
+
+// =========================================================================
 // TEST RF-03: Nome utente univoco, verifica case-insensitive e concorrenza
 // =========================================================================
 {

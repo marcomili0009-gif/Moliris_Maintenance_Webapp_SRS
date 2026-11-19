@@ -125,6 +125,14 @@ export class TransferService {
       );
     });
 
+    // Prompt #4: Registra il verificatore di trasferimenti attivi presso il SessionManager
+    // per sospendere la scadenza di inattività durante i trasferimenti in corso
+    this.sessionManager.setActiveTransferChecker((sessionId, userId) => {
+      const bySession = this.getActiveTransfersCountForSession(sessionId);
+      if (bySession > 0) return bySession;
+      return this.getActiveTransfersCountForUser(userId);
+    });
+
     // Task orario per la pulizia dei file temporanei orfani sul server (Problema A2 punto e, RF-TRF-009)
     this.hourlyCleanupTimer = setInterval(() => {
       this.cleanupServerOrphanTempFiles().catch((err) => {
@@ -1851,6 +1859,13 @@ export class TransferService {
     record.integrityLabel = "integrità non verificata";
     record.abortController.abort();
 
+    // Riavvia il timer di inattività della sessione al termine dell'operazione (Prompt #4)
+    if (record.userSessionId) {
+      try {
+        this.sessionManager.touchSession(record.userSessionId);
+      } catch {}
+    }
+
     // Rilascio e pulizia dei file temporanei (RF-TRF-009, RNF-REL-005)
     for (const cleanup of record.cleanupHandlers) {
       try { await cleanup(); } catch {}
@@ -2004,6 +2019,54 @@ export class TransferService {
       }
     }
     return evicted;
+  }
+
+  /**
+   * Restituisce il numero di trasferimenti attivi (QUEUED, IN_PROGRESS, INTEGRITY_CHECKING)
+   * associati a una determinata sessione utente (Prompt #4).
+   */
+  public getActiveTransfersCountForSession(sessionId: string): number {
+    if (!sessionId) return 0;
+    let count = 0;
+    for (const record of this.transfers.values()) {
+      if (record.userSessionId === sessionId) {
+        if (
+          record.status === TransferStatus.QUEUED ||
+          record.status === TransferStatus.IN_PROGRESS ||
+          record.status === TransferStatus.INTEGRITY_CHECKING
+        ) {
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Restituisce il numero di trasferimenti attivi associati a un determinato utente (Prompt #4).
+   */
+  public getActiveTransfersCountForUser(userId: string): number {
+    if (!userId) return 0;
+    let count = 0;
+    for (const record of this.transfers.values()) {
+      if (record.userId === userId) {
+        if (
+          record.status === TransferStatus.QUEUED ||
+          record.status === TransferStatus.IN_PROGRESS ||
+          record.status === TransferStatus.INTEGRITY_CHECKING
+        ) {
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Restituisce true se vi è almeno un trasferimento attivo associato alla sessione (Prompt #4).
+   */
+  public hasActiveTransfersForSession(sessionId: string): boolean {
+    return this.getActiveTransfersCountForSession(sessionId) > 0;
   }
 
   private reconcileActiveCounts(): void {
@@ -2160,6 +2223,12 @@ export class TransferService {
       record.status = TransferStatus.FAILED;
     }
     record.completedAt = new Date();
+
+    if (record.userSessionId) {
+      try {
+        this.sessionManager.touchSession(record.userSessionId);
+      } catch {}
+    }
 
     let safeUserMsg = "Trasferimento file non riuscito.";
     let errorCode = ErrorCode.TRANSFER_INTERRUPTED;
@@ -2893,6 +2962,12 @@ export class TransferService {
   }
 
   private async recordAuditSuccess(record: TransferRecord): Promise<void> {
+    if (record.userSessionId) {
+      try {
+        this.sessionManager.touchSession(record.userSessionId);
+      } catch {}
+    }
+
     await this.auditRepository.record({
       userId: record.userId,
       operation: AuditOperation.TRANSFER_COMPLETE,

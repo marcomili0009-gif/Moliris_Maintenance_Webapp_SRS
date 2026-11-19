@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { apiClient } from "../services/api-client.ts";
 import { ErrorPresenter } from "../services/error-presenter.ts";
 import type { FormattedError } from "../types/error.ts";
@@ -27,6 +27,12 @@ const IDLE_STATE: TerminalState = {
 
 export function useTerminal() {
   const [terminalState, setTerminalState] = useState<TerminalState>(IDLE_STATE);
+  const [terminalIdleWarning, setTerminalIdleWarning] = useState<{
+    remainingSeconds: number;
+    remainingMinutes: number;
+    message: string;
+    robotId?: string;
+  } | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const wsSessionIdRef = useRef<string | null>(null);
@@ -235,12 +241,21 @@ export function useTerminal() {
               const parsed = JSON.parse(event.data);
               if (parsed.type === "terminal_idle_warning") {
                 handlers.onData(`\r\n\x1b[33m[Avviso: ${parsed.message}]\x1b[0m\r\n`);
+                const remainingSeconds = typeof parsed.remainingSeconds === "number" ? parsed.remainingSeconds : (parsed.remainingMinutes || 5) * 60;
+                setTerminalIdleWarning({
+                  remainingSeconds,
+                  remainingMinutes: parsed.remainingMinutes || Math.ceil(remainingSeconds / 60),
+                  message: parsed.message,
+                  robotId: parsed.robotId,
+                });
                 return;
               }
               if (parsed.type === "terminal_idle_reset") {
+                setTerminalIdleWarning(null);
                 return;
               }
               if (parsed.type === "session_closed") {
+                setTerminalIdleWarning(null);
                 serverClosedRef.current = true;
                 handlers.onData(
                   `\r\n\x1b[33m[${parsed.message || "Connessione terminale chiusa."}]\x1b[0m\r\n`
@@ -321,12 +336,45 @@ export function useTerminal() {
    * 3. resetta lo stato frontend e chiude il pannello.
    */
   const disconnectTerminal = useCallback(() => {
+    setTerminalIdleWarning(null);
     releaseCurrentConnection(true);
     setTerminalState(IDLE_STATE);
   }, [releaseCurrentConnection]);
 
+  /**
+   * Azione Conferma (CONFIRM) per avviso inattività terminale (Prompt #4).
+   * Invia messaggio di conferma sul WebSocket per azzerare il timer remoto e chiudere il pop-up.
+   */
+  const confirmTerminalIdle = useCallback(() => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(JSON.stringify({ type: "confirm_idle" }));
+      } catch {}
+    }
+    setTerminalIdleWarning(null);
+  }, []);
+
+  // Countdown timer locale per l'avviso inattività terminale (Prompt #4)
+  useEffect(() => {
+    if (!terminalIdleWarning) return;
+    const interval = setInterval(() => {
+      setTerminalIdleWarning((prev) => {
+        if (!prev) return null;
+        if (prev.remainingSeconds <= 1) {
+          return null;
+        }
+        return {
+          ...prev,
+          remainingSeconds: prev.remainingSeconds - 1,
+        };
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [terminalIdleWarning]);
+
   return {
     terminalState,
+    terminalIdleWarning,
     openTerminal,
     openServerTerminal,
     attachWebSocket,
@@ -334,5 +382,6 @@ export function useTerminal() {
     resize,
     closeTerminal: disconnectTerminal,
     disconnectTerminal,
+    confirmTerminalIdle,
   };
 }

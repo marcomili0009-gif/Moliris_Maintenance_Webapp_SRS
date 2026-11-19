@@ -16,10 +16,24 @@ export interface SessionData {
 
 export type SessionTerminationReason = "LOGOUT" | "EXPIRED" | "PASSWORD_RESET";
 
+export type ActiveTransferChecker = (sessionId: string, userId: string) => number;
+
 export type SessionTerminationListener = (
   sessionId: string,
   userId: string,
   reason: SessionTerminationReason
+) => void;
+
+export type SessionExpirationListener = (
+  session: SessionData,
+  reason: "IDLE_TIMEOUT" | "ABSOLUTE_TIMEOUT"
+) => void;
+
+export type SessionSuspensionListener = (
+  sessionId: string,
+  userId: string,
+  activeTransfers: number,
+  context: "sessione"
 ) => void;
 
 export class SessionLimitReachedError extends Error {
@@ -48,6 +62,10 @@ export interface AuthorizedContext {
 export class SessionManager {
   private sessions: Map<string, SessionData> = new Map();
   private terminationListeners: SessionTerminationListener[] = [];
+  private expirationListeners: SessionExpirationListener[] = [];
+  private suspensionListeners: SessionSuspensionListener[] = [];
+  private activeTransferChecker: ActiveTransferChecker | null = null;
+  private transferSuspendedSessions: Set<string> = new Set();
   private readonly timeoutMs: number;
   private readonly absoluteTimeoutMs?: number;
   private expiryTimer: NodeJS.Timeout | null = null;
@@ -104,11 +122,53 @@ export class SessionManager {
   }
 
   /**
+   * Registra il verificatore dei trasferimenti attivi per impedire la scadenza durante operazioni SFTP in corso (Prompt #4).
+   */
+  public setActiveTransferChecker(checker: ActiveTransferChecker): void {
+    this.activeTransferChecker = checker;
+  }
+
+  /**
+   * Registra un listener per gli eventi di scadenza sessione con dettaglio causa (Prompt #4).
+   */
+  public onSessionExpired(listener: SessionExpirationListener): void {
+    this.expirationListeners.push(listener);
+  }
+
+  /**
+   * Registra un listener per gli eventi di sospensione inattività dovuti a trasferimenti in corso (Prompt #4).
+   */
+  public onSessionSuspendedForTransfer(listener: SessionSuspensionListener): void {
+    this.suspensionListeners.push(listener);
+  }
+
+  /**
    * Scorre ed elimina tutte le sessioni scadute per inattività o per tetto assoluto.
+   * Se vi sono trasferimenti attivi, l'inattività viene sospesa e la sessione non scade (Prompt #4).
    */
   public purgeExpiredSessions(): void {
     const now = Date.now();
     for (const [sessionId, session] of Array.from(this.sessions.entries())) {
+      const activeTransfers = this.activeTransferChecker
+        ? this.activeTransferChecker(sessionId, session.userId)
+        : 0;
+
+      if (activeTransfers > 0) {
+        // Sospensione inattività: trasferimenti attivi in corso
+        session.lastActivityAt = new Date(now);
+        if (!this.transferSuspendedSessions.has(sessionId)) {
+          this.transferSuspendedSessions.add(sessionId);
+          for (const listener of this.suspensionListeners) {
+            try {
+              listener(sessionId, session.userId, activeTransfers, "sessione");
+            } catch {}
+          }
+        }
+        continue;
+      } else {
+        this.transferSuspendedSessions.delete(sessionId);
+      }
+
       const inactiveElapsed = now - session.lastActivityAt.getTime();
       const absoluteElapsed = now - session.createdAt.getTime();
 
@@ -117,6 +177,12 @@ export class SessionManager {
 
       if (isInactiveExpired || isAbsoluteExpired) {
         this.sessions.delete(sessionId);
+        const reasonDetail = isAbsoluteExpired ? "ABSOLUTE_TIMEOUT" : "IDLE_TIMEOUT";
+        for (const listener of this.expirationListeners) {
+          try {
+            listener(session, reasonDetail);
+          } catch {}
+        }
         this.notifyTermination(sessionId, session.userId, "EXPIRED");
       }
     }
@@ -166,6 +232,7 @@ export class SessionManager {
   /**
    * Valida l'esistenza e la validità temporale della sessione SENZA aggiornare lastActivityAt.
    * Se la sessione è scaduta per inattività o per timeout assoluto, viene invalidata e rimossa.
+   * Se vi sono trasferimenti attivi, l'inattività è sospesa (Prompt #4).
    */
   public validate(sessionId: string): SessionData | null {
     if (!sessionId) return null;
@@ -174,11 +241,26 @@ export class SessionManager {
     if (!session) return null;
 
     const now = Date.now();
+    const activeTransfers = this.activeTransferChecker
+      ? this.activeTransferChecker(sessionId, session.userId)
+      : 0;
+
+    if (activeTransfers > 0) {
+      session.lastActivityAt = new Date(now);
+      return structuredClone(session);
+    }
+
     const inactiveElapsed = now - session.lastActivityAt.getTime();
     const absoluteElapsed = now - session.createdAt.getTime();
 
     if (inactiveElapsed > this.timeoutMs || (this.absoluteTimeoutMs && absoluteElapsed > this.absoluteTimeoutMs)) {
       this.sessions.delete(sessionId);
+      const reasonDetail = this.absoluteTimeoutMs && absoluteElapsed > this.absoluteTimeoutMs ? "ABSOLUTE_TIMEOUT" : "IDLE_TIMEOUT";
+      for (const listener of this.expirationListeners) {
+        try {
+          listener(session, reasonDetail);
+        } catch {}
+      }
       this.notifyTermination(sessionId, session.userId, "EXPIRED");
       return null;
     }
@@ -190,6 +272,7 @@ export class SessionManager {
    * Rinnova il timestamp di ultima attività (lastActivityAt) per la sessione specificata.
    * Da invocare ESCLUSIVAMENTE a fronte di attività qualificate:
    * - Richieste API HTTP autenticate
+   * - Azione Conferma (CONFIRM) sul pop-up di inattività
    * - Input dell'utente sul WebSocket del terminale (tasti o resize)
    * - Avanzamento di un trasferimento file avviato dalla stessa sessione
    * NON contano: output del robot, polling di monitoraggio, heartbeat tecnici.
@@ -201,17 +284,54 @@ export class SessionManager {
     if (!session) return false;
 
     const now = Date.now();
+    const activeTransfers = this.activeTransferChecker
+      ? this.activeTransferChecker(sessionId, session.userId)
+      : 0;
+
+    if (activeTransfers > 0) {
+      session.lastActivityAt = new Date(now);
+      return true;
+    }
+
     const inactiveElapsed = now - session.lastActivityAt.getTime();
     const absoluteElapsed = now - session.createdAt.getTime();
 
     if (inactiveElapsed > this.timeoutMs || (this.absoluteTimeoutMs && absoluteElapsed > this.absoluteTimeoutMs)) {
       this.sessions.delete(sessionId);
+      const reasonDetail = this.absoluteTimeoutMs && absoluteElapsed > this.absoluteTimeoutMs ? "ABSOLUTE_TIMEOUT" : "IDLE_TIMEOUT";
+      for (const listener of this.expirationListeners) {
+        try {
+          listener(session, reasonDetail);
+        } catch {}
+      }
       this.notifyTermination(sessionId, session.userId, "EXPIRED");
       return false;
     }
 
     session.lastActivityAt = new Date(now);
     return true;
+  }
+
+  /**
+   * Restituisce i millisecondi rimanenti di inattività per la sessione,
+   * tenendo conto di eventuali trasferimenti in corso (Prompt #4).
+   */
+  public getRemainingInactivityMs(sessionId: string): { remainingMs: number; isSuspended: boolean; activeTransfers: number } | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    const now = Date.now();
+    const activeTransfers = this.activeTransferChecker
+      ? this.activeTransferChecker(sessionId, session.userId)
+      : 0;
+
+    if (activeTransfers > 0) {
+      return { remainingMs: this.timeoutMs, isSuspended: true, activeTransfers };
+    }
+
+    const elapsed = now - session.lastActivityAt.getTime();
+    const remainingMs = Math.max(0, this.timeoutMs - elapsed);
+    return { remainingMs, isSuspended: false, activeTransfers: 0 };
   }
 
   /**

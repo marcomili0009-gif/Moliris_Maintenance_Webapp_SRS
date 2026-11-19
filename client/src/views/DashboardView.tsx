@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import type { User } from "../types/auth.ts";
+import type { User, IdleWarningInfo } from "../types/auth.ts";
 import type { RobotSummaryDto, RegistrationOutcome } from "../types/fleet.ts";
 import type { BulkConflict } from "../types/transfer.ts";
 import { FleetTable } from "../components/fleet/FleetTable.tsx";
@@ -17,6 +17,7 @@ import { DeleteFolderModal, type DeleteFolderTarget } from "../components/common
 import { NotificationBanner } from "../components/common/NotificationBanner.tsx";
 import { Modal } from "../components/common/Modal.tsx";
 import { ToastHost, type ToastMessage } from "../components/common/ToastHost.tsx";
+import { IdleWarningModal } from "../components/common/IdleWarningModal.tsx";
 import { FleetFilterBar } from "../components/fleet/FleetFilterBar.tsx";
 
 import { useFleet } from "../hooks/useFleet.ts";
@@ -26,9 +27,12 @@ import { useTerminal } from "../hooks/useTerminal.ts";
 
 interface DashboardViewProps {
   user: User;
-  onLogout: () => Promise<void>;
+  onLogout: (context?: "sessione" | "terminale") => Promise<void>;
   idleWarning: string | null;
+  idleWarningInfo?: IdleWarningInfo | null;
+  onConfirmSession?: () => Promise<void>;
   onDismissIdleWarning: () => void;
+  setActiveTransfersCount?: (count: number) => void;
   goHomeTrigger?: number;
   activeMainView?: "fleet" | "files";
   onActiveMainViewChange?: (view: "fleet" | "files") => void;
@@ -36,9 +40,12 @@ interface DashboardViewProps {
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
   user,
-  onLogout: _onLogout,
+  onLogout,
   idleWarning,
+  idleWarningInfo,
+  onConfirmSession,
   onDismissIdleWarning,
+  setActiveTransfersCount,
   goHomeTrigger,
   activeMainView,
   onActiveMainViewChange,
@@ -116,6 +123,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     void transfers.syncNow();
     return result;
   };
+
+  // Notifica contatore trasferimenti attivi a useAuth per la sospensione dell'inattività (Prompt #4)
+  React.useEffect(() => {
+    setActiveTransfersCount?.(transfers.activeCount);
+  }, [transfers.activeCount, setActiveTransfersCount]);
 
   // Apre il filesystem dedicato di un robot elencato nella root aggregata dell'Archivio Generale.
   const handleOpenRobotFromGeneral = (robotId: string) => {
@@ -326,27 +338,57 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         }}
       />
 
-      {/* Avviso inattività modale */}
-      <Modal
-        id="modal-idle-warning"
-        isOpen={Boolean(idleWarning)}
-        onClose={onDismissIdleWarning}
-        title="Avviso di scadenza"
-        role="alertdialog"
-        ariaLabelledBy="idle-warning-title"
-        footer={
-          <button
-            type="button"
-            id="btn-dismiss-idle-warning"
-            className="btn btn-primary"
-            onClick={onDismissIdleWarning}
-          >
-            OK
-          </button>
-        }
-      >
-        <p id="idle-warning-message">{idleWarning}</p>
-      </Modal>
+      {/* Avviso inattività modale unificato (Prompt #4) */}
+      {(() => {
+        const isSessionWarning = Boolean(idleWarningInfo?.active || idleWarning);
+        const isTerminalWarning = !isSessionWarning && Boolean(terminal.terminalIdleWarning);
+        const isWarningModalOpen = isSessionWarning || isTerminalWarning;
+
+        const warningContext: "sessione" | "terminale" = isSessionWarning ? "sessione" : "terminale";
+        const warningRemainingSeconds = isSessionWarning
+          ? idleWarningInfo?.remainingSeconds ?? 300
+          : terminal.terminalIdleWarning?.remainingSeconds ?? 300;
+        const warningMessage = isSessionWarning
+          ? idleWarningInfo?.message || idleWarning || undefined
+          : terminal.terminalIdleWarning?.message;
+        const warningTargetName = isTerminalWarning
+          ? terminal.terminalState.robotName || terminal.terminalState.robotId || undefined
+          : undefined;
+
+        const handleConfirmIdle = async () => {
+          if (isSessionWarning) {
+            if (onConfirmSession) {
+              await onConfirmSession();
+            } else {
+              onDismissIdleWarning();
+            }
+          } else {
+            terminal.confirmTerminalIdle();
+            if (onConfirmSession) {
+              await onConfirmSession();
+            }
+          }
+        };
+
+        const handleLogoutIdle = async () => {
+          if (isTerminalWarning) {
+            terminal.disconnectTerminal();
+          }
+          await onLogout(warningContext);
+        };
+
+        return (
+          <IdleWarningModal
+            isOpen={isWarningModalOpen}
+            context={warningContext}
+            targetName={warningTargetName}
+            remainingSeconds={warningRemainingSeconds}
+            message={warningMessage}
+            onConfirm={handleConfirmIdle}
+            onLogout={handleLogoutIdle}
+          />
+        );
+      })()}
 
       <main className="dashboard-content">
         {/* Vista Flotta */}
@@ -626,6 +668,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {/* Modal Gestione File - Selezione Percorso Trasferimento (Prompt Correttivo #2) */}
       {fileManagementTarget && (
         <FileManagementModal
+          user={user}
           isOpen={Boolean(fileManagementTarget)}
           onClose={() => setFileManagementTarget(null)}
           sourceFileName={fileManagementTarget.fileName}

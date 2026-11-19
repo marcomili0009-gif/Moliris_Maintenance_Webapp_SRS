@@ -1164,6 +1164,61 @@ try {
   assert.strictEqual(isFleetActiveAfterHome, true, "Il click sul logo deve riportare alla Home (vista Flotta)");
   console.log("  PASS: AppNavbar logo funge da pulsante Home verso Flotta senza ricaricare la pagina.");
 
+  // Test Prompt #4: Modale avviso inattività, countdown, azioni Conferma ed Esci, e accessibilità
+  console.log("  -> Test Prompt #4: Verifica modale avviso inattività su Chrome (azioni Conferma/Esci, countdown, accessibilità)");
+  await evaluateInBrowser<void>(`
+    if (typeof window._molirisSimulateInactivity === 'function') {
+      window._molirisSimulateInactivity(28); // 28 minuti trascorsi su 30 -> 2 minuti rimanenti
+    }
+  `);
+  await new Promise((r) => setTimeout(r, 600));
+
+  const warningModal = await evaluateInBrowser<{
+    exists: boolean;
+    role: string | null;
+    hasCountdown: boolean;
+    hasConfirm: boolean;
+    confirmText: string | null;
+    hasLogout: boolean;
+    logoutText: string | null;
+  }>(`
+    (() => {
+      const modal = document.getElementById('modal-idle-warning');
+      const confirmBtn = document.getElementById('btn-idle-confirm');
+      const logoutBtn = document.getElementById('btn-idle-logout');
+      const countdown = document.getElementById('idle-warning-countdown');
+      return {
+        exists: Boolean(modal),
+        role: modal ? modal.getAttribute('role') : null,
+        hasCountdown: Boolean(countdown),
+        hasConfirm: Boolean(confirmBtn),
+        confirmText: confirmBtn ? confirmBtn.textContent.trim() : null,
+        hasLogout: Boolean(logoutBtn),
+        logoutText: logoutBtn ? logoutBtn.textContent.trim() : null,
+      };
+    })()
+  `);
+
+  assert.strictEqual(warningModal.exists, true, "Il modale di avviso inattività deve essere presente");
+  assert.strictEqual(warningModal.role, "alertdialog", "Il modale deve avere role='alertdialog'");
+  assert.strictEqual(warningModal.hasCountdown, true, "Deve essere presente il countdown");
+  assert.strictEqual(warningModal.hasConfirm, true, "Deve essere presente il pulsante Conferma");
+  assert.strictEqual(warningModal.confirmText, "Conferma");
+  assert.strictEqual(warningModal.hasLogout, true, "Deve essere presente il pulsante Esci");
+  assert.strictEqual(warningModal.logoutText, "Esci");
+
+  // Click su Conferma: chiude il pop-up e azzera il timer
+  await evaluateInBrowser<void>(`
+    document.getElementById('btn-idle-confirm').click();
+  `);
+  await new Promise((r) => setTimeout(r, 200));
+
+  const isIdleModalClosed = await evaluateInBrowser<boolean>(
+    "!document.getElementById('modal-idle-warning')"
+  );
+  assert.strictEqual(isIdleModalClosed, true, "Il click su Conferma deve chiudere il pop-up");
+  console.log("  PASS: Modale avviso inattività (countdown, Conferma, Esci, chiusura e accessibilità) verificato su Chrome.");
+
   // Test Route /assets per file .png con Content-Type image/png
   console.log("  -> Test Route /assets: verifica Content-Type image/png per file .png");
   const distAssetsDir = path.join(import.meta.dirname, "..", "dist", "frontend", "assets");

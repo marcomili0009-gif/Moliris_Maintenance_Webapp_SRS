@@ -77,9 +77,16 @@ export class ApiClient {
         headers,
       });
 
-      const isAutomaticStatusPolling =
-        options.method === "GET" && /^\/api\/robots\/[^/]+\/status(?:\?.*)?$/.test(endpoint);
-      if (!isAutomaticStatusPolling) {
+      const isAutomaticBackgroundCall =
+        (options.method === "GET" && /^\/api\/robots(?:\?.*)?$/.test(endpoint)) ||
+        (options.method === "GET" && /^\/api\/robots\/[^/]+\/status(?:\?.*)?$/.test(endpoint)) ||
+        (options.method === "GET" && /^\/api\/config\/public(?:\?.*)?$/.test(endpoint)) ||
+        (options.method === "GET" && /^\/api\/auth\/me(?:\?.*)?$/.test(endpoint)) ||
+        (options.method === "GET" && /^\/api\/transfers(?:\/.*)?(?:\?.*)?$/.test(endpoint)) ||
+        (options.method === "GET" && /^\/api\/robots\/[^/]+\/transfers(?:\?.*)?$/.test(endpoint)) ||
+        (options.method === "POST" && /^\/api\/auth\/session\/warning(?:\?.*)?$/.test(endpoint));
+
+      if (!isAutomaticBackgroundCall) {
         this.notifyQualifiedActivity();
       }
 

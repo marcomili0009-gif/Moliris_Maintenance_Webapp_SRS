@@ -116,8 +116,18 @@ const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) =>
           sftp.name(reqid, [{ filename: p || "/" }]);
         });
 
-        sftp.on("STAT", (reqid, p) => {
+        const handleStat = (reqid: number, p: string) => {
           const normP = path.posix.normalize(p || "");
+          if (normP === "/remote" || normP === "/" || normP === "." || normP === "/home" || normP === "/home/robots") {
+            return sftp.attrs(reqid, {
+              mode: 0o040755,
+              size: 4096,
+              uid: 1000,
+              gid: 1000,
+              atime: Math.floor(Date.now() / 1000),
+              mtime: Math.floor(Date.now() / 1000),
+            } as any);
+          }
           if (writtenFileSizes.has(normP)) {
             return sftp.attrs(reqid, {
               mode: 0o100644,
@@ -149,7 +159,10 @@ const mockSshServer = new ssh2.Server({ hostKeys: [serverHostKey] }, (client) =>
           } else {
             sftp.status(reqid, 2 /* SSH_FX_NO_SUCH_FILE */);
           }
-        });
+        };
+
+        sftp.on("STAT", handleStat);
+        sftp.on("LSTAT", handleStat);
 
         sftp.on("OPEN", (reqid, filename, flags) => {
           const hId = `h_${++handleCounter}`;
