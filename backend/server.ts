@@ -1,6 +1,6 @@
 // Requisiti soddisfatti: RNF-SEC-001, SRS §2.4 vincolo 3, §5.1, §5.2, RF-AUTH-001..006
 
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -478,7 +478,7 @@ export function createServer(
   // Servizio statico del frontend client React compatibile Google Chrome (§2.5, §5.1, RNF-UX-002/003)
   const distFrontendDir = resolveFrontendDistDir();
 
-  app.get("/", async (_request, reply) => {
+  const serveIndex = async (_request: FastifyRequest, reply: FastifyReply) => {
     const indexPath = path.join(distFrontendDir, "index.html");
     if (fs.existsSync(indexPath)) {
       reply
@@ -490,7 +490,10 @@ export function createServer(
     } else {
       reply.status(404).send("Frontend React non trovato. Eseguire 'npm run build:client'.");
     }
-  });
+  };
+
+  app.get("/", serveIndex);
+  app.get("/index.html", serveIndex);
 
   app.get("/react", async (_request, reply) => {
     return reply.redirect("/");
@@ -503,6 +506,7 @@ export function createServer(
     }
     const filePath = path.join(distFrontendDir, "assets", filename);
     if (fs.existsSync(filePath)) {
+      reply.header("Cache-Control", "public, max-age=31536000, immutable");
       if (filename.endsWith(".js")) reply.type("application/javascript");
       else if (filename.endsWith(".css")) reply.type("text/css");
       else if (filename.endsWith(".svg")) reply.type("image/svg+xml");
