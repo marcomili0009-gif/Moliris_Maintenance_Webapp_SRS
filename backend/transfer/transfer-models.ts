@@ -149,6 +149,8 @@ export interface TransferRecord {
   lastBytesAtUpdate: number;
   abortController: AbortController;
   cleanupHandlers: (() => Promise<void>)[];
+  /** Richiesta originale (solo Server ↔ Robot) per consentire Riprova/Riprendi (RF-TRF-010). */
+  originalRequest?: Omit<StartServerRobotTransferRequest, "onAccepted" | "onQueued">;
 }
 
 /**
@@ -161,6 +163,14 @@ export interface StartServerRobotTransferRequest {
   overwrite?: boolean;
   confirmed?: boolean;
   expectedChecksum?: string;
+  /**
+   * Hook interni (non serializzabili via JSON), usati dalla route in modalità background:
+   * - onQueued: record registrato e già visibile in lista (stato QUEUED);
+   * - onAccepted: controlli preliminari superati (destinazione esistente/scrivibile, spazio,
+   *   politica di sovrascrittura) e flusso dati in procinto di partire.
+   */
+  onQueued?: (dto: TransferDto) => void;
+  onAccepted?: (dto: TransferDto) => void;
 }
 
 /**

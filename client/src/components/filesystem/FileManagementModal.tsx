@@ -1,20 +1,25 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { useAuth } from "../../hooks/useAuth.ts";
 import { apiClient } from "../../services/api-client.ts";
 import { ErrorPresenter } from "../../services/error-presenter.ts";
 import { StateFormatter } from "../../services/state-formatter.ts";
 import type { DirectoryItem, PathVerificationResult } from "../../types/filesystem.ts";
+import type { TransferStartResult } from "../../types/transfer.ts";
 
 export interface FileManagementModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onConfirm: (destinationPath: string) => Promise<boolean | void>;
+  /** Avvia il trasferimento verso la cartella scelta; la modale si chiude solo se `ok`. */
+  onConfirm: (destinationPath: string, options: { overwrite: boolean }) => Promise<TransferStartResult>;
   sourceFileName: string;
   sourceFileSize?: number;
   sourceType: "server" | "remote"; // "server" -> destinazione Robot; "remote" -> destinazione Server
   robotId: string;
   robotName?: string;
+  /** Percorso iniziale; vuoto = home dell'utente SSH (robot) o radice (server). */
   initialPath?: string;
+  /** Utente con ruolo operatore: limitato a `allowedPaths`. */
+  isOperator?: boolean;
+  allowedPaths?: string[];
 }
 
 // Confronto componenti percorso per controllo client-side operatore
@@ -30,6 +35,15 @@ const isPathAllowedForUser = (candidate: string, allowedRoots: string[]): boolea
   });
 };
 
+const normalizeClientPath = (raw: string): string => {
+  let p = raw.trim().replace(/\\/g, "/");
+  if (!p) return "";
+  if (!p.startsWith("/")) p = "/" + p;
+  p = p.replace(/\/\.(?=\/|$)/g, "").replace(/\/+/g, "/");
+  if (p.length > 1) p = p.replace(/\/+$/, "");
+  return p || "/";
+};
+
 export const FileManagementModal: React.FC<FileManagementModalProps> = ({
   isOpen,
   onClose,
@@ -39,179 +53,183 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
   sourceType,
   robotId,
   robotName,
-  initialPath = "/",
+  initialPath = "",
+  isOperator = false,
+  allowedPaths,
 }) => {
-  const { currentUser } = useAuth();
-  const isOperator = currentUser?.roles.includes("operatore") ?? false;
-  const operatorAllowedPaths = currentUser?.allowedPaths;
-
   const modalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Navigazione browser
-  const [currentBrowserPath, setCurrentBrowserPath] = useState<string>(initialPath || "/");
+  // Valori "volatili" letti solo all'apertura: non devono rilanciare il caricamento se cambiano.
+  const initialPathRef = useRef(initialPath);
+  initialPathRef.current = initialPath;
+  const operatorRootsRef = useRef<string[] | undefined>(isOperator ? allowedPaths : undefined);
+  operatorRootsRef.current = isOperator ? allowedPaths : undefined;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  // Anti-race: solo l'ultima richiesta di navigazione/verifica può aggiornare lo stato.
+  const navRequestId = useRef(0);
+  const verifyRequestId = useRef(0);
+
+  const [currentBrowserPath, setCurrentBrowserPath] = useState<string>("");
   const [directories, setDirectories] = useState<DirectoryItem[]>([]);
   const [parentPath, setParentPath] = useState<string | null>(null);
   const [isLoadingDirs, setIsLoadingDirs] = useState<boolean>(false);
   const [browserError, setBrowserError] = useState<string | null>(null);
 
-  // Inserimento manuale path & verifica
-  const [manualPath, setManualPath] = useState<string>(initialPath || "/");
+  const [manualPath, setManualPath] = useState<string>("");
   const [clientValidationError, setClientValidationError] = useState<string | null>(null);
-  const [verificationResult, setVerificationResult] = useState<PathVerificationResult | null>(null);
+  const [verification, setVerification] = useState<{ path: string; result: PathVerificationResult } | null>(null);
   const [isVerifying, setIsVerifying] = useState<boolean>(false);
 
-  // Stato submit (anti-doppio clic)
+  const [overwrite, setOverwrite] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const submittingRef = useRef(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  // Normalizza percorso lato client
-  const normalizeClientPath = (raw: string): string => {
-    let p = raw.trim();
-    if (!p) return "/";
-    p = p.replace(/\\/g, "/");
-    if (!p.startsWith("/")) p = "/" + p;
-    // Rimuovi /./ e // multipli
-    p = p.replace(/\/\.\//g, "/");
-    p = p.replace(/\/+/g, "/");
-    return p;
-  };
-
-  // Validazione sintattica client-side
-  const validateSyntax = (p: string): string | null => {
-    if (!p || p.trim() === "") {
-      return "Il percorso non può essere vuoto.";
-    }
-    if (p.includes("\0")) {
-      return "Il percorso contiene byte nulli o caratteri non consentiti.";
-    }
-    if (p.length > 4096) {
-      return "La lunghezza del percorso supera il limite di 4096 caratteri.";
-    }
-    if (!p.trim().startsWith("/")) {
-      return "Il percorso deve essere assoluto e iniziare con '/'.";
-    }
+  const validateSyntax = useCallback((p: string): string | null => {
+    if (!p || p.trim() === "") return "Il percorso non può essere vuoto.";
+    if (p.includes("\0")) return "Il percorso contiene byte nulli o caratteri non consentiti.";
+    if (p.length > 4096) return "La lunghezza del percorso supera il limite di 4096 caratteri.";
     if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(p) || /%2e%2e/i.test(p)) {
       return "Attraversamento directory ('..') non consentito.";
     }
-    if (isOperator && operatorAllowedPaths && operatorAllowedPaths.length > 0) {
-      if (!isPathAllowedForUser(p, operatorAllowedPaths)) {
-        return "Accesso non consentito: la cartella richiesta è esterna ai percorsi autorizzati per l'operatore.";
-      }
+    const roots = operatorRootsRef.current;
+    if (roots && roots.length > 0 && !isPathAllowedForUser(p, roots)) {
+      return "Accesso non consentito: la cartella richiesta è esterna ai percorsi autorizzati per l'operatore.";
     }
     return null;
-  };
+  }, []);
 
-  // Caricamento elenco sole directory dal server/robot
-  const fetchDirectories = useCallback(
-    async (pathParam: string) => {
-      setIsLoadingDirs(true);
-      setBrowserError(null);
-      try {
-        const endpoint =
-          sourceType === "server"
-            ? `/api/robots/${encodeURIComponent(robotId)}/fs/remote/directories?path=${encodeURIComponent(pathParam)}`
-            : `/api/robots/${encodeURIComponent(robotId)}/fs/server/directories?path=${encodeURIComponent(pathParam)}`;
-
-        const res = await apiClient.get(endpoint);
-        const data = await res.json();
-        if (res.ok) {
-          setCurrentBrowserPath(data.currentPath || pathParam);
-          setParentPath(data.parentPath !== undefined ? data.parentPath : null);
-          setDirectories(Array.isArray(data.directories) ? data.directories : []);
-        } else {
-          const errFormatted = ErrorPresenter.formatError(data);
-          setBrowserError(errFormatted.userMessage || "Impossibile caricare le directory.");
-          setDirectories([]);
-        }
-      } catch (err: any) {
-        const errFormatted = ErrorPresenter.formatError(err);
-        setBrowserError(errFormatted.userMessage || "Errore di connessione durante la lettura delle cartelle.");
-        setDirectories([]);
-      } finally {
-        setIsLoadingDirs(false);
-      }
-    },
-    [sourceType, robotId]
-  );
-
-  // Verifica esistenza e scrivibilità lato server del percorso
-  const verifyPathOnServer = useCallback(
-    async (candidate: string) => {
+  /** Verifica esistenza, tipo e permessi di scrittura reali (SFTP stat / probe di scrittura). */
+  const verifyPath = useCallback(
+    async (candidate: string): Promise<PathVerificationResult | null> => {
+      const reqId = ++verifyRequestId.current;
       const syntaxErr = validateSyntax(candidate);
       if (syntaxErr) {
         setClientValidationError(syntaxErr);
-        setVerificationResult(null);
-        return;
+        setVerification(null);
+        setIsVerifying(false);
+        return null;
       }
       setClientValidationError(null);
       setIsVerifying(true);
-
+      let result: PathVerificationResult;
       try {
         const endpoint =
           sourceType === "server"
-            ? `/api/robots/${encodeURIComponent(robotId)}/fs/remote/verify-path`
+            ? `/api/robots/${encodeURIComponent(robotId)}/sftp/validate-path`
             : `/api/robots/${encodeURIComponent(robotId)}/fs/server/verify-path`;
-
         const res = await apiClient.post(endpoint, { path: candidate });
-        const data = await res.json();
-        if (res.ok) {
-          setVerificationResult(data);
-        } else {
-          setVerificationResult({
-            valid: false,
-            exists: false,
-            isDirectory: false,
-            isWritable: false,
-            resolvedPath: candidate,
-            error: data.message || "Percorso non valido o non verificabile.",
-          });
-        }
-      } catch (err: any) {
-        setVerificationResult({
+        const data = await res.json().catch(() => ({}));
+        result = res.ok
+          ? (data as PathVerificationResult)
+          : {
+              valid: false,
+              exists: false,
+              isDirectory: false,
+              isWritable: false,
+              resolvedPath: candidate,
+              error: ErrorPresenter.formatError(data).userMessage || "Percorso non valido o non verificabile.",
+            };
+      } catch {
+        result = {
           valid: false,
           exists: false,
           isDirectory: false,
           isWritable: false,
           resolvedPath: candidate,
           error: "Errore di comunicazione durante la verifica del percorso.",
-        });
-      } finally {
-        setIsVerifying(false);
+        };
       }
+      if (reqId !== verifyRequestId.current) return null; // risposta superata
+      setVerification({ path: candidate, result });
+      setIsVerifying(false);
+      return result;
     },
-    [sourceType, robotId]
+    [sourceType, robotId, validateSyntax]
   );
 
-  // Inizializzazione all'apertura
-  useEffect(() => {
-    if (isOpen) {
-      let startPath = initialPath || "/";
-      if (isOperator && operatorAllowedPaths && operatorAllowedPaths.length > 0) {
-        if (!isPathAllowedForUser(startPath, operatorAllowedPaths)) {
-          const firstRoot = operatorAllowedPaths[0];
-          startPath = firstRoot.startsWith("/") ? firstRoot : "/" + firstRoot;
+  /**
+   * Naviga (e verifica) una cartella. Unico punto di caricamento dell'elenco: viene chiamato solo da
+   * azioni esplicite (apertura, click riga/breadcrumb/Livello superiore, Invio/Esplora).
+   * Un percorso vuoto = cartella di partenza (home SSH per il robot).
+   */
+  const navigateTo = useCallback(
+    async (pathParam: string) => {
+      const reqId = ++navRequestId.current;
+      setIsLoadingDirs(true);
+      setBrowserError(null);
+      let resolved = pathParam;
+      try {
+        const query = pathParam ? `?path=${encodeURIComponent(pathParam)}` : "";
+        const endpoint =
+          sourceType === "server"
+            ? `/api/robots/${encodeURIComponent(robotId)}/fs/remote/directories${query}`
+            : `/api/robots/${encodeURIComponent(robotId)}/fs/server/directories${query}`;
+        const res = await apiClient.get(endpoint);
+        const data = await res.json().catch(() => ({}));
+        if (reqId !== navRequestId.current) return;
+        if (res.ok) {
+          resolved = data.currentPath || pathParam || "/";
+          setCurrentBrowserPath(resolved);
+          setParentPath(data.parentPath !== undefined ? data.parentPath : null);
+          setDirectories(Array.isArray(data.directories) ? data.directories : []);
+        } else {
+          setBrowserError(ErrorPresenter.formatError(data).userMessage || "Impossibile caricare le directory.");
+          setDirectories([]);
         }
+      } catch (err) {
+        if (reqId !== navRequestId.current) return;
+        setBrowserError(
+          ErrorPresenter.formatError(err).userMessage || "Errore di connessione durante la lettura delle cartelle."
+        );
+        setDirectories([]);
+      } finally {
+        if (reqId === navRequestId.current) setIsLoadingDirs(false);
       }
-      setCurrentBrowserPath(startPath);
-      setManualPath(startPath);
-      setSubmitError(null);
-      setIsSubmitting(false);
-      fetchDirectories(startPath);
-      verifyPathOnServer(startPath);
-    }
-  }, [isOpen, initialPath, isOperator, operatorAllowedPaths, fetchDirectories, verifyPathOnServer]);
+      if (reqId !== navRequestId.current) return;
+      if (resolved) {
+        setManualPath(resolved);
+        await verifyPath(resolved);
+      }
+    },
+    [sourceType, robotId, verifyPath]
+  );
 
-  // Gestione focus trap e tasto Escape
+  // Caricamento iniziale: SOLO all'apertura (o cambio robot/direzione), mai per re-render del padre.
   useEffect(() => {
     if (!isOpen) return;
+    let startPath = normalizeClientPath(initialPathRef.current);
+    const roots = operatorRootsRef.current;
+    if (roots && roots.length > 0 && (!startPath || !isPathAllowedForUser(startPath, roots))) {
+      startPath = normalizeClientPath(roots[0]);
+    }
+    setCurrentBrowserPath(startPath);
+    setManualPath(startPath);
+    setVerification(null);
+    setClientValidationError(null);
+    setSubmitError(null);
+    setOverwrite(false);
+    setIsSubmitting(false);
+    submittingRef.current = false;
+    void navigateTo(startPath);
+    return () => {
+      // Invalida eventuali risposte in volo alla chiusura.
+      navRequestId.current++;
+      verifyRequestId.current++;
+    };
+  }, [isOpen, robotId, sourceType, navigateTo]);
 
+  // Focus trap e tasto Escape (listener registrato una volta per apertura)
+  useEffect(() => {
+    if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (!isSubmitting) onClose();
+        if (!submittingRef.current) onCloseRef.current();
         return;
       }
-
       if (e.key === "Tab" && modalRef.current) {
         const focusable = modalRef.current.querySelectorAll<HTMLElement>(
           'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
@@ -219,7 +237,6 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
         if (focusable.length === 0) return;
         const first = focusable[0];
         const last = focusable[focusable.length - 1];
-
         if (e.shiftKey && document.activeElement === first) {
           last.focus();
           e.preventDefault();
@@ -229,94 +246,89 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
         }
       }
     };
-
     window.addEventListener("keydown", handleKeyDown);
-    // Focus automatico sul campo input
-    setTimeout(() => inputRef.current?.focus(), 50);
-
+    inputRef.current?.focus();
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, isSubmitting, onClose]);
+  }, [isOpen]);
 
-  // Debounce per verifica manuale
-  useEffect(() => {
-    if (!isOpen) return;
-    const timer = setTimeout(() => {
-      if (manualPath.trim()) {
-        verifyPathOnServer(manualPath.trim());
-      }
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [manualPath, isOpen, verifyPathOnServer]);
-
-  // Navigazione a una sottocartella tramite browser
   const handleNavigateSubfolder = (folderPath: string) => {
-    const norm = normalizeClientPath(folderPath);
-    setCurrentBrowserPath(norm);
-    setManualPath(norm);
-    fetchDirectories(norm);
-    verifyPathOnServer(norm);
-  };
-
-  // Navigazione livello superiore
-  const handleNavigateUp = () => {
-    if (parentPath !== null) {
-      const target = parentPath || "/";
-      setCurrentBrowserPath(target);
-      setManualPath(target);
-      fetchDirectories(target);
-      verifyPathOnServer(target);
+    if (isSubmitting) return;
+    const norm = normalizeClientPath(folderPath) || "/";
+    const err = validateSyntax(norm);
+    if (err) {
+      setClientValidationError(err);
+      return;
     }
+    setManualPath(norm);
+    void navigateTo(norm);
   };
 
-  // Selezione esplicita della cartella corrente visualizzata nel browser
-  const handleSelectCurrentBrowserFolder = () => {
-    setManualPath(currentBrowserPath);
-    verifyPathOnServer(currentBrowserPath);
+  const handleNavigateUp = () => {
+    if (isSubmitting || parentPath === null) return;
+    handleNavigateSubfolder(parentPath || "/");
   };
 
-  // Modifica manuale del testo del percorso
+  // Invio / pulsante Esplora: sincronizza browser e verifica sul percorso digitato
+  const handleManualPathCommit = () => {
+    if (isSubmitting) return;
+    const norm = normalizeClientPath(manualPath);
+    const err = validateSyntax(norm);
+    if (err) {
+      setClientValidationError(err);
+      return;
+    }
+    setClientValidationError(null);
+    setManualPath(norm);
+    void navigateTo(norm);
+  };
+
   const handleManualPathChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setManualPath(val);
-    const syntaxErr = validateSyntax(val);
-    setClientValidationError(syntaxErr);
+    setSubmitError(null);
+    setClientValidationError(val.trim() ? validateSyntax(normalizeClientPath(val)) : null);
   };
 
-  // Sincronizzazione da manuale verso browser al tasto Invio o blur
-  const handleManualPathCommit = () => {
-    if (!clientValidationError && manualPath.trim()) {
-      const norm = normalizeClientPath(manualPath);
-      setCurrentBrowserPath(norm);
-      fetchDirectories(norm);
-    }
-  };
+  const manualNormalized = normalizeClientPath(manualPath);
+  const verificationForCurrent =
+    verification && verification.path === manualNormalized ? verification.result : null;
+  const isNotWritable =
+    verificationForCurrent !== null &&
+    (!verificationForCurrent.valid ||
+      !verificationForCurrent.exists ||
+      !verificationForCurrent.isDirectory ||
+      !verificationForCurrent.isWritable);
 
-  // Conferma trasferimento
   const handleConfirm = async () => {
-    if (isSubmitting) return;
-
-    const syntaxErr = validateSyntax(manualPath);
+    if (submittingRef.current) return;
+    const candidate = manualNormalized;
+    const syntaxErr = validateSyntax(candidate);
     if (syntaxErr) {
       setClientValidationError(syntaxErr);
       return;
     }
-
-    if (!verificationResult || !verificationResult.valid || !verificationResult.exists || !verificationResult.isWritable) {
-      setSubmitError("Selezionare o inserire una cartella di destinazione valida ed esistente con permessi di scrittura.");
-      return;
-    }
-
+    submittingRef.current = true;
     setIsSubmitting(true);
     setSubmitError(null);
     try {
-      const outcome = await onConfirm(verificationResult.resolvedPath || manualPath.trim());
-      if (outcome !== false) {
-        onClose();
+      let result = verificationForCurrent;
+      if (!result) result = await verifyPath(candidate);
+      if (!result || !result.valid || !result.exists || !result.isDirectory || !result.isWritable) {
+        setSubmitError(
+          "Selezionare una cartella di destinazione esistente con permessi di scrittura per l'utente SSH."
+        );
+        return;
       }
-    } catch (err: any) {
-      const errFormatted = ErrorPresenter.formatError(err);
-      setSubmitError(errFormatted.userMessage || "Errore durante l'avvio del trasferimento.");
+      const outcome = await onConfirm(result.resolvedPath || candidate, { overwrite });
+      if (outcome.ok) {
+        onCloseRef.current();
+      } else {
+        setSubmitError(outcome.error || "Impossibile avviare il trasferimento.");
+      }
+    } catch (err) {
+      setSubmitError(ErrorPresenter.formatError(err).userMessage || "Errore durante l'avvio del trasferimento.");
     } finally {
+      submittingRef.current = false;
       setIsSubmitting(false);
     }
   };
@@ -329,22 +341,13 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
       : `Server: Cartella associata al robot ${robotName ? `${robotName} (${robotId})` : robotId}`;
 
   const isConfirmDisabled =
-    isSubmitting ||
-    Boolean(clientValidationError) ||
-    isVerifying ||
-    !verificationResult ||
-    !verificationResult.valid ||
-    !verificationResult.exists ||
-    !verificationResult.isDirectory ||
-    !verificationResult.isWritable;
+    isSubmitting || isVerifying || isLoadingDirs || Boolean(clientValidationError) || !manualNormalized || isNotWritable;
 
-  // Costruzione segmenti breadcrumb
   const breadcrumbSegments = currentBrowserPath
     .split("/")
     .filter(Boolean)
     .reduce<Array<{ name: string; fullPath: string }>>((acc, seg, idx, arr) => {
-      const fullPath = "/" + arr.slice(0, idx + 1).join("/");
-      acc.push({ name: seg, fullPath });
+      acc.push({ name: seg, fullPath: "/" + arr.slice(0, idx + 1).join("/") });
       return acc;
     }, []);
 
@@ -361,7 +364,6 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
       }}
     >
       <div className="modal-content modal-large" style={{ maxWidth: 760 }}>
-        {/* Header */}
         <div className="modal-header">
           <h3 id="file-management-title" className="h5 fw-bold mb-0">
             Gestione File – Percorso di Trasferimento
@@ -376,9 +378,7 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
           />
         </div>
 
-        {/* Body */}
         <div className="modal-body">
-          {/* 1. Scheda dettagli file e destinazione */}
           <div className="card mb-3 bg-light border">
             <div className="card-body p-3">
               <div className="row g-2">
@@ -396,7 +396,7 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
                 </div>
                 <div className="col-12 mt-2">
                   <span className="text-secondary small d-block">Destinazione Trasferimento:</span>
-                  <span id="file-mgmt-target-desc" className="badge badge-info p-2 text-wrap text-start">
+                  <span id="file-mgmt-target-desc" className="fm-target-badge">
                     {targetDescription}
                   </span>
                 </div>
@@ -404,7 +404,6 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
             </div>
           </div>
 
-          {/* 2. Campo di testo inserimento manuale con validazione real-time */}
           <div className="mb-3">
             <label htmlFor="input-manual-path" className="form-label fw-bold mb-1">
               Percorso di Destinazione (Path):
@@ -416,16 +415,11 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
                 id="input-manual-path"
                 name="manualPath"
                 className={`form-control ${
-                  clientValidationError || (verificationResult && !verificationResult.isWritable)
-                    ? "is-invalid"
-                    : verificationResult?.isWritable
-                    ? "is-valid"
-                    : ""
+                  clientValidationError || isNotWritable ? "is-invalid" : verificationForCurrent ? "is-valid" : ""
                 }`}
-                placeholder="/es. cartella/destinazione"
+                placeholder="/home/utente/cartella"
                 value={manualPath}
                 onChange={handleManualPathChange}
-                onBlur={handleManualPathCommit}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
@@ -434,21 +428,22 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
                 }}
                 disabled={isSubmitting}
                 aria-describedby="manual-path-feedback"
+                autoComplete="off"
+                spellCheck={false}
               />
               <button
                 type="button"
                 className="btn btn-outline-secondary"
                 id="btn-sync-browser-to-manual"
-                title="Sincronizza browser sulla cartella digitata"
+                title="Apri nel browser la cartella digitata e verificane i permessi"
                 onClick={handleManualPathCommit}
-                disabled={isSubmitting || Boolean(clientValidationError)}
+                disabled={isSubmitting || isLoadingDirs || Boolean(clientValidationError)}
               >
                 Esplora
               </button>
             </div>
 
-            {/* Feedback di validazione sintattica e verifica server */}
-            <div id="manual-path-feedback" className="mt-1 small">
+            <div id="manual-path-feedback" className="mt-1 small" aria-live="polite">
               {clientValidationError && (
                 <div className="text-danger fw-semibold" id="feedback-client-error">
                   {clientValidationError}
@@ -460,23 +455,30 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
                   Verifica esistenza e permessi del percorso in corso...
                 </div>
               )}
-              {!isVerifying && verificationResult && !clientValidationError && (
-                <div>
-                  {verificationResult.valid && verificationResult.exists && verificationResult.isWritable ? (
-                    <div className="text-success fw-semibold" id="feedback-valid-path">
-                      Cartella valida, esistente e scrivibile.
-                    </div>
-                  ) : (
-                    <div className="text-danger fw-semibold" id="feedback-server-error">
-                      {verificationResult.error || "Percorso non valido o privo di permessi di scrittura."}
-                    </div>
-                  )}
+              {!isVerifying && !clientValidationError && verificationForCurrent && (
+                verificationForCurrent.valid &&
+                verificationForCurrent.exists &&
+                verificationForCurrent.isDirectory &&
+                verificationForCurrent.isWritable ? (
+                  <div className="text-success fw-semibold" id="feedback-valid-path">
+                    Cartella valida, esistente e scrivibile.
+                  </div>
+                ) : (
+                  <div className="fm-warning" id="feedback-server-error" role="alert">
+                    {verificationForCurrent.exists && verificationForCurrent.isDirectory
+                      ? "Directory di sola lettura o permessi insufficienti per l'utente SSH: seleziona una cartella scrivibile come /home/<utente>."
+                      : verificationForCurrent.error || "Percorso non valido o inesistente."}
+                  </div>
+                )
+              )}
+              {!isVerifying && !clientValidationError && !verificationForCurrent && manualNormalized && (
+                <div className="text-muted" id="feedback-pending">
+                  Premi Invio o Esplora per aprire e verificare la cartella.
                 </div>
               )}
             </div>
           </div>
 
-          {/* 3. Browser visivo di selezione cartelle */}
           <div className="card border">
             <div className="card-header bg-white d-flex align-items-center justify-content-between p-2 flex-wrap gap-2">
               <div className="d-flex align-items-center gap-2 flex-grow-1">
@@ -485,7 +487,7 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
                   id="btn-browser-up"
                   className="btn btn-outline-secondary btn-sm"
                   onClick={handleNavigateUp}
-                  disabled={isSubmitting || parentPath === null || currentBrowserPath === "/"}
+                  disabled={isSubmitting || isLoadingDirs || parentPath === null}
                   title="Torna alla cartella superiore"
                 >
                   Livello superiore (..)
@@ -494,7 +496,7 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
                   <ol className="breadcrumb mb-0 py-1 px-2 bg-light rounded" style={{ fontSize: "0.85rem" }}>
                     <li className={`breadcrumb-item ${breadcrumbSegments.length === 0 ? "active" : ""}`}>
                       {breadcrumbSegments.length === 0 ? (
-                        <strong>/ (root)</strong>
+                        <strong>/</strong>
                       ) : (
                         <button
                           type="button"
@@ -526,25 +528,20 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
                   </ol>
                 </nav>
               </div>
-
               <button
                 type="button"
                 id="btn-select-current-dir"
                 className="btn btn-outline-primary btn-sm"
                 title="Seleziona la cartella attualmente visualizzata nel browser"
-                onClick={handleSelectCurrentBrowserFolder}
-                disabled={isSubmitting}
+                onClick={() => currentBrowserPath && handleNavigateSubfolder(currentBrowserPath)}
+                disabled={isSubmitting || isLoadingDirs || !currentBrowserPath}
               >
                 Seleziona questa cartella
               </button>
             </div>
 
-            {/* Lista directory caricate */}
-            <div
-              className="card-body p-0"
-              style={{ maxHeight: 220, minHeight: 140, overflowY: "auto", position: "relative" }}
-            >
-              {isLoadingDirs ? (
+            <div className="card-body p-0" style={{ maxHeight: 220, minHeight: 140, overflowY: "auto", position: "relative" }}>
+              {isLoadingDirs && directories.length === 0 && !browserError ? (
                 <div className="p-4 text-center text-muted">
                   <div className="spinner-border spinner-border-sm mb-2" role="status" />
                   <div>Caricamento elenco directory...</div>
@@ -555,24 +552,46 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
                 </div>
               ) : directories.length === 0 ? (
                 <div className="p-4 text-center text-muted" id="browser-empty-msg">
-                  Nessuna sottocartella presente in questo percorso.
+                  Cartella vuota: nessuna sottocartella in questo percorso.
                 </div>
               ) : (
-                <ul className="list-group list-group-flush mb-0" id="browser-dirs-list">
+                <ul
+                  className="list-group list-group-flush mb-0"
+                  id="browser-dirs-list"
+                  style={{ opacity: isLoadingDirs ? 0.55 : 1 }}
+                >
                   {directories.map((dir) => (
                     <li
                       key={dir.path}
                       className="list-group-item list-group-item-action d-flex align-items-center justify-content-between py-2 px-3"
                       style={{ cursor: "pointer" }}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => handleNavigateSubfolder(dir.path)}
+                      onDoubleClick={() => handleNavigateSubfolder(dir.path)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleNavigateSubfolder(dir.path);
+                        }
+                      }}
                     >
                       <div className="d-flex align-items-center gap-2">
-                        <span className="badge badge-info" aria-hidden="true">
+                        <span className="fm-dir-tag" aria-hidden="true">
                           Dir
                         </span>
                         <span className="fw-semibold text-primary">{dir.name}/</span>
                       </div>
-                      <span className="small text-muted">Apri</span>
+                      <button
+                        type="button"
+                        className="btn btn-outline-secondary btn-sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleNavigateSubfolder(dir.path);
+                        }}
+                      >
+                        Apri
+                      </button>
                     </li>
                   ))}
                 </ul>
@@ -580,7 +599,20 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
             </div>
           </div>
 
-          {/* Messaggio errore finale submit */}
+          <div className="form-check mt-3">
+            <input
+              id="chk-overwrite"
+              type="checkbox"
+              className="form-check-input"
+              checked={overwrite}
+              onChange={(e) => setOverwrite(e.target.checked)}
+              disabled={isSubmitting}
+            />
+            <label htmlFor="chk-overwrite" className="form-check-label small">
+              Sovrascrivi il file se esiste già nella cartella di destinazione
+            </label>
+          </div>
+
           {submitError && (
             <div className="alert alert-danger mt-3 mb-0 p-2" role="alert" id="file-mgmt-submit-error">
               {submitError}
@@ -588,11 +620,8 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
           )}
         </div>
 
-        {/* Footer */}
         <div className="modal-footer d-flex justify-content-between">
-          <small className="text-muted">
-            Il file verrà salvato nella cartella specificata.
-          </small>
+          <small className="text-muted">Il file verrà salvato nella cartella specificata.</small>
           <div className="d-flex gap-2">
             <button
               type="button"
@@ -613,7 +642,7 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
               {isSubmitting ? (
                 <>
                   <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true" />
-                  Trasferimento in corso...
+                  Avvio in corso...
                 </>
               ) : (
                 "Conferma"

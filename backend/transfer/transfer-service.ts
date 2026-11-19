@@ -208,6 +208,74 @@ export class TransferService {
     };
   }
 
+  /**
+   * Memorizza la richiesta originale (per Riprova/Riprendi) e notifica che il record è visibile
+   * in lista (stato QUEUED) prima di slot e handshake SSH.
+   */
+  private markAccepted(record: TransferRecord, req: StartServerRobotTransferRequest): void {
+    const { onAccepted: _onAccepted, onQueued, ...original } = req;
+    record.originalRequest = original;
+    if (onQueued) {
+      try {
+        onQueued(this.toDto(record));
+      } catch {
+        // Un errore nel callback non deve interrompere il trasferimento.
+      }
+    }
+  }
+
+  /** Segnala che i controlli preliminari sono superati e il trasferimento sta per partire. */
+  private signalAccepted(record: TransferRecord, req: StartServerRobotTransferRequest): void {
+    if (!req.onAccepted) return;
+    try {
+      req.onAccepted(this.toDto(record));
+    } catch {
+      // Un errore nel callback non deve interrompere il trasferimento.
+    }
+  }
+
+  /**
+   * Verifica che la cartella di destinazione sul robot esista, sia una directory e sia scrivibile
+   * (RF-TRF-014, RF-FS-007): il test di scrittura usa lo stesso file temporaneo del trasferimento.
+   */
+  private async assertRemoteDestinationWritable(
+    sftp: any,
+    remoteTargetDir: string,
+    remoteTempPath: string,
+    robotId: string
+  ): Promise<void> {
+    const dirStat = await new Promise<any>((resolve) => {
+      sftp.stat(remoteTargetDir, (err: any, st: any) => resolve(err ? null : st));
+    });
+    const isDir = Boolean(
+      dirStat &&
+        (typeof dirStat.isDirectory === "function"
+          ? dirStat.isDirectory()
+          : dirStat.mode && (dirStat.mode & 0o170000) === 0o040000)
+    );
+    if (!isDir) {
+      throw new MolirisAppError(
+        ErrorCode.REMOTE_FS_ERROR,
+        `Cartella di destinazione remota non trovata o non valida: ${remoteTargetDir} (robot ${robotId})`,
+        "La cartella di destinazione sul robot non esiste o non è una directory."
+      );
+    }
+    await new Promise<void>((resolve, reject) => {
+      sftp.open(remoteTempPath, "a", (err: any, handle: any) => {
+        if (err) {
+          return reject(
+            new MolirisAppError(
+              ErrorCode.REMOTE_FS_ERROR,
+              `Cartella di destinazione remota non scrivibile: ${remoteTargetDir} (robot ${robotId}): ${err.message}`,
+              "Directory di sola lettura o permessi insufficienti per l'utente SSH: seleziona una cartella scrivibile come /home/<utente>."
+            )
+          );
+        }
+        sftp.close(handle, () => resolve());
+      });
+    });
+  }
+
   private isTerminalRecord(record: TransferRecord): boolean {
     return TransferService.TERMINAL_STATUSES.has(record.status);
   }
@@ -660,6 +728,7 @@ export class TransferService {
       expectedChecksum: req.expectedChecksum,
     });
     this.transfers.set(record.transferId, record);
+    this.markAccepted(record, req);
 
     const destLockKey = `robot:${robot.id}:${req.remotePath}`;
     let slotAcquired = false;
@@ -727,6 +796,7 @@ export class TransferService {
         `.tmp_moliris_${record.transferId}.tmp`
       );
       record.tempDestinationPath = remoteTempPath;
+      await this.assertRemoteDestinationWritable(sftp, remoteTargetDir, remoteTempPath, robot.id);
 
       // RF-TRF-010: Ripresa trasferimenti interrotti (opzionale se abilitata)
       let startOffset = 0;
@@ -747,6 +817,8 @@ export class TransferService {
           });
         }
       }
+
+      this.signalAccepted(record, req);
 
       const localReadStream = fs.createReadStream(sourceServerPath, {
         start: startOffset,
@@ -906,6 +978,7 @@ export class TransferService {
       expectedChecksum: req.expectedChecksum,
     });
     this.transfers.set(record.transferId, record);
+    this.markAccepted(record, req);
 
     const destLockKey = `server:${robot.id}:${targetServerRelative}`;
     let slotAcquired = false;
@@ -980,6 +1053,7 @@ export class TransferService {
       remoteReadHandle = await this.remoteFsService.openRemoteReadStream(context, robot, req.remotePath, {
         start: startOffset,
       });
+      this.signalAccepted(record, req);
 
       await this.streamWithTrackingAndChecksum(
         remoteReadHandle.stream,
@@ -1798,6 +1872,89 @@ export class TransferService {
     });
 
     return this.toDto(record);
+  }
+
+  /**
+   * Riprova/Riprende un trasferimento Server ↔ Robot interrotto, fallito o annullato (RF-TRF-010, RF-TRF-012).
+   * Usa la richiesta originale: con transferResumeEnabled il file temporaneo parziale viene riutilizzato.
+   * I trasferimenti originati dal computer dell'utente non sono riavviabili dal backend (il corpo
+   * del file non è conservato): in tal caso viene restituito un errore esplicito.
+   */
+  public async retryTransfer(
+    transferId: string,
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    hooks?: { onQueued?: (dto: TransferDto) => void; onAccepted?: (dto: TransferDto) => void }
+  ): Promise<TransferDto> {
+    const record = this.transfers.get(transferId);
+    if (!record) {
+      throw new MolirisAppError(
+        ErrorCode.TRANSFER_INTERRUPTED,
+        `Trasferimento '${transferId}' non trovato`,
+        "Trasferimento non trovato."
+      );
+    }
+    if (record.userId !== context.userId) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Utente '${context.userId}' non autorizzato a riprovare il trasferimento di '${record.userId}'`,
+        "Operazione non consentita: non è possibile riavviare trasferimenti altrui."
+      );
+    }
+    if (!TransferService.TERMINAL_STATUSES.has(record.status) || record.status === TransferStatus.COMPLETED) {
+      throw new MolirisAppError(
+        ErrorCode.TRANSFER_INTERRUPTED,
+        `Trasferimento '${transferId}' in stato ${record.status}: non riavviabile`,
+        "Solo i trasferimenti interrotti, falliti o annullati possono essere riprovati."
+      );
+    }
+    if (!record.originalRequest) {
+      throw new MolirisAppError(
+        ErrorCode.TRANSFER_INTERRUPTED,
+        `Trasferimento '${transferId}' (${record.direction}) non riavviabile dal backend`,
+        "Questo trasferimento è stato avviato dal computer: ripeti l'operazione di caricamento o download."
+      );
+    }
+    const original = record.originalRequest;
+    // Il vecchio record viene sostituito solo quando il nuovo è stato effettivamente registrato:
+    // se la validazione iniziale fallisce, il tentativo precedente resta consultabile.
+    return this.executeServerRobotTransfer(context, robot, {
+      ...original,
+      onQueued: (dto) => {
+        this.transfers.delete(transferId);
+        hooks?.onQueued?.(dto);
+      },
+      onAccepted: hooks?.onAccepted,
+    });
+  }
+
+  /**
+   * Rimuove dallo storico un trasferimento terminale (pulizia lista, non cancella file).
+   */
+  public removeTransfer(transferId: string, requestedByUserId: string): void {
+    const record = this.transfers.get(transferId);
+    if (!record) {
+      throw new MolirisAppError(
+        ErrorCode.TRANSFER_INTERRUPTED,
+        `Trasferimento '${transferId}' non trovato`,
+        "Trasferimento non trovato."
+      );
+    }
+    if (record.userId !== requestedByUserId) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Utente '${requestedByUserId}' non autorizzato a rimuovere il trasferimento di '${record.userId}'`,
+        "Operazione non consentita: non è possibile rimuovere trasferimenti altrui."
+      );
+    }
+    if (!TransferService.TERMINAL_STATUSES.has(record.status)) {
+      throw new MolirisAppError(
+        ErrorCode.TRANSFER_INTERRUPTED,
+        `Trasferimento '${transferId}' ancora attivo (${record.status})`,
+        "Annulla il trasferimento prima di rimuoverlo dalla lista."
+      );
+    }
+    this.transfers.delete(transferId);
   }
 
   /**

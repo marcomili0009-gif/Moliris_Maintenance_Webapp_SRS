@@ -1127,6 +1127,72 @@ fs.writeFileSync(validPreexistingServerPath, "VALID_SERVER_PREEXISTING_DATA_ORIG
   assert.match(streamRes.body, /event: snapshot/);
   assert.match(streamRes.body, /data:/);
 
+  // 3. Avvio in background (HTTP 202), destinazione inesistente rifiutata subito, Riprova e Rimuovi
+  const cookieHeader = {
+    cookie: `__Host-moliris_session=${sessionAuth.sessionId}`,
+    origin: "http://localhost",
+    host: "localhost",
+  };
+  const bgSource = "bg_source.bin";
+  fs.writeFileSync(path.join(testRobot.serverDirectoryPath, bgSource), Buffer.from("CONTENUTO_BACKGROUND"));
+
+  const missingDirRes = await testServer.inject({
+    method: "POST",
+    url: `/api/robots/${testRobot.id}/transfers/server-robot`,
+    headers: cookieHeader,
+    payload: {
+      direction: "SERVER_TO_ROBOT",
+      serverRelativePath: bgSource,
+      remotePath: "/cartella/inesistente/bg_dest.bin",
+      overwrite: true,
+      background: true,
+    },
+  });
+  assert.notStrictEqual(missingDirRes.statusCode, 202, "Destinazione inesistente: errore esplicito, non 202");
+  assert.notStrictEqual(missingDirRes.statusCode, 403, missingDirRes.body);
+  assert.ok(missingDirRes.statusCode >= 400, `Atteso errore HTTP, ricevuto ${missingDirRes.statusCode}`);
+
+  const bgRes = await testServer.inject({
+    method: "POST",
+    url: `/api/robots/${testRobot.id}/transfers/server-robot`,
+    headers: cookieHeader,
+    payload: {
+      direction: "SERVER_TO_ROBOT",
+      serverRelativePath: bgSource,
+      remotePath: "bg_dest.bin",
+      overwrite: true,
+      background: true,
+    },
+  });
+  assert.ok([200, 202].includes(bgRes.statusCode), `Atteso 202 in background, ricevuto ${bgRes.statusCode}: ${bgRes.body}`);
+  const bgDto = JSON.parse(bgRes.body);
+  assert.ok(bgDto.transferId);
+  let finalStatus = "";
+  for (let i = 0; i < 50 && finalStatus !== "COMPLETED"; i++) {
+    const r = await testServer.inject({ method: "GET", url: `/api/transfers/${bgDto.transferId}`, headers: cookieHeader });
+    finalStatus = JSON.parse(r.body).status;
+    if (finalStatus !== "COMPLETED") await new Promise((res) => setTimeout(res, 100));
+  }
+  assert.strictEqual(finalStatus, "COMPLETED");
+
+  // Riprova su un trasferimento completato non è ammesso
+  const retryDone = await testServer.inject({
+    method: "POST",
+    url: `/api/transfers/${bgDto.transferId}/retry`,
+    headers: cookieHeader,
+  });
+  assert.ok(retryDone.statusCode >= 400, "Il retry di un trasferimento completato deve essere rifiutato");
+
+  const removeRes = await testServer.inject({
+    method: "DELETE",
+    url: `/api/transfers/${bgDto.transferId}`,
+    headers: cookieHeader,
+  });
+  assert.strictEqual(removeRes.statusCode, 200);
+  const afterRemove = await testServer.inject({ method: "GET", url: `/api/transfers/${bgDto.transferId}`, headers: cookieHeader });
+  assert.ok(afterRemove.statusCode >= 400, "Il trasferimento rimosso non deve più essere consultabile");
+  fs.unlinkSync(path.join(testRobot.serverDirectoryPath, bgSource));
+
   await testServer.close();
   console.log("  PASS: Endpoint REST di trasferimento verificati con autenticazione e RBAC.");
 }

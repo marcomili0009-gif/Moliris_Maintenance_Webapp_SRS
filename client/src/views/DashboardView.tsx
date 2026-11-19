@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import type { User } from "../types/auth.ts";
 import type { RobotSummaryDto, RegistrationOutcome } from "../types/fleet.ts";
 import type { BulkConflict } from "../types/transfer.ts";
@@ -16,6 +16,7 @@ import { ConfirmDialog } from "../components/common/ConfirmDialog.tsx";
 import { DeleteFolderModal, type DeleteFolderTarget } from "../components/common/DeleteFolderModal.tsx";
 import { NotificationBanner } from "../components/common/NotificationBanner.tsx";
 import { Modal } from "../components/common/Modal.tsx";
+import { ToastHost, type ToastMessage } from "../components/common/ToastHost.tsx";
 import { FleetFilterBar } from "../components/fleet/FleetFilterBar.tsx";
 
 import { useFleet } from "../hooks/useFleet.ts";
@@ -61,6 +62,60 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const fs = useFilesystem();
   const transfers = useTransfers(true);
   const terminal = useTerminal();
+
+  // Toast non bloccanti
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const toastSeq = useRef(0);
+  const dismissToast = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+  const pushToast = useCallback((kind: ToastMessage["kind"], text: string) => {
+    const id = ++toastSeq.current;
+    setToasts((prev) => [...prev.slice(-3), { id, kind, text }]);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), kind === "error" ? 9000 : 5000);
+  }, []);
+
+  // Trasferimenti avviati da questa sessione UI: al completamento aggiornano la cartella di destinazione
+  // (senza loader né reload) e segnalano l'esito.
+  const watchedTransfers = useRef(
+    new Map<string, { destination: "server" | "robot"; robotId: string; label: string }>()
+  );
+  const fsRef = useRef(fs);
+  fsRef.current = fs;
+  useEffect(() => {
+    if (watchedTransfers.current.size === 0) return;
+    for (const dto of transfers.transfers) {
+      const watch = watchedTransfers.current.get(dto.transferId);
+      if (!watch) continue;
+      if (dto.status === "COMPLETED") {
+        watchedTransfers.current.delete(dto.transferId);
+        const cur = fsRef.current;
+        if (watch.destination === "server") {
+          if (cur.serverRobotId === watch.robotId) {
+            void cur.loadServerDirectory(watch.robotId, cur.serverPath || "/", { silent: true });
+          }
+        } else if (cur.remoteRobotId === watch.robotId) {
+          void cur.loadRemoteDirectory(watch.robotId, cur.remotePath, { silent: true });
+        }
+        pushToast("success", `Trasferimento completato: ${dto.filename} → ${watch.label}`);
+      } else if (dto.status === "FAILED" || dto.status === "INTEGRITY_FAILED" || dto.status === "CANCELLED") {
+        watchedTransfers.current.delete(dto.transferId);
+        if (dto.status !== "CANCELLED") {
+          pushToast("error", `Trasferimento non riuscito: ${dto.filename}${dto.errorMessage ? ` – ${dto.errorMessage}` : ""}`);
+        }
+      }
+    }
+  }, [transfers.transfers, pushToast]);
+
+  // Dopo un caricamento massivo aggiorna silenziosamente le cartelle visibili e la lista trasferimenti
+  const handleBulkExecute: typeof transfers.executeBulkUpload = async (...args) => {
+    const result = await transfers.executeBulkUpload(...args);
+    const cur = fsRef.current;
+    if (cur.serverRobotId) void cur.loadServerDirectory(cur.serverRobotId, cur.serverPath || "/", { silent: true });
+    if (cur.remoteRobotId) void cur.loadRemoteDirectory(cur.remoteRobotId, cur.remotePath, { silent: true });
+    void transfers.syncNow();
+    return result;
+  };
 
   // Apre il filesystem dedicato di un robot elencato nella root aggregata dell'Archivio Generale.
   const handleOpenRobotFromGeneral = (robotId: string) => {
@@ -384,7 +439,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 sourceType: "server",
                 robotId: fs.serverRobotId,
                 robotName: r?.displayName,
-                initialPath: "/",
+                initialPath: "",
               });
             }}
             onServerDelete={(fileName) => setDeleteTarget({ fileName, targetType: "server" })}
@@ -456,6 +511,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             activeTransfersCount={transfers.activeCount}
             onRefreshTransfers={() => transfers.loadTransfers()}
             onCancelTransfer={transfers.cancelTransfer}
+            onRetryTransfer={transfers.retryTransfer}
+            onRemoveTransfer={transfers.removeTransfer}
           />
         </div>
       </main>
@@ -544,7 +601,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         onClose={() => setIsBulkUploadOpen(false)}
         robots={fleet.robots.filter((r) => r.anagraphicState === "attivo")}
         onPreCheck={transfers.preCheckBulkUpload}
-        onExecuteUpload={transfers.executeBulkUpload}
+        onExecuteUpload={handleBulkExecute}
         onConflictsDetected={(conflicts, files, destinations) => {
           setBulkConflicts({ conflicts, files, destinations });
         }}
@@ -577,23 +634,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           robotId={fileManagementTarget.robotId}
           robotName={fileManagementTarget.robotName}
           initialPath={fileManagementTarget.initialPath}
-          onConfirm={async (destinationPath) => {
-            if (fileManagementTarget.sourceType === "server") {
-              const success = await fs.transferServerToRemote(fileManagementTarget.fileName, destinationPath);
-              if (success) {
-                await transfers.loadTransfers();
+          isOperator={user.roles.includes("operatore") && !isAdmin}
+          allowedPaths={user.allowedPaths}
+          onConfirm={async (destinationPath, { overwrite }) => {
+            const target = fileManagementTarget;
+            const result =
+              target.sourceType === "server"
+                ? await fs.transferServerToRemote(target.fileName, destinationPath, overwrite)
+                : await fs.transferRemoteToServer(target.fileName, destinationPath, overwrite);
+            if (result.ok) {
+              const label = target.sourceType === "server" ? `Robot (${destinationPath})` : `Server (${destinationPath})`;
+              if (result.transferId) {
+                watchedTransfers.current.set(result.transferId, {
+                  destination: target.sourceType === "server" ? "robot" : "server",
+                  robotId: target.robotId,
+                  label,
+                });
               }
-              return success;
-            } else {
-              const success = await fs.transferRemoteToServer(fileManagementTarget.fileName, destinationPath);
-              if (success) {
-                await transfers.loadTransfers();
-              }
-              return success;
+              pushToast("info", `Trasferimento avviato verso ${label}`);
+              void transfers.syncNow();
             }
+            return result;
           }}
         />
       )}
+      <ToastHost toasts={toasts} onDismiss={dismissToast} />
     </section>
   );
 };

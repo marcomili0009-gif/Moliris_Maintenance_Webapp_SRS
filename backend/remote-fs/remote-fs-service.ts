@@ -861,17 +861,21 @@ export class RemoteFilesystemService {
         });
         isWritable = true;
       } catch {
-        // Fallback: controllo mode bit se probe non consentito
-        isWritable = Boolean(stat.mode && (stat.mode & 0o222) !== 0);
+        // Il test di scrittura effettivo via SFTP è l'unica fonte attendibile: i soli bit di modo
+        // (es. rwxr-xr-x su "/") non dicono nulla sui permessi dell'utente SSH non-root.
+        isWritable = false;
       }
 
+      const sshUser = (robot as any).sftpUser || robot.remoteUsername || "<utente>";
       return {
         valid: true,
         exists: true,
         isDirectory: true,
         isWritable,
         resolvedPath,
-        error: isWritable ? null : "Permesso di scrittura negato nella cartella specificata.",
+        error: isWritable
+          ? null
+          : `Directory di sola lettura o permessi insufficienti per l'utente SSH: seleziona una cartella scrivibile come /home/${sshUser}`,
       };
     } catch (err: any) {
       return {

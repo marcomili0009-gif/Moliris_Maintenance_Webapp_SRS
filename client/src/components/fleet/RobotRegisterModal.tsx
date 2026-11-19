@@ -1,7 +1,6 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import type { RegisterRobotPayload, RegistrationOutcome } from "../../types/fleet.ts";
 import type { FormattedError } from "../../types/error.ts";
-import { DoubleSubmitButton } from "../common/DoubleSubmitButton.tsx";
 
 interface RobotRegisterModalProps {
   isOpen: boolean;
@@ -38,11 +37,23 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
 
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [generalError, setGeneralError] = useState<string | null>(null);
+  // Stato di caricamento del pulsante "Crea Robot" durante la verifica SSH (RF-ROB-007)
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape" && !isSubmitting) onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, isSubmitting, onClose]);
 
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setFieldErrors({});
     setGeneralError(null);
 
@@ -89,7 +100,13 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
       sftpUser: sftpUser.trim() || undefined,
     };
 
-    const res = await onRegister(payload);
+    setIsSubmitting(true);
+    let res: Awaited<ReturnType<typeof onRegister>>;
+    try {
+      res = await onRegister(payload);
+    } finally {
+      setIsSubmitting(false);
+    }
     if (res.outcome) {
       onClose();
       onRegistrationSuccess(res.outcome);
@@ -104,20 +121,39 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
   };
 
   return (
-    <div id="modal-robot-register" className="modal" role="dialog" aria-modal="true">
-      <div className="modal-content modal-large">
-        <div className="modal-header">
-          <h3>Registrazione Nuovo Robot</h3>
-          <button
-            type="button"
-            className="btn-close"
-            id="btn-close-register"
-            onClick={onClose}
-            aria-label="Chiudi"
-          />
+    <div id="modal-robot-register" className="modal" role="dialog" aria-modal="true" aria-labelledby="register-robot-title">
+      <div className="modal-content modal-large modal-register">
+        <div className="modal-header modal-register-header">
+          <h3 id="register-robot-title">Registrazione Nuovo Robot</h3>
+          <div className="modal-register-actions">
+            <button
+              type="submit"
+              form="form-register-robot"
+              className="btn btn-primary"
+              id="btn-submit-register"
+              disabled={isSubmitting}
+              aria-busy={isSubmitting}
+              data-pending={isSubmitting ? "true" : undefined}
+            >
+              {isSubmitting ? (
+                <>
+                  <span className="btn-spinner" aria-hidden="true" /> Verifica SSH in corso...
+                </>
+              ) : (
+                "Crea Robot"
+              )}
+            </button>
+            <button
+              type="button"
+              className="btn-close"
+              id="btn-close-register"
+              onClick={onClose}
+              aria-label="Chiudi"
+            />
+          </div>
         </div>
 
-        <div className="modal-body">
+        <div className="modal-body modal-register-body">
           {generalError && (
             <div className="error-message mb-4" role="alert">
               {generalError}
@@ -423,25 +459,6 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
                   </div>
                 </details>
               </div>
-            </div>
-
-            <div className="modal-footer">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                id="btn-cancel-register"
-                onClick={onClose}
-              >
-                Annulla
-              </button>
-              <DoubleSubmitButton
-                type="submit"
-                className="btn btn-primary"
-                id="btn-submit-register"
-                pendingText="Registrazione..."
-              >
-                Registra Robot
-              </DoubleSubmitButton>
             </div>
           </form>
         </div>

@@ -168,73 +168,80 @@ export function registerRemoteFsRoutes(
   /**
    * Verifica di un percorso remoto per modale «Gestione File» (Prompt Correttivo #2)
    */
-  app.post(
+  // Validazione reale di esistenza, tipo directory e scrittura via SFTP; il percorso storico
+  // (/fs/remote/verify-path) e l'alias /sftp/validate-path condividono lo stesso handler.
+  for (const url of [
     "/api/robots/:robotId/fs/remote/verify-path",
-    {
-      schema: {
-        body: {
-          type: "object",
-          required: ["path"],
-          properties: {
-            path: { type: "string" },
+    "/api/robots/:robotId/sftp/validate-path",
+  ]) {
+    app.post(
+      url,
+      {
+        schema: {
+          body: {
+            type: "object",
+            required: ["path"],
+            properties: {
+              path: { type: "string" },
+            },
           },
         },
+        preHandler: [
+          authMiddleware.requirePermission(
+            AppPermission.FS_REMOTE_NAVIGATE,
+            (req) => (req.params as any).robotId
+          ),
+        ],
       },
-      preHandler: [
-        authMiddleware.requirePermission(
-          AppPermission.FS_REMOTE_NAVIGATE,
-          (req) => (req.params as any).robotId
-        ),
-      ],
-    },
-    async (req: FastifyRequest, reply: FastifyReply) => {
-      const { robotId } = req.params as { robotId: string };
-      const body = (req.body as any) || {};
-      const candidatePath = typeof body.path === "string" ? body.path : "";
+      async (req: FastifyRequest, reply: FastifyReply) => {
+        const { robotId } = req.params as { robotId: string };
+        const body = (req.body as any) || {};
+        const candidatePath = typeof body.path === "string" ? body.path : "";
 
-      const robot = await robotRepository.findById(robotId);
-      if (!robot) {
-        const errDef = ERROR_CATALOG[ErrorCode.MISSING_ROBOT_PARAMS];
-        return reply.status(404).send({
-          code: errDef.code,
-          message: `Robot con identificativo '${robotId}' non trovato nell'anagrafica.`,
-          classification: errDef.classification,
-        });
-      }
+        const robot = await robotRepository.findById(robotId);
+        if (!robot) {
+          const errDef = ERROR_CATALOG[ErrorCode.MISSING_ROBOT_PARAMS];
+          return reply.status(404).send({
+            code: errDef.code,
+            message: `Robot con identificativo '${robotId}' non trovato nell'anagrafica.`,
+            classification: errDef.classification,
+          });
+        }
 
-      const context = sessionManager.createAuthorizedContext(
-        req.molirisSession!,
-        req.molirisUser!,
-        robot.id,
-        roleMapping
-      );
+        const context = sessionManager.createAuthorizedContext(
+          req.molirisSession!,
+          req.molirisUser!,
+          robot.id,
+          roleMapping
+        );
 
-      try {
-        const result = await remoteFsService.verifyPath(context, robot, candidatePath);
-        return reply.status(200).send(result);
-      } catch (err: any) {
-        if (err instanceof MolirisAppError) {
-          const statusCode = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : 400;
-          return reply.status(statusCode).send({
+        try {
+          const result = await remoteFsService.verifyPath(context, robot, candidatePath);
+          return reply.status(200).send(result);
+        } catch (err: any) {
+          if (err instanceof MolirisAppError) {
+            const statusCode = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : 400;
+            return reply.status(statusCode).send({
+              valid: false,
+              exists: false,
+              isDirectory: false,
+              isWritable: false,
+              resolvedPath: candidatePath,
+              error: err.userMessage,
+            });
+          }
+          return reply.status(500).send({
             valid: false,
             exists: false,
             isDirectory: false,
             isWritable: false,
             resolvedPath: candidatePath,
-            error: err.userMessage,
+            error: "Errore interno durante la verifica del percorso remoto.",
           });
         }
-        return reply.status(500).send({
-          valid: false,
-          exists: false,
-          isDirectory: false,
-          isWritable: false,
-          resolvedPath: candidatePath,
-          error: "Errore interno durante la verifica del percorso remoto.",
-        });
       }
-    }
-  );
+    );
+  }
 
   /**
    * Eliminazione controllata di un file sul filesystem remoto del robot (RF-FS-007, RNF-FS-003, RF-ROB-013)

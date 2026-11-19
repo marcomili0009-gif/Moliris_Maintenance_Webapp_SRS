@@ -18,6 +18,12 @@ export type TransferStatus =
 export interface TransferProgress {
   transferId: string;
   robotId?: string;
+  /** Nome del file trasferito. */
+  filename: string;
+  /** Percorso sorgente come riportato dal backend (relativo alla cartella robot sul server o assoluto sul robot). */
+  sourcePath: string;
+  /** Percorso di destinazione come riportato dal backend. */
+  destinationPath: string;
   sourceFile: string;
   targetFile: string;
   direction: TransferDirection;
@@ -28,8 +34,18 @@ export interface TransferProgress {
   speedBps: number;
   etaSeconds: number | null;
   errorMessage?: string;
+  integrityLabel?: string;
+  checksum?: string;
   startedAt: string;
   completedAt?: string;
+}
+
+/** Esito dell'avvio di un trasferimento Server ↔ Robot (HTTP 202 = preso in carico). */
+export interface TransferStartResult {
+  ok: boolean;
+  transferId?: string;
+  /** Messaggio utente in caso di rifiuto (destinazione non scrivibile, file esistente, spazio…). */
+  error?: string;
 }
 
 export interface BulkConflict {
