@@ -41,6 +41,11 @@ console.log("--> Esecuzione test unitari Modulo di Configurazione (SRS §2)...")
   assert.strictEqual(config.futureExtensions.maxSessionsPerAccount, 1, "Default maxSessionsPerAccount deve essere 1");
   assert.deepStrictEqual(config.futureExtensions.customSettings, {}, "Default customSettings deve essere un oggetto vuoto");
 
+  assert.strictEqual(config.fleetPollingIntervalSeconds, 5, "Default fleetPollingIntervalSeconds deve essere 5");
+  assert.strictEqual(config.maxConcurrentTransfers, 5, "Default maxConcurrentTransfers deve essere 5");
+  assert.strictEqual(config.sshConnectTimeoutSeconds, 15, "Default sshConnectTimeoutSeconds deve essere 15");
+  assert.strictEqual(config.transferTimeoutMinutes, 30, "Default transferTimeoutMinutes deve essere 30");
+
   assert(Object.isFrozen(config), "L'oggetto configurazione deve essere immutabile (frozen)");
 
   fs.rmSync(defaultsDir, { recursive: true, force: true });

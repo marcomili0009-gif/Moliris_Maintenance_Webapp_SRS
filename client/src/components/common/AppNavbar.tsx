@@ -128,7 +128,9 @@ export const AppNavbar: React.FC<AppNavbarProps> = ({
                 id="btn-logout"
                 type="button"
                 className="btn btn-outline-danger btn-sm"
-                onClick={onLogout}
+                onClick={() => {
+                  void onLogout("sessione");
+                }}
               >
                 Disconnetti (Logout)
               </button>

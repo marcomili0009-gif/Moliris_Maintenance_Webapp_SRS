@@ -34,7 +34,7 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
 
   const checkCurrentUser = useCallback(async () => {
     try {
-      const res = await apiClient.get("/api/auth/me");
+      const res = await apiClient.get(`/api/auth/me?_t=${Date.now()}`);
       if (res.ok) {
         const data = await res.json();
         setCurrentUser(data.user);
@@ -90,33 +90,46 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
     }
   };
 
-  const logout = useCallback(async (context: "sessione" | "terminale" = "sessione"): Promise<void> => {
-    // 1. Reset immediato e sincrono dello stato client per reindirizzamento istantaneo (0ms)
-    setCurrentUser(null);
-    setIsAuthenticated(false);
-    setIdleWarning(null);
-    setIdleWarningInfo(null);
-    setIsIdleWarningOpen(false);
-    hasReportedWarningRef.current = false;
-    if (idleCheckIntervalRef.current) {
-      clearInterval(idleCheckIntervalRef.current);
-      idleCheckIntervalRef.current = null;
-    }
+  const logout = useCallback(async (contextOrEvent?: unknown): Promise<void> => {
+    const validContext = contextOrEvent === "terminale" ? "terminale" : "sessione";
 
-    try {
-      localStorage.setItem(
-        "moliris_idle_action",
-        JSON.stringify({ type: "LOGOUT", timestamp: Date.now() })
-      );
-    } catch {}
-
-    // 2. Notifica ed invalidazione immediata della sessione lato backend
+    // 1. Notifica ed invalidazione immediata della sessione lato backend (prioritaria, blocca accessi successivi)
     try {
       await apiClient.post("/api/auth/logout", {
-        context,
+        context: validContext,
         reason: "MANUAL_LOGOUT",
       });
-    } catch {}
+    } catch (err) {
+      console.warn("Logout remoto non riuscito o già invalidato:", err);
+    } finally {
+      // 2. Pulizia categorica dello stato client, timer e memorie locali (localStorage, sessionStorage)
+      setCurrentUser(null);
+      setIsAuthenticated(false);
+      setIdleWarning(null);
+      setIdleWarningInfo(null);
+      setIsIdleWarningOpen(false);
+      hasReportedWarningRef.current = false;
+      if (idleCheckIntervalRef.current) {
+        clearInterval(idleCheckIntervalRef.current);
+        idleCheckIntervalRef.current = null;
+      }
+
+      try {
+        localStorage.removeItem("moliris_last_activity");
+        localStorage.setItem(
+          "moliris_idle_action",
+          JSON.stringify({ type: "LOGOUT", timestamp: Date.now() })
+        );
+      } catch {}
+
+      try {
+        sessionStorage.clear();
+      } catch {}
+
+      if (typeof window !== "undefined" && window.history?.replaceState) {
+        window.history.replaceState(null, "", window.location.pathname);
+      }
+    }
   }, []);
 
   const confirmActivity = useCallback(async (): Promise<void> => {

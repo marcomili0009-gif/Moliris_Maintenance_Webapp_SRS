@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import type { User, IdleWarningInfo } from "../types/auth.ts";
+import type { User } from "../types/auth.ts";
 import type { RobotSummaryDto, RegistrationOutcome } from "../types/fleet.ts";
 import type { BulkConflict } from "../types/transfer.ts";
 import { FleetTable } from "../components/fleet/FleetTable.tsx";
@@ -28,10 +28,8 @@ import { useTerminal } from "../hooks/useTerminal.ts";
 interface DashboardViewProps {
   user: User;
   onLogout: (context?: "sessione" | "terminale") => Promise<void>;
-  idleWarning: string | null;
-  idleWarningInfo?: IdleWarningInfo | null;
+  isSessionWarningOpen: boolean;
   onConfirmSession?: () => Promise<void>;
-  onDismissIdleWarning: () => void;
   setActiveTransfersCount?: (count: number) => void;
   goHomeTrigger?: number;
   activeMainView?: "fleet" | "files";
@@ -41,10 +39,8 @@ interface DashboardViewProps {
 export const DashboardView: React.FC<DashboardViewProps> = ({
   user,
   onLogout,
-  idleWarning,
-  idleWarningInfo,
+  isSessionWarningOpen,
   onConfirmSession,
-  onDismissIdleWarning,
   setActiveTransfersCount,
   goHomeTrigger,
   activeMainView,
@@ -324,6 +320,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
   };
 
+  const handleConfirmTerminalIdle = async (): Promise<void> => {
+    terminal.confirmTerminalIdle();
+    if (onConfirmSession) {
+      await onConfirmSession();
+    }
+  };
+
+  const handleLogoutTerminalIdle = async (): Promise<void> => {
+    terminal.disconnectTerminal();
+    await onLogout("terminale");
+  };
+
   return (
     <section id="dashboard-section" className="card border-0 shadow-none p-3">
       <NotificationBanner
@@ -338,57 +346,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         }}
       />
 
-      {/* Avviso inattività modale unificato (Prompt #4) */}
-      {(() => {
-        const isSessionWarning = Boolean(idleWarningInfo?.active || idleWarning);
-        const isTerminalWarning = !isSessionWarning && Boolean(terminal.terminalIdleWarning);
-        const isWarningModalOpen = !isSessionWarning && isTerminalWarning;
-
-        const warningContext: "sessione" | "terminale" = isSessionWarning ? "sessione" : "terminale";
-        const warningRemainingSeconds = isSessionWarning
-          ? idleWarningInfo?.remainingSeconds ?? 300
-          : terminal.terminalIdleWarning?.remainingSeconds ?? 300;
-        const warningMessage = isSessionWarning
-          ? idleWarningInfo?.message || idleWarning || undefined
-          : terminal.terminalIdleWarning?.message;
-        const warningTargetName = isTerminalWarning
-          ? terminal.terminalState.robotName || terminal.terminalState.robotId || undefined
-          : undefined;
-
-        const handleConfirmIdle = async () => {
-          if (isSessionWarning) {
-            if (onConfirmSession) {
-              await onConfirmSession();
-            } else {
-              onDismissIdleWarning();
-            }
-          } else {
-            terminal.confirmTerminalIdle();
-            if (onConfirmSession) {
-              await onConfirmSession();
-            }
-          }
-        };
-
-        const handleLogoutIdle = async () => {
-          if (isTerminalWarning) {
-            terminal.disconnectTerminal();
-          }
-          await onLogout(warningContext);
-        };
-
-        return (
-          <IdleWarningModal
-            isOpen={isWarningModalOpen}
-            context={warningContext}
-            targetName={warningTargetName}
-            remainingSeconds={warningRemainingSeconds}
-            message={warningMessage}
-            onConfirm={handleConfirmIdle}
-            onLogout={handleLogoutIdle}
-          />
-        );
-      })()}
+      <IdleWarningModal
+        isOpen={!isSessionWarningOpen && Boolean(terminal.terminalIdleWarning)}
+        context="terminale"
+        targetName={terminal.terminalState.robotName || terminal.terminalState.robotId || undefined}
+        remainingSeconds={terminal.terminalIdleWarning?.remainingSeconds ?? 300}
+        message={terminal.terminalIdleWarning?.message}
+        onConfirm={handleConfirmTerminalIdle}
+        onLogout={handleLogoutTerminalIdle}
+      />
 
       <main className="dashboard-content">
         {/* Vista Flotta */}

@@ -105,7 +105,7 @@ body {
   max-width: 600px;
   max-height: 90vh;
   overflow-y: auto;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--bs-box-shadow);
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border-color);
@@ -185,7 +185,7 @@ body {
   overflow: hidden;
   background: #fff;
   border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--bs-box-shadow);
 }
 
 .modal-register .modal-register-header {
@@ -221,13 +221,7 @@ body {
   border: 2px solid rgba(255, 255, 255, 0.55);
   border-top-color: #fff;
   border-radius: 50%;
-  animation: moliris-spin 0.8s linear infinite;
-}
-
-@keyframes moliris-spin {
-  to {
-    transform: rotate(360deg);
-  }
+  animation: var(--bs-spinner-animation-speed) linear infinite var(--bs-spinner-animation-name);
 }
 
 /* Grid per form complessi (Modali Registrazione ed Edit Robot, §10) */
@@ -417,7 +411,7 @@ body {
   /* Sovrascrive l'overflow-y:auto di .modal-content: qui il layout è flex e
      nessun elemento deve scorrere sopra la status bar inferiore. */
   overflow: hidden;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--bs-box-shadow);
 }
 
 .terminal-modal-header {
@@ -773,7 +767,6 @@ body {
   border: 1px solid #e2e8f0;
   border-radius: 16px;
   padding: 1.15rem 1.25rem 1.35rem;
-  box-shadow: 0 18px 40px -34px rgba(15, 23, 42, 0.6);
 }
 
 .fs-section-toolbar {
@@ -795,7 +788,7 @@ body {
   margin: 0;
 }
 
-/* --- Tab bar con indicatore animato -------------------------------------- */
+/* --- Tab bar con indicatore attivo ---------------------------------------- */
 .fs-tab-bar {
   position: relative;
   display: flex;
@@ -805,7 +798,7 @@ body {
   margin-bottom: 1.25rem;
   border: 1px solid #e5eaf2;
   border-radius: 12px;
-  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  background: #f8fafc;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: thin;
@@ -828,15 +821,7 @@ body {
   left: 0;
   border-radius: 9px;
   background: #ffffff;
-  box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.06),
-    0 8px 20px -12px rgba(13, 110, 253, 0.55),
-    inset 0 0 0 1px rgba(13, 110, 253, 0.14);
   border-bottom: 2px solid var(--bs-primary);
-  transition:
-    transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
-    width 0.25s ease,
-    opacity 0.15s ease;
   z-index: 0;
   pointer-events: none;
 }
@@ -951,9 +936,8 @@ body {
   height: 40px;
   flex: 0 0 auto;
   border-radius: 11px;
-  background: linear-gradient(135deg, #eff6ff, #e0e7ff);
-  color: #1d4ed8;
-  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.12);
+  background: var(--bs-primary-bg-subtle);
+  color: var(--bs-primary-text-emphasis);
 }
 
 .fs-context-header h3 {
@@ -1051,13 +1035,7 @@ body {
 }
 
 .fs-spin {
-  animation: fs-spin 0.9s linear infinite;
-}
-
-@keyframes fs-spin {
-  to {
-    transform: rotate(360deg);
-  }
+  animation: var(--bs-spinner-animation-speed) linear infinite var(--bs-spinner-animation-name);
 }
 
 .fs-item-link {
@@ -1262,7 +1240,7 @@ body {
 }
 
 .fs-entry-icon.is-dir {
-  background: linear-gradient(135deg, #eff6ff, #dbeafe);
+  background: var(--bs-primary-bg-subtle);
   color: #2563eb;
 }
 
@@ -1272,7 +1250,7 @@ body {
 }
 
 .fs-entry-icon.is-robot {
-  background: linear-gradient(135deg, #dbeafe, #ede9fe);
+  background: var(--bs-info-bg-subtle);
   color: #4338ca;
 }
 
@@ -1520,9 +1498,7 @@ body {
   display: block;
   height: 0.8rem;
   border-radius: 6px;
-  background: linear-gradient(90deg, #eef2f7 25%, #e2e8f0 37%, #eef2f7 63%);
-  background-size: 400% 100%;
-  animation: fs-shimmer 1.3s ease infinite;
+  background: var(--bs-secondary-bg-subtle);
 }
 
 .fs-skeleton-name {
@@ -1540,15 +1516,6 @@ body {
 .fs-skeleton-action {
   width: 150px;
   margin-left: auto;
-}
-
-@keyframes fs-shimmer {
-  0% {
-    background-position: 100% 0;
-  }
-  100% {
-    background-position: 0 0;
-  }
 }
 
 /* Compatibilità con pannelli legacy (es. TransfersPanel) */
@@ -1717,7 +1684,7 @@ body {
   background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.15);
   border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--bs-box-shadow-sm);
   font-size: 0.82rem;
 }
 
@@ -1804,7 +1771,7 @@ body {
   border-radius: 8px;
   background: #111827;
   color: #fff;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--bs-box-shadow-sm);
   font-size: 0.9rem;
   display: flex;
   gap: 10px;

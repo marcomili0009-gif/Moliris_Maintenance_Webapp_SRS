@@ -36,7 +36,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       id={id}
       isOpen={isOpen}
       onClose={onClose}
-      title={<h3 style={{ color: isDestructive ? "#b91c1c" : "inherit" }}>{title}</h3>}
+      title={<h3 className={isDestructive ? "text-danger" : undefined}>{title}</h3>}
       footer={
         <>
           <button
@@ -63,10 +63,8 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
     >
       {targetDescription && (
         <div
+          className="bg-danger-subtle border border-danger-subtle rounded-2"
           style={{
-            background: "#fef2f2",
-            border: "1px solid #f87171",
-            borderRadius: "6px",
             padding: "0.75rem",
             margin: "0.5rem 0",
             fontFamily: "monospace",

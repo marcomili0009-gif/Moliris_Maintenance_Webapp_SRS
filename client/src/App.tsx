@@ -22,13 +22,13 @@ export const App: React.FC = () => {
     logout,
     confirmActivity,
     confirmSession,
-    dismissIdleWarning,
     dismissSessionConflict,
     setActiveTransfersCount,
   } = useAuth();
 
   const [activeMainView, setActiveMainView] = useState<"fleet" | "files" | "logs">("fleet");
   const [goHomeTrigger, setGoHomeTrigger] = useState<number>(0);
+  const isSessionWarningOpen = isIdleWarningOpen || Boolean(idleWarningInfo?.active || idleWarning);
 
   const handleGoHome = (): void => {
     setActiveMainView("fleet");
@@ -78,19 +78,17 @@ export const App: React.FC = () => {
         <DashboardView
           user={currentUser}
           onLogout={logout}
-          idleWarning={idleWarning}
-          idleWarningInfo={idleWarningInfo}
+          isSessionWarningOpen={isSessionWarningOpen}
           onConfirmSession={confirmActivity || confirmSession}
-          onDismissIdleWarning={dismissIdleWarning}
           setActiveTransfersCount={setActiveTransfersCount}
           goHomeTrigger={goHomeTrigger}
           activeMainView={activeMainView}
           onActiveMainViewChange={(v) => setActiveMainView(v)}
         />
       )}
-      {isAuthenticated && (isIdleWarningOpen || Boolean(idleWarningInfo?.active || idleWarning)) && (
+      {isAuthenticated && isSessionWarningOpen && (
         <IdleWarningModal
-          isOpen={isIdleWarningOpen || Boolean(idleWarningInfo?.active || idleWarning)}
+          isOpen={isSessionWarningOpen}
           context="sessione"
           remainingSeconds={
             idleWarningInfo?.remainingSeconds ?? (idleRemainingMinutes * 60)

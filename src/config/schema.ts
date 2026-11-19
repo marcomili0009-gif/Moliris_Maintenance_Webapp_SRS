@@ -160,6 +160,46 @@ export const AppConfigSchema = z.object({
     maxSessionsPerAccount: 1,
     customSettings: {},
   }),
+
+  /**
+   * 8. Intervallo di polling per monitoraggio stato della flotta in secondi (SRS §2, §11.4)
+   */
+  fleetPollingIntervalSeconds: z
+    .number({ message: "fleetPollingIntervalSeconds deve essere un numero" })
+    .int("fleetPollingIntervalSeconds deve essere un intero")
+    .min(1, "fleetPollingIntervalSeconds deve essere almeno 1 secondo")
+    .max(3600, "fleetPollingIntervalSeconds non può superare 3600 secondi")
+    .default(5),
+
+  /**
+   * 9. Numero massimo di trasferimenti simultanei ammessi sul server (SRS §2, RF-TRF-012)
+   */
+  maxConcurrentTransfers: z
+    .number({ message: "maxConcurrentTransfers deve essere un numero" })
+    .int("maxConcurrentTransfers deve essere un intero")
+    .min(1, "maxConcurrentTransfers deve essere almeno 1")
+    .max(100, "maxConcurrentTransfers non può superare 100")
+    .default(5),
+
+  /**
+   * 10. Timeout per connessioni SSH/SFTP verso i robot in secondi (SRS §2, RF-TRF-013)
+   */
+  sshConnectTimeoutSeconds: z
+    .number({ message: "sshConnectTimeoutSeconds deve essere un numero" })
+    .int("sshConnectTimeoutSeconds deve essere un intero")
+    .min(1, "sshConnectTimeoutSeconds deve essere almeno 1 secondo")
+    .max(300, "sshConnectTimeoutSeconds non può superare 300 secondi")
+    .default(15),
+
+  /**
+   * 11. Timeout massimo per singola operazione di trasferimento in minuti (SRS §2, RF-TRF-013)
+   */
+  transferTimeoutMinutes: z
+    .number({ message: "transferTimeoutMinutes deve essere un numero" })
+    .int("transferTimeoutMinutes deve essere un intero")
+    .min(1, "transferTimeoutMinutes deve essere almeno 1 minuto")
+    .max(1440, "transferTimeoutMinutes non può superare 1440 minuti")
+    .default(30),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

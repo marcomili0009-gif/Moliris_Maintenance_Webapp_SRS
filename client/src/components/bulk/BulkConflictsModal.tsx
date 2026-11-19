@@ -21,7 +21,7 @@ export const BulkConflictsModal: React.FC<BulkConflictsModalProps> = ({
     <div id="modal-bulk-conflicts" className="modal" role="dialog" aria-modal="true">
       <div className="modal-content">
         <div className="modal-header">
-          <h3 style={{ color: "#b91c1c" }}>Rilevati Conflitti di Sovrascrittura</h3>
+          <h3 className="text-danger">Rilevati Conflitti di Sovrascrittura</h3>
           <button
             type="button"
             className="btn-close"
@@ -35,12 +35,10 @@ export const BulkConflictsModal: React.FC<BulkConflictsModalProps> = ({
           <p>I seguenti file esistono già nelle destinazioni selezionate:</p>
           <div
             id="bulk-conflicts-list"
+            className="bg-danger-subtle border border-danger-subtle rounded-2"
             style={{
               maxHeight: "160px",
               overflowY: "auto",
-              background: "#fef2f2",
-              border: "1px solid #f87171",
-              borderRadius: "6px",
               padding: "0.75rem",
               margin: "1rem 0",
               fontFamily: "monospace",

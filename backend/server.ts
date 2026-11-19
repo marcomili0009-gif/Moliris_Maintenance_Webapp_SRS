@@ -113,6 +113,41 @@ export function createServer(
   const appConfig = deps.appConfig || loadConfig();
   registerAppConfig(app, appConfig);
 
+  // Sincronizza i parametri vincolanti di config.json su SystemConfiguration se non già valorizzati esplicitamente (SRS §2)
+  if (config.pollingIntervalSeconds === undefined && appConfig.fleetPollingIntervalSeconds !== undefined) {
+    config.pollingIntervalSeconds = appConfig.fleetPollingIntervalSeconds;
+  }
+  if (config.maxConcurrentTransfersServer === undefined && appConfig.maxConcurrentTransfers !== undefined) {
+    config.maxConcurrentTransfersServer = appConfig.maxConcurrentTransfers;
+  }
+  if (config.sshConnectionTimeoutMs === undefined && appConfig.sshConnectTimeoutSeconds !== undefined) {
+    config.sshConnectionTimeoutMs = appConfig.sshConnectTimeoutSeconds * 1000;
+  }
+  if (config.transferIdleTimeoutMs === undefined && appConfig.transferTimeoutMinutes !== undefined) {
+    config.transferIdleTimeoutMs = appConfig.transferTimeoutMinutes * 60 * 1000;
+  }
+  if (config.inactiveSessionTimeoutMinutes === undefined && appConfig.sessionInactivityTimeoutMinutes !== undefined) {
+    config.inactiveSessionTimeoutMinutes = appConfig.sessionInactivityTimeoutMinutes;
+  }
+  if (config.sessionInactivityWarningMinutes === undefined && appConfig.sessionInactivityWarningMinutes !== undefined) {
+    config.sessionInactivityWarningMinutes = appConfig.sessionInactivityWarningMinutes;
+  }
+  if (config.terminalSessionTimeoutMinutes === undefined && appConfig.sshTerminalActiveTimeoutMinutes !== undefined) {
+    config.terminalSessionTimeoutMinutes = appConfig.sshTerminalActiveTimeoutMinutes;
+  }
+  if (config.maxBulkUploadFiles === undefined && appConfig.bulkUploadConfig?.maxConcurrentFiles !== undefined) {
+    config.maxBulkUploadFiles = appConfig.bulkUploadConfig.maxConcurrentFiles;
+  }
+  if (config.defaultOperatorAllowedPaths === undefined && appConfig.bulkUploadConfig?.allowedSubPaths !== undefined) {
+    config.defaultOperatorAllowedPaths = appConfig.bulkUploadConfig.allowedSubPaths;
+  }
+  if (config.transferChunkSizeBytes === undefined && appConfig.bulkUploadConfig?.chunkSizeBytes !== undefined) {
+    config.transferChunkSizeBytes = appConfig.bulkUploadConfig.chunkSizeBytes;
+  }
+  if (config.maxFileSizeBytes === undefined && appConfig.maxFileUploadBytes !== undefined) {
+    config.maxFileSizeBytes = appConfig.maxFileUploadBytes;
+  }
+
   app.get("/api/config/public", async (_request, reply) => {
     const allowedSubPaths = (appConfig as any).bulkUploadConfig?.allowedSubPaths ?? ["/"];
     return reply.status(200).send({
@@ -135,6 +170,12 @@ export function createServer(
       maxConcurrentWebUsers: (appConfig as any).maxConcurrentWebUsers ?? 5,
       maxConcurrentTerminalsPerRobot: (appConfig as any).maxConcurrentTerminalsPerRobot ?? 1,
       maxSessionsPerAccount: (appConfig as any).futureExtensions?.maxSessionsPerAccount ?? 1,
+      fleetPollingIntervalSeconds: appConfig.fleetPollingIntervalSeconds ?? 5,
+      maxConcurrentTransfers: appConfig.maxConcurrentTransfers ?? 5,
+      sshConnectTimeoutSeconds: appConfig.sshConnectTimeoutSeconds ?? 15,
+      transferTimeoutMinutes: appConfig.transferTimeoutMinutes ?? 30,
+      maxFileUploadBytes: appConfig.maxFileUploadBytes,
+      futureExtensions: appConfig.futureExtensions,
       allowedPaths: allowedSubPaths,
       bulkUploadConfig: {
         maxConcurrentFiles: (appConfig as any).bulkUploadConfig?.maxConcurrentFiles ?? 5,
@@ -172,9 +213,14 @@ export function createServer(
     let originMatches = false;
     if (origin && request.headers.host) {
       try {
-        const protocol = (request.raw.socket as any).encrypted ? "https:" : "http:";
-        const expectedOrigin = new URL(`${protocol}//${request.headers.host}`).origin;
-        originMatches = new URL(origin).origin === expectedOrigin;
+        const socketEncrypted = Boolean((request.raw?.socket as any)?.encrypted);
+        const protoHeader = request.headers["x-forwarded-proto"];
+        const isHttps = socketEncrypted || protoHeader === "https" || (request as any).protocol === "https";
+        const expectedOrigin = new URL(`${isHttps ? "https" : "http"}://${request.headers.host}`).origin;
+        const parsedOrigin = new URL(origin);
+        originMatches =
+          parsedOrigin.origin === expectedOrigin ||
+          (parsedOrigin.host === request.headers.host && (parsedOrigin.protocol === "https:" || parsedOrigin.protocol === "http:"));
       } catch {
         originMatches = false;
       }
@@ -535,6 +581,41 @@ export async function startServer(): Promise<void> {
     // Caricamento e validazione rigida della configurazione conforme all'SRS §2
     const appConfig = loadConfig();
     const config = loadAndValidateConfig(process.env);
+
+    // Sincronizza i parametri vincolanti di config.json su SystemConfiguration
+    if (appConfig.fleetPollingIntervalSeconds !== undefined && (!process.env["MOLIRIS_POLLING_INTERVAL_SEC"])) {
+      config.pollingIntervalSeconds = appConfig.fleetPollingIntervalSeconds;
+    }
+    if (appConfig.maxConcurrentTransfers !== undefined && (!process.env["MOLIRIS_MAX_TRF_SERVER"])) {
+      config.maxConcurrentTransfersServer = appConfig.maxConcurrentTransfers;
+    }
+    if (appConfig.sshConnectTimeoutSeconds !== undefined && (!process.env["MOLIRIS_SSH_CONNECTION_TIMEOUT_MS"] && !process.env["MOLIRIS_SSH_TIMEOUT_MS"])) {
+      config.sshConnectionTimeoutMs = appConfig.sshConnectTimeoutSeconds * 1000;
+    }
+    if (appConfig.transferTimeoutMinutes !== undefined && (!process.env["MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS"])) {
+      config.transferIdleTimeoutMs = appConfig.transferTimeoutMinutes * 60 * 1000;
+    }
+    if (appConfig.sessionInactivityTimeoutMinutes !== undefined && (!process.env["MOLIRIS_SESSION_TIMEOUT_MIN"])) {
+      config.inactiveSessionTimeoutMinutes = appConfig.sessionInactivityTimeoutMinutes;
+    }
+    if (appConfig.sessionInactivityWarningMinutes !== undefined && (!process.env["MOLIRIS_SESSION_WARNING_MIN"])) {
+      config.sessionInactivityWarningMinutes = appConfig.sessionInactivityWarningMinutes;
+    }
+    if (appConfig.sshTerminalActiveTimeoutMinutes !== undefined && (!process.env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"])) {
+      config.terminalSessionTimeoutMinutes = appConfig.sshTerminalActiveTimeoutMinutes;
+    }
+    if (appConfig.bulkUploadConfig?.maxConcurrentFiles !== undefined) {
+      config.maxBulkUploadFiles = appConfig.bulkUploadConfig.maxConcurrentFiles;
+    }
+    if (appConfig.bulkUploadConfig?.allowedSubPaths !== undefined) {
+      config.defaultOperatorAllowedPaths = appConfig.bulkUploadConfig.allowedSubPaths;
+    }
+    if (appConfig.bulkUploadConfig?.chunkSizeBytes !== undefined) {
+      config.transferChunkSizeBytes = appConfig.bulkUploadConfig.chunkSizeBytes;
+    }
+    if (appConfig.maxFileUploadBytes !== undefined) {
+      config.maxFileSizeBytes = appConfig.maxFileUploadBytes;
+    }
     const mongoConfig = resolveMongoConfig();
     assertMongoCredentialsInProduction(mongoConfig.uri);
     mongoClient = new MongoClient(mongoConfig.uri);

@@ -188,7 +188,47 @@ function extractEnvConfig(env: Record<string, string | undefined>): Record<strin
     result.futureExtensions = futureExt;
   }
 
+  // 8. fleetPollingIntervalSeconds
+  const rawFleetPolling = env["MOLIRIS_POLLING_INTERVAL_SEC"] ?? env["FLEET_POLLING_INTERVAL_SECONDS"];
+  if (rawFleetPolling !== undefined && rawFleetPolling.trim() !== "") {
+    const n = Number(rawFleetPolling);
+    result.fleetPollingIntervalSeconds = isNaN(n) ? rawFleetPolling : n;
+  }
+
+  // 9. maxConcurrentTransfers
+  const rawMaxTrf = env["MOLIRIS_MAX_TRF_SERVER"] ?? env["MAX_CONCURRENT_TRANSFERS"];
+  if (rawMaxTrf !== undefined && rawMaxTrf.trim() !== "") {
+    const n = Number(rawMaxTrf);
+    result.maxConcurrentTransfers = isNaN(n) ? rawMaxTrf : n;
+  }
+
+  // 10. sshConnectTimeoutSeconds
+  const rawSshTimeout = env["MOLIRIS_SSH_CONNECTION_TIMEOUT_MS"] ?? env["MOLIRIS_SSH_TIMEOUT_MS"] ?? env["SSH_CONNECT_TIMEOUT_SECONDS"];
+  if (rawSshTimeout !== undefined && rawSshTimeout.trim() !== "") {
+    const n = Number(rawSshTimeout);
+    result.sshConnectTimeoutSeconds = isNaN(n) ? rawSshTimeout : (n > 1000 ? Math.round(n / 1000) : n);
+  }
+
+  // 11. transferTimeoutMinutes
+  const rawTrfTimeoutMs = env["MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS"];
+  const rawTrfTimeout = rawTrfTimeoutMs ? String(Math.round(Number(rawTrfTimeoutMs) / 60000)) : env["TRANSFER_TIMEOUT_MINUTES"];
+  if (rawTrfTimeout !== undefined && rawTrfTimeout.trim() !== "") {
+    const n = Number(rawTrfTimeout);
+    result.transferTimeoutMinutes = isNaN(n) ? rawTrfTimeout : n;
+  }
+
   return result;
+}
+
+/**
+ * Rimuove commenti single-line (//...) e multi-line (/* ... * /) preservando le stringhe,
+ * consentendo commenti standard in stile JSONC nei file di configurazione.
+ */
+export function stripJsonComments(jsonString: string): string {
+  return jsonString.replace(
+    /("(?:[^"\\]|\\.)*")|(\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)/g,
+    (_match, stringLiteral) => (stringLiteral ? stringLiteral : "")
+  );
 }
 
 /**
@@ -220,7 +260,7 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
   if (resolvedPath && fs.existsSync(resolvedPath)) {
     try {
       const rawContent = fs.readFileSync(resolvedPath, "utf-8");
-      const parsedConfig = JSON.parse(rawContent);
+      const parsedConfig = JSON.parse(stripJsonComments(rawContent));
       if (!parsedConfig || typeof parsedConfig !== "object" || Array.isArray(parsedConfig)) {
         throw new ConfigError(
           `Il file di configurazione "${resolvedPath}" deve contenere un oggetto JSON.`,

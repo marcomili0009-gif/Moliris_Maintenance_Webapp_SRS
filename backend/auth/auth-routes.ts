@@ -283,6 +283,10 @@ export function registerAuthRoutes(
       "Set-Cookie",
       "__Host-moliris_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
     );
+    reply.header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    reply.header("Pragma", "no-cache");
+    reply.header("Expires", "0");
+    reply.header("Clear-Site-Data", "\"cache\", \"cookies\", \"storage\"");
 
     return reply.status(200).send({
       status: "LOGGED_OUT",
@@ -369,6 +373,9 @@ export function registerAuthRoutes(
   app.get("/api/auth/me", { preHandler: [authMiddleware.authenticate.bind(authMiddleware)] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const user = req.molirisUser!;
     const profile = toUserProfileDto(user);
+    reply.header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    reply.header("Pragma", "no-cache");
+    reply.header("Expires", "0");
     return reply.status(200).send({
       user: profile,
       allowedPaths: profile.allowedPaths || [],
