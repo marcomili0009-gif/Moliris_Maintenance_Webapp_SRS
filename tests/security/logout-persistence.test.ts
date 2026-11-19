@@ -1,6 +1,10 @@
 // Test di validazione E2E: Logout reale, invalidazione server-side, cancellazione cookie e persistenza dopo reload (F5)
 
 import assert from "node:assert";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execSync } from "node:child_process";
 import Fastify from "fastify";
 import { createServer } from "../../backend/server.ts";
 import { SessionManager } from "../../backend/auth/session-manager.ts";
@@ -13,9 +17,31 @@ import { loadConfig } from "../../src/config/index.ts";
 
 console.log("--> Esecuzione test di validazione Logout e Non-Persistenza al Reload (F5)...");
 
+const projectCertPath = path.resolve(process.cwd(), "certs/server.crt");
+const projectKeyPath = path.resolve(process.cwd(), "certs/server.key");
+let certPath = process.env.MOLIRIS_TLS_CERT_PATH;
+let keyPath = process.env.MOLIRIS_TLS_KEY_PATH;
+let tmpCertDir: string | null = null;
+
+if (!certPath || !keyPath || !fs.existsSync(certPath) || !fs.existsSync(keyPath)) {
+  if (fs.existsSync(projectCertPath) && fs.existsSync(projectKeyPath)) {
+    certPath = projectCertPath;
+    keyPath = projectKeyPath;
+  } else {
+    tmpCertDir = fs.mkdtempSync(path.join(os.tmpdir(), "moliris-logout-cert-"));
+    certPath = path.join(tmpCertDir, "cert.pem");
+    keyPath = path.join(tmpCertDir, "key.pem");
+    execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${keyPath}" -out "${certPath}" -days 1 -nodes -subj "/CN=localhost"`, {
+      stdio: "pipe",
+    });
+  }
+}
+
+const tmpFsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moliris-logout-test-fs-"));
+
 const env = {
   ...process.env,
-  MOLIRIS_FS_ROOT: "/tmp/moliris-logout-test-fs",
+  MOLIRIS_FS_ROOT: tmpFsRoot,
   MOLIRIS_POLLING_INTERVAL_SEC: "60",
   MOLIRIS_SSH_TIMEOUT_MS: "5000",
   MOLIRIS_MAX_TRF_PER_USER: "2",
@@ -24,8 +50,8 @@ const env = {
   MOLIRIS_TEMP_RETENTION_MIN: "60",
   MOLIRIS_STATE_FILE_PATHS: "/tmp/state.json",
   MOLIRIS_SESSION_TIMEOUT_MIN: "30",
-  MOLIRIS_TLS_CERT_PATH: "/home/mmilitello/.config/moliris/dev/localhost-cert.pem",
-  MOLIRIS_TLS_KEY_PATH: "/home/mmilitello/.config/moliris/dev/localhost-key.pem",
+  MOLIRIS_TLS_CERT_PATH: certPath,
+  MOLIRIS_TLS_KEY_PATH: keyPath,
   MOLIRIS_REGISTRATION_MODE: "rigorosa",
   MOLIRIS_AUDIT_RETENTION_DAYS: "365",
   MOLIRIS_CREDENTIAL_PROVIDER: "in-memory",
@@ -150,4 +176,10 @@ assert.strictEqual(logoutAudit.details?.context, "sessione");
 assert.strictEqual(logoutAudit.details?.reason, "MANUAL_LOGOUT");
 
 await app.close();
+try {
+  fs.rmSync(tmpFsRoot, { recursive: true, force: true });
+  if (tmpCertDir) {
+    fs.rmSync(tmpCertDir, { recursive: true, force: true });
+  }
+} catch {}
 console.log("PASS: Test di validazione Logout e Non-Persistenza al Reload completato con successo al 100%.");

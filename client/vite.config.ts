@@ -24,5 +24,6 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "../dist/frontend"),
     emptyOutDir: true,
+    chunkSizeWarningLimit: 1000,
   },
 });
