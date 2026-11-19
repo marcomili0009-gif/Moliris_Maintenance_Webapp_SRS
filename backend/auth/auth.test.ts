@@ -15,6 +15,7 @@ import { AppPermission, hasPermission, type RolePermissionMapping, DEFAULT_ROLE_
 import { InMemoryAuditRepository } from "../../storage/audit-repository.ts";
 import { AuditOperation } from "../../storage/audit-models.ts";
 import { createServer } from "../server.ts";
+import { loadConfig } from "../../src/config/index.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
 import { type SystemConfiguration } from "../../config/configuration.ts";
 import { ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
@@ -144,11 +145,21 @@ assert.strictEqual(hasPermission(operatorUser, AppPermission.ROBOT_CONFIG_UPDATE
 assert.strictEqual(hasPermission(operatorUser, AppPermission.ROBOT_CONFIG_UPDATE, undefined, customRoleMapping), true);
 console.log("  PASS: Permessi modificabili a runtime da configurazione superati.");
 
-// 4. Test server HTTPS con API di Autenticazione
+// 4. Test server HTTPS con API di Autenticazione (con maxSessionsPerAccount: 1 per testare la concorrenza singola)
+const testAppConfig = loadConfig({
+  overrides: {
+    futureExtensions: {
+      maxSessionsPerAccount: 1,
+      maxFleetRobots: 100,
+      customSettings: {},
+    },
+  },
+});
 const app = createServer(config, logger, {
   sessionManager,
   userRepository: userRepo,
   auditRepository: auditRepo,
+  appConfig: testAppConfig,
 });
 
 await app.listen({ port: 0, host: "127.0.0.1" });

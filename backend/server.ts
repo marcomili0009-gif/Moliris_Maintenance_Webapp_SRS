@@ -132,9 +132,11 @@ export function createServer(
         (appConfig as any)?.sshTerminalWarningMinutes ??
         (appConfig as any)?.terminalSessionWarningMinutes ??
         5,
-      maxConcurrentWebUsers: (appConfig as any).maxConcurrentWebUsers ?? 5,
+      maxConcurrentWebUsers: (appConfig as any).maxConcurrentWebUsers ?? 10,
       maxConcurrentTerminalsPerRobot: (appConfig as any).maxConcurrentTerminalsPerRobot ?? 1,
       maxSessionsPerAccount: (appConfig as any).futureExtensions?.maxSessionsPerAccount ?? 1,
+      activeConfigFile: (appConfig as any).loadedConfigPath ? path.basename((appConfig as any).loadedConfigPath) : "defaults",
+      activeConfigPath: (appConfig as any).loadedConfigPath ?? null,
       allowedPaths: allowedSubPaths,
       bulkUploadConfig: {
         maxConcurrentFiles: (appConfig as any).bulkUploadConfig?.maxConcurrentFiles ?? 5,
@@ -534,6 +536,8 @@ export async function startServer(): Promise<void> {
   try {
     // Caricamento e validazione rigida della configurazione conforme all'SRS §2
     const appConfig = loadConfig();
+    logger.info(`[CONFIG] File di configurazione applicativo caricato: ${appConfig.loadedConfigPath || "valori predefiniti"}`);
+    logger.info(`[CONFIG] Parametri attivi: maxConcurrentWebUsers=${appConfig.maxConcurrentWebUsers}, maxSessionsPerAccount=${appConfig.futureExtensions.maxSessionsPerAccount}, maxConcurrentTerminalsPerRobot=${appConfig.maxConcurrentTerminalsPerRobot}, sessionTimeout=${appConfig.sessionInactivityTimeoutMinutes}m, sessionWarning=${appConfig.sessionInactivityWarningMinutes}m`);
     const config = loadAndValidateConfig(process.env);
     const mongoConfig = resolveMongoConfig();
     assertMongoCredentialsInProduction(mongoConfig.uri);
