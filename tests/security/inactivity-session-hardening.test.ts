@@ -284,13 +284,16 @@ const adminUser: UserEntity = {
   (termService as any).activeSessions.set(termSessionId, termSession);
 
   const messageListeners: ((msg: any) => void)[] = [];
-  mockWs.on = (evt: string, fn: any) => {
+  mockWs.on = (evt: string, fn: any): any => {
     if (evt === "message") messageListeners.push(fn);
+    return mockWs;
   };
-  mockWs.emit = (evt: string, data: any) => {
+  mockWs.emit = (evt: string, data: any): any => {
     if (evt === "message") {
       for (const fn of messageListeners) fn(data);
+      return true;
     }
+    return false;
   };
 
   termService.attachWebSocket(termSessionId, adminUser, mockWs as any);
