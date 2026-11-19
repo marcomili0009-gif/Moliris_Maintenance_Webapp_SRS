@@ -223,6 +223,7 @@ export function useTransfers(isAuthenticated: boolean) {
     error,
     activeCount,
     loadTransfers,
+    refresh: loadTransfers,
     cancelTransfer,
     cleanupAllTemp,
     preCheckBulkUpload,

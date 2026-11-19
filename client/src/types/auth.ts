@@ -3,6 +3,7 @@ export interface User {
   username: string;
   roles: string[];
   enabled: boolean;
+  allowedPaths?: string[];
   createdAt?: string;
   updatedAt?: string;
 }

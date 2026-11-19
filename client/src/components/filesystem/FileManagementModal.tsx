@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { useAuth } from "../../hooks/useAuth.ts";
 import { apiClient } from "../../services/api-client.ts";
 import { ErrorPresenter } from "../../services/error-presenter.ts";
 import { StateFormatter } from "../../services/state-formatter.ts";
@@ -16,6 +17,19 @@ export interface FileManagementModalProps {
   initialPath?: string;
 }
 
+// Confronto componenti percorso per controllo client-side operatore
+const isPathAllowedForUser = (candidate: string, allowedRoots: string[]): boolean => {
+  const normCandidate = "/" + candidate.replace(/^[/\\]+/, "").replace(/\/+$/, "");
+  const candSegs = normCandidate.split("/").filter(Boolean);
+  return allowedRoots.some((root) => {
+    const normRoot = "/" + root.replace(/^[/\\]+/, "").replace(/\/+$/, "");
+    const rootSegs = normRoot.split("/").filter(Boolean);
+    if (rootSegs.length === 0) return true;
+    if (candSegs.length < rootSegs.length) return false;
+    return rootSegs.every((seg, i) => candSegs[i] === seg);
+  });
+};
+
 export const FileManagementModal: React.FC<FileManagementModalProps> = ({
   isOpen,
   onClose,
@@ -27,6 +41,10 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
   robotName,
   initialPath = "/",
 }) => {
+  const { currentUser } = useAuth();
+  const isOperator = currentUser?.roles.includes("operatore") ?? false;
+  const operatorAllowedPaths = currentUser?.allowedPaths;
+
   const modalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -75,6 +93,11 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
     }
     if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(p) || /%2e%2e/i.test(p)) {
       return "Attraversamento directory ('..') non consentito.";
+    }
+    if (isOperator && operatorAllowedPaths && operatorAllowedPaths.length > 0) {
+      if (!isPathAllowedForUser(p, operatorAllowedPaths)) {
+        return "Accesso non consentito: la cartella richiesta è esterna ai percorsi autorizzati per l'operatore.";
+      }
     }
     return null;
   };
@@ -163,7 +186,13 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
   // Inizializzazione all'apertura
   useEffect(() => {
     if (isOpen) {
-      const startPath = initialPath || "/";
+      let startPath = initialPath || "/";
+      if (isOperator && operatorAllowedPaths && operatorAllowedPaths.length > 0) {
+        if (!isPathAllowedForUser(startPath, operatorAllowedPaths)) {
+          const firstRoot = operatorAllowedPaths[0];
+          startPath = firstRoot.startsWith("/") ? firstRoot : "/" + firstRoot;
+        }
+      }
       setCurrentBrowserPath(startPath);
       setManualPath(startPath);
       setSubmitError(null);
@@ -171,7 +200,7 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
       fetchDirectories(startPath);
       verifyPathOnServer(startPath);
     }
-  }, [isOpen, initialPath, fetchDirectories, verifyPathOnServer]);
+  }, [isOpen, initialPath, isOperator, operatorAllowedPaths, fetchDirectories, verifyPathOnServer]);
 
   // Gestione focus trap e tasto Escape
   useEffect(() => {

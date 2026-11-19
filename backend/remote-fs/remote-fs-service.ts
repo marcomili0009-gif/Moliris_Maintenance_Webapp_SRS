@@ -14,6 +14,7 @@ import { type AuditRepository } from "../../storage/audit-repository.ts";
 import { AuditOperation } from "../../storage/audit-models.ts";
 import { MolirisLogger, redactSensitiveData } from "../../logging/logger.ts";
 import { MolirisAppError, ErrorCode } from "../../errors/app-errors.ts";
+import { isPathAllowedByComponents } from "../auth/path-authorization.ts";
 import {
   type RemoteFolderInspectionResult,
   type RemoteFileItemDto,
@@ -413,23 +414,16 @@ export class RemoteFilesystemService {
     });
 
     if (!isAdmin) {
-      // Ruolo Operatore: limitato rigorosamente alle sole cartelle consentite (jail)
+      // Ruolo Operatore: limitato rigorosamente alle sole cartelle consentite (Prompt Correttivo #3)
       const allowedPaths =
-        this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0
+        context.allowedPaths && context.allowedPaths.length > 0
+          ? context.allowedPaths
+          : this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0
           ? this.config.remoteFsAllowedPaths
           : this.config.defaultOperatorAllowedPaths;
 
       if (allowedPaths && allowedPaths.length > 0) {
-        const isAllowed = allowedPaths.some((allowed) => {
-          let normAllowed = path.posix.normalize(allowed.trim());
-          if (!normAllowed.startsWith("/")) {
-            normAllowed = "/" + normAllowed;
-          }
-          return (
-            normalized === normAllowed ||
-            normalized.startsWith(normAllowed.endsWith("/") ? normAllowed : `${normAllowed}/`)
-          );
-        });
+        const isAllowed = isPathAllowedByComponents(normalized, allowedPaths);
 
         if (!isAllowed) {
           await this.recordSecurityViolation(
@@ -448,16 +442,7 @@ export class RemoteFilesystemService {
     } else {
       // Ruolo Amministratore: se configurata remoteFsAllowedPaths a livello perimetrale di sistema, verifica solo quella
       if (this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0) {
-        const isAllowed = this.config.remoteFsAllowedPaths.some((allowed) => {
-          let normAllowed = path.posix.normalize(allowed.trim());
-          if (!normAllowed.startsWith("/")) {
-            normAllowed = "/" + normAllowed;
-          }
-          return (
-            normalized === normAllowed ||
-            normalized.startsWith(normAllowed.endsWith("/") ? normAllowed : `${normAllowed}/`)
-          );
-        });
+        const isAllowed = isPathAllowedByComponents(normalized, this.config.remoteFsAllowedPaths);
 
         if (!isAllowed) {
           await this.recordSecurityViolation(
@@ -667,6 +652,18 @@ export class RemoteFilesystemService {
         });
       });
 
+      const roles = context.roles || [];
+      const isAdmin = roles.some((r) => {
+        const lower = r.toLowerCase();
+        return lower === "amministratore" || lower === "admin";
+      });
+      const effectiveAllowed =
+        context.allowedPaths && context.allowedPaths.length > 0
+          ? context.allowedPaths
+          : this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0
+          ? this.config.remoteFsAllowedPaths
+          : this.config.defaultOperatorAllowedPaths;
+
       const directories: Array<{ name: string; path: string }> = [];
       for (const entry of rawEntries) {
         if (entry.filename === "." || entry.filename === "..") continue;
@@ -681,15 +678,35 @@ export class RemoteFilesystemService {
         }
 
         if (isDir) {
+          const entryPath = path.posix.join(targetPath, entry.filename);
+          // Per operatore, includi solo se consentito o antenato di un percorso consentito
+          if (!isAdmin && effectiveAllowed && effectiveAllowed.length > 0) {
+            const isDirectlyAllowed = isPathAllowedByComponents(entryPath, effectiveAllowed);
+            const isAncestorOfAllowed = effectiveAllowed.some((root) => {
+              const rootNorm = path.posix.normalize(root);
+              return rootNorm.startsWith(entryPath + "/");
+            });
+            if (!isDirectlyAllowed && !isAncestorOfAllowed) {
+              continue;
+            }
+          }
+
           directories.push({
             name: entry.filename,
-            path: path.posix.join(targetPath, entry.filename),
+            path: entryPath,
           });
         }
       }
 
       directories.sort((a, b) => a.name.localeCompare(b.name));
-      const parentPath = targetPath === "/" ? null : path.posix.dirname(targetPath);
+      let parentPath: string | null = targetPath === "/" ? null : path.posix.dirname(targetPath);
+
+      // Blocca la risalita oltre le radici assegnate all'operatore
+      if (!isAdmin && effectiveAllowed && effectiveAllowed.length > 0) {
+        if (effectiveAllowed.some((root) => path.posix.normalize(root) === targetPath)) {
+          parentPath = null;
+        }
+      }
 
       return {
         robotId: robot.id,
@@ -984,20 +1001,18 @@ export class RemoteFilesystemService {
                   });
 
                   const normResolved = path.posix.normalize(resolvedTarget);
-                  const isAllowed = this.config.remoteFsAllowedPaths.some((allowed) => {
-                    const normAllowed = path.posix.normalize(allowed.trim());
-                    return (
-                      normResolved === normAllowed ||
-                      normResolved.startsWith(normAllowed.endsWith("/") ? normAllowed : `${normAllowed}/`)
-                    );
-                  });
+                  const effectiveSymlinkAllowed =
+                    context.allowedPaths && context.allowedPaths.length > 0
+                      ? context.allowedPaths
+                      : this.config.remoteFsAllowedPaths;
+                  const isAllowed = isPathAllowedByComponents(normResolved, effectiveSymlinkAllowed);
 
                   if (!isAllowed) {
                     await this.recordSecurityViolation(
                       context.username,
                       robot.id,
                       "SYMLINK_TARGET_OUTSIDE_ALLOWED_RESTRICTIONS",
-                      { targetPath: normResolved, allowedPaths: this.config.remoteFsAllowedPaths }
+                      { targetPath: normResolved, allowedPaths: effectiveSymlinkAllowed }
                     );
                     return reject(
                       new MolirisAppError(

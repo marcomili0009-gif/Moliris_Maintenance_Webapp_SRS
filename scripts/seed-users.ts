@@ -44,6 +44,7 @@ import { MongoClient } from "mongodb";
 import { hashPassword, type UserEntity } from "../backend/auth/user-models.ts";
 import { MongoUserRepository } from "../backend/auth/user-repository.ts";
 import { resolveMongoConfig } from "../config/mongodb.ts";
+import { sanitizeAndValidateAllowedRoots, toCanonicalPosixPath } from "../backend/auth/path-authorization.ts";
 
 export interface SeedPasswords {
   operatorPassword: string;
@@ -145,9 +146,14 @@ export function loadSeedPasswords(options?: {
 }
 
 export async function seedInitialUsers(
-  repo: { create(user: UserEntity): Promise<UserEntity>; findByUsername(username: string): Promise<UserEntity | null> },
+  repo: {
+    create(user: UserEntity): Promise<UserEntity>;
+    findByUsername(username: string): Promise<UserEntity | null>;
+    update?(id: string, update: Partial<UserEntity>): Promise<UserEntity>;
+  },
   operatorPassword?: string,
-  adminPassword?: string
+  adminPassword?: string,
+  operatorPaths?: string[]
 ): Promise<void> {
   console.log("--> Provisioning utenti iniziali...");
 
@@ -161,6 +167,10 @@ export async function seedInitialUsers(
   }
   validateSeedPasswords({ operatorPassword: finalOpPassword, adminPassword: finalAdmPassword });
 
+  const initialOperatorPaths = operatorPaths && operatorPaths.length > 0
+    ? sanitizeAndValidateAllowedRoots(operatorPaths)
+    : ["/upload", "/shared", "/logs", "/backups", "/configs"];
+
   // 1. Utente Operatore (§2.2: "Utente autorizzato")
   const existingOperator = await repo.findByUsername("operatore");
   if (!existingOperator) {
@@ -171,12 +181,18 @@ export async function seedInitialUsers(
       passwordHash: operatorPasswordHash,
       roles: ["operatore"],
       enabled: true,
+      allowedPaths: initialOperatorPaths,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    console.log("  Utente 'operatore' creato con successo (Ruolo: operatore).");
+    console.log(`  Utente 'operatore' creato con successo (Ruolo: operatore, Percorsi autorizzati: ${initialOperatorPaths.join(", ")}).`);
   } else {
-    console.log("  Utente 'operatore' già presente.");
+    if (operatorPaths && operatorPaths.length > 0 && repo.update) {
+      await repo.update(existingOperator.id, { allowedPaths: initialOperatorPaths });
+      console.log(`  Utente 'operatore' aggiornato con percorsi: ${initialOperatorPaths.join(", ")}`);
+    } else {
+      console.log("  Utente 'operatore' già presente.");
+    }
   }
 
   // 2. Utente Amministratore (§2.2: "Amministratore o gestore della flotta")
@@ -201,9 +217,30 @@ export async function seedInitialUsers(
 // Esecuzione autonoma CLI su MongoDB reale
 if (process.argv[1] && process.argv[1].endsWith("seed-users.ts")) {
   let passwordFileArg: string | undefined;
+  let operatorPathsArg: string[] | undefined;
+  let addPathUser: string | undefined;
+  let addPathVal: string | undefined;
+  let removePathUser: string | undefined;
+  let removePathVal: string | undefined;
+  let listPathsUser: string | undefined;
+
   for (let i = 2; i < process.argv.length; i++) {
     if (process.argv[i] === "--password-file" && i + 1 < process.argv.length) {
       passwordFileArg = process.argv[i + 1];
+      i++;
+    } else if (process.argv[i] === "--operator-paths" && i + 1 < process.argv.length) {
+      operatorPathsArg = process.argv[i + 1].split(",").map((p) => p.trim()).filter(Boolean);
+      i++;
+    } else if (process.argv[i] === "--add-operator-path" && i + 2 < process.argv.length) {
+      addPathUser = process.argv[i + 1];
+      addPathVal = process.argv[i + 2];
+      i += 2;
+    } else if (process.argv[i] === "--remove-operator-path" && i + 2 < process.argv.length) {
+      removePathUser = process.argv[i + 1];
+      removePathVal = process.argv[i + 2];
+      i += 2;
+    } else if (process.argv[i] === "--list-operator-paths" && i + 1 < process.argv.length) {
+      listPathsUser = process.argv[i + 1];
       i++;
     }
   }
@@ -211,12 +248,50 @@ if (process.argv[1] && process.argv[1].endsWith("seed-users.ts")) {
   const mongoConfig = resolveMongoConfig();
   const client = new MongoClient(mongoConfig.uri);
   try {
-    const passwords = loadSeedPasswords({ passwordFile: passwordFileArg });
     await client.connect();
     const db = client.db(mongoConfig.dbName);
     const repo = new MongoUserRepository(db);
     await repo.initIndexes();
-    await seedInitialUsers(repo, passwords.operatorPassword, passwords.adminPassword);
+
+    if (listPathsUser) {
+      const user = await repo.findByUsername(listPathsUser);
+      if (!user) {
+        console.error(`Utente '${listPathsUser}' non trovato.`);
+        process.exit(1);
+      }
+      console.log(`Percorsi autorizzati per '${listPathsUser}': ${(user.allowedPaths || []).join(", ") || "(nessuno)"}`);
+      process.exit(0);
+    }
+
+    if (addPathUser && addPathVal) {
+      const user = await repo.findByUsername(addPathUser);
+      if (!user) {
+        console.error(`Utente '${addPathUser}' non trovato.`);
+        process.exit(1);
+      }
+      const current = user.allowedPaths || [];
+      const updated = sanitizeAndValidateAllowedRoots([...current, addPathVal]);
+      await repo.update(user.id, { allowedPaths: updated });
+      console.log(`Percorso '${addPathVal}' aggiunto a '${addPathUser}'. Percorsi attuali: ${updated.join(", ")}`);
+      process.exit(0);
+    }
+
+    if (removePathUser && removePathVal) {
+      const user = await repo.findByUsername(removePathUser);
+      if (!user) {
+        console.error(`Utente '${removePathUser}' non trovato.`);
+        process.exit(1);
+      }
+      const canonicalToRemove = toCanonicalPosixPath(removePathVal);
+      const current = user.allowedPaths || [];
+      const filtered = current.filter((p) => p !== canonicalToRemove);
+      await repo.update(user.id, { allowedPaths: filtered });
+      console.log(`Percorso '${canonicalToRemove}' rimosso da '${removePathUser}'. Percorsi attuali: ${filtered.join(", ")}`);
+      process.exit(0);
+    }
+
+    const passwords = loadSeedPasswords({ passwordFile: passwordFileArg });
+    await seedInitialUsers(repo, passwords.operatorPassword, passwords.adminPassword, operatorPathsArg);
     console.log("Provisioning completato con successo.");
   } catch (err: any) {
     console.error("Errore durante il provisioning utenti:", err.message);

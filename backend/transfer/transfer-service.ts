@@ -624,6 +624,8 @@ export class TransferService {
       AppPermission.FS_REMOTE_UPLOAD,
     ]);
 
+    this.serverFsService.assertOperatorAccess(context, req.serverRelativePath, "TRANSFER_SOURCE");
+
     const sourceServerPath = await this.serverFsService.resolveRobotPath(robot, req.serverRelativePath);
     if (!fs.existsSync(sourceServerPath)) {
       throw new MolirisAppError(
@@ -886,6 +888,8 @@ export class TransferService {
         targetServerRelative = stripped || safeFilename;
       }
     }
+
+    this.serverFsService.assertOperatorAccess(context, targetServerRelative, "TRANSFER_DESTINATION");
 
     const finalServerPath = await this.serverFsService.resolveRobotPath(robot, targetServerRelative);
 

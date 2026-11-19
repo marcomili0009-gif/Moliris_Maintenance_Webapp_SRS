@@ -13,6 +13,7 @@ export interface UserEntity {
   enabled: boolean;     // Stato abilitato/disabilitato dell'account
   permissions?: string[]; // Permessi globali aggiuntivi
   robotPermissions?: Record<string, string[]>; // Permessi specifici per robot: robotId -> permissions[] (CA-SSH-005)
+  allowedPaths?: string[]; // Percorsi (radici) autorizzati per operatore (Prompt Correttivo #3)
   passwordChangedAt?: Date; // Timestamp atomico dell'ultimo cambio/reset password per revoca sessioni
   createdAt: Date;
   updatedAt: Date;
@@ -28,6 +29,7 @@ export interface UserProfileDto {
   roles: string[];
   permissions: string[];
   robotPermissions: Record<string, string[]>;
+  allowedPaths?: string[];
 }
 
 /**
@@ -100,5 +102,6 @@ export function toUserProfileDto(user: UserEntity): UserProfileDto {
     roles: [...user.roles],
     permissions: user.permissions ? [...user.permissions] : [],
     robotPermissions: user.robotPermissions ? { ...user.robotPermissions } : {},
+    allowedPaths: user.allowedPaths ? [...user.allowedPaths] : undefined,
   };
 }

@@ -42,6 +42,7 @@ export interface AuthorizedContext {
   roles: string[];
   targetRobotId?: string;
   permissions: Set<AppPermission>;
+  allowedPaths?: string[];
 }
 
 export class SessionManager {
@@ -275,6 +276,7 @@ export class SessionManager {
       roles: [...session.roles],
       targetRobotId,
       permissions,
+      allowedPaths: user.allowedPaths ? [...user.allowedPaths] : undefined,
     };
   }
 

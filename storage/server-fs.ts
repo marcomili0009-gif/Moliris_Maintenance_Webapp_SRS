@@ -13,6 +13,7 @@ import { MolirisAppError, ErrorCode } from "../errors/app-errors.ts";
 import { type AuditRepository } from "./audit-repository.ts";
 import { AuditOperation } from "./audit-models.ts";
 import { MolirisLogger } from "../logging/logger.ts";
+import { isPathAllowedByComponents } from "../backend/auth/path-authorization.ts";
 
 /**
  * Risultato della creazione della directory di un robot (RF-ROB-008, RF-ROB-009, RNF-FS-004)
@@ -130,21 +131,21 @@ export class ServerFilesystemService {
 
   /**
    * Verifica se un percorso relativo ricade all'interno delle cartelle consentite per l'operatore (RNF-SEC-005).
+   * Confronto per componenti di percorso (segmenti), mai per prefisso di stringa parziale.
    */
-  public isPathAllowedForOperator(relativeSubPath?: string): boolean {
-    if (!this.operatorAllowedPaths || this.operatorAllowedPaths.length === 0) {
+  public isPathAllowedForOperator(relativeSubPath?: string, customAllowed?: string[]): boolean {
+    const allowed = customAllowed && customAllowed.length > 0 ? customAllowed : this.operatorAllowedPaths;
+    if (!allowed || allowed.length === 0) {
       return true;
     }
     if (!relativeSubPath || relativeSubPath.trim() === "" || relativeSubPath.trim() === ".") {
       return false;
     }
-    const norm = path.normalize(relativeSubPath.trim()).replace(/^\/+|\/+$/g, "");
+    const norm = relativeSubPath.trim().replace(/^[/\\]+/, "");
     if (norm === "" || norm === ".") {
       return false;
     }
-    return this.operatorAllowedPaths.some(
-      (allowed) => norm === allowed || norm.startsWith(allowed + "/") || norm.startsWith(allowed + path.sep)
-    );
+    return isPathAllowedByComponents(norm, allowed);
   }
 
   /**
@@ -155,17 +156,20 @@ export class ServerFilesystemService {
     relativeSubPath?: string,
     operation: string = "Accesso"
   ): void {
-    if (this.isOperator(context) && this.operatorAllowedPaths && this.operatorAllowedPaths.length > 0) {
-      if (!this.isPathAllowedForOperator(relativeSubPath)) {
-        this.logger.warn(`Accesso negato per ruolo operatore al percorso server: ${relativeSubPath}`, {
-          userId: context.userId,
-          operation,
-        });
-        throw new MolirisAppError(
-          ErrorCode.INSUFFICIENT_PERMISSIONS,
-          `Operazione '${operation}' non consentita: percorso al di fuori delle cartelle consentite per il ruolo operatore.`,
-          "Accesso non consentito: la cartella richiesta è esterna ai percorsi autorizzati per l'operatore."
-        );
+    if (this.isOperator(context)) {
+      const allowed = context.allowedPaths && context.allowedPaths.length > 0 ? context.allowedPaths : this.operatorAllowedPaths;
+      if (allowed && allowed.length > 0) {
+        if (!this.isPathAllowedForOperator(relativeSubPath, allowed)) {
+          this.logger.warn(`Accesso negato per ruolo operatore al percorso server: ${relativeSubPath}`, {
+            userId: context.userId,
+            operation,
+          });
+          throw new MolirisAppError(
+            ErrorCode.INSUFFICIENT_PERMISSIONS,
+            `Operazione '${operation}' non consentita: percorso al di fuori delle cartelle consentite per il ruolo operatore.`,
+            "Accesso non consentito: la cartella richiesta è esterna ai percorsi autorizzati per l'operatore."
+          );
+        }
       }
     }
   }
@@ -906,8 +910,15 @@ export class ServerFilesystemService {
         }
 
         // Se l'utente è un operatore che visualizza la root e le restrizioni sono attive, filtra mostrando SOLO le cartelle consentite
-        if (isOp && isRoot && this.operatorAllowedPaths && this.operatorAllowedPaths.length > 0 && !this.operatorAllowedPaths.includes(entry.name)) {
-          continue;
+        const effectiveAllowed = context.allowedPaths && context.allowedPaths.length > 0 ? context.allowedPaths : this.operatorAllowedPaths;
+        if (isOp && isRoot && effectiveAllowed && effectiveAllowed.length > 0) {
+          const isAllowed = effectiveAllowed.some((root) => {
+            const rootSegs = root.split("/").filter(Boolean);
+            return rootSegs.length === 0 || rootSegs[0] === entry.name;
+          });
+          if (!isAllowed) {
+            continue;
+          }
         }
 
         const fullItemPath = path.join(targetDir, entry.name);
@@ -988,10 +999,17 @@ export class ServerFilesystemService {
 
       if (entry.isDirectory()) {
         const entryRelative = cleanSub ? path.posix.join(cleanSub, entry.name) : entry.name;
-        if (isOp && isRoot && this.operatorAllowedPaths && this.operatorAllowedPaths.length > 0 && !this.operatorAllowedPaths.includes(entry.name)) {
-          continue;
+        const effectiveAllowed = context.allowedPaths && context.allowedPaths.length > 0 ? context.allowedPaths : this.operatorAllowedPaths;
+        if (isOp && isRoot && effectiveAllowed && effectiveAllowed.length > 0) {
+          const isAllowed = effectiveAllowed.some((root) => {
+            const rootSegs = root.split("/").filter(Boolean);
+            return rootSegs.length === 0 || rootSegs[0] === entry.name;
+          });
+          if (!isAllowed) {
+            continue;
+          }
         }
-        if (isOp && !isRoot && !this.isPathAllowedForOperator(entryRelative)) {
+        if (isOp && !isRoot && !this.isPathAllowedForOperator(entryRelative, effectiveAllowed)) {
           continue;
         }
 
@@ -1112,7 +1130,8 @@ export class ServerFilesystemService {
     const subPath = norm === "/" ? "" : norm.replace(/^[/\\]+/, "");
 
     // Controllo restrizioni operatore
-    if (this.isOperator(context) && subPath && !this.isPathAllowedForOperator(subPath)) {
+    const effectiveAllowed = context.allowedPaths && context.allowedPaths.length > 0 ? context.allowedPaths : this.operatorAllowedPaths;
+    if (this.isOperator(context) && subPath && !this.isPathAllowedForOperator(subPath, effectiveAllowed)) {
       return {
         valid: false,
         exists: false,

@@ -229,4 +229,49 @@ try {
   assert(err.message.includes("MOLIRIS_MAX_BULK_UPLOAD_FILES"));
 }
 
+// Test 12: Verifica effetto reale modifica parametri (Prompt Correttivo #3 Parte A.1)
+{
+  const customConfig = loadAndValidateConfig({
+    ...validEnv,
+    MOLIRIS_POLLING_INTERVAL_SEC: "42",
+    MOLIRIS_SSH_CONNECTION_TIMEOUT_MS: "12345",
+    MOLIRIS_MAX_TRF_PER_USER: "7",
+    MOLIRIS_MAX_TRF_PER_ROBOT: "4",
+    MOLIRIS_MAX_TRF_SERVER: "18",
+    MOLIRIS_TEMP_RETENTION_MIN: "120",
+    MOLIRIS_AUDIT_RETENTION_DAYS: "365",
+    MOLIRIS_MAX_FILE_SIZE_BYTES: "5368709120",
+    MOLIRIS_QUOTA_PER_ROBOT_BYTES: "10737418240",
+  });
+  assert.strictEqual(customConfig.pollingIntervalSeconds, 42, "pollingIntervalSeconds deve riflettere 42");
+  assert.strictEqual(customConfig.sshConnectionTimeoutMs, 12345, "sshConnectionTimeoutMs deve riflettere 12345");
+  assert.strictEqual(customConfig.maxConcurrentTransfersPerUser, 7, "maxConcurrentTransfersPerUser deve riflettere 7");
+  assert.strictEqual(customConfig.maxConcurrentTransfersPerRobot, 4, "maxConcurrentTransfersPerRobot deve riflettere 4");
+  assert.strictEqual(customConfig.maxConcurrentTransfersServer, 18, "maxConcurrentTransfersServer deve riflettere 18");
+  assert.strictEqual(customConfig.tempFileRetentionMinutes, 120, "tempFileRetentionMinutes deve riflettere 120");
+  assert.strictEqual(customConfig.auditLogRetentionDays, 365, "auditLogRetentionDays deve riflettere 365");
+  assert.strictEqual(customConfig.maxFileSizeBytes, 5368709120, "maxFileSizeBytes deve riflettere 5GB");
+  assert.strictEqual(customConfig.quotaPerRobotBytes, 10737418240, "quotaPerRobotBytes deve riflettere 10GB");
+}
+
+// Test 13: Verifica validazione tipizzata Zod per valori non validi / fuori range (Prompt Correttivo #3 Parte A.2)
+{
+  assert.throws(
+    () =>
+      loadAndValidateConfig({
+        ...validEnv,
+        MOLIRIS_AUDIT_RETENTION_DAYS: "-10",
+      }),
+    /auditLogRetentionDays/
+  );
+  assert.throws(
+    () =>
+      loadAndValidateConfig({
+        ...validEnv,
+        MOLIRIS_POLLING_INTERVAL_SEC: "0",
+      }),
+    /pollingIntervalSeconds/
+  );
+}
+
 console.log("PASS: Test configurazione completato con successo.");

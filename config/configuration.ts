@@ -1,6 +1,7 @@
 // Requisiti soddisfatti: RNF-MNT-001, RF-ROB-005, RF-TRF-012, RF-AUTH-006, RF-MON-001, RF-ROB-009, RF-SRVFS-007, RNF-SEC-002, RNF-SEC-004, §8.1, §11.1..11.6
 
 import fs from "fs";
+import { z } from "zod";
 
 export interface SystemConfiguration {
   // 1. Root del filesystem server (RNF-MNT-001, RF-SRVFS-001)
@@ -118,6 +119,65 @@ export interface SystemConfiguration {
   // Default unico ammesso: porta SSH 22 (RF-ROB-005)
   defaultSshPort: number;
 }
+
+/**
+ * Schema Zod per la validazione tipizzata di tutti i parametri di sistema (SystemConfiguration).
+ */
+export const SystemConfigSchema = z.object({
+  serverFilesystemRoot: z.string().min(1, "serverFilesystemRoot non può essere vuoto"),
+  pollingIntervalSeconds: z.number().int().min(1, "pollingIntervalSeconds deve essere un intero >= 1"),
+  sshConnectionTimeoutMs: z.number().int().min(100, "sshConnectionTimeoutMs deve essere >= 100 ms"),
+  maxConcurrentTransfersPerUser: z.number().int().min(1, "maxConcurrentTransfersPerUser deve essere >= 1"),
+  maxConcurrentTransfersPerRobot: z.number().int().min(1, "maxConcurrentTransfersPerRobot deve essere >= 1"),
+  maxConcurrentTransfersServer: z.number().int().min(1, "maxConcurrentTransfersServer deve essere >= 1"),
+  tempFileRetentionMinutes: z.number().int().min(1, "tempFileRetentionMinutes deve essere >= 1"),
+  stateFilePaths: z.array(z.string().min(1)).min(1, "stateFilePaths deve contenere almeno un percorso"),
+  inactiveSessionTimeoutMinutes: z.number().int().min(1, "inactiveSessionTimeoutMinutes deve essere >= 1"),
+  sessionAbsoluteMaxMinutes: z.number().int().min(1).max(1440).optional(),
+  tlsCertPath: z.string().min(1, "tlsCertPath non può essere vuoto"),
+  tlsKeyPath: z.string().min(1, "tlsKeyPath non può essere vuoto"),
+  credentialProviderType: z.enum(["mongo", "in-memory"]).optional(),
+  masterKeyFilePath: z.string().optional(),
+  standardSubdirectories: z.array(z.string()).optional(),
+  serverDirectoryPermissions: z.string().optional(),
+  registrationMode: z.enum(["rigorosa", "differita"]),
+  robotUsernameUniqueness: z.enum(["per_host", "globale"]).optional(),
+  auditLogRetentionDays: z.number().int().min(1, "auditLogRetentionDays deve essere >= 1"),
+  allowedSshAuthMethods: z.array(z.enum(["key", "password"])).optional(),
+  allowedDestinations: z.array(z.string()).optional(),
+  maxConcurrentRegistrationVerifications: z.number().int().min(1).optional(),
+  existingDirectoryPolicy: z.enum(["accetta", "rifiuta"]).optional(),
+  activeSessionPolicyOnDisable: z.enum(["chiudi_immediatamente", "lascia_terminare"]).optional(),
+  staleDataThresholdSeconds: z.number().int().min(1).optional(),
+  terminalSessionTimeoutMinutes: z.number().int().min(1).optional(),
+  maxConcurrentTerminalSessionsServer: z.number().int().min(1).max(20).optional(),
+  maxConcurrentTerminalSessionsPerUser: z.number().int().min(1).optional(),
+  maxConcurrentTerminalSessionsPerRobot: z.number().int().min(1).optional(),
+  terminalDisconnectPolicy: z.enum(["chiudi_immediatamente"]).optional(),
+  wsPingIntervalMs: z.number().int().min(0).optional(),
+  wsPingTimeoutMs: z.number().int().min(100).optional(),
+  remoteFsInitialPath: z.string().optional(),
+  remoteFsAllowedPaths: z.array(z.string()).optional(),
+  remoteFsMaxDirectoryEntries: z.number().int().min(1).optional(),
+  remoteFsOverwritePolicy: z.enum(["rifiuta", "sovrascrivi"]).optional(),
+  remoteFsConnectionIdleTimeoutMs: z.number().int().min(100).optional(),
+  transferChunkSizeBytes: z.number().int().min(64 * 1024).optional(),
+  transferChecksumAlgorithm: z.enum(["sha256", "md5"]).optional(),
+  transferOverwritePolicy: z.enum(["rifiuta", "richiedi_conferma", "sovrascrivi"]).optional(),
+  transferResumeEnabled: z.boolean().optional(),
+  transferConcurrencyQueuePolicy: z.enum(["rifiuta", "coda"]).optional(),
+  transferIdleTimeoutMs: z.number().int().min(100).optional(),
+  transferVerifyMode: z.enum(["stream", "readback"]).optional(),
+  robotNonAtomicReplace: z.boolean().optional(),
+  transferSpaceMarginMb: z.number().int().min(0).optional(),
+  stateFileFormat: z.enum(["auto", "json", "keyvalue"]).optional(),
+  stateFileSchemaPath: z.string().optional(),
+  defaultSshPort: z.number().int().min(1).max(65535),
+  maxBulkUploadFiles: z.number().int().min(1).optional(),
+  defaultOperatorAllowedPaths: z.array(z.string()).optional(),
+  maxFileSizeBytes: z.number().int().min(1).optional(),
+  quotaPerRobotBytes: z.number().int().min(1).optional(),
+});
 
 export function loadAndValidateConfig(env: Record<string, string | undefined>): SystemConfiguration {
   const missing: string[] = [];
@@ -427,7 +487,7 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     ? rawOperatorAllowed.split(",").map(p => p.trim()).filter(Boolean)
     : ["upload", "shared", "logs", "backups", "configs"];
 
-  return {
+  const rawConfig: SystemConfiguration = {
     serverFilesystemRoot,
     pollingIntervalSeconds,
     sshConnectionTimeoutMs,
@@ -482,4 +542,14 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     maxBulkUploadFiles,
     defaultOperatorAllowedPaths,
   };
+
+  try {
+    return SystemConfigSchema.parse(rawConfig) as SystemConfiguration;
+  } catch (err: any) {
+    if (err instanceof z.ZodError) {
+      const details = err.issues.map((i) => `[${i.path.join(".") || "config"}]: ${i.message}`).join(", ");
+      throw new Error(`Errore di validazione della configurazione di sistema: ${details}`);
+    }
+    throw err;
+  }
 }
