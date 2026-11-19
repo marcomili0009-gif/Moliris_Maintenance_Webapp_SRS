@@ -39,9 +39,13 @@
   "futureExtensions": {
     // Numero massimo di robot mobili gestibili contemporaneamente nell'anagrafica della flotta
     "maxFleetRobots": 100,
+<<<<<<< HEAD
     // Numero massimo di sessioni simultanee consentite per singolo account (1 vieta accessi contemporanei con le stesse credenziali; RF-AUTH-004)
     "maxSessionsPerAccount": 1,
     // Spazio per impostazioni personalizzate o sperimentali aggiuntive concordate con il committente
+=======
+    "maxSessionsPerAccount": 2,
+>>>>>>> ab2502ba0a7bd471edd9e2e2fad034408cb2efeb
     "customSettings": {}
   },
 
