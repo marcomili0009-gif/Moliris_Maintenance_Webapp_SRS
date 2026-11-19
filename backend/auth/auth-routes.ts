@@ -4,6 +4,7 @@ import { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fa
 import crypto from "crypto";
 import {
   SessionLimitReachedError,
+  GlobalSessionLimitReachedError,
   type SessionData,
   type SessionManager,
 } from "./session-manager.ts";
@@ -170,9 +171,36 @@ export function registerAuthRoutes(
     try {
       session = sessionManager.createSession(
         user,
-        app.appConfig.futureExtensions.maxSessionsPerAccount
+        app.appConfig.futureExtensions.maxSessionsPerAccount,
+        app.appConfig.maxConcurrentWebUsers
       );
     } catch (error) {
+      if (error instanceof GlobalSessionLimitReachedError) {
+        await auditRepository.record({
+          userId: user.username,
+          operation: AuditOperation.AUTH_LOGIN,
+          outcome: "FAILURE",
+          timestamp: new Date(),
+          details: { reason: "MAX_CONCURRENT_WEB_USERS_REACHED" },
+        });
+
+        if (fileLogger) {
+          fileLogger.logAccess({
+            event: "LOGIN",
+            username: user.username,
+            role: normalizeRoleForLog(user.roles),
+            outcome: "FALLIMENTO",
+            details: `Limite utenti contemporanei raggiunto (${app.appConfig.maxConcurrentWebUsers})`,
+          }).catch(() => {});
+        }
+
+        return reply.status(503).send({
+          success: false,
+          code: "MAX_CONCURRENT_WEB_USERS_REACHED",
+          message: `Raggiunto il limite massimo di utenti contemporanei alla web app (${app.appConfig.maxConcurrentWebUsers}). Riprova più tardi.`,
+        });
+      }
+
       if (!(error instanceof SessionLimitReachedError)) {
         throw error;
       }

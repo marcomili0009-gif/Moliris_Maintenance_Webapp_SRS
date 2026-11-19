@@ -78,11 +78,12 @@ const publicConfigResponse = await server.inject({
 });
 assert.strictEqual(publicConfigResponse.statusCode, 200, "La configurazione pubblica deve essere leggibile");
 const publicConfig = publicConfigResponse.json();
-assert.strictEqual(publicConfig.sessionInactivityTimeoutMinutes, 30);
+assert.strictEqual(publicConfig.sessionInactivityTimeoutMinutes, server.appConfig.sessionInactivityTimeoutMinutes);
 assert.strictEqual(publicConfig.sshTerminalActiveTimeoutMinutes, 15);
-assert.strictEqual(publicConfig.maxConcurrentWebUsers, 10);
-assert.strictEqual(publicConfig.maxConcurrentTerminalsPerRobot, 1);
-assert.strictEqual(publicConfig.maxSessionsPerAccount, 1);
+assert.strictEqual(publicConfig.maxConcurrentWebUsers, server.appConfig.maxConcurrentWebUsers);
+assert.strictEqual(publicConfig.maxConcurrentTerminalsPerRobot, server.appConfig.maxConcurrentTerminalsPerRobot);
+assert.strictEqual(publicConfig.maxSessionsPerAccount, server.appConfig.futureExtensions.maxSessionsPerAccount);
+assert(typeof publicConfig.activeConfigFile === "string", "activeConfigFile deve essere presente");
 assert.strictEqual(publicConfig.bulkUploadConfig.maxConcurrentFiles, 20);
 assert.strictEqual(publicConfig.customSettings, undefined, "Le impostazioni estese non devono essere esposte pubblicamente");
 

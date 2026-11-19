@@ -160,6 +160,11 @@ export const AppConfigSchema = z.object({
     maxSessionsPerAccount: 1,
     customSettings: {},
   }),
+
+  /**
+   * Percorso del file da cui è stata caricata la configurazione (metadato informativo)
+   */
+  loadedConfigPath: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

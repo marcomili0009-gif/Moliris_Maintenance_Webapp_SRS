@@ -44,6 +44,16 @@ export class SessionLimitReachedError extends Error {
   }
 }
 
+export class GlobalSessionLimitReachedError extends Error {
+  public readonly maxConcurrentWebUsers: number;
+  constructor(maxConcurrentWebUsers: number) {
+    super(`Raggiunto il limite massimo globale di utenti web contemporanei (${maxConcurrentWebUsers}).`);
+    this.name = "GlobalSessionLimitReachedError";
+    this.maxConcurrentWebUsers = maxConcurrentWebUsers;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 /**
  * Contesto autorizzato (RF-SSH-006, RNF-SEC-007).
  * Oggetto riusabile dai servizi (terminale, trasferimenti)
@@ -207,16 +217,32 @@ export class SessionManager {
 
   /**
    * Crea una nuova sessione autenticata con token crittografico casuale a 256 bit (RF-AUTH-003).
+   * Controlla sia il limite massimo di sessioni per account (§2, §6.1) che il limite globale di utenti web contemporanei (SRS §2).
    */
-  public createSession(user: UserEntity, maxSessionsPerUser = Number.POSITIVE_INFINITY): SessionData {
+  public createSession(
+    user: UserEntity,
+    maxSessionsPerUser = Number.POSITIVE_INFINITY,
+    maxConcurrentWebUsers = Number.POSITIVE_INFINITY
+  ): SessionData {
     if (!Number.isInteger(maxSessionsPerUser) && maxSessionsPerUser !== Number.POSITIVE_INFINITY) {
       throw new RangeError("Il limite di sessioni per utente deve essere un intero positivo.");
     }
     if (maxSessionsPerUser < 1) {
       throw new RangeError("Il limite di sessioni per utente deve essere un intero positivo.");
     }
+    if (!Number.isInteger(maxConcurrentWebUsers) && maxConcurrentWebUsers !== Number.POSITIVE_INFINITY) {
+      throw new RangeError("Il limite globale di utenti web contemporanei deve essere un intero positivo.");
+    }
+    if (maxConcurrentWebUsers < 1) {
+      throw new RangeError("Il limite globale di utenti web contemporanei deve essere un intero positivo.");
+    }
 
     this.purgeExpiredSessions();
+
+    if (this.sessions.size >= maxConcurrentWebUsers) {
+      throw new GlobalSessionLimitReachedError(maxConcurrentWebUsers);
+    }
+
     const activeSessions = Array.from(this.sessions.values()).filter(
       (session) => session.userId === user.id
     ).length;
