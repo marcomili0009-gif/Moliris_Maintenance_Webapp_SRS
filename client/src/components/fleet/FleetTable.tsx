@@ -97,11 +97,12 @@ export const FleetTable: React.FC<FleetTableProps> = ({
 
     const rect = buttonEl.getBoundingClientRect();
     const menuWidth = 180;
-    const estimatedMenuHeight = isAdmin ? 220 : 60;
+    const estimatedMenuHeight = isAdmin ? 230 : 60;
     const spaceBelow = window.innerHeight - rect.bottom;
     const spaceAbove = rect.top;
 
-    const shouldFlipTop = spaceBelow < estimatedMenuHeight && spaceAbove > spaceBelow;
+    // Apri sempre sopra se lo spazio sotto è insufficiente, indipendentemente dallo spazio sopra
+    const shouldFlipTop = spaceBelow < estimatedMenuHeight + 8;
 
     let left = rect.right - menuWidth;
     if (left < 10) left = 10;
@@ -109,6 +110,9 @@ export const FleetTable: React.FC<FleetTableProps> = ({
       left = window.innerWidth - menuWidth - 10;
     }
 
+    // Per il posizionamento "top": il menu appare sopra il trigger
+    // top = rect.top e poi translateY(-100%) lo porta sopra
+    // Aggiungiamo un margine di 4px
     const top = shouldFlipTop ? rect.top - 4 : rect.bottom + 4;
 
     activeTriggerRef.current = buttonEl;
@@ -268,8 +272,7 @@ export const FleetTable: React.FC<FleetTableProps> = ({
             zIndex: 1040,
             minWidth: "180px",
             margin: 0,
-          }}
-        >
+          }}        >
           <button
             type="button"
             className="dropdown-item py-1"

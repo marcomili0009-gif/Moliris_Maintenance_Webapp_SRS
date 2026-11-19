@@ -37,13 +37,13 @@ const TRANSFER_STANDARD_REGEX =
   /^\[(.*?)\]\s+File:\s*(.*?)\s*\|\s*Utente:\s*(.*?)\s*\|\s*Direzione:\s*(.*?)\s*\|\s*Esito:\s*(.*?)(?:\s*\|\s*Dettagli:\s*(.*))?$/i;
 
 const BULK_HEADER_REGEX =
-  /^\[(.*?)\]\s+===\s*INIZIO CARICAMENTO MASSIVO\s*\|\s*Utente:\s*(.*?)\s*\|\s*BatchID:\s*(.*?)\s*\|\s*Totale file:\s*(.*?)\s*===$/i;
+  /^=== INIZIO CARICAMENTO MASSIVO \[batchId:\s*(.*?)\] \((\d+) file\) - Utente:\s*(.*?) \[(.*?)\] ===$/i;
 
 const BULK_FOOTER_REGEX =
-  /^\[(.*?)\]\s+===\s*CARICAMENTO MASSIVO TERMINATO\s*\|\s*Utente:\s*(.*?)\s*\|\s*BatchID:\s*(.*?)\s*\|\s*Completati:\s*(.*?)\s*===$/i;
+  /^=== CARICAMENTO MASSIVO TERMINATO \[batchId:\s*(.*?)\] - Esito:\s*(.*?) \(Completati:\s*(.*?)\/(.*?), Annullati:\s*(.*?), Falliti:\s*(.*?)\) \[(.*?)\] ===$/i;
 
 const BULK_ITEM_REGEX =
-  /^\[(.*?)\]\s+\[FILE\s*(.*?)\/(.*?)\]\s+File:\s*(.*?)\s*\|\s*Utente:\s*(.*?)\s*\|\s*Esito:\s*(.*?)(?:\s*\|\s*Dettagli:\s*(.*))?$/i;
+  /^\[(.*?)\]\s+\[batchId:\s*(.*?)\]\s+\[FILE\s*(\d+)\/(\d+)\]\s+File:\s*(.*?)\s*\|\s*Utente:\s*(.*?)\s*\|\s*Direzione:\s*(.*?)\s*\|\s*Esito:\s*(.*?)(?:\s*\|\s*Dettagli:\s*(.*))?$/i;
 
 export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
   const isAdmin = user.roles.some(
@@ -82,6 +82,8 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
         const parsed = JSON.parse(textOrJson);
         if (Array.isArray(parsed)) {
           lines = parsed.map((item) => (typeof item === "string" ? item : JSON.stringify(item)));
+        } else if (parsed && Array.isArray(parsed.logs)) {
+          lines = parsed.logs;
         } else if (parsed && Array.isArray(parsed.lines)) {
           lines = parsed.lines;
         } else if (parsed && Array.isArray(parsed.entries)) {
@@ -94,7 +96,8 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
       } catch {
         lines = textOrJson.split("\n").filter((l) => l.trim().length > 0);
       }
-      setRawAccessLogs(lines);
+      // Ordine cronologico decrescente (i più recenti in cima)
+      setRawAccessLogs([...lines].reverse());
     } catch (err: any) {
       setAccessError(err.message || "Impossibile recuperare i log di accesso.");
     } finally {
@@ -116,6 +119,8 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
         const parsed = JSON.parse(textOrJson);
         if (Array.isArray(parsed)) {
           lines = parsed.map((item) => (typeof item === "string" ? item : JSON.stringify(item)));
+        } else if (parsed && Array.isArray(parsed.logs)) {
+          lines = parsed.logs;
         } else if (parsed && Array.isArray(parsed.lines)) {
           lines = parsed.lines;
         } else if (parsed && Array.isArray(parsed.entries)) {
@@ -128,7 +133,8 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
       } catch {
         lines = textOrJson.split("\n").filter((l) => l.trim().length > 0);
       }
-      setRawTransferLogs(lines);
+      // Ordine cronologico decrescente (i più recenti in cima)
+      setRawTransferLogs([...lines].reverse());
     } catch (err: any) {
       setTransferError(err.message || "Impossibile recuperare i log dei trasferimenti.");
     } finally {
@@ -187,10 +193,10 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
         return {
           raw: line,
           isBulkHeader: true,
-          timestamp: bulkHeaderMatch[1]?.trim(),
-          username: bulkHeaderMatch[2]?.trim(),
-          batchId: bulkHeaderMatch[3]?.trim(),
-          details: `Totale file: ${bulkHeaderMatch[4]?.trim()}`,
+          batchId: bulkHeaderMatch[1]?.trim(),
+          details: `Inizio caricamento massivo: ${bulkHeaderMatch[2]?.trim()} file`,
+          username: bulkHeaderMatch[3]?.trim(),
+          timestamp: bulkHeaderMatch[4]?.trim(),
         };
       }
       const bulkFooterMatch = line.match(BULK_FOOTER_REGEX);
@@ -198,10 +204,10 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
         return {
           raw: line,
           isBulkFooter: true,
-          timestamp: bulkFooterMatch[1]?.trim(),
-          username: bulkFooterMatch[2]?.trim(),
-          batchId: bulkFooterMatch[3]?.trim(),
-          details: `Completati: ${bulkFooterMatch[4]?.trim()}`,
+          batchId: bulkFooterMatch[1]?.trim(),
+          outcome: bulkFooterMatch[2]?.trim().toUpperCase(),
+          details: `Completati: ${bulkFooterMatch[3]?.trim()}/${bulkFooterMatch[4]?.trim()} (Annullati: ${bulkFooterMatch[5]?.trim()}, Falliti: ${bulkFooterMatch[6]?.trim()})`,
+          timestamp: bulkFooterMatch[7]?.trim(),
         };
       }
       const bulkItemMatch = line.match(BULK_ITEM_REGEX);
@@ -210,10 +216,12 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
           raw: line,
           isBulkItem: true,
           timestamp: bulkItemMatch[1]?.trim(),
-          filename: bulkItemMatch[4]?.trim(),
-          username: bulkItemMatch[5]?.trim(),
-          outcome: bulkItemMatch[6]?.trim().toUpperCase(),
-          details: `File ${bulkItemMatch[2]?.trim()}/${bulkItemMatch[3]?.trim()}`,
+          batchId: bulkItemMatch[2]?.trim(),
+          filename: bulkItemMatch[5]?.trim(),
+          username: bulkItemMatch[6]?.trim(),
+          direction: bulkItemMatch[7]?.trim(),
+          outcome: bulkItemMatch[8]?.trim().toUpperCase(),
+          details: `[FILE ${bulkItemMatch[3]?.trim()}/${bulkItemMatch[4]?.trim()}] ${bulkItemMatch[9]?.trim() || ""}`,
         };
       }
       const stdMatch = line.match(TRANSFER_STANDARD_REGEX);

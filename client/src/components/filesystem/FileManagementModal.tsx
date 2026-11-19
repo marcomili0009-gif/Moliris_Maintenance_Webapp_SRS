@@ -271,6 +271,23 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
     void navigateTo(norm);
   };
 
+  /**
+   * Seleziona la cartella corrente del browser come destinazione senza ricaricarla.
+   * Aggiorna manualPath e avvia la verifica dei permessi senza re-navigazione.
+   */
+  const handleSelectCurrentDir = () => {
+    if (isSubmitting || isLoadingDirs || !currentBrowserPath) return;
+    const norm = normalizeClientPath(currentBrowserPath) || "/";
+    const err = validateSyntax(norm);
+    if (err) {
+      setClientValidationError(err);
+      return;
+    }
+    setClientValidationError(null);
+    setManualPath(norm);
+    void verifyPath(norm);
+  };
+
   const handleNavigateUp = () => {
     if (isSubmitting || parentPath === null) return;
     handleNavigateSubfolder(parentPath || "/");
@@ -550,7 +567,7 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
                 id="btn-select-current-dir"
                 className="btn btn-outline-primary btn-sm"
                 title="Seleziona la cartella attualmente visualizzata nel browser"
-                onClick={() => currentBrowserPath && handleNavigateSubfolder(currentBrowserPath)}
+                onClick={handleSelectCurrentDir}
                 disabled={isSubmitting || isLoadingDirs || !currentBrowserPath}
               >
                 Seleziona questa cartella
