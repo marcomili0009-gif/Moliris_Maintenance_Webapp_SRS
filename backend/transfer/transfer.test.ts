@@ -397,12 +397,10 @@ const userAuthorized: UserEntity = {
   username: "operatore_trf",
   roles: ["operatore"], // Contiene permessi di download/upload e trasferimenti
   enabled: true,
-    updatedAt: new Date(),
-    passwordHash: "mock_hash",
+  updatedAt: new Date(),
+  passwordHash: "mock_hash",
   createdAt: new Date(),
-    
-    
-  
+  allowedPaths: ["/"],
 };
 const sessionAuth = sessionManager.createSession(userAuthorized);
 const contextAuth = sessionManager.createAuthorizedContext(sessionAuth, userAuthorized, testRobot.id);

@@ -15,6 +15,7 @@ import { hashPassword, verifyPassword, toUserProfileDto } from "./user-models.ts
 import { AppPermission } from "./permissions.ts";
 import { ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
+import { type PhysicalFileLogger, normalizeRoleForLog } from "../logging/physical-file-logger.ts";
 
 export function registerAuthRoutes(
   app: FastifyInstance,
@@ -22,8 +23,20 @@ export function registerAuthRoutes(
   userRepository: UserRepository,
   auditRepository: AuditRepository,
   authMiddleware: AuthMiddleware,
-  logger: MolirisLogger
+  logger: MolirisLogger,
+  fileLogger?: PhysicalFileLogger
 ): void {
+  if (fileLogger) {
+    sessionManager.onSessionExpired((session, reason) => {
+      fileLogger.logAccess({
+        event: "INACTIVITY_LOGOUT",
+        username: session.username,
+        role: normalizeRoleForLog(session.roles),
+        outcome: "SUCCESSO",
+        details: `Sessione scaduta per inattività: ${reason}`,
+      }).catch(() => {});
+    });
+  }
   const loginAttempts = new Map<string, { count: number; windowStartedAt: number; blockedUntil: number }>();
   (app as any)._molirisLoginAttempts = loginAttempts;
   const loginWindowMs = 5 * 60 * 1000;
@@ -74,6 +87,15 @@ export function registerAuthRoutes(
         timestamp: new Date(),
         details: { reason: "INVALID_CREDENTIALS_PAYLOAD" },
       });
+      if (fileLogger) {
+        fileLogger.logAccess({
+          event: "LOGIN",
+          username: username || "anonymous",
+          role: "Operatore",
+          outcome: "FALLIMENTO",
+          details: "Payload credenziali non valido",
+        }).catch(() => {});
+      }
       return reply.status(401).send({
         code: invalidCredsDef.code,
         message: invalidCredsDef.userMessage,
@@ -95,6 +117,15 @@ export function registerAuthRoutes(
         timestamp: new Date(),
         details: { reason: "USER_NOT_FOUND_OR_DISABLED" },
       });
+      if (fileLogger) {
+        fileLogger.logAccess({
+          event: "LOGIN",
+          username,
+          role: "Operatore",
+          outcome: "FALLIMENTO",
+          details: "Utente non trovato o disabilitato",
+        }).catch(() => {});
+      }
       return reply.status(401).send({
         code: invalidCredsDef.code,
         message: invalidCredsDef.userMessage,
@@ -113,6 +144,15 @@ export function registerAuthRoutes(
         timestamp: new Date(),
         details: { reason: "INVALID_PASSWORD" },
       });
+      if (fileLogger) {
+        fileLogger.logAccess({
+          event: "LOGIN",
+          username,
+          role: "Operatore",
+          outcome: "FALLIMENTO",
+          details: "Password errata",
+        }).catch(() => {});
+      }
       return reply.status(401).send({
         code: invalidCredsDef.code,
         message: invalidCredsDef.userMessage,
@@ -145,6 +185,16 @@ export function registerAuthRoutes(
         details: { reason: ErrorCode.SESSION_ALREADY_ACTIVE },
       });
 
+      if (fileLogger) {
+        fileLogger.logAccess({
+          event: "LOGIN",
+          username: user.username,
+          role: normalizeRoleForLog(user.roles),
+          outcome: "FALLIMENTO",
+          details: "Sessione già attiva per questo account (HTTP 409)",
+        }).catch(() => {});
+      }
+
       return reply.status(409).send({
         success: false,
         code: ErrorCode.SESSION_ALREADY_ACTIVE,
@@ -171,6 +221,16 @@ export function registerAuthRoutes(
       timestamp: new Date(),
       details: { roles: user.roles },
     });
+
+    if (fileLogger) {
+      fileLogger.logAccess({
+        event: "LOGIN",
+        username: user.username,
+        role: normalizeRoleForLog(user.roles),
+        outcome: "SUCCESSO",
+        details: "Autenticazione riuscita",
+      }).catch(() => {});
+    }
 
     // Imposta cookie di sessione sicuro (HttpOnly, Secure, SameSite=Strict)
     reply.header(
@@ -207,6 +267,16 @@ export function registerAuthRoutes(
         timestamp: new Date(),
         details: { context, reason },
       });
+
+      if (fileLogger) {
+        fileLogger.logAccess({
+          event: "LOGOUT",
+          username,
+          role: normalizeRoleForLog(session?.roles),
+          outcome: "SUCCESSO",
+          details: reason,
+        }).catch(() => {});
+      }
     }
 
     reply.header(

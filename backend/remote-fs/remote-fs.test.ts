@@ -372,6 +372,7 @@ const userAuthorized: UserEntity = {
   id: "user_op_01",
   username: "operatore_fs",
   roles: ["operatore"],
+  allowedPaths: ["/home"],
   enabled: true,
     updatedAt: new Date(),
     passwordHash: "mock_hash",

@@ -8,6 +8,7 @@ import { type SessionManager } from "../auth/session-manager.ts";
 import { type AuthMiddleware } from "../auth/auth-middleware.ts";
 import { AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "../auth/permissions.ts";
 import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
+import { authorizeOperatorPath } from "../auth/path-authorization.ts";
 
 export function registerRemoteFsRoutes(
   app: FastifyInstance,
@@ -59,6 +60,7 @@ export function registerRemoteFsRoutes(
 
       // 3. Esecuzione elenco directory remota
       try {
+        await authorizeOperatorPath(context, "remote", robot.id, requestedPath || "/", undefined, { isListingRootAllowed: true });
         const listing = await remoteFsService.listDirectory(context, robot, requestedPath);
         return reply.status(200).send(listing);
       } catch (err: any) {
@@ -134,6 +136,7 @@ export function registerRemoteFsRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "remote", robot.id, requestedPath || "/", undefined, { isListingRootAllowed: true });
         const listing = await remoteFsService.listDirectories(context, robot, requestedPath);
         return reply.status(200).send(listing);
       } catch (err: any) {
@@ -286,6 +289,7 @@ export function registerRemoteFsRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "remote", robot.id, filePath);
         await remoteFsService.deleteRemoteFile(context, robot, filePath);
         const filename = filePath.split("/").filter(Boolean).pop() || filePath;
         return reply.status(200).send({
@@ -353,6 +357,7 @@ export function registerRemoteFsRoutes(
     );
 
     try {
+      await authorizeOperatorPath(context, "remote", robot.id, folderPath);
       const inspection = await remoteFsService.getRemoteFolderDeletionInfo(context, robot, folderPath);
       return reply.status(200).send(inspection);
     } catch (err: any) {
@@ -455,6 +460,7 @@ export function registerRemoteFsRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "remote", robot.id, folderPath);
         await remoteFsService.deleteRemoteFolder(context, robot, folderPath, {
           recursive: true,
           expectedFileCount,

@@ -47,6 +47,10 @@ import { registerRemoteFsRoutes } from "./remote-fs/remote-fs-routes.ts";
 import { TransferService } from "./transfer/transfer-service.ts";
 import { registerTransferRoutes } from "./transfer/transfer-routes.ts";
 import { type TelemetryRepository, MongoTelemetryRepository, InMemoryTelemetryRepository } from "../storage/telemetry-repository.ts";
+import { setPathAuthorizationAuditRepository } from "./auth/path-authorization.ts";
+import { PhysicalFileLogger } from "./logging/physical-file-logger.ts";
+import { registerLogRoutes } from "./logging/log-routes.ts";
+import { BatchTransferManager } from "./transfer/batch-transfer-manager.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -78,6 +82,8 @@ export interface ServerDependencies {
   remoteFsService?: RemoteFilesystemService;
   transferService?: TransferService;
   telemetryRepository?: TelemetryRepository;
+  physicalFileLogger?: PhysicalFileLogger;
+  batchTransferManager?: BatchTransferManager;
   roleMapping?: RolePermissionMapping;
   db?: any;
   appConfig?: AppConfig;
@@ -197,6 +203,13 @@ export function createServer(
   const userRepository = deps.userRepository || new InMemoryUserRepository();
   const auditRepository = deps.auditRepository || new InMemoryAuditRepository();
   const roleMapping = deps.roleMapping || DEFAULT_ROLE_PERMISSIONS;
+
+  // Inizializzazione guardia percorsi operatore con repository di audit (Requisito #3)
+  setPathAuthorizationAuditRepository(auditRepository);
+
+  // Servizio di logging su file fisico (Requisito #8) e gestore batch trasferimenti (Requisito #9)
+  const physicalFileLogger = deps.physicalFileLogger || new PhysicalFileLogger(process.env.MOLIRIS_LOGS_DIR);
+  const batchTransferManager = deps.batchTransferManager || new BatchTransferManager(physicalFileLogger);
 
   const authMiddleware = new AuthMiddleware(
     sessionManager,
@@ -327,7 +340,10 @@ export function createServer(
     connectionManager
   );
 
-  // Collegamento verificatore trasferimenti attivi per terminalService (Prompt #4)
+  // Collegamento verificatore trasferimenti attivi per terminalService e sessionManager (Prompt #4, Requisito #4)
+  transferService.setPhysicalFileLogger(physicalFileLogger);
+  sessionManager.setActiveTransfersProvider((userId) => transferService.countActiveTransfersForUser(userId));
+
   terminalService.setActiveTransferChecker((sessionId, userId) => {
     const bySession = sessionId ? transferService.getActiveTransfersCountForSession(sessionId) : 0;
     if (bySession > 0) return bySession;
@@ -356,15 +372,19 @@ export function createServer(
     }).catch(() => {});
   });
 
-  // Registrazione endpoint di autenticazione e autorizzazione (RF-AUTH-001..006)
+  // Registrazione endpoint di autenticazione e autorizzazione (RF-AUTH-001..006, Requisito #4, Requisito #8)
   registerAuthRoutes(
     app,
     sessionManager,
     userRepository,
     auditRepository,
     authMiddleware,
-    logger
+    logger,
+    physicalFileLogger
   );
+
+  // Registrazione endpoint di consultazione e download log su file fisico (Requisito #8)
+  registerLogRoutes(app, physicalFileLogger, authMiddleware);
 
   // Registrazione endpoint filesystem server (RF-SRVFS-002, RF-SRVFS-005)
   registerServerFsRoutes(
@@ -413,14 +433,15 @@ export function createServer(
     );
   });
 
-  // Registrazione endpoint servizio di trasferimento file (RF-TRF-001..014, §5.5, §6.5..6.7)
+  // Registrazione endpoint servizio di trasferimento file (RF-TRF-001..014, §5.5, §6.5..6.7, Requisito #9)
   registerTransferRoutes(
     app,
     transferService,
     robotRepository,
     sessionManager,
     authMiddleware,
-    roleMapping
+    roleMapping,
+    batchTransferManager
   );
 
   // Rilascio risorse, arresto polling periodico e chiusura sessioni alla chiusura del server (RNF-REL-005)
@@ -428,6 +449,8 @@ export function createServer(
   app.decorate("terminalService", terminalService);
   app.decorate("remoteFsService", remoteFsService);
   app.decorate("transferService", transferService);
+  app.decorate("physicalFileLogger", physicalFileLogger);
+  app.decorate("batchTransferManager", batchTransferManager);
   app.addHook("onClose", async () => {
     monitoringService.stopPolling();
     transferService.stopCleanupTask();

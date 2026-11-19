@@ -36,6 +36,7 @@ import {
 import { resolveChecksumAlgorithm, ChecksumTransformStream } from "./checksum-service.ts";
 import { ProgressTrackerStream } from "./transfer-progress.ts";
 import { PipelinedSftpReadStream, PipelinedSftpWriteStream } from "../remote-fs/remote-fs-service.ts";
+import { type PhysicalFileLogger } from "../logging/physical-file-logger.ts";
 import {
   type BulkTarget,
   type BulkFileConflict,
@@ -92,6 +93,12 @@ export class TransferService {
     TransferStatus.CANCELLED,
     TransferStatus.INTEGRITY_FAILED,
   ]);
+
+  private physicalFileLogger?: PhysicalFileLogger;
+
+  public setPhysicalFileLogger(logger: PhysicalFileLogger): void {
+    this.physicalFileLogger = logger;
+  }
 
   constructor(
     config: SystemConfiguration,
@@ -2991,6 +2998,19 @@ export class TransferService {
         checksum: record.computedChecksum,
       },
     });
+
+    if (this.physicalFileLogger) {
+      try {
+        await this.physicalFileLogger.logTransfer({
+          filename: record.filename,
+          username: record.userId,
+          direction: record.direction,
+          outcome: "SUCCESSO",
+          details: `Completato (${record.transferredBytes} byte, checksum: ${record.computedChecksum || "N/A"})`,
+          timestamp: record.completedAt || new Date(),
+        });
+      } catch {}
+    }
   }
 
   private async recordAuditFailure(record: TransferRecord, err: any): Promise<void> {
@@ -3008,6 +3028,19 @@ export class TransferService {
           error: record.error || err?.message || String(err),
         },
       });
+
+      if (this.physicalFileLogger) {
+        try {
+          await this.physicalFileLogger.logTransfer({
+            filename: record.filename,
+            username: record.userId,
+            direction: record.direction,
+            outcome: "FALLIMENTO",
+            details: record.error || err?.message || String(err),
+            timestamp: record.completedAt || new Date(),
+          });
+        } catch {}
+      }
     } catch {}
   }
 

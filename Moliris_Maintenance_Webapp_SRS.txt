@@ -1,0 +1,1735 @@
+SPECIFICA DEI REQUISITI SOFTWARE (SRS)
+
+Web Applica on per la Ges one e il Monitoraggio di una Flo a di Robot Mobili
+
+Versione: 1.0
+Stato: Prima versione
+Tipologia: Speciﬁca dei requisi so ware
+Sistema: Moliris Maintenance Webapp
+
+Sistema opera vo server: Ubuntu 26.04
+Browser supportato: Google Chrome
+Conne vità richiesta: Accesso Internet e VPN Moliris
+
+
+
+1. Introduzione
+
+1.1 Scopo del documento
+
+Il presente documento deﬁnisce i requisi funzionali e non funzionali di una web applica on
+des nata alla ges one, al monitoraggio e all'interazione remota con una ﬂo a di robot mobili.
+
+L'applicazione dovrà consen re agli uten autorizza di:
+
+      Accedere al sistema tramite auten cazione.
+
+      Visualizzare l'elenco dei robot registra nella ﬂo a.
+
+      Consultare lo stato opera vo dei singoli robot.
+
+      Aprire un terminale Linux intera vo sul robot selezionato.
+
+      Navigare nel ﬁlesystem remoto del robot.
+
+      Caricare e scaricare ﬁle dal server e dal robot.
+
+      Trasferire ﬁle tra il computer dell'utente, il server applica vo e i robot.
+
+      Aggiungere nuovi robot alla ﬂo a fornendo i parametri necessari alla connessione.
+
+      Creare e mantenere automa camente l'alberatura delle directory del server associata ai
+       robot.
+
+      Ges re errori di connessione, trasferimen e operazioni sul ﬁlesystem.
+
+La speciﬁca cos tuisce la base per la proge azione, lo sviluppo, il collaudo e la manutenzione del
+sistema.
+
+1.2 Ambito del sistema
+
+Il sistema sarà composto da un'interfaccia web, un backend applica vo, un database e un
+ﬁlesystem sul server.
+Il backend dovrà ges re le connessioni verso i robot e fungere da intermediario per le operazioni di
+terminale, monitoraggio e trasferimento dei ﬁle.
+
+Il browser dell'utente non dovrà collegarsi dire amente ai robot tramite SSH o SFTP. Le operazioni
+saranno mediate dal backend, che applicherà le veriﬁche di auten cazione, autorizzazione e
+sicurezza.
+
+1.3 Deﬁnizioni e acronimi
+
+      Robot: disposi vo remoto Linux appartenente alla ﬂo a.
+
+      Flo a: insieme dei robot registra nell'applicazione.
+
+      Frontend: interfaccia web u lizzata dall'utente.
+
+      Backend: componente server che espone le API e ges sce la logica applica va.
+
+      SSH: protocollo sicuro per l'accesso remoto e l'esecuzione di comandi.
+
+      SFTP: protocollo sicuro per il trasferimento e la ges one dei ﬁle.
+
+      PTY: pseudoterminale necessario per una sessione shell intera va.
+
+      Filesystem server: spazio di archiviazione sul server applica vo des nato ai ﬁle ges
+       dall'applicazione.
+
+      Directory del robot: directory sul server associata a uno speciﬁco robot.
+
+      Polling: interrogazione periodica dei robot per aggiornare lo stato.
+
+      Checksum: valore u lizzato per veriﬁcare l'integrità di un ﬁle.
+
+      RBAC: controllo degli accessi basato sui ruoli.
+
+
+
+2. Descrizione generale
+
+2.1 Prospe va del prodo o
+
+L'applicazione sarà un sistema centralizzato per la ges one di una ﬂo a di robot. Dovrà perme ere
+all'utente di accedere alle funzionalità opera ve da un browser, senza dover installare un client
+dedicato sul proprio computer.
+
+Il server applica vo sarà il punto centrale di comunicazione tra frontend, database, ﬁlesystem e
+robot remo .
+
+2.2 Tipologie di uten
+
+Il sistema dovrà prevedere almeno le seguen categorie logiche di uten :
+
+Utente autorizzato
+Può accedere alle funzionalità consen te dal proprio proﬁlo, consultare la ﬂo a, visualizzare gli
+sta e u lizzare le funzionalità opera ve autorizzate.
+
+
+
+Amministratore o gestore della ﬂo a
+
+Può inoltre registrare nuovi robot, conﬁgurare i parametri di connessione e ges re la
+conﬁgurazione dei robot. Le autorizzazioni per modiﬁca, disabilitazione e rimozione dovranno
+essere conﬁgurabili.
+
+L'implementazione potrà ado are un sistema di ruoli e permessi più ar colato qualora necessario.
+
+2.3 Ambiente opera vo
+
+Il sistema dovrà prevedere:
+
+      Browser web moderno.
+
+      Server applica vo raggiungibile tramite HTTPS.
+
+      Backend in grado di ges re connessioni SSH e SFTP.
+
+      Database per la persistenza dei da applica vi.
+
+      Filesystem server con spazio dedicato ai ﬁle della ﬂo a.
+
+      Robot dota di sistema opera vo Linux e servizio SSH accessibile dal server.
+
+      Conne vità di rete tra server applica vo e robot.
+
+Il database potrà essere implementato, ad esempio, u lizzando MongoDB. La scelta deﬁni va
+dovrà essere confermata in fase di proge azione.
+
+2.4 Vincoli archite urali
+
+   1. Le credenziali e le chiavi private u lizzate per accedere ai robot dovranno essere ges te
+      esclusivamente lato server.
+
+   2. Il browser non dovrà ricevere chiavi private SSH o credenziali persisten dei robot.
+
+   3. Il traﬃco tra browser e applicazione dovrà u lizzare HTTPS.
+
+   4. Le comunicazioni tra backend e robot dovranno u lizzare SSH e, per i trasferimen di ﬁle,
+      SFTP o un protocollo sicuro equivalente.
+
+   5. Il sistema dovrà consen re il trasferimento di ﬁle di dimensioni superiori a 1 GB.
+
+   6. La directory di ciascun robot sul server dovrà essere associata al rela vo username del
+      robot, secondo le regole di conﬁgurazione deﬁnite.
+
+   7. Il backend dovrà impedire l'accesso non autorizzato alle directory e alle sessioni di altri
+      robot
+2.5 Ambiente di esecuzione
+
+La webapp dovrà essere installata su un server con sistema opera vo Ubuntu 26.04.
+
+L'interfaccia dovrà essere u lizzabile mediante Google Chrome su un disposi vo dotato di
+schermo, altoparlante, connessione Internet a va e accesso alla VPN Moliris.
+
+
+
+
+3. Requisi funzionali
+
+3.1 Auten cazione e accesso
+
+RF-AUTH-001 — Login
+
+Il sistema dovrà consen re l'accesso alla web applica on tramite username e password.
+
+RF-AUTH-002 — Veriﬁca delle credenziali
+
+Il backend dovrà veriﬁcare le credenziali dell'utente prima di consen re l'accesso alle funzionalità
+prote e.
+
+RF-AUTH-003 — Ges one della sessione
+
+Il sistema dovrà ges re la sessione auten cata dell'utente e impedire l'accesso alle funzionalità
+prote e in assenza di una sessione valida.
+
+RF-AUTH-004 — Logout
+
+Il sistema dovrà consen re all'utente di terminare la propria sessione.
+
+RF-AUTH-005 — Autorizzazioni
+
+Il backend dovrà veriﬁcare i permessi dell'utente per ogni operazione prote a, comprese le
+operazioni sui robot, sui terminali e sui ﬁle.
+
+RF-AUTH-006 — Scadenza della sessione
+
+Il sistema dovrà poter terminare le sessioni ina ve o scadute secondo una poli ca conﬁgurabile.
+
+
+
+3.2 Ges one della ﬂo a
+
+RF-ROB-001 — Visualizzazione della ﬂo a
+
+Il sistema dovrà mostrare una lista dei robot registra .
+
+Per ciascun robot dovranno essere visualizzate almeno le seguen informazioni, quando
+disponibili:
+      Nome visualizzato.
+
+      Iden ﬁca vo univoco.
+
+      Username remoto.
+
+      Hostname o indirizzo IP.
+
+      Porta SSH.
+
+      Stato della connessione.
+
+      Stato opera vo ricavato dai ﬁle di stato.
+
+      Data e ora dell'ul mo aggiornamento dello stato.
+
+      Eventuali errori o avvisi rela vi alla connessione.
+
+RF-ROB-002 — Selezione del robot
+
+L'utente dovrà poter selezionare un robot per accedere alle funzionalità disponibili per quel
+disposi vo.
+
+RF-ROB-003 — De aglio del robot
+
+Il sistema dovrà presentare una schermata di de aglio contenente la conﬁgurazione del robot, lo
+stato corrente e i collegamen alle funzionalità autorizzate.
+
+RF-ROB-004 — Aggiunta di un nuovo robot
+
+Il sistema dovrà consen re agli uten autorizza di aggiungere un nuovo robot alla ﬂo a tramite
+un'apposita interfaccia.
+
+La registrazione dovrà includere l'inserimento dei parametri necessari alla connessione e alla
+ges one del robot.
+
+RF-ROB-005 — Conﬁgurazione del nuovo robot
+
+Durante la registrazione, il sistema dovrà consen re di inserire almeno i seguen parametri:
+
+      Nome visualizzato del robot.
+
+      Username remoto del robot.
+
+      Indirizzo IP o hostname.
+
+      Porta SSH, con valore predeﬁnito 22.
+
+      Metodo di auten cazione SSH supportato.
+
+      Credenziali o riferimento sicuro alla chiave privata, secondo il metodo scelto.
+
+      Conﬁgurazione della veriﬁca della chiave host SSH.
+
+      Percorso remoto dei ﬁle u lizza per il monitoraggio.
+      Parametri necessari per l'accesso SFTP, se diﬀeren da quelli SSH.
+
+      Eventuali ulteriori parametri richies dalla conﬁgurazione del robot.
+
+I campi obbligatori dovranno essere chiaramente indica nell'interfaccia.
+
+Le credenziali e le chiavi private dovranno essere memorizzate o referenziate in modo sicuro lato
+server e non dovranno essere res tuite al frontend nelle risposte delle API.
+
+RF-ROB-006 — Validazione dei da del robot
+
+Prima di completare la registrazione, il sistema dovrà veriﬁcare:
+
+      La presenza di tu    i campi obbligatori.
+
+      La validità sinta ca dell'indirizzo e della porta.
+
+      La validità dei parametri di auten cazione.
+
+      La corre ezza dei percorsi conﬁgura , secondo le regole previste.
+
+      L'unicità dell'iden ﬁca vo del robot.
+
+      L'assenza di duplica secondo le regole di unicità conﬁgurate, almeno per l'iden ﬁca vo e
+       lo username del robot.
+
+Il sistema dovrà segnalare chiaramente i campi non validi o mancan .
+
+RF-ROB-007 — Veriﬁca della connessione durante la registrazione
+
+Il sistema dovrà poter veriﬁcare la raggiungibilità del robot e la possibilità di auten carsi tramite
+SSH prima di completare la registrazione.
+
+La veriﬁca dovrà controllare, per quanto tecnicamente possibile:
+
+      La raggiungibilità dell'host.
+
+      La disponibilità del servizio SSH.
+
+      La veriﬁca della chiave host.
+
+      L'esito dell'auten cazione.
+
+      La possibilità di accedere alle risorse necessarie per le funzionalità conﬁgurate.
+
+La veriﬁca dovrà evitare comandi modiﬁca vi sul robot. Le operazioni di test dovranno essere
+limitate a controlli non distru vi.
+
+Se la connessione non può essere veriﬁcata, il sistema dovrà informare l'utente e applicare la
+poli ca di registrazione conﬁgurata.
+
+RF-ROB-008 — Creazione automa ca della directory del robot
+Quando un robot viene registrato, il sistema dovrà creare la rela va directory sul ﬁlesystem del
+server, se non già presente.
+
+Il nome della directory dovrà corrispondere allo username del robot, all'interno della root
+conﬁgurata per la ges one dei ﬁle della ﬂo a.
+
+Esempio:
+
+/home/robots/
+
+  robot_user_01/
+
+  robot_user_02/
+
+  robot_user_03/
+
+Il percorso eﬀe vo dovrà essere conﬁgurabile. L'esempio è indica vo e non impone uno speciﬁco
+percorso assoluto.
+
+RF-ROB-009 — Aggiornamento dell'alberatura del server
+
+Il sistema dovrà aggiornare l'alberatura logica e ﬁsica delle directory in conseguenza della
+registrazione di un nuovo robot.
+
+Se previste dalla conﬁgurazione, dovranno essere create anche le so odirectory standard
+necessarie alla ges one dei ﬁle.
+
+La creazione e l'aggiornamento non dovranno modiﬁcare o cancellare i da appartenen ad altri
+robot.
+
+Il sistema dovrà riconoscere una directory già esistente e ges re il caso in modo idempotente,
+evitando duplicazioni o sovrascri ure non richieste.
+
+RF-ROB-010 — Coerenza tra database e ﬁlesystem
+
+Il sistema dovrà mantenere coeren , per quanto possibile, la registrazione del robot nel database e
+la directory corrispondente sul ﬁlesystem.
+
+Se una delle operazioni fallisce, il sistema dovrà:
+
+      Segnalare l'errore.
+
+      Evitare di dichiarare la registrazione completamente riuscita se le condizioni richieste non
+       sono soddisfa e.
+
+      Eseguire un rollback delle operazioni reversibili, ove possibile.
+
+      Oppure registrare uno stato di conﬁgurazione incompleta che consenta il recupero
+       controllato.
+
+Il sistema dovrà considerare che una transazione sul database e un'operazione sul ﬁlesystem non
+sono normalmente atomiche tra loro.
+RF-ROB-011 — Inizializzazione delle funzionalità
+
+Dopo la registrazione, il sistema dovrà rendere disponibile la conﬁgurazione del robot per le
+funzionalità previste, tra cui:
+
+      Monitoraggio dello stato.
+
+      Connessione SSH.
+
+      Terminale intera vo.
+
+      Navigazione del ﬁlesystem remoto.
+
+      Trasferimento dei ﬁle.
+
+      Ges one della directory del robot sul server.
+
+L'eﬀe va disponibilità delle singole funzioni dovrà dipendere dalla conﬁgurazione e dai permessi
+veriﬁca .
+
+RF-ROB-012 — Esito della registrazione
+
+Al termine della registrazione, il sistema dovrà mostrare un riepilogo dell'esito.
+
+Il riepilogo dovrà dis nguere almeno tra:
+
+      Registrazione completata.
+
+      Registrazione riﬁutata per da non validi.
+
+      Connessione SSH non veriﬁcata.
+
+      Creazione della directory non riuscita.
+
+      Registrazione incompleta che richiede un intervento.
+
+      Registrazione completata con una o più funzionalità non veriﬁcate.
+
+RF-ROB-013 — Disabilitazione e rimozione del robot
+
+Il sistema dovrebbe consen re agli uten autorizza di disabilitare o rimuovere un robot dalla
+ﬂo a.
+
+La rimozione dell'anagraﬁca non dovrà comportare automa camente la cancellazione dei ﬁle
+presen nella directory del robot sul server.
+
+La cancellazione dei da , qualora prevista, dovrà essere un'operazione separata, esplicita e
+prote a da autorizzazioni adeguate.
+
+RF-ROB-014 — Dis nzione tra registrazione e conne vità
+
+Il sistema dovrà dis nguere lo stato anagraﬁco del robot dal suo stato di raggiungibilità.
+Un robot corre amente registrato potrà risultare temporaneamente oﬄine o non raggiungibile
+senza essere automa camente eliminato dalla ﬂo a.
+
+
+
+3.3 Monitoraggio dello stato dei robot
+
+RF-MON-001 — Le ura dei ﬁle di stato
+
+Il sistema dovrà acquisire le informazioni sullo stato opera vo dei robot leggendo speciﬁci ﬁle di
+testo presen sui disposi vi remo .
+
+I percorsi dei ﬁle dovranno essere conﬁgurabili per ciascun robot o tramite una conﬁgurazione
+comune.
+
+
+
+RF-MON-002 — Parsing dei ﬁle
+
+Il backend dovrà interpretare il contenuto dei ﬁle di stato e trasformarlo in informazioni stru urate
+u lizzabili dal frontend.
+
+Il formato a eso dei ﬁle dovrà essere documentato e veriﬁcato. Il sistema dovrà ges re ﬁle
+mancan , vuo , incomple o non conformi al formato previsto.
+
+RF-MON-003 — Aggiornamento periodico
+
+Il sistema dovrà interrogare periodicamente i robot per aggiornare lo stato visualizzato.
+
+L'intervallo di polling dovrà essere conﬁgurabile.
+
+RF-MON-004 — Aggiornamento manuale
+
+L'utente autorizzato dovrà poter richiedere manualmente un aggiornamento dello stato di un
+robot.
+
+Il sistema dovrà mostrare l'esito dell'operazione e aggiornare la data e l'ora dell'ul mo tenta vo o
+dell'ul mo aggiornamento valido.
+
+RF-MON-005 — Ges one degli errori di monitoraggio
+
+Se un robot non è raggiungibile o un ﬁle non è leggibile, il sistema dovrà segnalare l'errore e
+mantenere dis nta l'ul ma informazione valida dal risultato dell'ul mo tenta vo.
+
+Il sistema non dovrà interpretare automa camente l'assenza di da come uno stato opera vo
+speciﬁco del robot.
+
+RF-MON-006 — Visualizzazione dello stato
+
+Il frontend dovrà presentare le informazioni di stato in modo comprensibile, indicando, ove
+disponibili:
+
+      Stato opera vo interpretato.
+      Data e ora dell'ul mo aggiornamento valido.
+
+      Esito dell'ul ma interrogazione.
+
+      Eventuali errori o da non disponibili.
+
+
+
+3.4 Terminale SSH nel browser
+
+RF-SSH-001 — Apertura del terminale
+
+Il sistema dovrà consen re all'utente autorizzato di aprire un terminale sul robot selezionato
+dire amente dal browser.
+
+
+
+RF-SSH-002 — Shell Linux completa
+
+Il terminale dovrà fornire una shell Linux intera va, compa bilmente con la shell e i permessi
+conﬁgura sull'account remoto.
+
+Non sarà suﬃciente una semplice interfaccia per l'esecuzione di singoli comandi: dovranno essere
+supporta i principali comportamen intera vi di una sessione terminale.
+
+RF-SSH-003 — Ges one dell'interazione
+
+Il terminale dovrà supportare input e output in tempo reale, inclusi i cara eri di controllo necessari
+all'interazione con la shell.
+
+Dovranno essere ges     , ove supporta dal terminale e dal server remoto:
+
+      Invio di comandi.
+
+      Visualizzazione dell'output progressivo.
+
+      Interruzione di un comando tramite i cara eri di controllo appropria .
+
+      Ridimensionamento del terminale.
+
+      Ges one delle sequenze di escape e dei cara eri di controllo.
+
+      Comandi intera vi che richiedono input aggiun vo.
+
+RF-SSH-004 — Sessione persistente
+
+Il backend dovrà ges re la sessione SSH mediante uno pseudoterminale (PTY) e un canale di
+comunicazione bidirezionale, ad esempio WebSocket.
+
+RF-SSH-005 — Chiusura della sessione
+
+L'utente dovrà poter chiudere esplicitamente la sessione terminale.
+Il sistema dovrà liberare le risorse associate alla sessione e ges re la chiusura delle connessioni in
+caso di disconnessione dell'utente o di meout.
+
+RF-SSH-006 — Isolamento delle sessioni
+
+Ogni sessione dovrà essere associata all'utente, al robot e al contesto autorizzato.
+
+Un utente non dovrà poter accedere o collegarsi alla sessione di un altro utente senza
+un'autorizzazione esplicita.
+
+RF-SSH-007 — Errori del terminale
+
+Il sistema dovrà mostrare messaggi comprensibili in caso di connessione fallita, auten cazione
+riﬁutata, disconnessione del robot o interruzione della sessione.
+
+
+
+
+RF-SSH-008 — Autorizzazione dei comandi
+
+I comandi esegui sul robot dovranno essere limita ai permessi dell'account SSH conﬁgurato,
+salvo eventuali meccanismi amministra vi separa ed esplicitamente autorizza .
+
+Il sistema non dovrà elevare automa camente i privilegi dell'utente remoto.
+
+
+
+3.5 Ges one del ﬁlesystem remoto del robot
+
+RF-FS-001 — Visualizzazione delle directory remote
+
+Il sistema dovrà consen re all'utente autorizzato di navigare nel ﬁlesystem del robot tramite
+un'interfaccia web.
+
+RF-FS-002 — Elenco dei ﬁle
+
+Per ciascuna directory accessibile, il sistema dovrà poter mostrare almeno:
+
+      Nome del ﬁle o della directory.
+
+      Tipologia dell'elemento.
+
+      Dimensione, quando applicabile.
+
+      Eventuali informazioni aggiun ve disponibili, come data di modiﬁca.
+
+RF-FS-003 — Navigazione delle directory
+
+L'utente dovrà poter aprire le directory accessibili e tornare ai livelli preceden .
+
+RF-FS-004 — Download dal robot
+Il sistema dovrà consen re il download di ﬁle dal robot al computer dell'utente, passando
+a raverso il backend.
+
+RF-FS-005 — Upload verso il robot
+
+Il sistema dovrà consen re il caricamento di ﬁle dal computer dell'utente al robot, passando
+a raverso il backend.
+
+RF-FS-006 — Errori ﬁlesystem
+
+Il sistema dovrà ges re errori dovu a ﬁle inesisten , permessi insuﬃcien , connessioni interro e
+o operazioni non consen te.
+
+RF-FS-007 — Operazioni autorizzate
+
+Le operazioni disponibili sul ﬁlesystem remoto dovranno rispe are i permessi dell'account remoto
+e le autorizzazioni dell'applicazione.
+
+
+
+3.6 Ges one del ﬁlesystem sul server
+
+RF-SRVFS-001 — Directory dedicata per robot
+
+Il server dovrà disporre di una root conﬁgurata per l'archiviazione dei ﬁle associa alla ﬂo a.
+
+Ogni robot dovrà avere una directory dedicata, denominata secondo la regola deﬁnita per lo
+username del robot.
+
+RF-SRVFS-002 — Navigazione dei ﬁle sul server
+
+L'interfaccia dovrà consen re all'utente autorizzato di visualizzare e navigare i ﬁle presen nella
+directory del robot selezionato.
+
+RF-SRVFS-003 — Upload dal computer al server
+
+L'utente dovrà poter caricare ﬁle dal proprio computer al ﬁlesystem server tramite l'interfaccia
+web.
+
+RF-SRVFS-004 — Download dal server al computer
+
+L'utente dovrà poter scaricare sul proprio computer i ﬁle presen nel ﬁlesystem server.
+
+RF-SRVFS-005 — Isolamento delle directory
+
+Le operazioni sui ﬁle dovranno essere limitate alla directory del robot selezionato e alle altre
+directory esplicitamente autorizzate.
+
+RF-SRVFS-006 — Ges one delle directory esisten
+
+Il sistema dovrà ges re le directory già presen senza sovrascrivere o cancellare automa camente
+ﬁle esisten durante la registrazione di un robot.
+RF-SRVFS-007 — Creazione di so odirectory
+
+Il sistema potrà creare so odirectory standard per organizzare i ﬁle, secondo una stru ura deﬁnita
+in fase di conﬁgurazione.
+
+
+
+3.7 Trasferimento dei ﬁle tra computer, server e robot
+
+RF-TRF-001 — Trasferimento computer-server
+
+Il sistema dovrà consen re trasferimen bidirezionali tra il computer dell'utente e il ﬁlesystem
+server.
+
+RF-TRF-002 — Trasferimento server-robot
+
+Il sistema dovrà consen re trasferimen bidirezionali tra il ﬁlesystem server e il ﬁlesystem remoto
+del robot.
+
+
+
+RF-TRF-003 — Trasferimento computer-robot
+
+Il sistema dovrà consen re trasferimen bidirezionali tra il computer dell'utente e il robot.
+
+Tali trasferimen dovranno essere ges dal backend, u lizzando il server come intermediario. Il
+browser non dovrà instaurare una connessione SSH o SFTP dire a con il robot.
+
+RF-TRF-004 — Trasferimento di ﬁle di grandi dimensioni
+
+Il sistema dovrà supportare ﬁle di dimensioni superiori a 1 GB, senza imporre che l'intero
+contenuto del ﬁle sia caricato contemporaneamente nella memoria RAM.
+
+RF-TRF-005 — Trasferimento in streaming
+
+Il backend dovrà trasferire i da mediante streaming, blocchi o un meccanismo equivalente che
+limi il consumo di memoria.
+
+RF-TRF-006 — Avanzamento del trasferimento
+
+L'interfaccia dovrà mostrare, quando tecnicamente disponibile:
+
+      Nome del ﬁle.
+
+      Direzione del trasferimento.
+
+      Dimensione totale.
+
+      Quan tà trasferita.
+
+      Percentuale di completamento.
+
+      Velocità di trasferimento, se disponibile.
+      Tempo s mato residuo, se calcolabile.
+
+      Stato corrente dell'operazione.
+
+RF-TRF-007 — Ges one degli errori di trasferimento
+
+Il sistema dovrà rilevare e segnalare errori dovu a disconnessioni, permessi insuﬃcien , spazio
+esaurito, meout o ﬁle non disponibili.
+
+RF-TRF-008 — Integrità dei ﬁle
+
+Il sistema dovrà prevedere un meccanismo per veriﬁcare l'integrità dei ﬁle trasferi , ad esempio
+mediante checksum, quando applicabile.
+
+Il trasferimento non dovrà essere dichiarato completato con successo se il controllo di integrità
+previsto fallisce.
+
+
+
+
+RF-TRF-009 — Ges one dei ﬁle temporanei
+
+I ﬁle parziali o temporanei dovranno essere ges     in modo controllato.
+
+In caso di errore, il sistema dovrà prevedere una poli ca per conservare, riprendere o eliminare i
+ﬁle temporanei senza danneggiare i ﬁle di des nazione già validi.
+
+RF-TRF-010 — Ripresa dei trasferimen
+
+Il sistema dovrebbe consen re la ripresa dei trasferimen interro , almeno per i ﬁle di grandi
+dimensioni, quando il protocollo e le condizioni opera ve lo perme ono.
+
+La ripresa dovrà veriﬁcare che il ﬁle sorgente e quello parziale siano compa bili con la ripresa
+stessa.
+
+RF-TRF-011 — Sovrascri ura dei ﬁle
+
+Il sistema dovrà ges re in modo esplicito i casi in cui un ﬁle di des nazione esista già.
+
+La poli ca di sovrascri ura dovrà essere deﬁnita e applicata coerentemente. Le sovrascri ure non
+dovranno avvenire in modo involontario.
+
+RF-TRF-012 — Limi di trasferimento concorrente
+
+Il sistema dovrà poter limitare il numero di trasferimen simultanei per utente, robot o server,
+secondo parametri conﬁgurabili.
+
+RF-TRF-013 — Timeout e annullamento
+
+Il sistema dovrà ges re meout e annullamento dei trasferimen , ove supporta .
+
+L'annullamento dovrà arrestare il lavoro in corso e liberare le risorse non più necessarie.
+RF-TRF-014 — Spazio disponibile
+
+Il sistema dovrà ges re i casi in cui lo spazio disponibile sul server o sul disposi vo remoto sia
+insuﬃciente per completare un trasferimento.
+
+Ove possibile, il sistema dovrà rilevare il problema prima di iniziare l'operazione e segnalare
+l'errore all'utente.
+
+
+
+
+4. Requisi non funzionali
+
+4.1 Sicurezza
+
+RNF-SEC-001 — Comunicazioni prote e
+
+Tu e le comunicazioni tra browser e web applica on dovranno u lizzare HTTPS.
+
+RNF-SEC-002 — Protezione delle credenziali
+
+Le password degli uten dovranno essere ges te secondo pra che sicure di auten cazione.
+
+Le chiavi private SSH e le credenziali dei robot dovranno essere conservate lato server, con accesso
+limitato ai soli componen autorizza .
+
+Le credenziali non dovranno essere inserite nei log né res tuite nelle risposte delle API.
+
+RNF-SEC-003 — Veriﬁca delle chiavi host
+
+Il sistema dovrà veriﬁcare l'iden tà del server SSH remoto mediante una poli ca di veriﬁca delle
+chiavi host.
+
+Non dovrà disabilitare automa camente la veriﬁca per risolvere errori di connessione.
+
+RNF-SEC-004 — Autorizzazione lato server
+
+Ogni operazione prote a dovrà essere autorizzata dal backend, indipendentemente dai controlli
+dell'interfaccia frontend.
+
+RNF-SEC-005 — Protezione da path traversal
+Il sistema dovrà impedire che percorsi forni dall'utente perme ano di accedere a directory
+esterne alla root autorizzata o di manipolare ﬁle appartenen ad altri robot.
+
+RNF-SEC-006 — Validazione degli host
+
+L'applicazione dovrà impedire l'u lizzo arbitrario di host e porte nelle connessioni SSH/SFTP.
+
+Le connessioni dovranno essere create esclusivamente sulla base di robot registra e
+conﬁgurazioni autorizzate, con adeguate misure contro gli abusi e le connessioni verso sistemi non
+consen .
+
+RNF-SEC-007 — Isolamento delle sessioni
+
+Le sessioni SSH, i trasferimen e le operazioni sul ﬁlesystem dovranno essere associa al contesto
+autorizzato dell'utente e del robot.
+
+RNF-SEC-008 — Protezione dei da temporanei
+
+I ﬁle temporanei e i da intermedi dovranno essere prote      contro l'accesso non autorizzato.
+
+
+
+
+RNF-SEC-009 — Audit
+
+Il sistema dovrà registrare gli even rilevan , tra cui:
+
+      Login e logout.
+
+      Registrazione e modiﬁca dei robot.
+
+      Disabilitazione e rimozione dei robot.
+
+      Apertura e chiusura delle sessioni terminale.
+
+      Avvio, completamento e fallimento dei trasferimen .
+
+      Errori signiﬁca vi di autorizzazione o sicurezza.
+
+I log non dovranno contenere password, chiavi private, token di sessione o altri segre .
+
+4.2 Sicurezza del ﬁlesystem
+
+RNF-FS-001 — Permessi delle directory
+
+Le directory dei robot dovranno avere permessi adegua a impedire l'accesso non autorizzato ai
+da .
+
+RNF-FS-002 — Separazione dei da
+
+Il sistema dovrà evitare che operazioni eseguite per un robot possano modiﬁcare o esporre i da di
+un altro robot.
+RNF-FS-003 — Operazioni distru ve
+
+Le operazioni di eliminazione o sovrascri ura dovranno essere controllate e, ove necessario,
+richiedere conferma esplicita.
+
+RNF-FS-004 — Idempotenza
+
+La creazione e l'aggiornamento delle directory dovranno essere idempoten : l'esecuzione ripetuta
+della stessa operazione non dovrà generare duplica né causare perdite di da .
+
+4.3 Prestazioni e scalabilità
+
+RNF-PERF-001 — Ges one dei ﬁle grandi
+
+Il sistema dovrà trasferire ﬁle superiori a 1 GB senza richiedere il caricamento integrale del
+contenuto in RAM.
+
+RNF-PERF-002 — Uso eﬃciente delle risorse
+
+Le operazioni di trasferimento dovranno usare buﬀering limitato e risorse controllate.
+
+
+
+
+RNF-PERF-003 — Concorrenza
+
+Il backend dovrà poter ges re più uten , sessioni SSH e trasferimen contemporaneamente, entro
+limi conﬁgurabili.
+
+RNF-PERF-004 — Polling conﬁgurabile
+
+Il monitoraggio dovrà supportare intervalli di polling conﬁgurabili e meccanismi per evitare un
+numero eccessivo di connessioni simultanee.
+
+RNF-PERF-005 — Scalabilità della ﬂo a
+
+L'archite ura dovrà consen re di aggiungere robot senza richiedere modiﬁche al codice per
+ciascun nuovo disposi vo, purché questo rispe i protocolli e i requisi conﬁgura .
+
+4.4 Aﬃdabilità e ges one degli errori
+
+RNF-REL-001 — Ges one delle disconnessioni
+
+Il sistema dovrà rilevare le disconnessioni dei robot e ges rle senza comprome ere l'intera
+applicazione.
+
+RNF-REL-002 — Stato aggiornato
+
+Il sistema dovrà dis nguere i da corren dai da storici o non più veriﬁca .
+
+RNF-REL-003 — Recupero da errori parziali
+Le operazioni che coinvolgono più risorse, come database e ﬁlesystem, dovranno prevedere
+procedure di recupero dagli errori parziali.
+
+RNF-REL-004 — Integrità dei ﬁle esisten
+
+Un trasferimento fallito non dovrà comprome ere un ﬁle di des nazione valido già presente, salvo
+una poli ca esplicita e documentata che preveda diversamente.
+
+RNF-REL-005 — Pulizia delle risorse
+
+Il sistema dovrà liberare connessioni, processi, sessioni e ﬁle temporanei non più necessari.
+4.5 Usabilità e compa bilità
+
+RNF-UX-001 — Interfaccia intui va
+
+L'interfaccia dovrà perme ere di individuare facilmente i robot, consultarne lo stato e accedere
+alle funzioni disponibili.
+
+RNF-UX-002 — Feedback delle operazioni
+
+Le operazioni di connessione, monitoraggio e trasferimento dovranno fornire feedback
+comprensibili all'utente.
+
+RNF-UX-003 — Compa bilità browser
+
+L'applicazione dovrà funzionare sui browser moderni deﬁni come supporta dal proge o.
+
+RNF-UX-004 — Terminale intera vo
+
+Il terminale dovrà essere u lizzabile senza installare componen aggiun vi sul computer
+dell'utente, oltre al browser supportato.
+
+4.6 Manutenibilità e conﬁgurabilità
+
+RNF-MNT-001 — Parametri conﬁgurabili
+
+Dovranno essere conﬁgurabili, ove per nen :
+
+      Root del ﬁlesystem server.
+
+      Intervallo di polling.
+
+      Timeout delle connessioni SSH/SFTP.
+
+      Numero massimo di connessioni e trasferimen simultanei.
+
+      Limi di dimensione o quote, se previs .
+
+      Poli ca di conservazione dei ﬁle temporanei.
+
+      Percorsi dei ﬁle di stato.
+
+      Parametri di sicurezza e sessione.
+
+RNF-MNT-002 — Separazione dei componen
+
+Il codice dovrà separare la ges one dell'interfaccia, la logica applica va, il monitoraggio, il
+terminale, i trasferimen e l'accesso ai da .
+
+RNF-MNT-003 — Tracciabilità degli errori
+
+Gli errori dovranno essere registra con informazioni suﬃcien per la diagnosi, evitando
+l'esposizione di da sensibili.
+5. Archite ura logica proposta
+
+L'archite ura dovrà prevedere i seguen componen logici.
+
+5.1 Frontend web
+
+Responsabile di:
+
+      Login e ges one dell'interfaccia utente.
+
+      Visualizzazione della ﬂo a e dei de agli dei robot.
+
+      Form per la registrazione dei robot.
+
+      Visualizzazione dello stato opera vo.
+
+      Terminale SSH nel browser.
+
+      Navigazione dei ﬁlesystem.
+
+      Interfaccia di upload e download.
+
+      Visualizzazione dei progressi e degli errori.
+
+5.2 Backend API
+
+Responsabile di:
+
+      Auten cazione e autorizzazione.
+
+      Ges one dell'anagraﬁca dei robot.
+
+      Validazione dei parametri.
+
+      Ges one delle conﬁgurazioni.
+
+      Coordinamento delle operazioni.
+
+      Accesso al database.
+
+      Controllo delle operazioni sul ﬁlesystem server.
+
+      Registrazione degli even di audit.
+
+5.3 Servizio di monitoraggio SSH
+
+Responsabile di:
+
+      Connessione ai robot.
+
+      Le ura dei ﬁle di stato.
+
+      Parsing dei contenu .
+
+      Aggiornamento periodico e manuale.
+
+      Ges one dei meout e degli errori di connessione.
+5.4 Servizio terminale SSH
+
+Responsabile di:
+
+      Apertura delle connessioni SSH.
+
+      Allocazione e ges one dei PTY.
+
+      Scambio bidirezionale dei da con il browser.
+
+      Ges one delle sessioni e delle disconnessioni.
+
+      Applicazione dei controlli di autorizzazione.
+
+La comunicazione in tempo reale potrà u lizzare WebSocket o una tecnologia equivalente.
+
+5.5 Servizio di trasferimento ﬁle
+
+Responsabile di:
+
+      Trasferimen tra computer e server.
+
+      Trasferimen tra server e robot.
+
+      Coordinamento dei trasferimen computer-robot tramite il server.
+
+      Streaming o trasferimento a blocchi.
+
+      Ges one di progressi, meout, checksum e ﬁle temporanei.
+
+      Ges one degli errori e dell'eventuale ripresa dei trasferimen .
+
+5.6 Filesystem server
+
+Responsabile della conservazione dei ﬁle associa ai robot.
+
+La stru ura dovrà avere una root conﬁgurata e una directory dedicata a ciascun robot.
+
+Esempio indica vo:
+
+/home/robots/
+
+  robot_user_01/
+
+    upload/
+
+    download/
+
+    shared/
+
+  robot_user_02/
+
+    upload/
+
+    download/
+
+    shared/
+Le so odirectory upload, download e shared sono esempi: la stru ura deﬁni va dovrà essere
+confermata e dovrà essere coerente con le esigenze applica ve.
+
+
+
+6. Flussi opera vi principali
+
+6.1 Accesso all'applicazione
+
+   1. L'utente apre l'applicazione tramite HTTPS.
+
+   2. Inserisce username e password.
+
+   3. Il backend veriﬁca le credenziali.
+
+   4. In caso di esito posi vo, viene creata o a vata la sessione.
+
+   5. L'utente accede alla schermata della ﬂo a secondo le proprie autorizzazioni.
+
+6.2 Registrazione di un nuovo robot
+
+   1. L'utente autorizzato apre la funzione di aggiunta robot.
+
+   2. Inserisce nome, username remoto, host, metodo di auten cazione e gli altri parametri
+      richies .
+
+   3. Il frontend invia i da al backend tramite un canale prote o.
+
+   4. Il backend veriﬁca l'autorizzazione dell'utente.
+
+   5. Il backend valida i campi e controlla l'unicità dei da .
+
+   6. Il backend veriﬁca la connessione SSH, se richiesta dalla poli ca di registrazione.
+
+   7. Il backend veriﬁca la conﬁgurazione necessaria per monitoraggio e trasferimen .
+
+   8. Il backend crea o veriﬁca la directory del robot nella root conﬁgurata, senza alterare ﬁle
+      preesisten .
+
+   9. Il backend registra il robot nel database e aggiorna il rela vo stato di conﬁgurazione.
+
+   10. Il backend registra l'evento di audit.
+
+   11. Il frontend mostra l'esito della registrazione e aggiorna la lista della ﬂo a.
+
+Se una fase fallisce, il sistema dovrà seguire la procedura di ges one degli errori parziali descri a
+nei requisi RF-ROB-010 e RF-ROB-012.
+6.3 Monitoraggio di un robot
+
+   1. Il servizio di monitoraggio seleziona il robot da interrogare.
+
+   2. Il backend veriﬁca che il robot sia registrato e abilitato.
+
+   3. Il servizio apre una connessione SSH usando la conﬁgurazione associata.
+
+   4. Legge i ﬁle di stato conﬁgura .
+
+   5. Il backend interpreta il contenuto e aggiorna le informazioni disponibili.
+
+   6. Il frontend visualizza lo stato e la data dell'ul mo aggiornamento valido.
+
+   7. In caso di errore, il sistema conserva l'ul ma informazione valida e mostra l'esito dell'ul mo
+      tenta vo.
+
+6.4 Apertura del terminale
+
+   1. L'utente seleziona un robot.
+
+   2. Richiede l'apertura del terminale.
+
+   3. Il backend veriﬁca la sessione e le autorizzazioni.
+
+   4. Il servizio terminale apre la connessione SSH e alloca un PTY.
+
+   5. Il frontend stabilisce il canale di comunicazione in tempo reale.
+
+   6. L'utente interagisce con la shell Linux.
+
+   7. Alla chiusura o alla disconnessione, il backend termina o libera le risorse della sessione
+      secondo la poli ca conﬁgurata.
+
+6.5 Trasferimento computer-server
+
+   1. L'utente seleziona la directory di des nazione.
+
+   2. Seleziona il ﬁle da caricare oppure il ﬁle da scaricare.
+
+   3. Il backend veriﬁca i permessi e la des nazione.
+
+   4. Il trasferimento avviene tramite streaming o blocchi.
+
+   5. Il sistema mostra l'avanzamento.
+
+   6. Al termine, viene eseguita la veriﬁca di integrità prevista.
+
+   7. Il sistema comunica il risultato e ges sce gli eventuali ﬁle temporanei.
+
+6.6 Trasferimento server-robot
+
+   1. L'utente seleziona il robot e il ﬁle.
+
+   2. Il backend veriﬁca le autorizzazioni.
+   3. Il servizio di trasferimento apre una connessione SFTP o equivalente.
+
+   4. Il ﬁle viene trasferito in streaming o a blocchi.
+
+   5. Il sistema ges sce l'avanzamento e gli errori.
+
+   6. Al termine, viene eseguita la veriﬁca di integrità prevista.
+
+   7. Il frontend mostra l'esito dell'operazione.
+
+6.7 Trasferimento computer-robot
+
+   1. L'utente seleziona il robot e il ﬁle sul proprio computer.
+
+   2. Il backend riceve il contenuto tramite un ﬂusso di upload.
+
+   3. Il sistema trasferisce il contenuto verso il robot tramite SSH/SFTP o protocollo sicuro
+      equivalente.
+
+   4. Il backend ges sce i da in streaming o a blocchi, evitando di caricare l'intero ﬁle in RAM.
+
+   5. Il sistema mostra il progresso e ges sce eventuali errori.
+
+   6. Il trasferimento viene dichiarato completato solo dopo i controlli previs .
+
+Il trasferimento inverso dovrà seguire lo stesso principio: il backend legge dal robot e invia
+progressivamente il contenuto al browser.
+
+
+
+7. Criteri di acce azione
+
+I seguen criteri cos tuiscono la base per il collaudo funzionale e tecnico del sistema.
+
+7.1 Auten cazione
+
+CA-AUTH-001
+
+Un utente con credenziali valide può accedere all'applicazione.
+
+CA-AUTH-002
+
+Un utente con credenziali non valide non può accedere alle funzionalità prote e.
+
+CA-AUTH-003
+
+Un utente privo dei permessi richies non può eseguire operazioni amministra ve o accedere a
+risorse non autorizzate.
+
+7.2 Ges one della ﬂo a
+
+CA-ROB-001 — Registrazione valida
+
+Un utente autorizzato può registrare un robot inserendo tu      i parametri obbligatori validi.
+CA-ROB-002 — Validazione dei parametri
+
+Il sistema riﬁuta una registrazione contenente campi obbligatori mancan o parametri non validi e
+indica gli errori rileva .
+
+CA-ROB-003 — Veriﬁca SSH
+
+Quando la veriﬁca della connessione è obbligatoria, il sistema completa la registrazione solo se i
+controlli richies hanno esito posi vo.
+
+Se la poli ca consente la registrazione senza connessione veriﬁcata, il sistema registra il robot con
+uno stato esplicito che segnala la veriﬁca non riuscita o non eseguita.
+
+CA-ROB-004 — Creazione della directory
+
+La registrazione di un nuovo robot determina la creazione della directory associata allo username
+nella root conﬁgurata, quando la directory non esiste già.
+
+CA-ROB-005 — Preservazione dei da
+
+La registrazione di un robot non modiﬁca né elimina i ﬁle appartenen ad altri robot.
+
+Se la directory di des nazione esiste già, il sistema non la sovrascrive integralmente.
+
+CA-ROB-006 — Duplica
+
+Il sistema impedisce la registrazione di iden ﬁca vi duplica e applica le regole deﬁnite per
+l'unicità degli username e delle altre chiavi conﬁgurate.
+
+CA-ROB-007 — Errore di creazione della directory
+
+Se non è possibile creare o accedere alla directory necessaria, il sistema segnala l'errore e non
+dichiara la registrazione completamente riuscita.
+
+CA-ROB-008 — Recupero da errore parziale
+
+Se la registrazione fallisce dopo che alcune operazioni sono già state completate, il sistema esegue
+il rollback delle operazioni reversibili oppure registra uno stato di conﬁgurazione incompleta che
+consente il recupero.
+
+CA-ROB-009 — Sicurezza dei percorsi
+
+Un tenta vo di u lizzare percorsi contenen sequenze di path traversal o riferimen a directory
+non autorizzate viene riﬁutato.
+
+CA-ROB-010 — Integrazione delle funzionalità
+
+Dopo una registrazione completata, il robot compare nella ﬂo a e le funzionalità conﬁgurate
+risultano disponibili, compa bilmente con i permessi e la raggiungibilità del disposi vo.
+
+CA-ROB-011 — Rimozione senza cancellazione automa ca
+
+La rimozione dell'anagraﬁca del robot non cancella automa camente la directory e i ﬁle associa .
+CA-ROB-012 — Dis nzione dello stato
+
+Un robot registrato ma irraggiungibile con nua a comparire nella ﬂo a con uno stato di
+connessione appropriato.
+
+7.3 Monitoraggio
+
+CA-MON-001
+
+Il sistema legge i ﬁle di stato conﬁgura e mostra i valori interpreta corre amente.
+
+CA-MON-002
+
+La frequenza del polling può essere modiﬁcata mediante conﬁgurazione.
+
+CA-MON-003
+
+L'utente può richiedere un aggiornamento manuale dello stato.
+
+CA-MON-004
+
+Se un robot è oﬄine o il ﬁle di stato non è disponibile, il sistema segnala l'errore e non sos tuisce
+arbitrariamente l'ul mo stato valido.
+
+7.4 Terminale
+
+CA-SSH-001
+
+L'utente autorizzato apre un terminale sul robot selezionato senza u lizzare un client SSH locale.
+
+CA-SSH-002
+
+Il terminale perme e di eseguire comandi intera vi compa bili con la shell Linux remota.
+
+CA-SSH-003
+
+L'output dei comandi viene visualizzato progressivamente.
+
+CA-SSH-004
+
+La chiusura del terminale libera le risorse della sessione.
+
+CA-SSH-005
+
+Un utente non autorizzato non può accedere alla sessione terminale di un altro utente o di un
+robot per il quale non dispone dei permessi.
+7.5 Filesystem e trasferimen
+
+CA-FS-001
+
+L'utente può visualizzare e navigare le directory remote accessibili del robot selezionato.
+
+CA-FS-002
+
+L'utente può caricare e scaricare ﬁle dal ﬁlesystem server.
+
+CA-FS-003
+
+L'utente può trasferire ﬁle tra server e robot in entrambe le direzioni.
+
+CA-FS-004
+
+L'utente può trasferire ﬁle tra computer e robot senza instaurare una connessione SSH/SFTP dire a
+dal browser al robot.
+
+CA-TRF-001
+
+Il sistema completa un trasferimento di un ﬁle superiore a 1 GB senza richiedere che l'intero ﬁle sia
+caricato contemporaneamente in RAM.
+
+CA-TRF-002
+
+Durante il trasferimento, il frontend visualizza l'avanzamento quando le informazioni necessarie
+sono disponibili.
+
+CA-TRF-003
+
+Un'interruzione del trasferimento viene segnalata e non viene presentata come completamento
+riuscito.
+
+CA-TRF-004
+
+Quando è previsto il controllo di integrità, il sistema rileva un checksum non corrispondente e
+segnala il trasferimento come non valido.
+
+CA-TRF-005
+
+Un trasferimento fallito non danneggia un ﬁle di des nazione valido già presente, salvo
+comportamento esplicitamente conﬁgurato e comunicato.
+
+CA-TRF-006
+
+Il sistema ges sce corre amente i casi di spazio insuﬃciente, meout e permessi nega .
+
+CA-TRF-007
+
+Il sistema applica il limite conﬁgurato al numero di trasferimen simultanei.
+8. Requisi speciﬁci per la registrazione dei robot
+
+8.1 Poli ca di registrazione
+
+La procedura di registrazione dovrà applicare una poli ca esplicita per stabilire se un robot possa
+essere registrato quando non è raggiungibile.
+
+Sono possibili due modalità:
+
+      Modalità rigorosa: la registrazione viene completata solo dopo il superamento dei controlli
+       di connessione richies .
+
+      Modalità diﬀerita: il robot può essere registrato anche quando non è raggiungibile, ma
+       viene marcato come non veriﬁcato e le funzionalità che richiedono una connessione non
+       risultano disponibili ﬁno a una veriﬁca successiva.
+
+La modalità scelta dovrà essere deﬁnita in fase di proge azione.
+
+8.2 Ges one dei duplica
+
+Il sistema dovrà deﬁnire in modo univoco quali campi iden ﬁcano un robot.
+
+Dovrà essere impedito che una registrazione associ involontariamente due robot alla stessa
+iden tà applica va o alla stessa directory del server.
+
+La ges one dei robot con lo stesso username remoto ma host diﬀeren dovrà seguire una regola
+esplicita, evitando collisioni nel ﬁlesystem.
+
+8.3 Aggiornamento della conﬁgurazione
+
+La modiﬁca della conﬁgurazione dovrà prevedere la validazione dei nuovi parametri.
+
+In caso di cambio di host, porta o credenziali, il sistema dovrà aggiornare i riferimen u lizza per
+le connessioni successive.
+
+8.4 Disabilitazione e rimozione
+
+La disabilitazione di un robot dovrà impedire nuove operazioni opera ve secondo la poli ca
+conﬁgurata, senza cancellare l'anagraﬁca o i ﬁle associa .
+
+La rimozione dovrà separare almeno due operazioni:
+
+   1. Rimozione del robot dall'anagraﬁca a va.
+
+   2. Eventuale eliminazione dei da archivia sul server.
+
+La seconda operazione, se implementata, dovrà richiedere un'autorizzazione esplicita e una
+conferma adeguata.
+9. Ges one degli errori
+
+Il sistema dovrà fornire messaggi chiari e registrare gli even necessari alla diagnosi.
+
+Le principali categorie di errore comprendono:
+
+      Credenziali applica ve non valide.
+
+      Autorizzazioni insuﬃcien .
+
+      Parametri del robot mancan o non validi.
+
+      Host non raggiungibile.
+
+      Porta SSH non disponibile.
+
+      Auten cazione SSH fallita.
+
+      Chiave host non valida o non riconosciuta.
+
+      File di stato assente o non interpretabile.
+
+      Errore nell'apertura o nella chiusura del terminale.
+
+      Errore di le ura o scri ura nel ﬁlesystem remoto.
+
+      Directory server non accessibile.
+
+      Spazio insuﬃciente.
+
+      Trasferimento interro o.
+
+      Timeout.
+
+      Veriﬁca di integrità fallita.
+
+      Errore di persistenza nel database.
+
+      Errore di sincronizzazione tra database e ﬁlesystem.
+
+Il sistema dovrà dis nguere gli errori recuperabili da quelli che richiedono un intervento
+amministra vo.
+
+I messaggi mostra all'utente non dovranno esporre de agli tecnici sensibili, segre o informazioni
+che facili no l'accesso non autorizzato.
+10. Da e persistenza
+
+10.1 Da dei robot
+
+Per ciascun robot il sistema dovrà conservare una conﬁgurazione stru urata comprendente
+almeno:
+
+      Iden ﬁca vo interno univoco.
+
+      Nome visualizzato.
+
+      Username remoto.
+
+      Hostname o indirizzo IP.
+
+      Porta SSH.
+
+      Metodo di auten cazione.
+
+      Riferimento sicuro alle credenziali.
+
+      Parametri di veriﬁca della chiave host.
+
+      Percorsi dei ﬁle di stato.
+
+      Percorso della directory associata sul server.
+
+      Stato anagraﬁco.
+
+      Data di creazione e ul ma modiﬁca.
+
+      Informazioni sull'ul ma veriﬁca di connessione.
+
+10.2 Stato opera vo e stato della connessione
+
+Il sistema dovrà mantenere dis n :
+
+      Stato anagraﬁco del robot.
+
+      Stato della connessione SSH/SFTP.
+
+      Stato opera vo interpretato dai ﬁle remo .
+
+      Data e ora dell'ul mo aggiornamento valido.
+
+      Esito dell'ul mo tenta vo di connessione o monitoraggio.
+
+Queste informazioni non dovranno essere confuse in un unico campo che possa generare
+interpretazioni errate.
+
+10.3 File e ﬁlesystem
+
+Il ﬁlesystem server dovrà conservare i ﬁle carica e trasferi secondo la poli ca di organizzazione e
+conservazione deﬁnita.
+L'applicazione dovrà u lizzare percorsi controlla e non dovrà considerare i nomi o i percorsi forni
+dal frontend come a endibili senza validazione.
+
+10.4 Audit
+
+Gli even rilevan dovranno essere memorizza secondo una poli ca di conservazione
+conﬁgurabile.
+
+I log dovranno consen re di iden ﬁcare l'utente, l'operazione, il robot interessato, l'esito e il
+  mestamp, ove per nente, senza includere segre .
+
+
+
+11. Requisi da deﬁnire in fase di proge azione
+
+I seguen aspe     devono essere conferma prima di ﬁnalizzare l'implementazione.
+
+11.1 Organizzazione del ﬁlesystem server
+
+      Percorso assoluto della root.
+
+      Nomi e ﬁnalità delle so odirectory standard.
+
+      Permessi di accesso.
+
+      Poli ca di conservazione dei ﬁle.
+
+      Eventuali quote per robot o utente.
+
+11.2 Auten cazione SSH
+
+      Supporto esclusivo delle chiavi SSH o anche delle password.
+
+      Eventuale uso di un archivio sicuro di segre .
+
+      Modalità di distribuzione e aggiornamento delle chiavi.
+
+      Poli ca di veriﬁca e aggiornamento delle chiavi host.
+
+      Eventuali restrizioni sugli account remo .
+
+11.3 Registrazione dei robot
+
+      Obbligatorietà della veriﬁca SSH prima del completamento della registrazione.
+
+      Regole deﬁni ve per l'unicità dei robot.
+
+      Poli ca in caso di directory già esistente.
+
+      Ges one del cambio di username.
+
+      Poli ca di disabilitazione e rimozione.
+11.4 File di stato
+
+      Percorsi dei ﬁle di testo.
+
+      Formato e stru ura dei contenu .
+
+      Frequenza di polling.
+
+      Regole di interpretazione degli sta .
+
+      Ges one dei da non validi o obsole .
+
+11.5 Trasferimen
+
+      Dimensione massima dei ﬁle, se prevista.
+
+      Numero massimo di trasferimen simultanei.
+
+      Poli ca di sovrascri ura.
+
+      Poli ca di ripresa dei trasferimen .
+
+      Algoritmo di checksum.
+
+      Durata di conservazione dei ﬁle temporanei.
+
+      Limi di meout e quote di spazio.
+
+11.6 Uten e autorizzazioni
+
+      Ruoli deﬁni vi.
+
+      Permessi per terminale, monitoraggio e trasferimen .
+
+      Permessi per registrazione, modiﬁca e rimozione dei robot.
+
+      Poli ca di meout e scadenza delle sessioni.
+
+      Eventuali requisi di auten cazione aggiun va.
+
+11.7 Prestazioni e capacità
+
+      Numero iniziale e massimo previsto di robot.
+
+      Numero massimo di uten simultanei.
+
+      Numero di sessioni terminale contemporanee.
+
+      Volume e frequenza dei trasferimen .
+
+      Requisi di disponibilità e ripris no.
+12. Riepilogo dei requisi essenziali
+
+Il sistema dovrà soddisfare almeno i seguen obie vi:
+
+   1. Auten care gli uten tramite username e password.
+
+   2. Visualizzare e ges re una ﬂo a di robot.
+
+   3. Consen re agli uten autorizza di registrare nuovi robot inserendo i parametri di
+      connessione.
+
+   4. Validare i parametri e veriﬁcare la connessione secondo la poli ca deﬁnita.
+
+   5. Creare o veriﬁcare automa camente la directory server associata al robot.
+
+   6. Mantenere coeren l'anagraﬁca del robot e la stru ura del ﬁlesystem, gestendo gli errori
+      parziali.
+
+   7. Leggere e interpretare ﬁle di stato presen sui robot tramite SSH.
+
+   8. Aggiornare lo stato periodicamente e su richiesta.
+
+   9. Fornire un terminale Linux intera vo nel browser.
+
+   10. Consen re la navigazione dei ﬁlesystem remo e del ﬁlesystem server.
+
+   11. Consen re upload e download tra computer, server e robot.
+
+   12. U lizzare il backend come intermediario per tu e le operazioni verso i robot.
+
+   13. Supportare ﬁle superiori a 1 GB con trasferimen in streaming o a blocchi.
+
+   14. Ges re progressi, errori, meout, integrità e ﬁle temporanei.
+
+   15. Proteggere credenziali, sessioni, directory e da della ﬂo a.
+
+   16. Registrare gli even rilevan e fornire informazioni u li alla diagnosi.
+
+   17. Dis nguere lo stato di registrazione, la raggiungibilità del robot e il suo stato opera vo.
+
+   18. Consen re la futura estensione del sistema senza modiﬁcare il codice per ogni nuovo robot
+       compa bile.
+
+
+
+13. Conclusione
+
+La web applica on dovrà fornire un punto di accesso centralizzato e sicuro per il monitoraggio e la
+ges one opera va della ﬂo a di robot mobili.
+
+L'archite ura dovrà privilegiare la separazione dei componen , la protezione delle credenziali,
+l'isolamento dei da , la ges one aﬃdabile delle connessioni remote e la capacità di trasferire ﬁle di
+grandi dimensioni senza consumi eccessivi di memoria.
+La registrazione di nuovi robot dovrà aggiornare coerentemente l'anagraﬁca applica va e
+l'alberatura del ﬁlesystem server, evitando perdite di da e consentendo il recupero dagli errori
+parziali.
+
+La presente speciﬁca cos tuisce la baseline funzionale per le successive fasi di proge azione
+archite urale, deﬁnizione delle API, implementazione, test e validazione del sistema.
+
+
+
+
+1. Autenticazione e Gestione Sessioni
+Tempo di inattività del terminale impostato a 15 minuti, con un pop-up di avviso mostrato 5 minuti prima della scadenza che aggiorna il conteggio alla rovescia ogni minuto (4-3-2-1…).
+Pop-up di avviso per la scadenza della sessione 5 minuti prima della scadenza con conteggio alla rovescia di minuto in minuto (4-3-2-1…) (da verificare che il tempo di inattività della sessione sia di 30 minuti).
+Nome utente univoco: non possono esistere più utenti con lo stesso nome (es. "luca"), anche con password diverse.
+Permessi terminale SSH: utilizzo riservato unicamente agli utenti con livello di accesso Admin.
+
+2. File di Configurazione (config)
+All'avvio della web app, il sistema deve rilevare un file di configurazione (config) contenente i seguenti parametri impostabili:
+Modifica del tempo di inattività della web app.
+Modifica del tempo di attività del terminale SSH.
+Modifica del numero totale di persone con accesso contemporaneo alla web app (valore base: 10 utenti contemporanei).
+Modifica del numero totale di persone che possono accedere contemporaneamente ai terminali di ciascun singolo robot (es. max 2 terminali aperti per singolo robot, valore base: 1).
+Modifica delle impostazioni per il caricamento file di massa.
+Limite massimo per il caricamento file sia su server che su robot (preimpostato a 3 GB).
+Parametri di configurazione aggiuntivi per esigenze future (es. numero massimo di robot nella flotta, numero massimo di accessi contemporanei con lo stesso account, ecc. - da confermare con Daniele).
+
+3. Gestione File e Navigazione Cartelle
+Caricamento file di massa su server e robot: possibilità di selezionare uno o più file e specificare i robot di destinazione e/o server (senza limite massimo prefissato, parametro modificabile in config).
+Permessi di navigazione e gestione cartelle:
+Admin: navigazione completa con permessi di inserimento ed eliminazione file ovunque.
+Operatore: navigazione limitata alle sole cartelle autorizzate.
+Gestione dei conflitti durante il caricamento: in caso di nome file già esistente, mostrare un pop-up di avviso con richiesta di sovrascrittura. In caso di annullamento, interrompere l'operazione senza applicare modifiche o spostamenti.
+
+4. Gestione Robot
+Associazione dati: in fase di creazione e/o modifica del robot, associare un Nome Cliente e un Nome Impianto, mostrati chiaramente a schermo.
+
+5. Interfaccia Utente (UI)
+Barra dei filtri: inclusione di una barra di filtraggio per ricercare tramite Nome Cliente, Nome Impianto, Nome Robot o ID Robot.
+Stile grafico: sviluppare il frontend utilizzando la palette di colori Bootstrap.
+Navigazione principale: il logo dell'applicazione funge da pulsante per il ritorno alla Home.
+Usare REACT
+
+
+Specifiche e Requisiti di Sistema
+1. Gestione Robot e Impianti
+Durante la fase di creazione di un nuovo robot, il campo relativo al cliente è obbligatorio, mentre l'inserimento del nome impianto è opzionale.
+2. Selezione del Percorso di Trasferimento File
+Quando si seleziona il pulsante di dimensioni ridotte «Invia al robot» o il pulsante «Invia al server», il sistema deve mostrare una finestra pop-up per la «Gestione File». All'interno di questa finestra, l'operatore deve poter inserire il percorso (path) desiderato sia selezionandolo direttamente sia digitandolo manualmente.
+
+3. Validazione del File di Configurazione e Permessi di Navigazione
+È necessario verificare il corretto funzionamento del file di configurazione (config) rispetto alle sue finalità. Bisogna inoltre integrare la possibilità di definire e limitare i percorsi (path) su cui ciascun operatore è autorizzato ad agire.
+4. Gestione Avvisi di Inattività e Sessione
+Modificare o implementare la finestra pop-up di avviso per inattività, sia a livello di terminale sia a livello generale di sessione. La finestra di dialogo deve contenere due opzioni:
+Conferma (CONFIRM): Il timer di inattività viene azzerato, ripartendo dal valore predefinito (es. 15 o 30 minuti), e la finestra pop-up si chiude.
+Esci (DELETE): Viene effettuato immediatamente il logout dalla sessione corrente.
+Nota sulle operazioni in corso: Se un trasferimento di file è in esecuzione, la sessione non deve terminare per inattività.
+5. Conferma Eliminazione File e Cartelle
+Quando l'utente intende eliminare elementi dal file system, il sistema deve richiedere una conferma tramite pop-up. Se l'oggetto selezionato è una cartella, il messaggio di avviso deve specificare il numero totale dei file contenuti al suo interno che verranno eliminati definitivamente insieme ad essa.
+6. Concorrenza e Controllo delle Sessioni
+È consentito un massimo di un utente attivo per ogni sessione. Nel caso in cui si tenti un accesso simultaneo, il sistema deve notificare all'utente che la sessione risulta già avviata.
+7. Limitazioni Interfaccia per Profilo Operatore
+Per gli utenti con ruolo Operatore, è necessario rimuovere completamente il pulsante d'accesso al terminale (sia lato robot sia lato server), in quanto non dispongono dei permessi per utilizzarlo.
+8. Struttura dei File di Log (Area Amministratore)
+Gli utenti Amministratori disporranno di una sezione dedicata («Logs») per consultare lo storico degli eventi di sistema con file che saranno situati sul server:
+Log di Accesso: Traccia gli eventi di login e logout, registrando l'utente, il livello di privilegio, la data e l'ora esatta dell'operazione.
+Log Trasferimenti File: Traccia ciascuna operazione riportando nome file, nome utente, data, ora ed esito (successo/fallimento).
+Nel caso di caricamenti massivi, la struttura di registrazione deve delimitare chiaramente il blocco delle operazioni tramite tag di avviso (es. INIZIO CARICAMENTO MASSIVO ... CARICAMENTO MASSIVO TERMINATO) elencando ogni file con i relativi dettagli di trasferimento.
+9. Comportamento e Annullamento dei Trasferimenti Massivi
+In caso di interruzione o annullamento manuale di un trasferimento massivo in corso:
+I file il cui trasferimento è già stato completato non vengono rimossi e rimangono sul server/robot.
+I file in corso di scaricamento non completati devono essere interrotti ed eliminati definitivamente, a meno che il trasferimento non sia ormai prossimo alla conclusione (in tal caso l'operazione viene portata a termine).
+L'azione di annullamento agisce sull'intero blocco di trasferimento massivo e non sui singoli file singolarmente.
+

@@ -17,6 +17,8 @@ import { AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } f
 import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
 import { type StartServerRobotTransferRequest, type TransferDto, isActiveTransferStatus } from "./transfer-models.ts";
 import { type BulkPreCheckRequest, type BulkTarget } from "./bulk-transfer-models.ts";
+import { authorizeOperatorPath } from "../auth/path-authorization.ts";
+import { BatchTransferManager } from "./batch-transfer-manager.ts";
 
 export function registerTransferRoutes(
   app: FastifyInstance,
@@ -24,7 +26,8 @@ export function registerTransferRoutes(
   robotRepository: RobotRepository,
   sessionManager: SessionManager,
   authMiddleware: AuthMiddleware,
-  roleMapping: RolePermissionMapping = DEFAULT_ROLE_PERMISSIONS
+  roleMapping: RolePermissionMapping = DEFAULT_ROLE_PERMISSIONS,
+  batchTransferManager?: BatchTransferManager
 ): void {
   // Supporto content-type per streaming binario raw senza buffering in memoria (RF-TRF-004, CA-TRF-001)
   try {
@@ -247,6 +250,8 @@ export function registerTransferRoutes(
           : req.raw;
 
       try {
+        const destPath = subPath ? path.posix.join(subPath, filename) : filename;
+        await authorizeOperatorPath(context, "server", robot.id, destPath);
         const transferDto = await transferService.uploadClientToServer(
           context,
           robot,
@@ -298,6 +303,7 @@ export function registerTransferRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "server", robot.id, relativePath);
         if (query.preflight === "1") {
           const info = await transferService.inspectServerDownload(context, robot, relativePath);
           return reply.status(200).send({ ok: true, ...info });
@@ -360,6 +366,8 @@ export function registerTransferRoutes(
           : req.raw;
 
       try {
+        const destPath = remoteDirectory ? path.posix.join(remoteDirectory, filename) : filename;
+        await authorizeOperatorPath(context, "remote", robot.id, destPath);
         const transferDto = await transferService.uploadClientToRobot(
           context,
           robot,
@@ -411,6 +419,7 @@ export function registerTransferRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "remote", robot.id, remoteFilePath);
         if (query.preflight === "1") {
           const info = await transferService.inspectRobotDownload(context, robot, remoteFilePath);
           return reply.status(200).send({ ok: true, ...info });
@@ -795,6 +804,11 @@ export function registerTransferRoutes(
       );
 
       try {
+        for (const target of body.targets) {
+          if (target.directory) {
+            await authorizeOperatorPath(context, target.type === "server" ? "server" : "remote", target.robotId, target.directory);
+          }
+        }
         const response = await transferService.checkBulkConflicts(context, body);
         return reply.status(200).send(response);
       } catch (err: any) {
@@ -961,6 +975,12 @@ export function registerTransferRoutes(
           throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Nessuna destinazione (server/robot) selezionata.");
         }
 
+        for (const target of targets) {
+          if (target.directory) {
+            await authorizeOperatorPath(context, target.type === "server" ? "server" : "remote", target.robotId, target.directory);
+          }
+        }
+
         // Se overwrite non è confermata, esegui pre-check dei conflitti
         if (!overwrite) {
           const preCheck = await transferService.checkBulkConflicts(context, {
@@ -1033,6 +1053,14 @@ export function registerTransferRoutes(
       );
 
       try {
+        for (const sp of body.sourcePaths) {
+          await authorizeOperatorPath(context, "server", body.sourceRobotId, sp);
+        }
+        for (const target of body.targets) {
+          if (target.directory) {
+            await authorizeOperatorPath(context, target.type === "server" ? "server" : "remote", target.robotId, target.directory);
+          }
+        }
         const response = await transferService.executeBulkServerSource(context, {
           sourceScope: body.sourceScope || "general",
           sourceRobotId: body.sourceRobotId,
@@ -1072,6 +1100,12 @@ export function registerTransferRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "remote", body.sourceRobotId, body.sourceRemotePath);
+        if (body.commonTargetDirectory) {
+          for (const tid of body.targetRobotIds) {
+            await authorizeOperatorPath(context, "remote", tid, body.commonTargetDirectory);
+          }
+        }
         const response = await transferService.executeRobotToRobotTransfer(context, {
           sourceRobotId: body.sourceRobotId,
           sourceRemotePath: body.sourceRemotePath,
@@ -1083,6 +1117,106 @@ export function registerTransferRoutes(
           overwrite: Boolean(body.overwrite),
         });
         return reply.status(200).send(response);
+      } catch (err: any) {
+        return handleRouteError(reply, err);
+      }
+    }
+  );
+
+  // =========================================================================
+  // 10. GESTIONE BATCH TRASFERIMENTI MASSIVI E CANCELLAZIONE SELETTIVA (Requisito #9)
+  // =========================================================================
+
+  app.get(
+    "/api/transfers/batches",
+    {
+      preHandler: [authMiddleware.requirePermission(AppPermission.FLEET_VIEW)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const user = req.molirisUser!;
+      const roles = Array.isArray(user.roles) ? user.roles : [];
+      const isAdmin = roles.some((r) => {
+        const lower = (r || "").toLowerCase();
+        return lower === "amministratore" || lower === "admin";
+      });
+
+      const batches = batchTransferManager
+        ? batchTransferManager.listBatches(isAdmin ? undefined : user.id)
+        : [];
+
+      return reply.status(200).send({
+        success: true,
+        batches,
+      });
+    }
+  );
+
+  app.get(
+    "/api/transfers/batches/:batchId",
+    {
+      preHandler: [authMiddleware.requirePermission(AppPermission.FLEET_VIEW)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { batchId } = req.params as { batchId: string };
+      const user = req.molirisUser!;
+      const roles = Array.isArray(user.roles) ? user.roles : [];
+      const isAdmin = roles.some((r) => {
+        const lower = (r || "").toLowerCase();
+        return lower === "amministratore" || lower === "admin";
+      });
+
+      const batch = batchTransferManager?.getBatch(batchId);
+      if (!batch) {
+        return reply.status(404).send({
+          code: ErrorCode.TRANSFER_INTERRUPTED,
+          message: `Batch '${batchId}' non trovato.`,
+          classification: "recuperabile",
+        });
+      }
+
+      if (!isAdmin && batch.userId !== user.id) {
+        return reply.status(403).send({
+          code: ErrorCode.INSUFFICIENT_PERMISSIONS,
+          message: "Accesso non consentito: batch appartenente a un altro utente.",
+          classification: "richiede_intervento_amministrativo",
+        });
+      }
+
+      return reply.status(200).send({
+        success: true,
+        batch,
+      });
+    }
+  );
+
+  app.post(
+    "/api/transfers/batches/:batchId/cancel",
+    {
+      preHandler: [authMiddleware.requirePermission(AppPermission.FLEET_VIEW)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { batchId } = req.params as { batchId: string };
+      const user = req.molirisUser!;
+      const roles = Array.isArray(user.roles) ? user.roles : [];
+      const isAdmin = roles.some((r) => {
+        const lower = (r || "").toLowerCase();
+        return lower === "amministratore" || lower === "admin";
+      });
+
+      if (!batchTransferManager) {
+        return reply.status(404).send({
+          code: ErrorCode.TRANSFER_INTERRUPTED,
+          message: "BatchTransferManager non inizializzato.",
+          classification: "recuperabile",
+        });
+      }
+
+      try {
+        const result = await batchTransferManager.cancelBatch(batchId, user.id, isAdmin);
+        return reply.status(200).send({
+          success: true,
+          ...result,
+        });
       } catch (err: any) {
         return handleRouteError(reply, err);
       }
@@ -1118,6 +1252,12 @@ async function runServerRobotTransfer(
   body: StartServerRobotTransferRequest,
   background: boolean
 ): Promise<FastifyReply> {
+  if (body.serverRelativePath) {
+    await authorizeOperatorPath(context, "server", robot.id, body.serverRelativePath);
+  }
+  if (body.remotePath) {
+    await authorizeOperatorPath(context, "remote", robot.id, body.remotePath);
+  }
   if (!background) {
     const dto = await transferService.executeServerRobotTransfer(context, robot, body);
     return reply.status(200).send(dto);

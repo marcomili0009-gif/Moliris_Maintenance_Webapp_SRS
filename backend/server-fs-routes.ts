@@ -294,6 +294,7 @@ export function registerServerFsRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "server", robot.id, filePath);
         if (transferService && query.preflight === "1") {
           const info = await transferService.inspectServerDownload(context, robot, filePath);
           return reply.status(200).send({ ok: true, ...info });
@@ -384,6 +385,7 @@ export function registerServerFsRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "server", robot.id, filePath);
         await serverFsService.deleteFile(context, robot, filePath);
         const filename = path.basename(filePath);
         return reply.status(200).send({
@@ -444,6 +446,7 @@ export function registerServerFsRoutes(
     );
 
     try {
+      await authorizeOperatorPath(context, "server", robot.id, subPath);
       const result = await serverFsService.inspectRobotDirectory(context, robot, subPath);
       return reply.status(200).send({
         success: true,
@@ -556,6 +559,7 @@ export function registerServerFsRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "server", robot.id, folderPath);
         const opts: { recursive?: boolean; expectedFileCount?: number; expectedDirectoryCount?: number } = {
           recursive,
         };
@@ -643,6 +647,7 @@ export function registerServerFsRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "server", robot.id, path.posix.join(parentPath || "/", folderName));
         const result = await serverFsService.createRobotFolder(context, robot, parentPath, folderName);
         return reply.status(201).send({
           success: true,
@@ -785,6 +790,7 @@ export function registerServerFsRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "server", undefined, path.posix.join(parentPath || "/", folderName));
         const result = await serverFsService.createGeneralFolder(context, parentPath, folderName);
         return reply.status(201).send({
           success: true,
@@ -841,6 +847,7 @@ export function registerServerFsRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "server", undefined, filePath);
         if (transferService && query.preflight === "1") {
           const info = await transferService.inspectGeneralDownload(context, filePath);
           return reply.status(200).send({ ok: true, ...info });
@@ -920,6 +927,7 @@ export function registerServerFsRoutes(
             filename = data.filename;
           }
           const filePath = targetSubPath ? `${targetSubPath.replace(/^[/\\]+/, "")}/${filename}` : filename;
+          await authorizeOperatorPath(context, "server", undefined, filePath);
           if (transferService) {
             const dto = await transferService.executeGeneralUpload(
               context,
@@ -958,6 +966,7 @@ export function registerServerFsRoutes(
             });
           }
           const filePath = targetSubPath ? `${targetSubPath.replace(/^[/\\]+/, "")}/${filename}` : filename;
+          await authorizeOperatorPath(context, "server", undefined, filePath);
           const contentLength = req.headers["content-length"]
             ? Number.parseInt(String(req.headers["content-length"]), 10)
             : null;
@@ -1041,6 +1050,7 @@ export function registerServerFsRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "server", undefined, filePath);
         await serverFsService.deleteGeneralFile(context, filePath);
         const filename = path.basename(filePath);
         return reply.status(200).send({
@@ -1088,6 +1098,7 @@ export function registerServerFsRoutes(
     );
 
     try {
+      await authorizeOperatorPath(context, "server", undefined, subPath);
       const result = await serverFsService.inspectGeneralDirectory(context, subPath);
       return reply.status(200).send({
         success: true,
@@ -1175,6 +1186,7 @@ export function registerServerFsRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "server", undefined, folderPath);
         const opts: { recursive?: boolean; expectedFileCount?: number; expectedDirectoryCount?: number } = {
           recursive,
         };

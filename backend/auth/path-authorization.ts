@@ -14,7 +14,7 @@ import { MolirisAppError, ErrorCode } from "../../errors/app-errors.ts";
 export function validateAndNormalizePath(rawPath: string): string {
   if (typeof rawPath !== "string" || rawPath.trim() === "") {
     throw new MolirisAppError(
-      ErrorCode.INSUFFICIENT_PERMISSIONS,
+      ErrorCode.SERVER_DIR_INACCESSIBLE,
       "Percorso non specificato o vuoto.",
       "Il percorso richiesto non può essere vuoto."
     );
@@ -25,7 +25,7 @@ export function validateAndNormalizePath(rawPath: string): string {
   // Rifiuto categorico byte nulli o caratteri di controllo ASCII non stampabili (RNF-SEC-005)
   if (trimmed.includes("\0") || /[\x00-\x1F\x7F]/.test(trimmed)) {
     throw new MolirisAppError(
-      ErrorCode.INSUFFICIENT_PERMISSIONS,
+      ErrorCode.SERVER_DIR_INACCESSIBLE,
       "Percorso contenente byte nulli o caratteri di controllo non ammessi.",
       "Il percorso contiene caratteri non ammessi."
     );
@@ -34,7 +34,7 @@ export function validateAndNormalizePath(rawPath: string): string {
   // Limite lunghezza massima di sicurezza
   if (trimmed.length > 4096) {
     throw new MolirisAppError(
-      ErrorCode.INSUFFICIENT_PERMISSIONS,
+      ErrorCode.SERVER_DIR_INACCESSIBLE,
       "Lunghezza del percorso superiore al limite consentito di 4096 caratteri.",
       "La lunghezza del percorso supera il limite massimo consentito."
     );
@@ -43,7 +43,7 @@ export function validateAndNormalizePath(rawPath: string): string {
   // Rifiuto categorico sequenze di attraversamento ('..')
   if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(trimmed) || /%2e%2e/i.test(trimmed)) {
     throw new MolirisAppError(
-      ErrorCode.INSUFFICIENT_PERMISSIONS,
+      ErrorCode.SERVER_DIR_INACCESSIBLE,
       "Tentativo di attraversamento directory ('..') non consentito.",
       "Attraversamento directory non consentito."
     );

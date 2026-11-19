@@ -76,6 +76,7 @@ Tutti i parametri di runtime del sistema sono centralizzati nelle variabili d'am
 | `MOLIRIS_TRANSFER_POLL_INTERVAL_MS` | number | `1000` | Variabile globale browser | Opzionale. Configurazione frontend (`window.MOLIRIS_TRANSFER_POLL_INTERVAL_MS`) per la frequenza di polling dello stato dei trasferimenti attivi. | RF-TRF-006, §5.1 |
 | `MOLIRIS_MAX_BULK_UPLOAD_FILES` | number | `20` | Variabile d'ambiente | Opzionale. Intero positivo `>= 1`. Limite massimo di file caricabili simultaneamente per singola richiesta massiva. | RF-TRF-001, RNF-MNT-001, RNF-PERF-003 |
 | `MOLIRIS_DEFAULT_OPERATOR_ALLOWED_PATHS` | string | `"/upload,/shared,/logs,/backups"` | Variabile d'ambiente | Opzionale. Percorsi/pattern consentiti per il ruolo Operatore sul filesystem server e remoto (jail RBAC fail-closed). | RF-AUTH-005, RF-SRVFS-005, RNF-SEC-004, RNF-SEC-005 |
+| `MOLIRIS_LOGS_DIR` | string | `undefined` | Variabile d'ambiente | Opzionale. Percorso assoluto della directory per i file di log fisici su disco (`access.log` e `transfers.log`). Se non specificata, utilizza la sottodirectory `logs/` della configurazione. | §10.4, RNF-SEC-009, Requisito #8 |
 
 ---
 
