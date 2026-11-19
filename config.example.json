@@ -1,28 +1,12 @@
 {
-  // Moliris Maintenance Webapp - File di Configurazione Template (SRS v1.0 §2, RNF-MNT-001)
-
-  // Tempo massimo (in minuti) di inattività dell'utente prima del logout automatico obbligatorio (RF-AUTH-006, RNF-SEC-004, §11.6)
   "sessionInactivityTimeoutMinutes": 30,
-
-  // Finestra temporale di preavviso (in minuti) prima della scadenza sessione; mostra il pop-up modale con countdown (RF-AUTH-006, Prompt #4)
   "sessionInactivityWarningMinutes": 5,
-
-  // Watchdog timer di inattività (in minuti) per il terminale SSH PTY remoto; superato questo tempo la shell sul robot viene chiusa (RF-SSH-003, §11.6)
   "sshTerminalActiveTimeoutMinutes": 15,
-
-  // Numero massimo di utenti connessi e autenticati simultaneamente all'intera web application (RNF-PERF-003, §11.2)
   "maxConcurrentWebUsers": 10,
-
-  // Numero massimo di sessioni di terminale SSH interattivo aperte in contemporanea verso lo stesso robot (RF-SSH-005, RNF-SEC-007)
   "maxConcurrentTerminalsPerRobot": 1,
-
-  // Impostazioni per il Caricamento Massivo Multi-Target di file (RF-TRF-001..005, RNF-PERF-001)
   "bulkUploadConfig": {
-    // Numero massimo di file selezionabili e trasferibili in un singolo lotto batch (default: 20)
     "maxConcurrentFiles": 20,
-    // Dimensione del buffer di lettura/scrittura streaming in byte (2097152 B = 2 MB); Heap delta costante < 5 MB per file > 1 GB (RF-TRF-004, RNF-PERF-001)
     "chunkSizeBytes": 2097152,
-    // Lista delle sottocartelle permesse in cui gli utenti con ruolo Operatore possono caricare file (Jail RBAC Operatore; RF-AUTH-005, RF-SRVFS-005)
     "allowedSubPaths": [
       "upload",
       "shared",
@@ -31,33 +15,14 @@
       "configs"
     ]
   },
-
-  // Dimensione massima ammessa per singolo upload (3221225472 B = 3 GB); blocca file oltre questa soglia (RF-TRF-014, §11.5)
   "maxFileUploadBytes": 3221225472,
-
-  // Parametri di scalabilità ed estensioni future concordate con il committente (§2, futureExtensions)
   "futureExtensions": {
-    // Numero massimo di robot mobili gestibili contemporaneamente nell'anagrafica della flotta
     "maxFleetRobots": 100,
-<<<<<<< HEAD
-    // Numero massimo di sessioni simultanee consentite per singolo account (1 vieta accessi contemporanei con le stesse credenziali; RF-AUTH-004)
     "maxSessionsPerAccount": 1,
-    // Spazio per impostazioni personalizzate o sperimentali aggiuntive concordate con il committente
-=======
-    "maxSessionsPerAccount": 2,
->>>>>>> ab2502ba0a7bd471edd9e2e2fad034408cb2efeb
     "customSettings": {}
   },
-
-  // Intervallo (in secondi) con cui il backend interroga in background lo stato di connessione e la telemetria di tutti i robot (RF-MON-003, RNF-PERF-004, §11.4)
   "fleetPollingIntervalSeconds": 5,
-
-  // Numero massimo di trasferimenti SFTP simultanei ammessi globalmente sul server (RF-TRF-012, RNF-PERF-003, §11.5)
   "maxConcurrentTransfers": 5,
-
-  // Timeout massimo (in secondi) per l'handshake e la connessione SSH/SFTP verso un robot prima di considerarlo irraggiungibile (RF-TRF-013, RNF-MNT-001, §11.2)
   "sshConnectTimeoutSeconds": 15,
-
-  // Timeout massimo complessivo (in minuti) concesso a un singolo trasferimento file prima dell'interruzione forzata e pulizia file parziali (RF-TRF-013, §11.5)
   "transferTimeoutMinutes": 30
 }
