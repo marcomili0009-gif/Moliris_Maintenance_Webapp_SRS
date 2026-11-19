@@ -65,6 +65,7 @@ export class SessionManager {
   private expirationListeners: SessionExpirationListener[] = [];
   private suspensionListeners: SessionSuspensionListener[] = [];
   private activeTransferChecker: ActiveTransferChecker | null = null;
+  private activeTransfersProvider: ((userId: string) => number) | null = null;
   private transferSuspendedSessions: Set<string> = new Set();
   private readonly timeoutMs: number;
   private readonly absoluteTimeoutMs?: number;
@@ -129,6 +130,14 @@ export class SessionManager {
   }
 
   /**
+   * Registra il provider dei trasferimenti attivi per utente (Requisito #4).
+   * Se vi sono trasferimenti attivi per l'utente, la scadenza per inattività viene sospesa.
+   */
+  public setActiveTransfersProvider(provider: (userId: string) => number): void {
+    this.activeTransfersProvider = provider;
+  }
+
+  /**
    * Registra un listener per gli eventi di scadenza sessione con dettaglio causa (Prompt #4).
    */
   public onSessionExpired(listener: SessionExpirationListener): void {
@@ -149,9 +158,11 @@ export class SessionManager {
   public purgeExpiredSessions(): void {
     const now = Date.now();
     for (const [sessionId, session] of Array.from(this.sessions.entries())) {
-      const activeTransfers = this.activeTransferChecker
-        ? this.activeTransferChecker(sessionId, session.userId)
-        : 0;
+      const activeTransfers = this.activeTransfersProvider
+        ? this.activeTransfersProvider(session.userId)
+        : this.activeTransferChecker
+          ? this.activeTransferChecker(sessionId, session.userId)
+          : 0;
 
       if (activeTransfers > 0) {
         // Sospensione inattività: trasferimenti attivi in corso
@@ -241,9 +252,11 @@ export class SessionManager {
     if (!session) return null;
 
     const now = Date.now();
-    const activeTransfers = this.activeTransferChecker
-      ? this.activeTransferChecker(sessionId, session.userId)
-      : 0;
+    const activeTransfers = this.activeTransfersProvider
+      ? this.activeTransfersProvider(session.userId)
+      : this.activeTransferChecker
+        ? this.activeTransferChecker(sessionId, session.userId)
+        : 0;
 
     if (activeTransfers > 0) {
       session.lastActivityAt = new Date(now);
@@ -284,9 +297,11 @@ export class SessionManager {
     if (!session) return false;
 
     const now = Date.now();
-    const activeTransfers = this.activeTransferChecker
-      ? this.activeTransferChecker(sessionId, session.userId)
-      : 0;
+    const activeTransfers = this.activeTransfersProvider
+      ? this.activeTransfersProvider(session.userId)
+      : this.activeTransferChecker
+        ? this.activeTransferChecker(sessionId, session.userId)
+        : 0;
 
     if (activeTransfers > 0) {
       session.lastActivityAt = new Date(now);
@@ -321,9 +336,11 @@ export class SessionManager {
     if (!session) return null;
 
     const now = Date.now();
-    const activeTransfers = this.activeTransferChecker
-      ? this.activeTransferChecker(sessionId, session.userId)
-      : 0;
+    const activeTransfers = this.activeTransfersProvider
+      ? this.activeTransfersProvider(session.userId)
+      : this.activeTransferChecker
+        ? this.activeTransferChecker(sessionId, session.userId)
+        : 0;
 
     if (activeTransfers > 0) {
       return { remainingMs: this.timeoutMs, isSuspended: true, activeTransfers };

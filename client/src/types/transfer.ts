@@ -17,6 +17,7 @@ export type TransferStatus =
 
 export interface TransferProgress {
   transferId: string;
+  batchId?: string;
   robotId?: string;
   /** Nome del file trasferito. */
   filename: string;

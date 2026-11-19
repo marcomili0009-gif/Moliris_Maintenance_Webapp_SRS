@@ -481,7 +481,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 sourceType: "server",
                 robotId: fs.serverRobotId,
                 robotName: r?.displayName,
-                initialPath: "",
+                initialPath: "/",
               });
             }}
             onServerDelete={(fileName) => setDeleteTarget({ fileName, targetType: "server" })}

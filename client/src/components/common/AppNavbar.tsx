@@ -7,8 +7,8 @@ export interface AppNavbarProps {
   onGoHome?: () => void;
   user?: User | null;
   onLogout?: () => Promise<void>;
-  activeView?: "fleet" | "files";
-  onViewChange?: (view: "fleet" | "files") => void;
+  activeView?: "fleet" | "files" | "logs";
+  onViewChange?: (view: "fleet" | "files" | "logs") => void;
 }
 
 /**
@@ -88,6 +88,24 @@ export const AppNavbar: React.FC<AppNavbarProps> = ({
                   Gestione file/trasferimenti
                 </button>
               </li>
+              {user.roles?.some((r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore") && (
+                <li className="nav-item">
+                  <button
+                    type="button"
+                    id="nav-logs"
+                    data-view="logs"
+                    className={`nav-link btn btn-link text-decoration-none ${
+                      activeView === "logs" ? "active" : ""
+                    }`}
+                    aria-current={activeView === "logs" ? "page" : undefined}
+                    onClick={() => {
+                      if (onViewChange) onViewChange("logs");
+                    }}
+                  >
+                    Logs
+                  </button>
+                </li>
+              )}
             </ul>
           )}
         </div>

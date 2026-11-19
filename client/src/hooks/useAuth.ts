@@ -3,7 +3,12 @@ import { apiClient } from "../services/api-client.ts";
 import { ErrorPresenter } from "../services/error-presenter.ts";
 import type { User, IdleWarningInfo } from "../types/auth.ts";
 
-export function useAuth(activeTransfersCount: number = 0) {
+export function useAuth(activeTransfersOrOptions: number | { activeTransfersCount?: number } = 0) {
+  const initialTransfersCount =
+    typeof activeTransfersOrOptions === "number"
+      ? activeTransfersOrOptions
+      : activeTransfersOrOptions?.activeTransfersCount ?? 0;
+
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
@@ -11,14 +16,19 @@ export function useAuth(activeTransfersCount: number = 0) {
   const [sessionConflict, setSessionConflict] = useState<string | null>(null);
   const [idleWarning, setIdleWarning] = useState<string | null>(null);
   const [idleWarningInfo, setIdleWarningInfo] = useState<IdleWarningInfo | null>(null);
+  const [isIdleWarningOpen, setIsIdleWarningOpen] = useState<boolean>(false);
+  const [idleRemainingMinutes, setIdleRemainingMinutes] = useState<number>(5);
   const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(30);
   const [sessionWarningMinutes, setSessionWarningMinutes] = useState(5);
-  const [internalActiveTransfers, setInternalActiveTransfers] = useState<number>(activeTransfersCount);
+  const [internalActiveTransfers, setInternalActiveTransfers] = useState<number>(initialTransfersCount);
+
+  const activeTransfersRef = useRef<number>(initialTransfersCount);
+  activeTransfersRef.current = initialTransfersCount;
 
   const lastActivityRef = useRef<number>(Date.now());
   const idleCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const hasReportedWarningRef = useRef<boolean>(false);
-  const effectiveActiveTransfers = Math.max(activeTransfersCount, internalActiveTransfers);
+  const effectiveActiveTransfers = Math.max(initialTransfersCount, internalActiveTransfers);
   const activeTransfersCountRef = useRef<number>(effectiveActiveTransfers);
   activeTransfersCountRef.current = effectiveActiveTransfers;
 
@@ -97,17 +107,23 @@ export function useAuth(activeTransfersCount: number = 0) {
     setIsAuthenticated(false);
     setIdleWarning(null);
     setIdleWarningInfo(null);
+    setIsIdleWarningOpen(false);
     hasReportedWarningRef.current = false;
   }, []);
 
-  const confirmSession = useCallback(async (): Promise<void> => {
+  const confirmActivity = useCallback(async (): Promise<void> => {
     try {
-      await apiClient.post("/api/auth/session/confirm", { context: "sessione" });
-    } catch {}
+      await apiClient.post("/api/auth/heartbeat", {});
+    } catch {
+      try {
+        await apiClient.post("/api/auth/session/confirm", { context: "sessione" });
+      } catch {}
+    }
     lastActivityRef.current = Date.now();
     hasReportedWarningRef.current = false;
     setIdleWarning(null);
     setIdleWarningInfo(null);
+    setIsIdleWarningOpen(false);
     try {
       localStorage.setItem("moliris_last_activity", String(Date.now()));
       localStorage.setItem(
@@ -117,9 +133,24 @@ export function useAuth(activeTransfersCount: number = 0) {
     } catch {}
   }, []);
 
+  const confirmSession = confirmActivity;
+
   const dismissIdleWarning = () => {
     setIdleWarning(null);
     setIdleWarningInfo(null);
+    setIsIdleWarningOpen(false);
+  };
+
+  const setActiveTransfersCount = (count: number) => {
+    setInternalActiveTransfers(count);
+    activeTransfersCountRef.current = count;
+    if (count > 0) {
+      lastActivityRef.current = Date.now();
+      setIsIdleWarningOpen(false);
+      setIdleWarning(null);
+      setIdleWarningInfo(null);
+      hasReportedWarningRef.current = false;
+    }
   };
 
   // Qualified activity updates
@@ -327,11 +358,10 @@ export function useAuth(activeTransfersCount: number = 0) {
       // Sospensione inattività se vi sono trasferimenti in corso (Prompt #4)
       if (activeTransfersCountRef.current > 0) {
         lastActivityRef.current = now;
-        if (idleWarningInfo) {
-          setIdleWarning(null);
-          setIdleWarningInfo(null);
-          hasReportedWarningRef.current = false;
-        }
+        setIdleWarning(null);
+        setIdleWarningInfo(null);
+        setIsIdleWarningOpen(false);
+        hasReportedWarningRef.current = false;
         return;
       }
 
@@ -343,10 +373,13 @@ export function useAuth(activeTransfersCount: number = 0) {
         apiClient.notifySessionExpired();
         setIdleWarning(null);
         setIdleWarningInfo(null);
+        setIsIdleWarningOpen(false);
         hasReportedWarningRef.current = false;
       } else if (elapsedMs >= timeoutMs - warningWindowMs) {
         const remainingSeconds = Math.max(1, Math.ceil((timeoutMs - elapsedMs) / 1000));
         const remainingMinutes = Math.max(1, Math.ceil(remainingSeconds / 60));
+        setIdleRemainingMinutes(remainingMinutes);
+        setIsIdleWarningOpen(true);
         setIdleWarning(
           `La sessione scadrà per inattività tra ${remainingMinutes} minuto/i. Eseguire un'azione per mantenerla attiva.`
         );
@@ -365,9 +398,10 @@ export function useAuth(activeTransfersCount: number = 0) {
           }).catch(() => undefined);
         }
       } else {
-        if (idleWarningInfo) {
+        if (idleWarningInfo || isIdleWarningOpen) {
           setIdleWarning(null);
           setIdleWarningInfo(null);
+          setIsIdleWarningOpen(false);
           hasReportedWarningRef.current = false;
         }
       }
@@ -390,7 +424,7 @@ export function useAuth(activeTransfersCount: number = 0) {
     return () => {
       if (idleCheckIntervalRef.current) clearInterval(idleCheckIntervalRef.current);
     };
-  }, [isAuthenticated, sessionTimeoutMinutes, sessionWarningMinutes, idleWarningInfo]);
+  }, [isAuthenticated, sessionTimeoutMinutes, sessionWarningMinutes, idleWarningInfo, isIdleWarningOpen]);
 
   const isAdmin = currentUser?.roles.includes("amministratore") ?? false;
   const isOperator = currentUser?.roles.includes("operatore") ?? false;
@@ -403,13 +437,16 @@ export function useAuth(activeTransfersCount: number = 0) {
     sessionConflict,
     idleWarning,
     idleWarningInfo,
+    isIdleWarningOpen,
+    idleRemainingMinutes,
     isAdmin,
     isOperator,
     login,
     logout,
+    confirmActivity,
     confirmSession,
     dismissIdleWarning,
-    setActiveTransfersCount: setInternalActiveTransfers,
+    setActiveTransfersCount,
     dismissSessionConflict: () => {
       setSessionConflict(null);
       setLoginError(null);

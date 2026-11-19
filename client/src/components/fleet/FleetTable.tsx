@@ -205,19 +205,22 @@ export const FleetTable: React.FC<FleetTableProps> = ({
                     </td>
                     <td>
                       <div className="action-buttons-cell d-flex align-items-center gap-1" style={{ whiteSpace: "nowrap" }}>
-                        <button
-                          type="button"
-                          className="btn btn-primary btn-sm px-2 py-1"
-                          title={
-                            isOnline && !isDisabled
-                              ? "Apri terminale SSH remoto PTY"
-                              : "Terminale non disponibile per robot offline o disabilitato"
-                          }
-                          disabled={!isOnline || isDisabled}
-                          onClick={() => onOpenTerminal(robot.id, robot.displayName)}
-                        >
-                          Terminale
-                        </button>
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            id={`btn-terminal-${robot.id}`}
+                            className="btn btn-primary btn-sm px-2 py-1"
+                            title={
+                              isOnline && !isDisabled
+                                ? "Apri terminale SSH remoto PTY"
+                                : "Terminale non disponibile per robot offline o disabilitato"
+                            }
+                            disabled={!isOnline || isDisabled}
+                            onClick={() => onOpenTerminal(robot.id, robot.displayName)}
+                          >
+                            Terminale
+                          </button>
+                        )}
 
                         <button
                           type="button"

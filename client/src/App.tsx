@@ -2,7 +2,9 @@ import React, { useState } from "react";
 import { useAuth } from "./hooks/useAuth.ts";
 import { LoginView } from "./views/LoginView.tsx";
 import { DashboardView } from "./views/DashboardView.tsx";
+import { LogsView } from "./views/LogsView.tsx";
 import { AppNavbar } from "./components/common/AppNavbar.tsx";
+import { InactivityWarningModal } from "./components/common/InactivityWarningModal.tsx";
 import "./styles.css";
 
 export const App: React.FC = () => {
@@ -14,15 +16,18 @@ export const App: React.FC = () => {
     sessionConflict,
     idleWarning,
     idleWarningInfo,
+    isIdleWarningOpen,
+    idleRemainingMinutes,
     login,
     logout,
+    confirmActivity,
     confirmSession,
     dismissIdleWarning,
     dismissSessionConflict,
     setActiveTransfersCount,
   } = useAuth();
 
-  const [activeMainView, setActiveMainView] = useState<"fleet" | "files">("fleet");
+  const [activeMainView, setActiveMainView] = useState<"fleet" | "files" | "logs">("fleet");
   const [goHomeTrigger, setGoHomeTrigger] = useState<number>(0);
 
   const handleGoHome = (): void => {
@@ -67,18 +72,31 @@ export const App: React.FC = () => {
           sessionConflict={sessionConflict}
           onDismissSessionConflict={dismissSessionConflict}
         />
+      ) : activeMainView === "logs" ? (
+        <LogsView user={currentUser} />
       ) : (
         <DashboardView
           user={currentUser}
           onLogout={logout}
           idleWarning={idleWarning}
           idleWarningInfo={idleWarningInfo}
-          onConfirmSession={confirmSession}
+          onConfirmSession={confirmActivity || confirmSession}
           onDismissIdleWarning={dismissIdleWarning}
           setActiveTransfersCount={setActiveTransfersCount}
           goHomeTrigger={goHomeTrigger}
           activeMainView={activeMainView}
-          onActiveMainViewChange={setActiveMainView}
+          onActiveMainViewChange={(v) => setActiveMainView(v)}
+        />
+      )}
+      {isAuthenticated && (isIdleWarningOpen || Boolean(idleWarningInfo?.active)) && (
+        <InactivityWarningModal
+          isOpen={isIdleWarningOpen || Boolean(idleWarningInfo?.active)}
+          remainingMinutes={
+            idleRemainingMinutes ||
+            (idleWarningInfo ? Math.max(1, Math.ceil(idleWarningInfo.remainingSeconds / 60)) : 5)
+          }
+          onConfirm={confirmActivity || confirmSession}
+          onLogout={logout}
         />
       )}
     </div>

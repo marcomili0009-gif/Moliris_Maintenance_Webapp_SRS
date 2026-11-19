@@ -38,7 +38,7 @@ const isPathAllowedForUser = (candidate: string, allowedRoots: string[]): boolea
 };
 
 const normalizeClientPath = (raw: string): string => {
-  let p = (raw || "/").trim().replace(/\\/g, "/");
+  let p = (raw || "").trim().replace(/\\/g, "/");
   if (!p) return "/";
   if (!p.startsWith("/")) p = "/" + p;
   p = p.replace(/\/\.(?=\/|$)/g, "").replace(/\/+/g, "/");
@@ -442,13 +442,22 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
               <button
                 type="button"
                 className="btn btn-outline-secondary"
-                id="btn-sync-browser-to-manual"
+                id="btn-manual-path-navigate"
                 title="Apri nel browser la cartella digitata e verificane i permessi"
                 onClick={handleManualPathCommit}
                 disabled={isSubmitting || isLoadingDirs || Boolean(clientValidationError)}
               >
-                Esplora
+                Vai / Esplora
               </button>
+              <button
+                type="button"
+                id="btn-sync-browser-to-manual"
+                style={{ display: "none" }}
+                aria-hidden="true"
+                tabIndex={-1}
+                onClick={handleManualPathCommit}
+                disabled={isSubmitting || isLoadingDirs || Boolean(clientValidationError)}
+              />
             </div>
 
             <div id="manual-path-feedback" className="mt-1 small" aria-live="polite">

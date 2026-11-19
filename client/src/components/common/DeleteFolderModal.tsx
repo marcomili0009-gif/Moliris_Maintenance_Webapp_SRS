@@ -129,7 +129,12 @@ export const DeleteFolderModal: React.FC<DeleteFolderModalProps> = ({
         </>
       }
     >
-      <p>Sei sicuro di voler eliminare la cartella <strong>{target?.folderName}</strong>?</p>
+      <p>
+        Sei sicuro di voler eliminare definitivamente la cartella &apos;{target?.folderName}&apos;?
+        {fileCount > 0
+          ? ` Verranno eliminati in modo permanente anche ${fileCount} file contenuti al suo interno.`
+          : " La cartella è vuota. L'eliminazione è irreversibile."}
+      </p>
 
       {inspecting && (
         <div className="d-flex align-items-center gap-2 text-secondary" role="status">

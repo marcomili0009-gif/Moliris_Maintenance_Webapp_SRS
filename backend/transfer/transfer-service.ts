@@ -2063,6 +2063,13 @@ export class TransferService {
   }
 
   /**
+   * Alias per provider trasferimenti attivi utente (Requisito #4).
+   */
+  public countActiveTransfersForUser(userId: string): number {
+    return this.getActiveTransfersCountForUser(userId);
+  }
+
+  /**
    * Restituisce true se vi è almeno un trasferimento attivo associato alla sessione (Prompt #4).
    */
   public hasActiveTransfersForSession(sessionId: string): boolean {

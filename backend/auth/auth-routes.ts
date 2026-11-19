@@ -278,12 +278,30 @@ export function registerAuthRoutes(
   );
 
   /**
-   * Endpoint per ottenere il profilo dell'utente autenticato (RF-AUTH-003)
+   * Endpoint esplicito di heartbeat per rinnovo attività (Requisito #4)
+   */
+  app.post(
+    "/api/auth/heartbeat",
+    { preHandler: [authMiddleware.authenticate.bind(authMiddleware)] },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const session = req.molirisSession!;
+      sessionManager.touchSession(session.sessionId);
+      return reply.status(200).send({
+        success: true,
+        lastActivityAt: session.lastActivityAt,
+      });
+    }
+  );
+
+  /**
+   * Endpoint per ottenere il profilo dell'utente autenticato (RF-AUTH-003, Requisito #3)
    */
   app.get("/api/auth/me", { preHandler: [authMiddleware.authenticate.bind(authMiddleware)] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const user = req.molirisUser!;
+    const profile = toUserProfileDto(user);
     return reply.status(200).send({
-      user: toUserProfileDto(user),
+      user: profile,
+      allowedPaths: profile.allowedPaths || [],
     });
   });
 

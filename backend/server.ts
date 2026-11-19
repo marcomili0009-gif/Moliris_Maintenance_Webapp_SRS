@@ -108,6 +108,7 @@ export function createServer(
   registerAppConfig(app, appConfig);
 
   app.get("/api/config/public", async (_request, reply) => {
+    const allowedSubPaths = (appConfig as any).bulkUploadConfig?.allowedSubPaths ?? ["/"];
     return reply.status(200).send({
       sessionInactivityTimeoutMinutes:
         (appConfig as any).sessionInactivityTimeoutMinutes ??
@@ -123,9 +124,11 @@ export function createServer(
       maxConcurrentWebUsers: (appConfig as any).maxConcurrentWebUsers ?? 5,
       maxConcurrentTerminalsPerRobot: (appConfig as any).maxConcurrentTerminalsPerRobot ?? 1,
       maxSessionsPerAccount: (appConfig as any).futureExtensions?.maxSessionsPerAccount ?? 1,
+      allowedPaths: allowedSubPaths,
       bulkUploadConfig: {
         maxConcurrentFiles: (appConfig as any).bulkUploadConfig?.maxConcurrentFiles ?? 5,
         chunkSizeBytes: (appConfig as any).bulkUploadConfig?.chunkSizeBytes ?? 1024 * 1024,
+        allowedSubPaths: allowedSubPaths,
       },
     });
   });

@@ -2,6 +2,7 @@
 
 import path from "path";
 import { type AuthorizedContext } from "./session-manager.ts";
+import { type UserEntity } from "./user-models.ts";
 import { type AuditRepository } from "../../storage/audit-repository.ts";
 import { AuditOperation } from "../../storage/audit-models.ts";
 import { MolirisAppError, ErrorCode } from "../../errors/app-errors.ts";
@@ -163,6 +164,90 @@ export function sanitizeAndValidateAllowedRoots(rawRoots: string[]): string[] {
   }
 
   return nonRedundant;
+}
+
+let globalAuditRepo: AuditRepository | null = null;
+
+export function setPathAuthorizationAuditRepository(repo: AuditRepository): void {
+  globalAuditRepo = repo;
+}
+
+/**
+ * REQUISITO #3 — Config Governance & Operator Path ACL.
+ * Guardia centralizzata richiesta dall'SRS Moliris v1.0.
+ * Normalizza il percorso, blocca byte nulli, caratteri di controllo e traversamento '..'.
+ * Se l'utente ha ruolo 'operatore', verifica che il percorso ricada strettamente in user.allowedPaths (fail-closed).
+ * In caso di violazione, registra audit SECURITY_AUTHORIZATION_ERROR e solleva MolirisAppError (HTTP 403).
+ */
+export async function authorizeOperatorPath(
+  user: UserEntity | AuthorizedContext,
+  targetType: "server" | "remote",
+  robotId?: string,
+  requestedPath: string = "",
+  auditRepo?: AuditRepository,
+  options?: { isListingRootAllowed?: boolean }
+): Promise<void> {
+  const rawPath = typeof requestedPath === "string" ? requestedPath.trim() : "";
+  const pathToValidate = rawPath === "" || rawPath === "." ? "/" : rawPath;
+  const normalized = validateAndNormalizePath(pathToValidate);
+
+  const roles = (user as any).roles || [];
+  const isAdmin = roles.some((r: string) => {
+    const lower = (r || "").toLowerCase();
+    return lower === "amministratore" || lower === "admin";
+  });
+
+  if (isAdmin) {
+    return;
+  }
+
+  const isOperator = roles.some((r: string) => {
+    const lower = (r || "").toLowerCase();
+    return lower === "operatore" || lower === "operator";
+  });
+
+  if (!isOperator) {
+    return;
+  }
+
+  const allowedPaths = (user as any).allowedPaths;
+  const hasAllowedRoots = Array.isArray(allowedPaths) && allowedPaths.length > 0;
+  const isRootListing = Boolean(options?.isListingRootAllowed && (normalized === "/" || normalized === ""));
+
+  const isAllowed =
+    hasAllowedRoots &&
+    (isRootListing || isPathAllowedByComponents(normalized, allowedPaths));
+
+  if (!isAllowed) {
+    const canonicalReq = toCanonicalPosixPath(normalized);
+    const repo = auditRepo || globalAuditRepo;
+    const username = (user as any).username || (user as any).userId || "unknown";
+
+    if (repo) {
+      try {
+        await repo.record({
+          userId: username,
+          operation: AuditOperation.SECURITY_AUTHORIZATION_ERROR,
+          robotId: robotId || (targetType === "server" ? "server" : undefined),
+          outcome: "FAILURE",
+          timestamp: new Date(),
+          details: {
+            reason: "OPERATOR_PATH_ACCESS_DENIED",
+            targetType,
+            robotId,
+            requestedPath: canonicalReq,
+            allowedPaths: allowedPaths || [],
+          },
+        });
+      } catch {}
+    }
+
+    throw new MolirisAppError(
+      ErrorCode.INSUFFICIENT_PERMISSIONS,
+      `Operazione non consentita (${targetType}): il percorso '${canonicalReq}' è esterno ai percorsi autorizzati per l'operatore.`,
+      "Accesso non consentito: la cartella richiesta è esterna ai percorsi autorizzati per l'operatore."
+    );
+  }
 }
 
 export interface PathAuthorizationOptions {

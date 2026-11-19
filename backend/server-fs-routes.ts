@@ -9,6 +9,7 @@ import { type SessionManager } from "./auth/session-manager.ts";
 import { type TransferService } from "./transfer/transfer-service.ts";
 import { AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "./auth/permissions.ts";
 import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../errors/app-errors.ts";
+import { authorizeOperatorPath } from "./auth/path-authorization.ts";
 
 export function registerServerFsRoutes(
   app: FastifyInstance,
@@ -60,6 +61,7 @@ export function registerServerFsRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "server", robot.id, rawPath || "/", undefined, { isListingRootAllowed: true });
         const items = await serverFsService.listDirectory(context, robot, subPath);
         const mappedEntries = items.map((it: any) => ({
           name: it.name,
@@ -150,6 +152,7 @@ export function registerServerFsRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "server", robot.id, rawPath || "/", undefined, { isListingRootAllowed: true });
         const listing = await serverFsService.listDirectories(context, robot, rawPath);
         return reply.status(200).send(listing);
       } catch (err: any) {
