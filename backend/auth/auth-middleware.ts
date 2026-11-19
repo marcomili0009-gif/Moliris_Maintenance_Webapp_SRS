@@ -120,11 +120,17 @@ export class AuthMiddleware {
       }
     }
 
-    // Rinnovo attività qualificata: richieste API autenticate (escluso polling automatico di monitoraggio RF-MON-003)
-    const isMonitoringPolling =
-      req.method === "GET" &&
-      /^\/api\/robots\/[^/]+\/status(?:\?.*)?$/.test(req.url);
-    if (!isMonitoringPolling) {
+    // Rinnovo attività qualificata: richieste API autenticate (escluso polling automatico di monitoraggio, trasferimenti, flotta e avvisi)
+    const isBackgroundOrPolling =
+      (req.method === "GET" && /^\/api\/robots(?:\?.*)?$/.test(req.url)) ||
+      (req.method === "GET" && /^\/api\/robots\/[^/]+\/status(?:\?.*)?$/.test(req.url)) ||
+      (req.method === "GET" && /^\/api\/config\/public(?:\?.*)?$/.test(req.url)) ||
+      (req.method === "GET" && /^\/api\/auth\/me(?:\?.*)?$/.test(req.url)) ||
+      (req.method === "GET" && /^\/api\/transfers(?:\/.*)?(?:\?.*)?$/.test(req.url)) ||
+      (req.method === "GET" && /^\/api\/robots\/[^/]+\/transfers(?:\?.*)?$/.test(req.url)) ||
+      (req.method === "POST" && /^\/api\/auth\/session\/warning(?:\?.*)?$/.test(req.url));
+
+    if (!isBackgroundOrPolling) {
       this.sessionManager.touchSession(sessionId);
     }
 
