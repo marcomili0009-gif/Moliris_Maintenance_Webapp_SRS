@@ -5,7 +5,7 @@
   "description": "Web Application per la Gestione e il Monitoraggio di una Flotta di Robot Mobili (SRS v1.0)",
   "main": "backend/server.ts",
   "scripts": {
-    "dev": "MOLIRIS_SERVER_HOST=127.0.0.1 tsx watch --import dotenv/config backend/server.ts",
+    "dev": "MOLIRIS_SERVER_HOST=127.0.0.1 tsx watch --include config.json --include config.example.json --include \"config/*.json\" --import dotenv/config backend/server.ts",
     "build": "npm run build:client && npm run build:server",
     "build:client": "vite build --config client/vite.config.ts",
     "build:server": "tsc --noEmit false --allowImportingTsExtensions false --rewriteRelativeImportExtensions true --outDir ./dist",

@@ -290,6 +290,7 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
     ...fileConfig,
     ...envConfig,
     ...(options.overrides || {}),
+    loadedConfigPath: resolvedPath && fs.existsSync(resolvedPath) ? resolvedPath : undefined,
   };
 
   // Fusione profonda degli oggetti annidati (bulkUploadConfig, futureExtensions)

@@ -6,6 +6,7 @@ import os from "os";
 import { spawn, execSync, type ChildProcess } from "child_process";
 import { fileURLToPath } from "url";
 import { createServer } from "../backend/server.ts";
+import { loadConfig } from "../src/config/index.ts";
 import { MolirisLogger } from "../logging/logger.ts";
 import { type SystemConfiguration } from "../config/configuration.ts";
 import { InMemoryRobotRepository } from "../storage/robot-repository.ts";
@@ -312,6 +313,15 @@ const server = createServer(testConfig, logger, {
   hostKeyVerifier,
   connectionManager,
   serverFsService,
+  appConfig: loadConfig({
+    overrides: {
+      futureExtensions: {
+        maxSessionsPerAccount: 1,
+        maxFleetRobots: 100,
+        customSettings: {},
+      },
+    },
+  }),
 });
 
 const address = await server.listen({ port: 0, host: "127.0.0.1" });

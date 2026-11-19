@@ -162,6 +162,7 @@ export const AppConfigSchema = z.object({
   }),
 
   /**
+  /**
    * 8. Intervallo di polling per monitoraggio stato della flotta in secondi (SRS §2, §11.4)
    */
   fleetPollingIntervalSeconds: z
@@ -200,6 +201,11 @@ export const AppConfigSchema = z.object({
     .min(1, "transferTimeoutMinutes deve essere almeno 1 minuto")
     .max(1440, "transferTimeoutMinutes non può superare 1440 minuti")
     .default(30),
+
+  /**
+   * Percorso del file da cui è stata caricata la configurazione (metadato informativo)
+   */
+  loadedConfigPath: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
