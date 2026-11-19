@@ -1,6 +1,7 @@
 {
   "_comment_srs": "Moliris Maintenance Webapp - File di Configurazione (SRS v1.0 §2, RNF-MNT-001)",
   "sessionInactivityTimeoutMinutes": 30,
+  "sessionInactivityWarningMinutes": 5,
   "sshTerminalActiveTimeoutMinutes": 15,
   "maxConcurrentWebUsers": 10,
   "maxConcurrentTerminalsPerRobot": 1,
