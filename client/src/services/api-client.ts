@@ -84,7 +84,8 @@ export class ApiClient {
         (options.method === "GET" && /^\/api\/auth\/me(?:\?.*)?$/.test(endpoint)) ||
         (options.method === "GET" && /^\/api\/transfers(?:\/.*)?(?:\?.*)?$/.test(endpoint)) ||
         (options.method === "GET" && /^\/api\/robots\/[^/]+\/transfers(?:\?.*)?$/.test(endpoint)) ||
-        (options.method === "POST" && /^\/api\/auth\/session\/warning(?:\?.*)?$/.test(endpoint));
+        (options.method === "POST" && /^\/api\/auth\/session\/warning(?:\?.*)?$/.test(endpoint)) ||
+        (options.method === "POST" && /^\/api\/auth\/logout(?:\?.*)?$/.test(endpoint));
 
       if (!isAutomaticBackgroundCall) {
         this.notifyQualifiedActivity();

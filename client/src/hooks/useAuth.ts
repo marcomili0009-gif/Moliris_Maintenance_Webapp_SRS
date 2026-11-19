@@ -91,24 +91,32 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
   };
 
   const logout = useCallback(async (context: "sessione" | "terminale" = "sessione"): Promise<void> => {
-    try {
-      await apiClient.post("/api/auth/logout", {
-        context,
-        reason: "MANUAL_LOGOUT",
-      });
-    } catch {}
-    try {
-      localStorage.setItem(
-        "moliris_idle_action",
-        JSON.stringify({ type: "LOGOUT", timestamp: Date.now() })
-      );
-    } catch {}
+    // 1. Reset immediato e sincrono dello stato client per reindirizzamento istantaneo (0ms)
     setCurrentUser(null);
     setIsAuthenticated(false);
     setIdleWarning(null);
     setIdleWarningInfo(null);
     setIsIdleWarningOpen(false);
     hasReportedWarningRef.current = false;
+    if (idleCheckIntervalRef.current) {
+      clearInterval(idleCheckIntervalRef.current);
+      idleCheckIntervalRef.current = null;
+    }
+
+    try {
+      localStorage.setItem(
+        "moliris_idle_action",
+        JSON.stringify({ type: "LOGOUT", timestamp: Date.now() })
+      );
+    } catch {}
+
+    // 2. Notifica ed invalidazione immediata della sessione lato backend
+    try {
+      await apiClient.post("/api/auth/logout", {
+        context,
+        reason: "MANUAL_LOGOUT",
+      });
+    } catch {}
   }, []);
 
   const confirmActivity = useCallback(async (): Promise<void> => {
@@ -281,6 +289,10 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
     if (!isAuthenticated) return;
     let lastThrottledTime = 0;
     const handleUserInteraction = () => {
+      // Non considerare interazioni sul modale di avviso inattività come attività qualificata
+      if (document.querySelector("#modal-idle-warning")) {
+        return;
+      }
       const now = Date.now();
       if (now - lastThrottledTime > 5000) {
         lastThrottledTime = now;

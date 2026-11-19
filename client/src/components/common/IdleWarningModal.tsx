@@ -75,7 +75,11 @@ export const IdleWarningModal: React.FC<IdleWarningModalProps> = ({
             type="button"
             id="btn-idle-logout"
             className="btn btn-outline-danger"
-            onClick={onLogout}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              void onLogout();
+            }}
           >
             Esci
           </button>
