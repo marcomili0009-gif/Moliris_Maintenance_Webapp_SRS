@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { apiClient } from "../services/api-client.ts";
 import { ErrorPresenter } from "../services/error-presenter.ts";
 import {
@@ -10,27 +10,55 @@ import {
 } from "../types/transfer.ts";
 import type { FormattedError } from "../types/error.ts";
 
+/** Normalizza il DTO del backend nel modello usato dall'interfaccia. */
+export function normalizeTransfer(dto: any): TransferProgress {
+  const transferredBytes = Number(dto.transferredBytes || 0);
+  const totalBytes = Number(dto.totalBytes || 0);
+  const rawPercent = dto.percentage ?? dto.percent;
+  const percentage =
+    rawPercent !== undefined && rawPercent !== null
+      ? Number(rawPercent)
+      : totalBytes > 0
+      ? Math.min(100, Math.round((transferredBytes / totalBytes) * 10000) / 100)
+      : 0;
+  const filename = String(dto.filename || dto.sourceFile || "Trasferimento");
+  return {
+    transferId: String(dto.transferId),
+    robotId: dto.robotId,
+    filename,
+    sourcePath: String(dto.sourcePath || ""),
+    destinationPath: String(dto.destinationPath || ""),
+    sourceFile: dto.sourceFile || filename,
+    targetFile: dto.targetFile || dto.destinationPath || filename,
+    direction: dto.direction,
+    status: dto.status,
+    transferredBytes,
+    totalBytes,
+    percentage,
+    speedBps: Number(dto.speedBps ?? dto.speedBytesPerSec ?? 0),
+    etaSeconds: dto.etaSeconds ?? null,
+    errorMessage: dto.errorMessage || dto.error || undefined,
+    integrityLabel: dto.integrityLabel || undefined,
+    checksum: dto.checksum || undefined,
+    startedAt: dto.startedAt || new Date().toISOString(),
+    completedAt: dto.completedAt || undefined,
+  };
+}
+
+/** Evita re-render (e quindi ricalcoli a cascata) quando lo snapshot SSE non è cambiato. */
+function sameTransfers(a: TransferProgress[], b: TransferProgress[]): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
+
 export function useTransfers(isAuthenticated: boolean) {
   const [transfers, setTransfers] = useState<TransferProgress[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<FormattedError | null>(null);
 
-  const normalizeTransfer = (dto: any): TransferProgress => ({
-    transferId: String(dto.transferId),
-    robotId: dto.robotId,
-    sourceFile: dto.sourceFile || dto.filename || dto.sourcePath || "Trasferimento",
-    targetFile: dto.targetFile || dto.destinationPath || dto.filename || "Destinazione",
-    direction: dto.direction,
-    status: dto.status,
-    transferredBytes: Number(dto.transferredBytes || 0),
-    totalBytes: Number(dto.totalBytes || 0),
-    percentage: Number(dto.percentage ?? dto.percent ?? 0),
-    speedBps: Number(dto.speedBps ?? dto.speedBytesPerSec ?? 0),
-    etaSeconds: dto.etaSeconds ?? null,
-    errorMessage: dto.errorMessage || dto.error || undefined,
-    startedAt: dto.startedAt || new Date().toISOString(),
-    completedAt: dto.completedAt || undefined,
-  });
+  const applyRows = useCallback((rows: unknown[]) => {
+    const next = rows.map(normalizeTransfer);
+    setTransfers((prev) => (sameTransfers(prev, next) ? prev : next));
+  }, []);
 
   const fetchTransfers = useCallback(async (robotId?: string) => {
     if (!isAuthenticated) return;
@@ -44,8 +72,8 @@ export function useTransfers(isAuthenticated: boolean) {
     }
     const data = await res.json();
     const rows = Array.isArray(data) ? data : (data.transfers || []);
-    setTransfers(rows.map(normalizeTransfer));
-  }, [isAuthenticated]);
+    applyRows(rows);
+  }, [isAuthenticated, applyRows]);
 
   const loadTransfers = useCallback(async (robotId?: string) => {
     if (!isAuthenticated) return;
@@ -59,20 +87,71 @@ export function useTransfers(isAuthenticated: boolean) {
     }
   }, [fetchTransfers, isAuthenticated]);
 
-  const cancelTransfer = async (transferId: string): Promise<boolean> => {
+  /** Aggiorna silenziosamente lo stato JSON dei trasferimenti (nessun reload di pagina, nessun flag di loading). */
+  const syncNow = useCallback(async (): Promise<void> => {
+    try {
+      await fetchTransfers();
+    } catch {
+      // L'aggiornamento successivo (SSE/polling) riallinea comunque la lista.
+    }
+  }, [fetchTransfers]);
+
+  const cancelTransfer = useCallback(async (transferId: string): Promise<boolean> => {
     try {
       const res = await apiClient.post(`/api/transfers/${encodeURIComponent(transferId)}/cancel`, {});
       if (res.ok) {
         setTransfers((prev) =>
-          prev.map((t) => (t.transferId === transferId ? { ...t, status: "CANCELLED" } : t))
+          prev.map((t) =>
+            t.transferId === transferId
+              ? { ...t, status: "CANCELLED", speedBps: 0, etaSeconds: null }
+              : t
+          )
         );
+        void syncNow();
         return true;
       }
+      const errData = await res.json().catch(() => ({}));
+      setError(ErrorPresenter.formatError(errData));
       return false;
-    } catch {
+    } catch (err) {
+      setError(ErrorPresenter.formatError(err));
       return false;
     }
-  };
+  }, [syncNow]);
+
+  /** Riprova/Riprende un trasferimento fallito, annullato o interrotto (RF-TRF-010). */
+  const retryTransfer = useCallback(async (transferId: string): Promise<boolean> => {
+    try {
+      const res = await apiClient.post(`/api/transfers/${encodeURIComponent(transferId)}/retry`, {});
+      if (res.ok) {
+        await syncNow();
+        return true;
+      }
+      const errData = await res.json().catch(() => ({}));
+      setError(ErrorPresenter.formatError(errData));
+      return false;
+    } catch (err) {
+      setError(ErrorPresenter.formatError(err));
+      return false;
+    }
+  }, [syncNow]);
+
+  /** Rimuove un trasferimento concluso dallo storico (non elimina alcun file). */
+  const removeTransfer = useCallback(async (transferId: string): Promise<boolean> => {
+    try {
+      const res = await apiClient.delete(`/api/transfers/${encodeURIComponent(transferId)}`);
+      if (res.ok) {
+        setTransfers((prev) => prev.filter((t) => t.transferId !== transferId));
+        return true;
+      }
+      const errData = await res.json().catch(() => ({}));
+      setError(ErrorPresenter.formatError(errData));
+      return false;
+    } catch (err) {
+      setError(ErrorPresenter.formatError(err));
+      return false;
+    }
+  }, []);
 
   const cleanupAllTemp = async (): Promise<boolean> => {
     try {
@@ -193,7 +272,7 @@ export function useTransfers(isAuthenticated: boolean) {
       try {
         const payload = JSON.parse(event.data);
         const rows = Array.isArray(payload) ? payload : (payload.transfers || []);
-        setTransfers(rows.map(normalizeTransfer));
+        applyRows(rows);
       } catch {
         // Un payload SSE malformato non deve interrompere il monitoraggio successivo.
       }
@@ -211,11 +290,15 @@ export function useTransfers(isAuthenticated: boolean) {
       source.close();
       clearInterval(interval);
     };
-  }, [fetchTransfers, isAuthenticated, loadTransfers]);
+  }, [fetchTransfers, isAuthenticated, loadTransfers, applyRows]);
 
-  const activeCount = transfers.filter(
-    (t) => t.status === "QUEUED" || t.status === "IN_PROGRESS" || t.status === "INTEGRITY_CHECKING"
-  ).length;
+  const activeCount = useMemo(
+    () =>
+      transfers.filter(
+        (t) => t.status === "QUEUED" || t.status === "IN_PROGRESS" || t.status === "INTEGRITY_CHECKING"
+      ).length,
+    [transfers]
+  );
 
   return {
     transfers,
@@ -224,7 +307,10 @@ export function useTransfers(isAuthenticated: boolean) {
     activeCount,
     loadTransfers,
     refresh: loadTransfers,
+    syncNow,
     cancelTransfer,
+    retryTransfer,
+    removeTransfer,
     cleanupAllTemp,
     preCheckBulkUpload,
     executeBulkUpload,

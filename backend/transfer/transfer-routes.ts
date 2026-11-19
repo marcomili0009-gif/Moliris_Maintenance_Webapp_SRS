@@ -15,7 +15,7 @@ import { type SessionManager } from "../auth/session-manager.ts";
 import { type AuthMiddleware } from "../auth/auth-middleware.ts";
 import { AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "../auth/permissions.ts";
 import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
-import { type StartServerRobotTransferRequest, isActiveTransferStatus } from "./transfer-models.ts";
+import { type StartServerRobotTransferRequest, type TransferDto, isActiveTransferStatus } from "./transfer-models.ts";
 import { type BulkPreCheckRequest, type BulkTarget } from "./bulk-transfer-models.ts";
 
 export function registerTransferRoutes(
@@ -66,8 +66,7 @@ export function registerTransferRoutes(
       );
 
       try {
-        const transferDto = await transferService.executeServerRobotTransfer(context, robot, body);
-        return reply.status(200).send(transferDto);
+        return await runServerRobotTransfer(reply, transferService, context, robot, body, (req.body as any)?.background === true);
       } catch (err: any) {
         return handleRouteError(reply, err);
       }
@@ -111,8 +110,7 @@ export function registerTransferRoutes(
       };
 
       try {
-        const transferDto = await transferService.executeServerRobotTransfer(context, robot, reqBody);
-        return reply.status(200).send(transferDto);
+        return await runServerRobotTransfer(reply, transferService, context, robot, reqBody, (req.body as any)?.background === true);
       } catch (err: any) {
         return handleRouteError(reply, err);
       }
@@ -156,8 +154,7 @@ export function registerTransferRoutes(
       };
 
       try {
-        const transferDto = await transferService.executeServerRobotTransfer(context, robot, reqBody);
-        return reply.status(200).send(transferDto);
+        return await runServerRobotTransfer(reply, transferService, context, robot, reqBody, (req.body as any)?.background === true);
       } catch (err: any) {
         return handleRouteError(reply, err);
       }
@@ -200,8 +197,7 @@ export function registerTransferRoutes(
       };
 
       try {
-        const transferDto = await transferService.executeServerRobotTransfer(context, robot, reqBody);
-        return reply.status(200).send(transferDto);
+        return await runServerRobotTransfer(reply, transferService, context, robot, reqBody, (req.body as any)?.background === true);
       } catch (err: any) {
         return handleRouteError(reply, err);
       }
@@ -648,6 +644,59 @@ export function registerTransferRoutes(
   );
 
   // =========================================================================
+  // 7b. RIPROVA / RIPRENDI E RIMOZIONE DALLO STORICO (RF-TRF-010, RF-TRF-012)
+  // =========================================================================
+  app.post(
+    "/api/transfers/:transferId/retry",
+    {
+      preHandler: [(req, reply) => authMiddleware.authenticate(req, reply)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { transferId } = req.params as { transferId: string };
+      try {
+        const existing = transferService.listTransfers(
+          sessionManager.createAuthorizedContext(req.molirisSession!, req.molirisUser!, undefined, roleMapping)
+        ).find((t) => t.transferId === transferId);
+        if (!existing) {
+          return sendErrorReply(reply, 404, ErrorCode.TRANSFER_INTERRUPTED, "Trasferimento non trovato.");
+        }
+        const robot = await robotRepository.findById(existing.robotId);
+        if (!robot) {
+          return sendErrorReply(reply, 404, ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${existing.robotId}' non trovato.`);
+        }
+        const context = sessionManager.createAuthorizedContext(
+          req.molirisSession!,
+          req.molirisUser!,
+          robot.id,
+          roleMapping
+        );
+        const dto = await startInBackground((hooks) =>
+          transferService.retryTransfer(transferId, context, robot, hooks)
+        );
+        return reply.status(202).send(dto);
+      } catch (err: any) {
+        return handleRouteError(reply, err);
+      }
+    }
+  );
+
+  app.delete(
+    "/api/transfers/:transferId",
+    {
+      preHandler: [(req, reply) => authMiddleware.authenticate(req, reply)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { transferId } = req.params as { transferId: string };
+      try {
+        transferService.removeTransfer(transferId, req.molirisUser!.id);
+        return reply.status(200).send({ removed: true, transferId });
+      } catch (err: any) {
+        return handleRouteError(reply, err);
+      }
+    }
+  );
+
+  // =========================================================================
   // 8. BONIFICA FILE TEMPORANEI SUL ROBOT E SERVER (CA-TRF-005, RF-TRF-009)
   // =========================================================================
   app.post(
@@ -1048,6 +1097,78 @@ function sendErrorReply(reply: FastifyReply, status: number, code: ErrorCode, me
     message,
     classification: errDef.classification,
   });
+}
+
+/**
+ * Avvia un trasferimento Server ↔ Robot. In modalità background (opt-in con `background: true`)
+ * risponde 202 non appena i controlli preliminari sono superati (destinazione esistente e
+ * scrivibile, spazio disponibile, politica di sovrascrittura: RF-TRF-011, RF-TRF-014), senza
+ * attendere il completamento: l'avanzamento è poi disponibile via SSE/lista (RF-TRF-006).
+ * Gli errori dei controlli preliminari restano risposte HTTP immediate ed esplicite. Se il
+ * trasferimento resta in coda oltre BACKGROUND_ACCEPT_TIMEOUT_MS (limite di concorrenza,
+ * RF-TRF-012) viene comunque confermato come preso in carico (stato QUEUED).
+ */
+const BACKGROUND_ACCEPT_TIMEOUT_MS = 4000;
+
+async function runServerRobotTransfer(
+  reply: FastifyReply,
+  transferService: TransferService,
+  context: any,
+  robot: any,
+  body: StartServerRobotTransferRequest,
+  background: boolean
+): Promise<FastifyReply> {
+  if (!background) {
+    const dto = await transferService.executeServerRobotTransfer(context, robot, body);
+    return reply.status(200).send(dto);
+  }
+  return reply.status(202).send(await startInBackground((hooks) =>
+    transferService.executeServerRobotTransfer(context, robot, { ...body, ...hooks })
+  ));
+}
+
+type BackgroundHooks = {
+  onQueued: (dto: TransferDto) => void;
+  onAccepted: (dto: TransferDto) => void;
+};
+
+/** Esegue un trasferimento in background restituendo il DTO non appena "preso in carico". */
+async function startInBackground(
+  start: (hooks: BackgroundHooks) => Promise<TransferDto>
+): Promise<TransferDto> {
+  let queuedDto: TransferDto | null = null;
+  let resolveAccepted: (dto: TransferDto) => void = () => undefined;
+  const acceptedPromise = new Promise<TransferDto>((resolve) => {
+    resolveAccepted = resolve;
+  });
+  const running = start({
+    onQueued: (dto) => {
+      queuedDto = dto;
+    },
+    onAccepted: (dto) => resolveAccepted(dto),
+  });
+  // Un fallimento successivo alla presa in carico è già tracciato nel record e nell'audit.
+  const settled = running.then(
+    (dto) => ({ kind: "done" as const, dto }),
+    (err) => ({ kind: "failed" as const, err })
+  );
+  const timeout = new Promise<{ kind: "timeout" }>((resolve) =>
+    setTimeout(() => resolve({ kind: "timeout" }), BACKGROUND_ACCEPT_TIMEOUT_MS)
+  );
+  const first = await Promise.race([
+    acceptedPromise.then((dto) => ({ kind: "accepted" as const, dto })),
+    settled,
+    timeout,
+  ]);
+  if (first.kind === "failed") throw first.err;
+  if (first.kind === "timeout") {
+    if (queuedDto) return queuedDto;
+    // Nessun record ancora registrato: attende l'esito della validazione iniziale.
+    const outcome = await settled;
+    if (outcome.kind === "failed") throw outcome.err;
+    return outcome.dto;
+  }
+  return first.dto;
 }
 
 function handleRouteError(reply: FastifyReply, err: any): FastifyReply {

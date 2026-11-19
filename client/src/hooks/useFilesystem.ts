@@ -4,6 +4,7 @@ import { ErrorPresenter } from "../services/error-presenter.ts";
 import { triggerStreamingDownload } from "../utils/download.ts";
 import type { DirectoryListing, FsEntry } from "../types/filesystem.ts";
 import type { FormattedError } from "../types/error.ts";
+import type { TransferStartResult } from "../types/transfer.ts";
 
 function normalizeDirectoryListing(data: any, fallbackPath = "/"): DirectoryListing {
   if (!data) {
@@ -84,10 +85,14 @@ export function useFilesystem() {
   }, []);
 
   // Load Server Directory
-  const loadServerDirectory = useCallback(async (robotId: string, path = "/") => {
+  const loadServerDirectory = useCallback(async (robotId: string, path = "/", options?: { silent?: boolean }) => {
     if (!robotId) return;
-    setServerLoading(true);
-    setServerError(null);
+    const silent = options?.silent === true;
+    // In modalità silent (aggiornamento dopo un'operazione) l'elenco non viene sostituito da un loader.
+    if (!silent) {
+      setServerLoading(true);
+      setServerError(null);
+    }
     try {
       const url = `/api/robots/${encodeURIComponent(robotId)}/fs/server/list?path=${encodeURIComponent(path)}`;
       const res = await apiClient.get(url);
@@ -99,20 +104,23 @@ export function useFilesystem() {
         setServerRobotIdState(robotId);
       } else {
         const errData = await res.json().catch(() => ({}));
-        setServerError(ErrorPresenter.formatError(errData));
+        if (!silent) setServerError(ErrorPresenter.formatError(errData));
       }
     } catch (err) {
-      setServerError(ErrorPresenter.formatError(err));
+      if (!silent) setServerError(ErrorPresenter.formatError(err));
     } finally {
-      setServerLoading(false);
+      if (!silent) setServerLoading(false);
     }
   }, []);
 
   // Load Remote SFTP Directory
-  const loadRemoteDirectory = useCallback(async (robotId: string, path = "") => {
+  const loadRemoteDirectory = useCallback(async (robotId: string, path = "", options?: { silent?: boolean }) => {
     if (!robotId) return;
-    setRemoteLoading(true);
-    setRemoteError(null);
+    const silent = options?.silent === true;
+    if (!silent) {
+      setRemoteLoading(true);
+      setRemoteError(null);
+    }
     try {
       const url = `/api/robots/${encodeURIComponent(robotId)}/fs/remote/list?path=${encodeURIComponent(path)}`;
       const res = await apiClient.get(url);
@@ -124,12 +132,12 @@ export function useFilesystem() {
         setRemoteRobotIdState(robotId);
       } else {
         const errData = await res.json().catch(() => ({}));
-        setRemoteError(ErrorPresenter.formatError(errData));
+        if (!silent) setRemoteError(ErrorPresenter.formatError(errData));
       }
     } catch (err) {
-      setRemoteError(ErrorPresenter.formatError(err));
+      if (!silent) setRemoteError(ErrorPresenter.formatError(err));
     } finally {
-      setRemoteLoading(false);
+      if (!silent) setRemoteLoading(false);
     }
   }, []);
 
@@ -533,69 +541,67 @@ export function useFilesystem() {
     }
   };
 
-  // Transfer Server -> Remote SFTP
+  /** Unisce cartella di destinazione e nome file senza doppi slash. */
+  const joinDestination = (directory: string | undefined, fileName: string): string => {
+    if (!directory) return fileName;
+    return directory.endsWith("/") ? `${directory}${fileName}` : `${directory}/${fileName}`;
+  };
+
+  /** Sorgente relativa alla cartella del robot sul server (senza slash iniziale). */
+  const serverRelative = (directory: string | undefined, fileName: string): string => {
+    const clean = !directory || directory === "/" ? "" : directory.replace(/^\/+/, "").replace(/\/+$/, "");
+    return clean ? `${clean}/${fileName}` : fileName;
+  };
+
+  // Transfer Server -> Remote SFTP: il backend risponde 202 appena il trasferimento è preso in carico
   const transferServerToRemote = async (
     fileName: string,
-    targetRemotePath?: string,
+    targetRemoteDirectory?: string,
     overwrite = false
-  ): Promise<boolean> => {
-    if (!serverRobotId) return false;
-    const cleanServerPath = serverPath === "/" ? "" : serverPath.replace(/^\//, "");
-    const serverRelativePath = cleanServerPath ? `${cleanServerPath}/${fileName}` : fileName;
-    const remotePath = targetRemotePath
-      ? (targetRemotePath.endsWith("/") ? `${targetRemotePath}${fileName}` : targetRemotePath)
-      : fileName;
+  ): Promise<TransferStartResult> => {
+    if (!serverRobotId) return { ok: false };
+    const serverRelativePath = serverRelative(serverPath, fileName);
+    const remoteDestination = joinDestination(targetRemoteDirectory, fileName);
     try {
       const res = await apiClient.post(
         `/api/robots/${encodeURIComponent(serverRobotId)}/transfers/server-robot`,
-        { direction: "SERVER_TO_ROBOT", serverRelativePath, remotePath, overwrite }
+        { direction: "SERVER_TO_ROBOT", serverRelativePath, remotePath: remoteDestination, overwrite, background: true }
       );
       if (res.ok) {
-        return true;
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        setServerError(ErrorPresenter.formatError(errData));
-        return false;
+        const dto = await res.json().catch(() => ({}));
+        return { ok: true, transferId: dto?.transferId };
       }
+      const errData = await res.json().catch(() => ({}));
+      const formatted = ErrorPresenter.formatError(errData);
+      return { ok: false, error: formatted.userMessage };
     } catch (err) {
-      setServerError(ErrorPresenter.formatError(err));
-      return false;
+      return { ok: false, error: ErrorPresenter.formatError(err).userMessage };
     }
   };
 
   // Transfer Remote SFTP -> Server
   const transferRemoteToServer = async (
     fileName: string,
-    targetServerPath?: string,
+    targetServerDirectory?: string,
     overwrite = false
-  ): Promise<boolean> => {
-    if (!remoteRobotId) return false;
-    const remotePathClean = remotePath
-      ? (remotePath.endsWith("/") ? `${remotePath}${fileName}` : `${remotePath}/${fileName}`)
-      : fileName;
-    let serverRelativePath: string;
-    if (targetServerPath) {
-      const cleanTarget = targetServerPath === "/" ? "" : targetServerPath.replace(/^\//, "");
-      serverRelativePath = cleanTarget ? `${cleanTarget}/${fileName}` : fileName;
-    } else {
-      const cleanServerPath = serverPath === "/" ? "" : serverPath.replace(/^\//, "");
-      serverRelativePath = cleanServerPath ? `${cleanServerPath}/${fileName}` : fileName;
-    }
+  ): Promise<TransferStartResult> => {
+    if (!remoteRobotId) return { ok: false };
+    const remotePathClean = joinDestination(remotePath, fileName);
+    const serverRelativePath = serverRelative(targetServerDirectory ?? serverPath, fileName);
     try {
       const res = await apiClient.post(
         `/api/robots/${encodeURIComponent(remoteRobotId)}/transfers/server-robot`,
-        { direction: "ROBOT_TO_SERVER", serverRelativePath, remotePath: remotePathClean, overwrite }
+        { direction: "ROBOT_TO_SERVER", serverRelativePath, remotePath: remotePathClean, overwrite, background: true }
       );
       if (res.ok) {
-        return true;
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        setRemoteError(ErrorPresenter.formatError(errData));
-        return false;
+        const dto = await res.json().catch(() => ({}));
+        return { ok: true, transferId: dto?.transferId };
       }
+      const errData = await res.json().catch(() => ({}));
+      const formatted = ErrorPresenter.formatError(errData);
+      return { ok: false, error: formatted.userMessage };
     } catch (err) {
-      setRemoteError(ErrorPresenter.formatError(err));
-      return false;
+      return { ok: false, error: ErrorPresenter.formatError(err).userMessage };
     }
   };
 

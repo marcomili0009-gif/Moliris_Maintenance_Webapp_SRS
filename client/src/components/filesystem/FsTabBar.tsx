@@ -159,7 +159,10 @@ export const FsTabBar: React.FC<FsTabBarProps> = ({ activeTab, onChange, activeT
               {tab.label}
               {tab.id === "transfers" && (
                 <>
-                  <span className="fs-tab-count" id="transfers-active-count">
+                  <span
+                    className={`fs-tab-count${activeTransfersCount > 0 ? " has-active" : ""}`}
+                    id="transfers-active-count"
+                  >
                     {activeTransfersCount}
                   </span>
                   {activeTransfersCount > 0 && (
