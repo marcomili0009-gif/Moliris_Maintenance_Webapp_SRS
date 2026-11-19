@@ -110,15 +110,20 @@ export function createServer(
   app.get("/api/config/public", async (_request, reply) => {
     return reply.status(200).send({
       sessionInactivityTimeoutMinutes:
-        (appConfig as any).sessionInactivityTimeoutMinutes ??
-        (appConfig as any).inactiveSessionTimeoutMinutes ??
+        (config as any)?.inactiveSessionTimeoutMinutes ??
+        (appConfig as any)?.sessionInactivityTimeoutMinutes ??
+        (appConfig as any)?.inactiveSessionTimeoutMinutes ??
         30,
-      sessionInactivityWarningMinutes: (appConfig as any).sessionInactivityWarningMinutes ?? 5,
+      sessionInactivityWarningMinutes:
+        (config as any)?.sessionInactivityWarningMinutes ??
+        (appConfig as any)?.sessionInactivityWarningMinutes ??
+        5,
       sshTerminalActiveTimeoutMinutes:
-        (appConfig as any).sshTerminalActiveTimeoutMinutes ?? 15,
+        (appConfig as any)?.sshTerminalActiveTimeoutMinutes ?? 15,
       terminalSessionWarningMinutes:
-        (appConfig as any).sshTerminalWarningMinutes ??
-        (appConfig as any).terminalSessionWarningMinutes ??
+        (config as any)?.sshTerminalWarningMinutes ??
+        (appConfig as any)?.sshTerminalWarningMinutes ??
+        (appConfig as any)?.terminalSessionWarningMinutes ??
         5,
       maxConcurrentWebUsers: (appConfig as any).maxConcurrentWebUsers ?? 5,
       maxConcurrentTerminalsPerRobot: (appConfig as any).maxConcurrentTerminalsPerRobot ?? 1,

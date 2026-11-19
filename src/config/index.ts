@@ -92,17 +92,43 @@ function extractEnvConfig(env: Record<string, string | undefined>): Record<strin
   const result: Record<string, any> = {};
 
   // 1. sessionInactivityTimeoutMinutes
-  const rawSession = env["MOLIRIS_SESSION_INACTIVITY_TIMEOUT_MINUTES"] ?? env["SESSION_INACTIVITY_TIMEOUT_MINUTES"];
+  const rawSession =
+    env["MOLIRIS_SESSION_TIMEOUT_MIN"] ??
+    env["MOLIRIS_SESSION_INACTIVITY_TIMEOUT_MINUTES"] ??
+    env["SESSION_INACTIVITY_TIMEOUT_MINUTES"];
   if (rawSession !== undefined && rawSession.trim() !== "") {
     const n = Number(rawSession);
     result.sessionInactivityTimeoutMinutes = isNaN(n) ? rawSession : n;
   }
 
+  // 1b. sessionInactivityWarningMinutes
+  const rawSessionWarning =
+    env["MOLIRIS_SESSION_WARNING_MIN"] ??
+    env["MOLIRIS_SESSION_INACTIVITY_WARNING_MINUTES"] ??
+    env["SESSION_INACTIVITY_WARNING_MINUTES"];
+  if (rawSessionWarning !== undefined && rawSessionWarning.trim() !== "") {
+    const n = Number(rawSessionWarning);
+    result.sessionInactivityWarningMinutes = isNaN(n) ? rawSessionWarning : n;
+  }
+
   // 2. sshTerminalActiveTimeoutMinutes
-  const rawTerminal = env["MOLIRIS_SSH_TERMINAL_ACTIVE_TIMEOUT_MINUTES"] ?? env["SSH_TERMINAL_ACTIVE_TIMEOUT_MINUTES"];
+  const rawTerminal =
+    env["MOLIRIS_TERMINAL_IDLE_MIN"] ??
+    env["MOLIRIS_SSH_TERMINAL_ACTIVE_TIMEOUT_MINUTES"] ??
+    env["SSH_TERMINAL_ACTIVE_TIMEOUT_MINUTES"];
   if (rawTerminal !== undefined && rawTerminal.trim() !== "") {
     const n = Number(rawTerminal);
     result.sshTerminalActiveTimeoutMinutes = isNaN(n) ? rawTerminal : n;
+  }
+
+  // 2b. sshTerminalWarningMinutes
+  const rawTermWarning =
+    env["MOLIRIS_TERMINAL_WARNING_MIN"] ??
+    env["MOLIRIS_SSH_TERMINAL_WARNING_MINUTES"] ??
+    env["TERMINAL_SESSION_WARNING_MINUTES"];
+  if (rawTermWarning !== undefined && rawTermWarning.trim() !== "") {
+    const n = Number(rawTermWarning);
+    result.sshTerminalWarningMinutes = isNaN(n) ? rawTermWarning : n;
   }
 
   // 3. maxConcurrentWebUsers
