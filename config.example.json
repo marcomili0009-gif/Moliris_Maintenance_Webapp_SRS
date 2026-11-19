@@ -19,7 +19,7 @@
   "maxFileUploadBytes": 3221225472,
   "futureExtensions": {
     "maxFleetRobots": 100,
-    "maxSessionsPerAccount": 1,
+    "maxSessionsPerAccount": 2,
     "customSettings": {}
   }
 }
