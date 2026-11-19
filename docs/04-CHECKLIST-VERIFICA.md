@@ -90,40 +90,59 @@ Legenda: IMPLEMENTATO / PARZIALE / MANCANTE. Evidenze = file e route verificati 
 ## E. Audit - da compilare in ordine (risultato PASS/FAIL + note)
 
 ### E.1 UI-Guard (da eseguire per primo)
-- Stato: COMPLETATO (audit sul codice frontend, nessun avvio app)
-- Risultato complessivo: FAIL
-- Note: 14 controlli eseguiti su `client/src/` contro SRS §5 (UI) e requisiti aggiuntivi §7 (inattività, Gestione File, conflitti, eliminazione cartelle, terminale Operatore, Logs Admin).
+- Stato: COMPLETATO (audit ripetuto dopo correzioni D1-D3 di Dev)
+- Risultato complessivo: PASS
+- Note: 14 controlli rieseguiti su `client/src/` contro SRS §5 (UI) e requisiti aggiuntivi §7, dopo le correzioni D1-D3.
 
 | # | Controllo | Risultato | Note (file:riga) |
 |---|-----------|-----------|------------------|
 | 1 | Barra filtri Cliente / Impianto / Robot / ID | PASS | `client/src/components/fleet/FleetFilterBar.tsx` (tutto il file): campo ricerca + select campo (tutti/cliente/impianto/nome_robot/id_robot), debounce ~250ms, reset filtri, contatore. |
-| 2 | Palette Bootstrap 5.3.8 | PASS | `client/src/styles.css` variabili `--bs-*` (primary/secondary/success/danger/warning/light/dark), `client/package.json` Bootstrap 5.3.8. Nessun colore arbitrario nel layout principale. |
+| 2 | Palette Bootstrap 5.3.8 | PASS | `client/src/styles.css` variabili `--bs-*`, `client/package.json` Bootstrap 5.3.8. |
 | 3 | Logo = pulsante Home (ritorno Flotta) | PASS | `client/src/components/common/AppNavbar.tsx:31-60`: `navbar-brand` con `id="app-logo-link"`, `onClick` chiama `handleGoHome` → vista "fleet". |
-| 4 | Pop-up "Gestione File" path selezionabile o digitabile | PASS | `client/src/components/filesystem/FileManagementModal.tsx` (tutto il file): input percorso + bottone "Vai / Esplora", breadcrumb, verifica permessi via API, invio al robot/server. |
-| 5 | Limitazione path per Operatore | PASS | `FileManagementModal.tsx: validateSyntax` e `isPathAllowedForUser` (righe ~40-90) con `allowedPaths` da `useAuth`; gate operatore in `DashboardView.tsx` (`isOperator`). |
+| 4 | Pop-up "Gestione File" path selezionabile o digitabile | PASS | `client/src/components/filesystem/FileManagementModal.tsx` (tutto il file): input percorso + bottone "Vai / Esplora", breadcrumb, verifica permessi via API. |
+| 5 | Limitazione path per Operatore | PASS | `FileManagementModal.tsx` `validateSyntax` e `isPathAllowedForUser` con `allowedPaths` da `useAuth`; gate operatore in `DashboardView.tsx` (`isOperator`). |
 | 6 | Pop-up conflitto sovrascrittura + annullamento senza modifiche | PASS | `client/src/components/bulk/BulkConflictsModal.tsx` (tutto il file): elenco conflitti, pulsanti "Annulla Operazione" / "Sovrascrivi Confermati"; `BulkUploadModal.tsx` pre-check conflitti. |
-| 7 | Modale inattività: Conferma (azzeramento timer) / Esci (logout) | FAIL | D1: **doppia modale sovrapposta**. `App.tsx:67-80` renderizza `InactivityWarningModal`; `client/src/views/DashboardView.tsx:~280-330` renderizza `IdleWarningModal` inline. Entrambe attivate da `idleWarningInfo?.active || idleWarning` → due backdrop simultanee. SRS §7.4 prevede **una sola** finestra con Conferma/Esci. |
-| 8 | Conferma eliminazione; cartelle → numero file | PASS | `client/src/components/common/DeleteFolderModal.tsx:60-108`: ispezione cartella, `fileCount`/`directoryCount`, messaggio "Attenzione: ... contiene N file ...". |
-| 9 | Pulsante terminale assente per Operatore (robot + server) | PASS | `client/src/components/fleet/FleetTable.tsx:~150-170` (gate `isAdmin` su bottone Terminale); `DashboardView.tsx` `btn-server-terminal` (gate `isAdmin`). Backend `permissions.ts` TERMINAL_OPEN solo Admin. |
-| 10 | Sezione Logs Admin: access.log + transfers.log con tag INIZIO/FINE CARICAMENTO MASSIVO | PASS | `client/src/views/LogsView.tsx` regex `BULK_HEADER_REGEX`/`BULK_FOOTER_REGEX` (righe ~20-70), nav Logs gated solo Admin in `AppNavbar.tsx`; backend `backend/logging/physical-file-logger.ts`. |
-| 11 | Feedback operazioni (toast, banner, stati vuoto/caricamento/errore) | PASS | `DashboardView.tsx` `ToastHost` + `pushToast` (righe ~60-70, ~105-115); `NotificationBanner.tsx`; `FleetTable.tsx` celle vuoto/caricamento; `TransfersPanel.tsx` stato vuoto. |
-| 12 | Zero AI slop (nessun testo segnaposto/lorem/funzioni inventate/componenti morti/duplicati) | FAIL | D2: elementi decorativi non richiesti in `client/src/styles.css`: gradienti `linear-gradient` (righe ~808 `.fs-tab-bar`, ~954 `.fs-context-icon`, ~1265/1275 `.fs-entry-icon`, ~1523 `.fs-skeleton`), animazioni `moliris-spin` (~224), `fs-spin` (~1054), `fs-shimmer` (~1525), box-shadow pesanti (~776 `.fs-browser-card`, ~188 `.modal-register`). Nessun lorem ipsum / placeholder di testo trovato. Nessun componente morto o duplicato (ogni modale è usata: `ConfirmDialog`, `DeleteFolderModal`, `FileManagementModal`, `BulkConflictsModal`, `IdleWarningModal`, `InactivityWarningModal`). |
-| 13 | Zero emoji nel codice e nelle stringhe UI | PASS (con giudizio) | Scan regex `grep -P` su `client/src` e `docs/`: **nessun emoji Unicode**. Simboli testuali accettabili: `✕` (U+2715) in `ToastHost.tsx:21` (suggerito: sostituire con `.btn-close` Bootstrap per coerenza), frecce `→` in `TransfersPanel.tsx:295/408-409`, `transfer-format.ts:5-11`, `DashboardView.tsx:107`, `&rarr;` in `BulkConflictsModal`. Non sono emoji; giudizio: testo standard, accettabile ma non omogeneo con Bootstrap. |
-| 14 | Coerenza layout, gerarchia visiva, stati (loading/errore/vuoto) desktop e piccoli schermi | FAIL (marginale) | D5: inconsistenza ruolo admin tra `DashboardView.tsx` (controlla solo "amministratore") e `AppNavbar.tsx` (accetta anche "admin"). Colori hardcoded fuori palette Bootstrap in `BulkConflictsModal.tsx` (header `#b91c1c`, sfondo `#fef2f2`, bordo `#f87171`) e `ConfirmDialog.tsx` (targetDescription `#fef2f2`/`#f87171`, header `#b91c1c`). Reattività presente (`col-*/col-md-*/col-lg-*`) ma non verificata su browser reale (spetta a Browser-QA). |
+| 7 | Modale inattività: Conferma (azzeramento timer) / Esci (logout) | PASS | `client/src/App.tsx:60-100`: singola `<IdleWarningModal context="sessione" isOpen={isSessionWarningOpen} ... />`; `client/src/views/DashboardView.tsx:~348`: `<IdleWarningModal context="terminale" isOpen={!isSessionWarningOpen && ...} />` (priorità anti-sovrapposizione); `client/src/components/common/InactivityWarningModal.tsx` eliminato (duplicato). |
+| 8 | Conferma eliminazione; cartelle → numero file | PASS | `client/src/components/common/DeleteFolderModal.tsx:60-108`: ispezione cartella, `fileCount`/`directoryCount`, messaggio con conteggio file. |
+| 9 | Pulsante terminale assente per Operatore (robot + server) | PASS | `client/src/components/fleet/FleetTable.tsx:~150-170` (gate `isAdmin`); `DashboardView.tsx` `btn-server-terminal` (gate `isAdmin`). Backend `permissions.ts` TERMINAL_OPEN solo Admin. |
+| 10 | Sezione Logs Admin: access.log + transfers.log con tag INIZIO/FINE CARICAMENTO MASSIVO | PASS | `client/src/views/LogsView.tsx` regex `BULK_HEADER_REGEX`/`BULK_FOOTER_REGEX` (righe ~20-70); nav Logs gated solo Admin in `AppNavbar.tsx`; backend `backend/logging/physical-file-logger.ts`. |
+| 11 | Feedback operazioni (toast, banner, stati vuoto/caricamento/errore) | PASS | `DashboardView.tsx` `ToastHost` + `pushToast`; `NotificationBanner.tsx`; `FleetTable.tsx` celle vuoto/caricamento; `TransfersPanel.tsx` stato vuoto. |
+| 12 | Zero AI slop (nessun testo segnaposto/lorem/funzioni inventate/componenti morti/duplicati) | PASS | `client/src/styles.css`: rimossi gradienti `linear-gradient`, animazioni `moliris-spin`/`fs-spin`/`fs-shimmer`, box-shadow pesanti hardcoded; box-shadow ora via variabili Bootstrap (`var(--bs-box-shadow)`). Nessun lorem ipsum/placeholder di testo. Nessun componente morto o duplicato. |
+| 13 | Zero emoji nel codice e nelle stringhe UI | PASS | Scan regex `grep -P` su `client/src` e `docs/`: nessun emoji Unicode. `✕` (U+2715) in `ToastHost.tsx:21` e frecce `→` in `TransfersPanel.tsx`/`transfer-format.ts`/`DashboardView.tsx`: testo standard, non emoji. |
+| 14 | Coerenza layout, gerarchia visiva, stati (loading/errore/vuoto) desktop e piccoli schermi | PASS | Colori hardcoded rimossi da `BulkConflictsModal.tsx` e `ConfirmDialog.tsx` (nessun colore `#` residuo). Reattività `col-*/col-md-*/col-lg-*` presente. Stati vuoto/caricamento/errore coerenti. |
 
-## E.1 - Sintesi difetti UI da rimandare a Dev
-- **D1 (bloccante)**: doppia modale inattività sovrapposta (`App.tsx:67-80` + `DashboardView.tsx:~280-330`). Unificare in una singola modale Conferma/Esci come da SRS §7.4. → FAIL
-- **D2 (AI slop)**: gradienti, ombre pesanti e animazioni decorative in `client/src/styles.css` (righe ~188, ~224, ~776, ~808, ~954, ~1054, ~1265, ~1275, ~1523, ~1525) non richieste dalle specifiche. → FAIL
-- **D3 (AI slop minore)**: colori hardcoded fuori palette Bootstrap (`#b91c1c`, `#fef2f2`, `#f87171`) in `BulkConflictsModal.tsx` e `ConfirmDialog.tsx`. → FAIL
-- **D4 (annotazione, non bloccante)**: simboli testuali `✕` e `→` accettabili come testo standard, non emoji; suggerito `.btn-close` Bootstrap per `ToastHost.tsx:21`. → PASS
-- **D5 (marginale)**: disallineamento ruolo admin "amministratore" vs "admin" tra `DashboardView.tsx` e `AppNavbar.tsx`. → nota
+## E.1 - Sintesi difetti UI (stato dopo ripetizione audit)
+- **D1 (bloccante)**: risolto — unica modale `IdleWarningModal` condivisa (`App.tsx:60-100` context sessione, `DashboardView.tsx:~348` context terminale con priorità `!isSessionWarningOpen`); `InactivityWarningModal.tsx` eliminato. → **PASS**
+- **D2 (AI slop)**: risolto — rimossi gradienti, ombre pesanti e animazioni custom da `client/src/styles.css`; box-shadow ora via variabili Bootstrap. → **PASS**
+- **D3 (AI slop minore)**: risolto — colori hardcoded (`#b91c1c`, `#fef2f2`, `#f87171`) rimossi da `BulkConflictsModal.tsx` e `ConfirmDialog.tsx` (nessun colore `#` residuo). → **PASS**
+- **D4 (annotazione, non bloccante)**: simboli testuali `✕` e `→` accettabili come testo standard, non emoji. → **PASS**
+- **D5 (marginale, preesistente)**: disallineamento ruolo admin "amministratore" vs "admin" tra `DashboardView.tsx` e `AppNavbar.tsx` (non rientra nelle correzioni D1-D3, segnalato come nota). → **nota**
 
-**Verdetto complessivo UI-Guard: FAIL** (11 controlli PASS, 3 controlli FAIL: D1 bloccante, D2, D3). Il codice non è stato modificato; i difetti vanno corretti da @Dev e poi si ripete l'audit UI-Guard.
+**Verdetto complessivo UI-Guard: PASS** (14 controlli PASS, 0 controlli FAIL). Nessun codice sorgente modificato da UI-Guard; le correzioni D1-D3 sono state applicate da @Dev e verificate staticamente. Il verdetto di PASS si riferisce alla verifica UI/UX; il typecheck client presenta un errore preesistente su `AppNavbar.tsx:132` (`onLogout("sessione")` con zero argomenti dichiarati) dovuto a lavoro concorrente fuori scope, non riguardante i controlli UI-Guard.
 
 ### E.2 Sec-Auditor (dopo UI-Guard)
-- Stato: IN ATTESA
-- Risultato: -
-- Note: -
+- Stato: COMPLETATO
+- Risultato complessivo: **FAIL**
+- Perimetro: audit statico di `backend/`, `storage/`, `config/`, `src/config/`, test di sicurezza e confronto con SRS §3, §4, §5, §6, §9, §10, §11 e `docs/01-SPECIFICHE-BASE.md`.
+
+| # | Controllo | Risultato | Evidenza e riferimenti |
+|---|---|---|---|
+| 1 | Autenticazione, sessioni e cookie | PASS | Sessione server-side, revoca, timeout/heartbeat, limite sessione per account, cookie `Secure; HttpOnly; SameSite=Strict` e logout in `backend/auth/auth-middleware.ts`, `backend/auth/session-manager.ts`, `backend/auth/auth-routes.ts`; test `tests/security/inactivity-session-hardening.test.ts`. |
+| 2 | Autorizzazione server-side e ruoli | PASS | `requirePermission()` e controllo robot in `backend/auth/auth-middleware.ts`/`permissions.ts`; terminale Admin-only e isolamento titolarità WebSocket in `backend/terminal/terminal-routes.ts:236-255` e `terminal-service.ts:728-749`; log Admin-only in `backend/logging/log-routes.ts:47-49`. |
+| 3 | Validazione input a confine frontend/backend | **FAIL** | Diverse route usano cast TypeScript senza schema runtime (`backend/fleet/fleet-routes.ts:85-92`, `backend/transfer/transfer-routes.ts:55-72,785-812`). `FleetService.validateRegistrationInput()` controlla molti valori ma non verifica in modo completo il tipo del payload né la lunghezza di `displayName` (`backend/fleet/fleet-service.ts:281-298`); un campo numerico può arrivare a `.trim()` e produrre errore 500 invece di 400. |
+| 4 | Filesystem, path traversal, symlink e permessi | PASS | Normalizzazione/fail-closed ACL operatore in `backend/auth/path-authorization.ts:182-240`; jail, realpath e controlli symlink/tipi speciali in `storage/server-fs.ts`; test `security-hardening`, `operator-path-authorization`, `transfers-monitoring-hardening` e `bulk-upload-jail` superati. |
+| 5 | SSH, credenziali, terminali e host key | PASS | Whitelist destinazioni obbligatoria in production (`config/configuration.ts:319-331`), host-key verification senza bypass, master key e credenziali cifrate lato server; test `security-hardening.test.ts` e `corrective-hardening.test.ts` superati. |
+| 6 | Trasferimenti e accesso a log | PASS per autorizzazione/FS; FAIL per integrità audit | Permessi per target e rollback/cleanup verificati in `backend/transfer/transfer-service.ts` e nelle suite di hardening. Tuttavia i campi testuali dell’audit non sono neutralizzati: username accettato nel login (`backend/auth/auth-routes.ts:75-98`) viene interpolato direttamente nei log (`backend/logging/physical-file-logger.ts:155-172`), consentendo log injection con CR/LF. |
+| 7 | Errori e informazioni esposte | **FAIL** | `/api/config/public` è anonimo (`backend/server.ts:151`) e restituisce `activeConfigPath` assoluto (`backend/server.ts:179-181`), oltre alle policy dei path: viola il principio SRS RNF-MNT-003 di non esporre dettagli tecnici non necessari. Rimuovere il path assoluto o limitarlo a un metadato non sensibile. |
+| 8 | Copertura requisiti SRS | PARZIALE / non completamente verificabile | Implementazioni e test coprono auth, RBAC, terminale, filesystem e trasferimenti; restano aperti i punti già registrati in `docs/02-DOMANDE-REFERENTE.md`/SRS §11 (formato file stato, limite 3 GB, ripresa, conservazione, policy aggiuntive). La suite `npm test` si è interrotta con exit 139 durante la fase auth dopo i test di persistenza; le suite security mirate e `npm run typecheck`/`npm run build:server` sono invece PASS. |
+
+**Difetti da inoltrare a Dev:**
+
+- **SEC-01:** rimuovere `activeConfigPath` assoluto da `/api/config/public` e non pubblicare policy filesystem non necessarie.
+- **SEC-02:** sanificare CR/LF e delimitatori nei campi audit (`username`, `filename`, `batchId`) prima della scrittura su `access.log`/`transfers.log`.
+- **SEC-03:** introdurre validazione runtime condivisa (schema JSON/Zod) su tutti i body API, con rifiuto 400 per tipo/formato/lunghezza/valori non ammessi; i cast TypeScript non sono validazione backend.
+
+**Verifiche eseguite:** `tests/security/security-hardening.test.ts`, `corrective-hardening.test.ts`, `operator-path-authorization.test.ts`, `transfers-monitoring-hardening.test.ts`, `configuration-coherence.test.ts`, `inactivity-session-hardening.test.ts` PASS; `npm run typecheck` PASS; `npm run build:server` PASS; `git diff --check` PASS. Nessun codice sorgente modificato; E.1, E.3 e le tabelle requisito sono rimaste invariate.
 
 ### E.3 Browser-QA (dopo Sec-Auditor)
 - Stato: IN ATTESA
