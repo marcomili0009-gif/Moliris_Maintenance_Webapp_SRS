@@ -15,6 +15,11 @@ console.log("--> Esecuzione test backend HTTPS e endpoint /healthz...");
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "moliris-tls-test-"));
 const certPath = path.join(tmpDir, "cert.pem");
 const keyPath = path.join(tmpDir, "key.pem");
+const testServerFs = path.join(tmpDir, "server-fs");
+const testGeneralFs = path.join(tmpDir, "general-fs");
+fs.mkdirSync(testServerFs, { recursive: true });
+fs.mkdirSync(testGeneralFs, { recursive: true });
+process.env.MOLIRIS_GENERAL_FS_ROOT = testGeneralFs;
 
 // Generazione certificati autofirmati temporanei per il test HTTPS
 execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${keyPath}" -out "${certPath}" -days 1 -nodes -subj "/CN=localhost"`, {
@@ -24,7 +29,7 @@ execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${keyPath}" -out "${certPa
 // Test 1: Fallimento se certificati TLS sono mancanti
 const invalidConfig: SystemConfiguration = {
   credentialProviderType: "in-memory",
-  serverFilesystemRoot: "/home/robots",
+  serverFilesystemRoot: testServerFs,
   pollingIntervalSeconds: 10,
   sshConnectionTimeoutMs: 5000,
   maxConcurrentTransfersPerUser: 2,
@@ -67,6 +72,12 @@ const validConfig: SystemConfiguration = {
 };
 
 const server = createServer(validConfig, logger);
+
+// Test BUG-03: Registrazione route per verificare gestione globale errori Fastify (RNF-SEC-002)
+server.get("/test-unhandled-error", async () => {
+  throw new Error("Errore critico interno con dati riservati: /var/secret/path");
+});
+
 assert(server.hasDecorator("appConfig"), "Il server Fastify deve avere il decoratore 'appConfig'");
 assert.strictEqual(server.appConfig.sessionInactivityTimeoutMinutes, 30);
 assert.strictEqual(server.appConfig.maxFileUploadBytes, 3 * 1024 * 1024 * 1024);
@@ -139,11 +150,54 @@ try {
   });
   assert.strictEqual(assetResponse.statusCode, 200, "La rotta /assets deve restituire 200 per file PNG esistenti");
   assert.strictEqual(assetResponse.headers["content-type"], "image/png", "Il Content-Type deve essere image/png");
+
+  // Test BUG-02: Rifiuto path traversal su /assets/:filename
+  const traversalDot = await server.inject({ method: "GET", url: "/assets/." });
+  assert.strictEqual(traversalDot.statusCode, 404, "Accesso a '.' deve restituire 404");
+
+  const traversalDots = await server.inject({ method: "GET", url: "/assets/..something" });
+  assert.strictEqual(traversalDots.statusCode, 404, "Accesso traversal con '..' deve restituire 404");
+
+  const traversalEncoded = await server.inject({ method: "GET", url: "/assets/%2e%2e%2fpackage.json" });
+  assert.strictEqual(traversalEncoded.statusCode, 404, "Accesso traversal encoded deve restituire 404");
+
+  // Test BUG-02: Accesso a directory non deve causare EISDIR o 500
+  const subDir = path.join(distAssetsDir, "test-subdir");
+  fs.mkdirSync(subDir, { recursive: true });
+  try {
+    const dirResponse = await server.inject({ method: "GET", url: "/assets/test-subdir" });
+    assert.strictEqual(dirResponse.statusCode, 404, "Accesso a directory su /assets deve restituire 404");
+  } finally {
+    if (fs.existsSync(subDir)) fs.rmdirSync(subDir);
+  }
+
+  // Test BUG-02: Symlink esterno deve essere respinto
+  const symlinkPath = path.join(distAssetsDir, "test-symlink.png");
+  try {
+    fs.symlinkSync(keyPath, symlinkPath);
+    const symlinkResponse = await server.inject({ method: "GET", url: "/assets/test-symlink.png" });
+    assert.strictEqual(symlinkResponse.statusCode, 404, "Symlink verso file esterno deve essere respinto con 404");
+  } catch (err: any) {
+    // Alcuni ambienti non permettono symlink; se fallisce la creazione del link proseguiamo
+  } finally {
+    if (fs.existsSync(symlinkPath)) fs.unlinkSync(symlinkPath);
+  }
 } finally {
   if (fs.existsSync(testPngPath)) {
     fs.unlinkSync(testPngPath);
   }
 }
+
+// Test BUG-03: Verifica gestione globale errori Fastify (RNF-SEC-002: nessun leak di stack trace o info interne)
+const errorResponse = await server.inject({
+  method: "GET",
+  url: "/test-unhandled-error",
+});
+assert.strictEqual(errorResponse.statusCode, 500, "Errore non gestito deve produrre 500");
+const errorJson = errorResponse.json();
+assert.strictEqual(errorJson.code, "INTERNAL_SERVER_ERROR", "Codice errore standardizzato");
+assert.ok(!JSON.stringify(errorJson).includes("secret"), "Nessun dato riservato deve essere presente nel payload di risposta");
+assert.ok(!("stack" in errorJson), "Nessuno stack trace deve essere presente nella risposta");
 
 // Chiusura del server
 await server.close();

@@ -26,13 +26,19 @@ console.log("--> Esecuzione test modulo autenticazione, sessioni, RBAC e audit..
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "moliris-auth-test-"));
 const certPath = path.join(tmpDir, "cert.pem");
 const keyPath = path.join(tmpDir, "key.pem");
+const testServerFs = path.join(tmpDir, "server-fs");
+const testGeneralFs = path.join(tmpDir, "general-fs");
+fs.mkdirSync(testServerFs, { recursive: true });
+fs.mkdirSync(testGeneralFs, { recursive: true });
+process.env.MOLIRIS_GENERAL_FS_ROOT = testGeneralFs;
+
 execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${keyPath}" -out "${certPath}" -days 1 -nodes -subj "/CN=localhost"`, {
   stdio: "pipe",
 });
 
 const config: SystemConfiguration = {
   credentialProviderType: "in-memory",
-  serverFilesystemRoot: "/home/robots",
+  serverFilesystemRoot: testServerFs,
   pollingIntervalSeconds: 10,
   sshConnectionTimeoutMs: 5000,
   maxConcurrentTransfersPerUser: 2,

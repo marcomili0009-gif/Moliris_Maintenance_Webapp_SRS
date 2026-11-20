@@ -140,7 +140,15 @@ export class TransferService {
       return this.getActiveTransfersCountForUser(userId);
     });
 
-    // Task orario per la pulizia dei file temporanei orfani sul server (Problema A2 punto e, RF-TRF-009)
+    // Task per la pulizia dei file temporanei orfani sul server (Problema A2 punto e, RF-TRF-009, RNF-REL-004)
+    // 1. Bonifica immediata all'avvio per recupero da crash o riavvii
+    setTimeout(() => {
+      this.cleanupServerOrphanTempFiles().catch((err) => {
+        this.logger.error("Errore pulizia iniziale temporanei server all'avvio", err?.message);
+      });
+    }, 500).unref?.();
+
+    // 2. Bonifica periodica oraria programmata
     this.hourlyCleanupTimer = setInterval(() => {
       this.cleanupServerOrphanTempFiles().catch((err) => {
         this.logger.error("Errore task orario pulizia temporanei server", err?.message);

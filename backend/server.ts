@@ -51,6 +51,7 @@ import { setPathAuthorizationAuditRepository } from "./auth/path-authorization.t
 import { PhysicalFileLogger } from "./logging/physical-file-logger.ts";
 import { registerLogRoutes } from "./logging/log-routes.ts";
 import { BatchTransferManager } from "./transfer/batch-transfer-manager.ts";
+import { MolirisAppError, ErrorCode } from "../errors/app-errors.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -107,6 +108,48 @@ export function createServer(
   const app = Fastify({
     https: httpsOptions,
     logger: false, // Disabilitato il logger standard in favore del logger applicativo con redazione attiva
+  });
+
+  // Gestione globale centralizzata degli errori (SRS §9, RNF-SEC-002, OWASP Top 10)
+  // Impedisce la dispersione di stack trace, file path e messaggi di errore interni al client
+  app.setErrorHandler((error, request, reply) => {
+    const err = error as any;
+    logger.error("Errore non gestito durante l'elaborazione della richiesta", err?.message, {
+      url: request.raw.url,
+      method: request.raw.method,
+      statusCode: err?.statusCode,
+      code: err?.code,
+    });
+
+    if (error instanceof MolirisAppError) {
+      const statusMap: Record<string, number> = {
+        [ErrorCode.INVALID_CREDENTIALS]: 401,
+        [ErrorCode.INSUFFICIENT_PERMISSIONS]: 403,
+        [ErrorCode.MISSING_ROBOT_PARAMS]: 400,
+        [ErrorCode.SECURITY_VIOLATION]: 403,
+        [ErrorCode.CONNECTION_LIMIT_REACHED]: 429,
+        [ErrorCode.SESSION_ALREADY_ACTIVE]: 409,
+        [ErrorCode.HOST_KEY_INVALID]: 403,
+      };
+      const statusCode = statusMap[error.code] || 400;
+      return reply.status(statusCode).send({
+        error: error.userMessage,
+        code: error.code,
+        classification: error.classification,
+      });
+    }
+
+    if (err && typeof err === "object" && typeof err.statusCode === "number" && err.statusCode < 500) {
+      return reply.status(err.statusCode).send({
+        error: err.message || "Richiesta non valida",
+        statusCode: err.statusCode,
+      });
+    }
+
+    return reply.status(500).send({
+      error: "Errore interno del server. L'anomalia è stata registrata nei log di audit.",
+      code: "INTERNAL_SERVER_ERROR",
+    });
   });
 
   // Registrazione e validazione configurazione dell'applicazione conforme all'SRS §2
@@ -546,11 +589,36 @@ export function createServer(
 
   app.get("/assets/:filename", async (request, reply) => {
     const { filename } = request.params as { filename: string };
-    if (!/^[a-zA-Z0-9_.-]+$/.test(filename)) {
+    // Rifiuto rigoroso di traversal, caratteri nulli, separatori o directory speciali (RNF-SEC-004, RNF-FS-002)
+    if (!/^[a-zA-Z0-9_.-]+$/.test(filename) || filename === "." || filename === ".." || filename.includes("..")) {
       return reply.status(404).send("Asset non valido");
     }
-    const filePath = path.join(distFrontendDir, "assets", filename);
+    const assetsDir = path.resolve(distFrontendDir, "assets");
+    const filePath = path.resolve(assetsDir, filename);
+
+    // Verifica contenimento all'interno della cartella assets autorizzata (anti-traversal)
+    if (!filePath.startsWith(assetsDir + path.sep)) {
+      return reply.status(404).send("Asset non valido");
+    }
+
     if (fs.existsSync(filePath)) {
+      try {
+        const lstat = fs.lstatSync(filePath);
+        // Blocco symlink che puntano all'esterno della cartella assets autorizzata
+        if (lstat.isSymbolicLink()) {
+          const realTarget = fs.realpathSync(filePath);
+          if (!realTarget.startsWith(assetsDir + path.sep)) {
+            return reply.status(404).send("Asset non trovato");
+          }
+        }
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile()) {
+          return reply.status(404).send("Asset non trovato");
+        }
+      } catch {
+        return reply.status(404).send("Asset non trovato");
+      }
+
       reply.header("Cache-Control", "public, max-age=31536000, immutable");
       if (filename.endsWith(".js")) reply.type("application/javascript");
       else if (filename.endsWith(".css")) reply.type("text/css");
@@ -558,6 +626,7 @@ export function createServer(
       else if (filename.endsWith(".png")) reply.type("image/png");
       else if (filename.endsWith(".webp")) reply.type("image/webp");
       else if (filename.endsWith(".ico")) reply.type("image/x-icon");
+      else reply.type("application/octet-stream");
       return reply.send(fs.readFileSync(filePath));
     }
     return reply.status(404).send("Asset non trovato");
