@@ -84,6 +84,16 @@ export const AppConfigSchema = z.object({
     .default(30),
 
   /**
+   * Numero massimo di sessioni simultanee attive per singolo account (default: 1)
+   * Supportato sia a livello radice di configurazione che in futureExtensions.
+   */
+  maxSessionsPerAccount: z
+    .number({ message: "maxSessionsPerAccount deve essere un numero" })
+    .int("maxSessionsPerAccount deve essere un intero")
+    .min(1, "maxSessionsPerAccount deve essere almeno 1")
+    .optional(),
+
+  /**
    * Preavviso inattività sessione web app in minuti (default: 5)
    */
   sessionInactivityWarningMinutes: z
@@ -122,15 +132,6 @@ export const AppConfigSchema = z.object({
     .min(1, "maxConcurrentWebUsers deve essere almeno 1")
     .max(1000, "maxConcurrentWebUsers non può superare 1000")
     .default(10),
-
-  /**
-   * Numero massimo di sessioni contemporanee per singolo account (supportato sia a root che in futureExtensions)
-   */
-  maxSessionsPerAccount: z
-    .number({ message: "maxSessionsPerAccount deve essere un numero" })
-    .int("maxSessionsPerAccount deve essere un intero")
-    .min(1, "maxSessionsPerAccount deve essere almeno 1")
-    .optional(),
 
   /**
    * 4. Terminali SSH concorrenti aperti per singolo robot (default: 1, es. configurabile fino a 2)
