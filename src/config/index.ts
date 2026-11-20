@@ -182,7 +182,9 @@ function extractEnvConfig(env: Record<string, string | undefined>): Record<strin
   const rawMaxSessions = env["MOLIRIS_MAX_SESSIONS_PER_ACCOUNT"] ?? env["MAX_SESSIONS_PER_ACCOUNT"];
   if (rawMaxSessions !== undefined && rawMaxSessions.trim() !== "") {
     const n = Number(rawMaxSessions);
-    futureExt.maxSessionsPerAccount = isNaN(n) ? rawMaxSessions : n;
+    const parsedSessions = isNaN(n) ? rawMaxSessions : n;
+    result.maxSessionsPerAccount = parsedSessions;
+    futureExt.maxSessionsPerAccount = parsedSessions;
   }
   if (Object.keys(futureExt).length > 0) {
     result.futureExtensions = futureExt;
@@ -310,6 +312,23 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
     };
   }
 
+  // Supporto bidirezionale per maxSessionsPerAccount sia a livello radice che in futureExtensions
+  const resolvedMaxSessions =
+    options.overrides?.maxSessionsPerAccount ??
+    options.overrides?.futureExtensions?.maxSessionsPerAccount ??
+    envConfig.maxSessionsPerAccount ??
+    envConfig.futureExtensions?.maxSessionsPerAccount ??
+    fileConfig.maxSessionsPerAccount ??
+    fileConfig.futureExtensions?.maxSessionsPerAccount;
+
+  if (resolvedMaxSessions !== undefined) {
+    mergedPayload.maxSessionsPerAccount = resolvedMaxSessions;
+    if (!mergedPayload.futureExtensions) {
+      mergedPayload.futureExtensions = {};
+    }
+    mergedPayload.futureExtensions.maxSessionsPerAccount = resolvedMaxSessions;
+  }
+
   // Validazione rigorosa tramite lo schema Zod
   const parseResult = AppConfigSchema.safeParse(mergedPayload);
 
@@ -317,7 +336,20 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
     throw new ConfigValidationError(parseResult.error.issues);
   }
 
-  return Object.freeze(parseResult.data);
+  const finalConfig = parseResult.data;
+  const effectiveMaxSessions =
+    finalConfig.maxSessionsPerAccount ?? finalConfig.futureExtensions?.maxSessionsPerAccount ?? 1;
+
+  const enrichedConfig = {
+    ...finalConfig,
+    maxSessionsPerAccount: effectiveMaxSessions,
+    futureExtensions: {
+      ...(finalConfig.futureExtensions || { maxFleetRobots: 100, customSettings: {} }),
+      maxSessionsPerAccount: effectiveMaxSessions,
+    },
+  };
+
+  return Object.freeze(enrichedConfig);
 }
 
 /**

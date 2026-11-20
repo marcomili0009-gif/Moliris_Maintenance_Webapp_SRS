@@ -216,6 +216,26 @@ export class SessionManager {
   }
 
   /**
+   * Restituisce il conteggio delle sessioni attive in RAM, opzionalmente filtrate per utente.
+   */
+  public getActiveSessionsCount(userId?: string): number {
+    this.purgeExpiredSessions();
+    if (!userId) {
+      return this.sessions.size;
+    }
+    return Array.from(this.sessions.values()).filter((session) => session.userId === userId).length;
+  }
+
+  /**
+   * Alias / metodo di utilità per pulizia manuale delle sessioni scadute.
+   */
+  public pruneExpiredSessions(): number {
+    const before = this.sessions.size;
+    this.purgeExpiredSessions();
+    return before - this.sessions.size;
+  }
+
+  /**
    * Crea una nuova sessione autenticata con token crittografico casuale a 256 bit (RF-AUTH-003).
    * Controlla sia il limite massimo di sessioni per account (§2, §6.1) che il limite globale di utenti web contemporanei (SRS §2).
    */

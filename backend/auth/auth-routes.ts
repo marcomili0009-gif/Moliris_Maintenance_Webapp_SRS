@@ -171,7 +171,7 @@ export function registerAuthRoutes(
     try {
       session = sessionManager.createSession(
         user,
-        app.appConfig.futureExtensions.maxSessionsPerAccount,
+        app.appConfig.maxSessionsPerAccount ?? app.appConfig.futureExtensions?.maxSessionsPerAccount ?? 1,
         app.appConfig.maxConcurrentWebUsers
       );
     } catch (error) {

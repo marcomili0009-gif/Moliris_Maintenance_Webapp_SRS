@@ -169,7 +169,7 @@ export function createServer(
         5,
       maxConcurrentWebUsers: (appConfig as any).maxConcurrentWebUsers ?? 10,
       maxConcurrentTerminalsPerRobot: (appConfig as any).maxConcurrentTerminalsPerRobot ?? 1,
-      maxSessionsPerAccount: (appConfig as any).futureExtensions?.maxSessionsPerAccount ?? 1,
+      maxSessionsPerAccount: (appConfig as any).maxSessionsPerAccount ?? (appConfig as any).futureExtensions?.maxSessionsPerAccount ?? 1,
       fleetPollingIntervalSeconds: appConfig.fleetPollingIntervalSeconds ?? 5,
       maxConcurrentTransfers: appConfig.maxConcurrentTransfers ?? 5,
       sshConnectTimeoutSeconds: appConfig.sshConnectTimeoutSeconds ?? 15,
@@ -583,7 +583,7 @@ export async function startServer(): Promise<void> {
     // Caricamento e validazione rigida della configurazione conforme all'SRS §2
     const appConfig = loadConfig();
     logger.info(`[CONFIG] File di configurazione applicativo caricato: ${appConfig.loadedConfigPath || "valori predefiniti"}`);
-    logger.info(`[CONFIG] Parametri attivi: maxConcurrentWebUsers=${appConfig.maxConcurrentWebUsers}, maxSessionsPerAccount=${appConfig.futureExtensions.maxSessionsPerAccount}, maxConcurrentTerminalsPerRobot=${appConfig.maxConcurrentTerminalsPerRobot}, sessionTimeout=${appConfig.sessionInactivityTimeoutMinutes}m, sessionWarning=${appConfig.sessionInactivityWarningMinutes}m`);
+    logger.info(`[CONFIG] Parametri attivi: maxConcurrentWebUsers=${appConfig.maxConcurrentWebUsers}, maxSessionsPerAccount=${appConfig.maxSessionsPerAccount ?? appConfig.futureExtensions?.maxSessionsPerAccount ?? 1}, maxConcurrentTerminalsPerRobot=${appConfig.maxConcurrentTerminalsPerRobot}, sessionTimeout=${appConfig.sessionInactivityTimeoutMinutes}m, sessionWarning=${appConfig.sessionInactivityWarningMinutes}m`);
     const config = loadAndValidateConfig(process.env);
 
     // Sincronizza i parametri vincolanti di config.json su SystemConfiguration

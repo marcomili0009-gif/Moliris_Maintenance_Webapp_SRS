@@ -84,6 +84,16 @@ export const AppConfigSchema = z.object({
     .default(30),
 
   /**
+   * Numero massimo di sessioni simultanee attive per singolo account (default: 1)
+   * Supportato sia a livello radice di configurazione che in futureExtensions.
+   */
+  maxSessionsPerAccount: z
+    .number({ message: "maxSessionsPerAccount deve essere un numero" })
+    .int("maxSessionsPerAccount deve essere un intero")
+    .min(1, "maxSessionsPerAccount deve essere almeno 1")
+    .optional(),
+
+  /**
    * Preavviso inattività sessione web app in minuti (default: 5)
    */
   sessionInactivityWarningMinutes: z

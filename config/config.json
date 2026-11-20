@@ -37,13 +37,16 @@
   "_comment_maxFileUploadBytes": "Dimensione massima ammessa per singolo upload (3221225472 B = 3 GB); blocca file oltre questa soglia (RF-TRF-014, §11.5).",
   "maxFileUploadBytes": 3221225472,
 
+  "_comment_maxSessionsPerAccount": "Numero massimo di sessioni contemporanee permesse per singolo account (es. 3 consente fino a tre accessi simultanei indipendenti per lo stesso account; SRS §2, RF-AUTH-003, RF-AUTH-004).",
+  "maxSessionsPerAccount": 3,
+
   "_comment_futureExtensions": "Parametri di scalabilità ed estensioni future discusse con il committente (§2, futureExtensions).",
   "futureExtensions": {
     "_comment_maxFleetRobots": "Numero massimo di robot mobili gestibili contemporaneamente nell'anagrafica della flotta.",
     "maxFleetRobots": 100,
 
-    "_comment_maxSessionsPerAccount": "Numero massimo di sessioni contemporanee permesse per singolo account (1 vieta accessi simultanei con lo stesso login; RF-AUTH-004).",
-    "maxSessionsPerAccount": 1,
+    "_comment_maxSessionsPerAccount": "Numero massimo di sessioni contemporanee permesse per singolo account (es. 3 consente fino a tre accessi simultanei indipendenti per lo stesso account; RF-AUTH-004).",
+    "maxSessionsPerAccount": 3,
 
     "_comment_customSettings": "Spazio per impostazioni personalizzate o sperimentali aggiuntive.",
     "customSettings": {}
