@@ -1268,6 +1268,100 @@ export class FleetService {
   }
 
   /**
+   * Eliminazione esplicita e separata dei dati archiviati sul filesystem del server per un robot (RF-ROB-013, CA-ROB-011).
+   * Operazione riservata esclusivamente agli Amministratori, con richiesta obbligatoria di conferma esplicita.
+   */
+  public async deleteServerData(
+    arg1: UserEntity | string,
+    arg2: UserEntity | string,
+    confirmation?: boolean
+  ): Promise<void> {
+    const user = typeof arg1 === "object" ? arg1 : (arg2 as UserEntity);
+    const robotId = typeof arg1 === "string" ? arg1 : (arg2 as string);
+    const confirmed = typeof confirmation === "boolean" ? confirmation : typeof arg2 === "boolean" ? arg2 : false;
+
+    // Solo admin/amministratore (RF-ROB-013)
+    const isAdmin = (user.roles || []).some(
+      (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore"
+    );
+    if (!isAdmin || !hasPermission(user, AppPermission.FS_SERVER_DELETE, robotId, this.roleMapping)) {
+      await this.recordAudit(user.username, AuditOperation.SECURITY_AUTHORIZATION_ERROR, robotId, "FAILURE", {
+        reason: "PERMISSION_DENIED_FS_SERVER_DELETE",
+      });
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Autorizzazioni insufficienti per eliminare i dati server del robot (operazione riservata agli amministratori)."
+      );
+    }
+
+    if (confirmed !== true) {
+      throw new MolirisAppError(
+        ErrorCode.MISSING_ROBOT_PARAMS,
+        "L'eliminazione dei dati server del robot richiede conferma esplicita (RF-ROB-013)."
+      );
+    }
+
+    const robot = await this.robotRepository.findById(robotId);
+    if (!robot) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${robotId}' non trovato.`);
+    }
+
+    if (robot.serverDirectoryPath) {
+      await this.serverFsService.deleteFolderRecursive(robot.serverDirectoryPath);
+    }
+
+    await this.recordAudit(user.username, AuditOperation.ROBOT_SERVER_DATA_DELETION, robotId, "SUCCESS", {
+      deletedPath: robot.serverDirectoryPath,
+    });
+  }
+
+  /**
+   * Riepilogo aggregato della flotta (RF-ROB-001, SRS §6.1 punto 5).
+   * Restituisce metriche aggregate reali (totale, online, offline, disabilitati, per cliente, per impianto).
+   */
+  public async getFleetSummary(user: UserEntity): Promise<{
+    status: "OK";
+    totalRobots: number;
+    online: number;
+    offline: number;
+    disabled: number;
+    byClient: Record<string, number>;
+    byPlant: Record<string, number>;
+    robots: RobotSummaryDto[];
+  }> {
+    const robots = await this.listFleet(user);
+    const summary = {
+      status: "OK" as const,
+      totalRobots: robots.length,
+      online: 0,
+      offline: 0,
+      disabled: 0,
+      byClient: {} as Record<string, number>,
+      byPlant: {} as Record<string, number>,
+      robots,
+    };
+
+    for (const r of robots) {
+      if (r.anagraphicState === "disabilitato") {
+        summary.disabled++;
+      }
+      if (r.connectionState === "raggiungibile") {
+        summary.online++;
+      } else {
+        summary.offline++;
+      }
+
+      const client = r.customerName || "Non Assegnato";
+      summary.byClient[client] = (summary.byClient[client] || 0) + 1;
+
+      const plant = r.plantName || "Non Assegnato";
+      summary.byPlant[plant] = (summary.byPlant[plant] || 0) + 1;
+    }
+
+    return summary;
+  }
+
+  /**
    * Rinomina un cliente garantendo la sincronizzazione atomica/idempotente
    * verso tutti i robot associati della flotta (Problema 3).
    */

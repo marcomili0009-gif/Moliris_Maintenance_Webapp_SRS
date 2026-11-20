@@ -6,7 +6,7 @@ export interface AppNavbarProps {
   /** Chiamato quando l'utente clicca sul logo (Home). Il componente evita il reload della pagina. */
   onGoHome?: () => void;
   user?: User | null;
-  onLogout?: () => Promise<void>;
+  onLogout?: (context?: "sessione" | "terminale") => Promise<void>;
   activeView?: "fleet" | "files" | "logs";
   onViewChange?: (view: "fleet" | "files" | "logs") => void;
 }

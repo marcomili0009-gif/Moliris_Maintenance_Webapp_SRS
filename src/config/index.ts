@@ -310,6 +310,23 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
     };
   }
 
+  // Supporto bidirezionale per maxSessionsPerAccount sia al livello root che in futureExtensions
+  const rootMaxSessions =
+    options.overrides?.maxSessionsPerAccount ??
+    envConfig.maxSessionsPerAccount ??
+    fileConfig.maxSessionsPerAccount;
+
+  if (rootMaxSessions !== undefined) {
+    if (!mergedPayload.futureExtensions) {
+      mergedPayload.futureExtensions = {};
+    }
+    if (mergedPayload.futureExtensions.maxSessionsPerAccount === undefined || fileConfig.maxSessionsPerAccount !== undefined) {
+      mergedPayload.futureExtensions.maxSessionsPerAccount = rootMaxSessions;
+    }
+  } else if (mergedPayload.futureExtensions?.maxSessionsPerAccount !== undefined) {
+    mergedPayload.maxSessionsPerAccount = mergedPayload.futureExtensions.maxSessionsPerAccount;
+  }
+
   // Validazione rigorosa tramite lo schema Zod
   const parseResult = AppConfigSchema.safeParse(mergedPayload);
 

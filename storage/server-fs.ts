@@ -1495,6 +1495,31 @@ export class ServerFilesystemService {
   }
 
   /**
+   * Eliminazione ricorsiva controllata di una directory di robot sul filesystem del server (RF-ROB-013, CA-ROB-011).
+   * Riservata all'azione esplicita di cancellazione dati server autorizzata dall'Amministratore.
+   * Impedisce categoricamente la cancellazione di directory radice protette o esterne a fsRoot.
+   */
+  public async deleteFolderRecursive(targetPath: string): Promise<void> {
+    if (!targetPath || typeof targetPath !== "string") {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso directory server non valido o mancante.");
+    }
+
+    const resolved = path.resolve(targetPath);
+    const root = path.resolve(this.fsRoot);
+
+    if (!resolved.startsWith(root) || resolved === root || resolved === path.resolve("/")) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Operazione vietata: impossibile eliminare una directory radice protetta o esterna a fsRoot."
+      );
+    }
+
+    if (fs.existsSync(resolved)) {
+      await fs.promises.rm(resolved, { recursive: true, force: true });
+    }
+  }
+
+  /**
    * Ispezione preliminare di una cartella nell'Archivio Generale.
    */
   public async inspectGeneralDirectory(

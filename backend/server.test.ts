@@ -83,7 +83,10 @@ assert.strictEqual(publicConfig.sshTerminalActiveTimeoutMinutes, 15);
 assert.strictEqual(publicConfig.maxConcurrentWebUsers, server.appConfig.maxConcurrentWebUsers);
 assert.strictEqual(publicConfig.maxConcurrentTerminalsPerRobot, server.appConfig.maxConcurrentTerminalsPerRobot);
 assert.strictEqual(publicConfig.maxSessionsPerAccount, server.appConfig.futureExtensions.maxSessionsPerAccount);
-assert(typeof publicConfig.activeConfigFile === "string", "activeConfigFile deve essere presente");
+assert.strictEqual(publicConfig.activeConfigFile, undefined, "Il nome del file di configurazione non deve essere pubblico");
+assert.strictEqual(publicConfig.activeConfigPath, undefined, "Il path di configurazione non deve essere pubblico");
+assert.strictEqual(publicConfig.allowedPaths, undefined, "I path ammessi non devono essere pubblici");
+assert.strictEqual(publicConfig.bulkUploadConfig.allowedSubPaths, undefined, "I path bulk non devono essere pubblici");
 assert.strictEqual(publicConfig.bulkUploadConfig.maxConcurrentFiles, 20);
 assert.strictEqual(publicConfig.customSettings, undefined, "Le impostazioni estese non devono essere esposte pubblicamente");
 

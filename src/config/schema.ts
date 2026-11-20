@@ -124,6 +124,15 @@ export const AppConfigSchema = z.object({
     .default(10),
 
   /**
+   * Numero massimo di sessioni contemporanee per singolo account (supportato sia a root che in futureExtensions)
+   */
+  maxSessionsPerAccount: z
+    .number({ message: "maxSessionsPerAccount deve essere un numero" })
+    .int("maxSessionsPerAccount deve essere un intero")
+    .min(1, "maxSessionsPerAccount deve essere almeno 1")
+    .optional(),
+
+  /**
    * 4. Terminali SSH concorrenti aperti per singolo robot (default: 1, es. configurabile fino a 2)
    */
   maxConcurrentTerminalsPerRobot: z

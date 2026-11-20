@@ -83,10 +83,12 @@ async function testPhysicalFileLogger() {
     "Formato riga transfers.log deve essere conforme alle specifiche"
   );
 
-  // 1c. Caricamento massivo delimitato da tag
+  // 1c. Caricamento massivo delimitato da tag (formato allineato a SRS §6.2 / Specifiche di Sistema §6)
   const batchId = "batch_test_01";
   const startTag = await logger.logBulkStart(batchId, "operatore_1", 3);
-  assert.ok(startTag.startsWith("=== INIZIO CARICAMENTO MASSIVO [batchId: batch_test_01] (3 file)"));
+  assert.ok(startTag.startsWith("=== INIZIO CARICAMENTO MASSIVO === [batchId: batch_test_01] (3 file)"));
+  assert.ok(startTag.includes("Utente: operatore_1 | Data:"));
+  assert.ok(startTag.includes("| Ora:"));
 
   const file1 = await logger.logBulkFile(batchId, 1, 3, {
     filename: "file1.txt",
@@ -95,7 +97,7 @@ async function testPhysicalFileLogger() {
     outcome: "SUCCESSO",
     details: "Completato",
   });
-  assert.ok(file1.includes("[FILE 1/3] File: file1.txt"));
+  assert.ok(file1.includes("[FILE 1/3] File 1: file1.txt | Esito: SUCCESSO"));
 
   const endTag = await logger.logBulkEnd(batchId, {
     completed: 2,
@@ -103,8 +105,10 @@ async function testPhysicalFileLogger() {
     failed: 0,
     totalFiles: 3,
   });
-  assert.ok(endTag.startsWith("=== CARICAMENTO MASSIVO TERMINATO [batchId: batch_test_01]"));
+  assert.ok(endTag.startsWith("=== CARICAMENTO MASSIVO TERMINATO === [batchId: batch_test_01]"));
   assert.ok(endTag.includes("Completati: 2/3, Annullati: 1, Falliti: 0"));
+  assert.ok(endTag.includes("| Data:"));
+  assert.ok(endTag.includes("| Ora:"));
 
   // 1d. Filtri di query
   const accessLogs = await logger.getAccessLogs({ user: "admin_test" });

@@ -37,13 +37,13 @@ const TRANSFER_STANDARD_REGEX =
   /^\[(.*?)\]\s+File:\s*(.*?)\s*\|\s*Utente:\s*(.*?)\s*\|\s*Direzione:\s*(.*?)\s*\|\s*Esito:\s*(.*?)(?:\s*\|\s*Dettagli:\s*(.*))?$/i;
 
 const BULK_HEADER_REGEX =
-  /^=== INIZIO CARICAMENTO MASSIVO \[batchId:\s*(.*?)\] \((\d+) file\) - Utente:\s*(.*?) \[(.*?)\] ===$/i;
+  /^=== INIZIO CARICAMENTO MASSIVO === \[batchId:\s*(.*?)\] \((\d+) file\)\s+Utente:\s*(.*?)\s*\|\s*Data:\s*(.*?)\s*\|\s*Ora:\s*(.*?) ===$/i;
 
 const BULK_FOOTER_REGEX =
-  /^=== CARICAMENTO MASSIVO TERMINATO \[batchId:\s*(.*?)\] - Esito:\s*(.*?) \(Completati:\s*(.*?)\/(.*?), Annullati:\s*(.*?), Falliti:\s*(.*?)\) \[(.*?)\] ===$/i;
+  /^=== CARICAMENTO MASSIVO TERMINATO === \[batchId:\s*(.*?)\]\s+-\s*Esito:\s*(.*?) \(Completati:\s*(.*?)\/(.*?), Annullati:\s*(.*?), Falliti:\s*(.*?)\)\s*\|\s*Data:\s*(.*?)\s*\|\s*Ora:\s*(.*?) ===$/i;
 
 const BULK_ITEM_REGEX =
-  /^\[(.*?)\]\s+\[batchId:\s*(.*?)\]\s+\[FILE\s*(\d+)\/(\d+)\]\s+File:\s*(.*?)\s*\|\s*Utente:\s*(.*?)\s*\|\s*Direzione:\s*(.*?)\s*\|\s*Esito:\s*(.*?)(?:\s*\|\s*Dettagli:\s*(.*))?$/i;
+  /^\[batchId:\s*(.*?)\]\s+\[FILE\s*(\d+)\/(\d+)\]\s+File\s+\d+:\s*(.*?)\s*\|\s*Esito:\s*(.*?)(?:\s+\((.*?)\))?\s*\|\s*Direzione:\s*(.*?)\s*\|\s*Dettagli:\s*(.*)$/i;
 
 export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
   const isAdmin = user.roles.some(
@@ -196,7 +196,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
           batchId: bulkHeaderMatch[1]?.trim(),
           details: `Inizio caricamento massivo: ${bulkHeaderMatch[2]?.trim()} file`,
           username: bulkHeaderMatch[3]?.trim(),
-          timestamp: bulkHeaderMatch[4]?.trim(),
+          timestamp: `${bulkHeaderMatch[4]?.trim()} ${bulkHeaderMatch[5]?.trim()}`,
         };
       }
       const bulkFooterMatch = line.match(BULK_FOOTER_REGEX);
@@ -207,7 +207,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
           batchId: bulkFooterMatch[1]?.trim(),
           outcome: bulkFooterMatch[2]?.trim().toUpperCase(),
           details: `Completati: ${bulkFooterMatch[3]?.trim()}/${bulkFooterMatch[4]?.trim()} (Annullati: ${bulkFooterMatch[5]?.trim()}, Falliti: ${bulkFooterMatch[6]?.trim()})`,
-          timestamp: bulkFooterMatch[7]?.trim(),
+          timestamp: `${bulkFooterMatch[7]?.trim()} ${bulkFooterMatch[8]?.trim()}`,
         };
       }
       const bulkItemMatch = line.match(BULK_ITEM_REGEX);
@@ -215,13 +215,11 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
         return {
           raw: line,
           isBulkItem: true,
-          timestamp: bulkItemMatch[1]?.trim(),
-          batchId: bulkItemMatch[2]?.trim(),
-          filename: bulkItemMatch[5]?.trim(),
-          username: bulkItemMatch[6]?.trim(),
-          direction: bulkItemMatch[7]?.trim(),
-          outcome: bulkItemMatch[8]?.trim().toUpperCase(),
-          details: `[FILE ${bulkItemMatch[3]?.trim()}/${bulkItemMatch[4]?.trim()}] ${bulkItemMatch[9]?.trim() || ""}`,
+          batchId: bulkItemMatch[1]?.trim(),
+          filename: bulkItemMatch[3]?.trim(),
+          outcome: bulkItemMatch[4]?.trim().toUpperCase(),
+          direction: bulkItemMatch[6]?.trim(),
+          details: `[FILE ${bulkItemMatch[2]?.trim()}/${bulkItemMatch[2]?.trim()}] ${bulkItemMatch[5]?.trim() || ""}`,
         };
       }
       const stdMatch = line.match(TRANSFER_STANDARD_REGEX);

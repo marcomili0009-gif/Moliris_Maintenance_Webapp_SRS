@@ -44,7 +44,28 @@ export function formatLogTimestamp(date: Date = new Date()): string {
 }
 
 /**
- * Sanitizza i dettagli rimuovendo qualsiasi segreto, password o token sensibile.
+ * Rende un valore testuale sicuro per una riga di log a campi delimitati.
+ * I caratteri di controllo diventano sequenze visibili; pipe e marcatori di
+ * delimitazione vengono escaped prima di qualsiasi concatenazione.
+ */
+export function sanitizeLogText(value: string): string {
+  return String(value ?? "")
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\t/g, "\\t")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, (char) =>
+      `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`
+    )
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029")
+    .replace(/\|/g, "\\|")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]")
+    .replace(/={3,}/g, (match) => match.replace(/=/g, "\\="));
+}
+
+/**
+ * Sanitizza i dettagli rimuovendo segreti e neutralizzando i delimitatori.
  */
 export function sanitizeLogDetails(details?: string | Record<string, any>): string {
   if (!details) return "N/A";
@@ -55,18 +76,28 @@ export function sanitizeLogDetails(details?: string | Record<string, any>): stri
     s = s.replace(/secret[:=]\s*[^\s,;]+/gi, "secret: [REDACTED]");
     s = s.replace(/authorization[:=]\s*[^\s,;]+/gi, "authorization: [REDACTED]");
     s = s.replace(/passwordhash[:=]\s*[^\s,;]+/gi, "passwordHash: [REDACTED]");
-    return s.trim() || "N/A";
+    s = s.replace(/passphrase[:=]\s*[^\s,;]+/gi, "passphrase: [REDACTED]");
+    return sanitizeLogText(s.trim()).replace(/\\\[REDACTED\\\]/g, "[REDACTED]") || "N/A";
   }
 
   try {
-    const copy = { ...details };
-    const forbiddenKeys = ["password", "passwordHash", "token", "secret", "privateKey", "cookie", "authorization"];
-    for (const key of Object.keys(copy)) {
-      if (forbiddenKeys.some((f) => key.toLowerCase().includes(f.toLowerCase()))) {
-        copy[key] = "[REDACTED]";
+    const forbiddenKeys = [
+      "password",
+      "passwordHash",
+      "passphrase",
+      "token",
+      "secret",
+      "privateKey",
+      "cookie",
+      "authorization",
+    ];
+    const serialized = JSON.stringify(details, (key, value) => {
+      if (key && forbiddenKeys.some((f) => key.toLowerCase().includes(f.toLowerCase()))) {
+        return "[REDACTED]";
       }
-    }
-    return JSON.stringify(copy);
+      return value;
+    });
+    return sanitizeLogText(serialized || "N/A").replace(/\\\[REDACTED\\\]/g, "[REDACTED]");
   } catch {
     return "N/A";
   }
@@ -156,7 +187,10 @@ export class PhysicalFileLogger {
     const ts = formatLogTimestamp(entry.timestamp || new Date());
     const role = normalizeRoleForLog(entry.role);
     const details = sanitizeLogDetails(entry.details);
-    const line = `[${ts}] EVENT: ${entry.event} | Utente: ${entry.username} | Ruolo: ${role} | Esito: ${entry.outcome} | Dettagli: ${details}`;
+    const event = sanitizeLogText(entry.event);
+    const username = sanitizeLogText(entry.username);
+    const outcome = sanitizeLogText(entry.outcome);
+    const line = `[${ts}] EVENT: ${event} | Utente: ${username} | Ruolo: ${role} | Esito: ${outcome} | Dettagli: ${details}`;
     await this.append(this.accessLogPath, line);
     return line;
   }
@@ -168,24 +202,37 @@ export class PhysicalFileLogger {
   public async logTransfer(entry: TransferLogEntry): Promise<string> {
     const ts = formatLogTimestamp(entry.timestamp || new Date());
     const details = sanitizeLogDetails(entry.details);
-    const line = `[${ts}] File: ${entry.filename} | Utente: ${entry.username} | Direzione: ${entry.direction} | Esito: ${entry.outcome} | Dettagli: ${details}`;
+    const filename = sanitizeLogText(entry.filename);
+    const username = sanitizeLogText(entry.username);
+    const direction = sanitizeLogText(entry.direction);
+    const outcome = sanitizeLogText(entry.outcome);
+    const line = `[${ts}] File: ${filename} | Utente: ${username} | Direzione: ${direction} | Esito: ${outcome} | Dettagli: ${details}`;
     await this.append(this.transfersLogPath, line);
     return line;
   }
 
   /**
    * Delimita l'inizio di un caricamento massivo in transfers.log
+   * Formato allineato a SRS §6.2 / Specifiche di Sistema §6:
+   *   === INIZIO CARICAMENTO MASSIVO ===
+   *   Utente: <nome> | Data: <YYYY-MM-DD> | Ora: HH:MM:SS
+   * I campi esterni (batchId, numero file) sono mantenuti come estensione tra parentesi.
    */
   public async logBulkStart(batchId: string, username: string, totalFiles: number): Promise<string> {
     const ts = formatLogTimestamp(new Date());
-    const line = `=== INIZIO CARICAMENTO MASSIVO [batchId: ${batchId}] (${totalFiles} file) - Utente: ${username} [${ts}] ===`;
+    const safeBatchId = sanitizeLogText(batchId);
+    const safeUsername = sanitizeLogText(username);
+    const line = `=== INIZIO CARICAMENTO MASSIVO === [batchId: ${safeBatchId}] (${totalFiles} file) Utente: ${safeUsername} | Data: ${ts.slice(0, 10)} | Ora: ${ts.slice(11)} ===`;
     await this.append(this.transfersLogPath, line);
     return line;
   }
 
   /**
    * Registra un singolo file di un caricamento massivo in transfers.log
-   * Tag: [FILE k/N]
+   * Formato allineato a SRS §6.2 / Specifiche di Sistema §6:
+   *   File N: <nome_file> | Esito: OK
+   *   File N: <nome_file> | Esito: FALLITO (motivo)
+   * I campi esterni (batchId, FILE k/N, direzione, dettagli) sono mantenuti come estensione.
    */
   public async logBulkFile(
     batchId: string,
@@ -195,18 +242,27 @@ export class PhysicalFileLogger {
   ): Promise<string> {
     const ts = formatLogTimestamp(entry.timestamp || new Date());
     const details = sanitizeLogDetails(entry.details);
-    const line = `[${ts}] [batchId: ${batchId}] [FILE ${k}/${totalFiles}] File: ${entry.filename} | Utente: ${entry.username} | Direzione: ${entry.direction} | Esito: ${entry.outcome} | Dettagli: ${details}`;
+    const safeBatchId = sanitizeLogText(batchId);
+    const filename = sanitizeLogText(entry.filename);
+    const direction = sanitizeLogText(entry.direction);
+    const outcome = sanitizeLogText(entry.outcome);
+    const failedReason = outcome === "FALLIMENTO" && details && details !== "N/A" ? ` (${details})` : "";
+    const line = `[batchId: ${safeBatchId}] [FILE ${k}/${totalFiles}] File ${k}: ${filename} | Esito: ${outcome}${failedReason} | Direzione: ${direction} | Dettagli: ${details}`;
     await this.append(this.transfersLogPath, line);
     return line;
   }
 
   /**
    * Delimita il termine di un caricamento massivo in transfers.log
+   * Formato allineato a SRS §6.2 / Specifiche di Sistema §6:
+   *   === CARICAMENTO MASSIVO TERMINATO ===
    */
   public async logBulkEnd(batchId: string, summary: BulkSummary): Promise<string> {
     const ts = formatLogTimestamp(new Date());
     const outcome = summary.outcome || (summary.failed === 0 && summary.cancelled === 0 ? "SUCCESSO" : summary.completed > 0 ? "PARZIALE" : "FALLITO");
-    const line = `=== CARICAMENTO MASSIVO TERMINATO [batchId: ${batchId}] - Esito: ${outcome} (Completati: ${summary.completed}/${summary.totalFiles}, Annullati: ${summary.cancelled}, Falliti: ${summary.failed}) [${ts}] ===`;
+    const safeBatchId = sanitizeLogText(batchId);
+    const safeOutcome = sanitizeLogText(outcome);
+    const line = `=== CARICAMENTO MASSIVO TERMINATO === [batchId: ${safeBatchId}] - Esito: ${safeOutcome} (Completati: ${summary.completed}/${summary.totalFiles}, Annullati: ${summary.cancelled}, Falliti: ${summary.failed}) | Data: ${ts.slice(0, 10)} | Ora: ${ts.slice(11)} ===`;
     await this.append(this.transfersLogPath, line);
     return line;
   }

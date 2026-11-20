@@ -43,7 +43,7 @@
     "maxFleetRobots": 100,
 
     "_comment_maxSessionsPerAccount": "Numero massimo di sessioni contemporanee permesse per singolo account (1 vieta accessi simultanei con lo stesso login; RF-AUTH-004).",
-    "maxSessionsPerAccount": 1,
+    "maxSessionsPerAccount": 3,
 
     "_comment_customSettings": "Spazio per impostazioni personalizzate o sperimentali aggiuntive.",
     "customSettings": {}
@@ -59,5 +59,8 @@
   "sshConnectTimeoutSeconds": 15,
 
   "_comment_transferTimeoutMinutes": "Timeout massimo complessivo (in minuti) concesso a un singolo trasferimento file prima dell'interruzione forzata e pulizia file parziali (RF-TRF-013, §11.5).",
-  "transferTimeoutMinutes": 30
+  "transferTimeoutMinutes": 30,
+
+  "_comment_transferResumeEnabled": "Abilita la ripresa (resume) dei trasferimenti Server <-> Robot interrotti, falliti o annullati riutilizzando il file temporaneo parziale (RF-TRF-010). Default: true (era disattivato in sviluppo).",
+  "transferResumeEnabled": true
 }

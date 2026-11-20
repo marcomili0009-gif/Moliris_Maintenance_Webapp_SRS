@@ -19,6 +19,18 @@ import { type StartServerRobotTransferRequest, type TransferDto, isActiveTransfe
 import { type BulkPreCheckRequest, type BulkTarget } from "./bulk-transfer-models.ts";
 import { authorizeOperatorPath } from "../auth/path-authorization.ts";
 import { BatchTransferManager } from "./batch-transfer-manager.ts";
+import { parseRequestInput } from "../validation/request-validation.ts";
+import {
+  bulkPreCheckBodySchema,
+  bulkServerSourceBodySchema,
+  bulkTargetsSchema,
+  downloadQuerySchema,
+  robotToRobotBodySchema,
+  serverRobotTransferBodySchema,
+  transferBodySchema,
+  transferListQuerySchema,
+  uploadQuerySchema,
+} from "../validation/request-schemas.ts";
 
 export function registerTransferRoutes(
   app: FastifyInstance,
@@ -54,7 +66,8 @@ export function registerTransferRoutes(
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { robotId } = req.params as { robotId: string };
-      const body = req.body as StartServerRobotTransferRequest;
+      const body = parseRequestInput(serverRobotTransferBodySchema, req.body, reply, "body");
+      if (!body) return reply;
 
       const robot = await robotRepository.findById(robotId);
       if (!robot) {
@@ -69,7 +82,7 @@ export function registerTransferRoutes(
       );
 
       try {
-        return await runServerRobotTransfer(reply, transferService, context, robot, body, (req.body as any)?.background === true);
+        return await runServerRobotTransfer(reply, transferService, context, robot, body, body.background === true);
       } catch (err: any) {
         return handleRouteError(reply, err);
       }
@@ -89,7 +102,8 @@ export function registerTransferRoutes(
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { robotId } = req.params as { robotId: string };
-      const body = (req.body as any) || {};
+      const body = parseRequestInput(transferBodySchema, req.body, reply, "body");
+      if (!body) return reply;
 
       const robot = await robotRepository.findById(robotId);
       if (!robot) {
@@ -113,7 +127,7 @@ export function registerTransferRoutes(
       };
 
       try {
-        return await runServerRobotTransfer(reply, transferService, context, robot, reqBody, (req.body as any)?.background === true);
+        return await runServerRobotTransfer(reply, transferService, context, robot, reqBody, body.background === true);
       } catch (err: any) {
         return handleRouteError(reply, err);
       }
@@ -133,7 +147,8 @@ export function registerTransferRoutes(
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { robotId } = req.params as { robotId: string };
-      const body = (req.body as any) || {};
+      const body = parseRequestInput(transferBodySchema, req.body, reply, "body");
+      if (!body) return reply;
 
       const robot = await robotRepository.findById(robotId);
       if (!robot) {
@@ -157,7 +172,7 @@ export function registerTransferRoutes(
       };
 
       try {
-        return await runServerRobotTransfer(reply, transferService, context, robot, reqBody, (req.body as any)?.background === true);
+        return await runServerRobotTransfer(reply, transferService, context, robot, reqBody, body.background === true);
       } catch (err: any) {
         return handleRouteError(reply, err);
       }
@@ -176,7 +191,8 @@ export function registerTransferRoutes(
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { robotId } = req.params as { robotId: string };
-      const body = (req.body as any) || {};
+      const body = parseRequestInput(transferBodySchema, req.body, reply, "body");
+      if (!body) return reply;
 
       const robot = await robotRepository.findById(robotId);
       if (!robot) {
@@ -200,7 +216,7 @@ export function registerTransferRoutes(
       };
 
       try {
-        return await runServerRobotTransfer(reply, transferService, context, robot, reqBody, (req.body as any)?.background === true);
+        return await runServerRobotTransfer(reply, transferService, context, robot, reqBody, body.background === true);
       } catch (err: any) {
         return handleRouteError(reply, err);
       }
@@ -222,7 +238,8 @@ export function registerTransferRoutes(
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { robotId } = req.params as { robotId: string };
-      const query = (req.query as any) || {};
+      const query = parseRequestInput(uploadQuerySchema, req.query, reply, "query");
+      if (!query) return reply;
 
       const robot = await robotRepository.findById(robotId);
       if (!robot) {
@@ -283,7 +300,8 @@ export function registerTransferRoutes(
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { robotId } = req.params as { robotId: string };
-      const query = (req.query as any) || {};
+      const query = parseRequestInput(downloadQuerySchema, req.query, reply, "query");
+      if (!query) return reply;
       const relativePath = query.path;
 
       if (!relativePath || typeof relativePath !== "string") {
@@ -338,7 +356,8 @@ export function registerTransferRoutes(
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { robotId } = req.params as { robotId: string };
-      const query = (req.query as any) || {};
+      const query = parseRequestInput(uploadQuerySchema, req.query, reply, "query");
+      if (!query) return reply;
 
       const robot = await robotRepository.findById(robotId);
       if (!robot) {
@@ -399,7 +418,8 @@ export function registerTransferRoutes(
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { robotId } = req.params as { robotId: string };
-      const query = (req.query as any) || {};
+      const query = parseRequestInput(downloadQuerySchema, req.query, reply, "query");
+      if (!query) return reply;
       const remoteFilePath = query.path;
 
       if (!remoteFilePath || typeof remoteFilePath !== "string") {
@@ -477,6 +497,8 @@ export function registerTransferRoutes(
       preHandler: [(req, reply) => authMiddleware.authenticate(req, reply)],
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
+      const query = parseRequestInput(transferListQuerySchema, req.query, reply, "query");
+      if (!query) return reply;
       const context = sessionManager.createAuthorizedContext(
         req.molirisSession!,
         req.molirisUser!,
@@ -487,7 +509,7 @@ export function registerTransferRoutes(
       const list = transferService.listTransfers(context);
       const activeCount = list.filter((t) => isActiveTransferStatus(t.status)).length;
 
-      if ((req.query as any)?.envelope === "true" || (req.query as any)?.summary === "true") {
+      if (query.envelope === "true" || query.summary === "true") {
         return reply.status(200).send({
           transfers: list,
           activeCount,
@@ -564,6 +586,8 @@ export function registerTransferRoutes(
       preHandler: [(req, reply) => authMiddleware.authenticate(req, reply)],
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
+      const query = parseRequestInput(transferListQuerySchema, req.query, reply, "query");
+      if (!query) return reply;
       const context = sessionManager.createAuthorizedContext(
         req.molirisSession!,
         req.molirisUser!,
@@ -593,7 +617,7 @@ export function registerTransferRoutes(
       };
 
       sendSnapshot();
-      if ((req.query as any)?.once === "1") {
+      if (query.once === "1") {
         reply.raw.end();
         return reply;
       }
@@ -788,13 +812,8 @@ export function registerTransferRoutes(
       preHandler: [authMiddleware.requirePermission(AppPermission.FLEET_VIEW)],
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
-      const body = req.body as BulkPreCheckRequest;
-      if (!body || !Array.isArray(body.filenames) || !Array.isArray(body.targets)) {
-        return reply.status(400).send({
-          code: "INVALID_REQUEST_BODY",
-          message: "Richiesta non valida: 'filenames' e 'targets' devono essere array.",
-        });
-      }
+      const body = parseRequestInput(bulkPreCheckBodySchema, req.body, reply, "body");
+      if (!body) return reply;
 
       const context = sessionManager.createAuthorizedContext(
         req.molirisSession!,
@@ -948,8 +967,12 @@ export function registerTransferRoutes(
           } else if (part.type === "field") {
             if (part.fieldname === "targets") {
               try {
-                targets = typeof part.value === "string" ? JSON.parse(part.value) : (part.value as any);
-              } catch {
+                const parsedTargets = typeof part.value === "string" ? JSON.parse(part.value) : part.value;
+                const validatedTargets = parseRequestInput(bulkTargetsSchema, parsedTargets, reply, "body");
+                if (!validatedTargets) return reply;
+                targets = validatedTargets;
+              } catch (err: any) {
+                if (reply.sent) return reply;
                 throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Campo 'targets' non valido o JSON malformato.");
               }
             } else if (part.fieldname === "overwrite") {
@@ -1037,13 +1060,8 @@ export function registerTransferRoutes(
       preHandler: [authMiddleware.requirePermission(AppPermission.FLEET_VIEW)],
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
-      const body = req.body as any;
-      if (!body || !Array.isArray(body.sourcePaths) || !Array.isArray(body.targets)) {
-        return reply.status(400).send({
-          code: "INVALID_REQUEST_BODY",
-          message: "Richiesta non valida: 'sourcePaths' e 'targets' devono essere array.",
-        });
-      }
+      const body = parseRequestInput(bulkServerSourceBodySchema, req.body, reply, "body");
+      if (!body) return reply;
 
       const context = sessionManager.createAuthorizedContext(
         req.molirisSession!,
@@ -1084,13 +1102,8 @@ export function registerTransferRoutes(
       preHandler: [authMiddleware.requirePermission(AppPermission.FLEET_VIEW)],
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
-      const body = req.body as any;
-      if (!body || !body.sourceRobotId || !body.sourceRemotePath || !Array.isArray(body.targetRobotIds)) {
-        return reply.status(400).send({
-          code: "INVALID_REQUEST_BODY",
-          message: "Richiesta non valida: 'sourceRobotId', 'sourceRemotePath' e 'targetRobotIds' sono obbligatori.",
-        });
-      }
+      const body = parseRequestInput(robotToRobotBodySchema, req.body, reply, "body");
+      if (!body) return reply;
 
       const context = sessionManager.createAuthorizedContext(
         req.molirisSession!,

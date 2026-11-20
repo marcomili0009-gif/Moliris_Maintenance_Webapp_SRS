@@ -149,7 +149,6 @@ export function createServer(
   }
 
   app.get("/api/config/public", async (_request, reply) => {
-    const allowedSubPaths = (appConfig as any).bulkUploadConfig?.allowedSubPaths ?? ["/"];
     return reply.status(200).send({
       sessionInactivityTimeoutMinutes:
         (config as any)?.inactiveSessionTimeoutMinutes ??
@@ -175,14 +174,12 @@ export function createServer(
       sshConnectTimeoutSeconds: appConfig.sshConnectTimeoutSeconds ?? 15,
       transferTimeoutMinutes: appConfig.transferTimeoutMinutes ?? 30,
       maxFileUploadBytes: appConfig.maxFileUploadBytes,
+      transferResumeEnabled:
+        (appConfig as typeof appConfig & { transferResumeEnabled?: boolean }).transferResumeEnabled ?? true,
       futureExtensions: appConfig.futureExtensions,
-      activeConfigFile: (appConfig as any).loadedConfigPath ? path.basename((appConfig as any).loadedConfigPath) : "defaults",
-      activeConfigPath: (appConfig as any).loadedConfigPath ?? null,
-      allowedPaths: allowedSubPaths,
       bulkUploadConfig: {
         maxConcurrentFiles: (appConfig as any).bulkUploadConfig?.maxConcurrentFiles ?? 5,
         chunkSizeBytes: (appConfig as any).bulkUploadConfig?.chunkSizeBytes ?? 1024 * 1024,
-        allowedSubPaths: allowedSubPaths,
       },
     });
   });

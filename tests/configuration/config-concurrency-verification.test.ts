@@ -299,10 +299,13 @@ const logger = new MolirisLogger();
   const data = res.json();
   assert.strictEqual(data.maxConcurrentWebUsers, 15);
   assert.strictEqual(data.maxSessionsPerAccount, 3);
-  assert.strictEqual(typeof data.activeConfigFile, "string");
+  assert.strictEqual(data.activeConfigFile, undefined);
+  assert.strictEqual(data.activeConfigPath, undefined);
+  assert.strictEqual(data.allowedPaths, undefined);
+  assert.strictEqual(data.bulkUploadConfig?.allowedSubPaths, undefined);
 
   await app.close();
-  console.log("  PASS: Test 4 - /api/config/public espone correttamente activeConfigFile e parametri attivi.");
+  console.log("  PASS: Test 4 - /api/config/public espone solo parametri operativi, senza metadati di path.");
 }
 
 // Pulizia cartella temporanea

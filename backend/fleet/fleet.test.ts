@@ -19,6 +19,7 @@ import { DefaultHostKeyVerifier, computeHostKeyFingerprint } from "../connection
 import { RobotConnectionManager } from "../connection/robot-connection-manager.ts";
 import { FleetService } from "./fleet-service.ts";
 import { type UserEntity } from "../auth/user-models.ts";
+import { type RobotEntity } from "../../storage/robot-models.ts";
 import { AppPermission, DEFAULT_ROLE_PERMISSIONS } from "../auth/permissions.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
 import { MolirisAppError, ErrorCode } from "../../errors/app-errors.ts";
@@ -1302,6 +1303,95 @@ try {
     assert.ok(forbiddenCaught, "Utente senza ROBOT_CONFIG_UPDATE deve ricevere 403 / INSUFFICIENT_PERMISSIONS");
 
     console.log("  PASS: Tutti gli 11 scenari di test del Problema 3 superati con successo.");
+  }
+
+  // =========================================================================
+  // RF-ROB-013: Eliminazione Dati Server e Fleet Summary Endpoint
+  // =========================================================================
+  {
+    console.log("--> Esecuzione test suite RF-ROB-013 (deleteServerData) e Fleet Summary...");
+
+    const { service, repo, audit } = createService();
+
+    const delRobotDir = path.join(testFsRoot, "customer_plant_robot-del-01");
+    fs.mkdirSync(delRobotDir, { recursive: true });
+    fs.writeFileSync(path.join(delRobotDir, "telemetry.txt"), "sample data");
+    assert.ok(fs.existsSync(delRobotDir), "La cartella del robot di test deve esistere");
+
+    const testRobotDel: RobotEntity = {
+      id: "robot-del-01",
+      displayName: "Robot Eliminazione Dati",
+      host: "127.0.0.1",
+      sshPort: testServerPort,
+      remoteUsername: "operator",
+      sshAuthMethod: "password",
+      credentialReference: "cred-del-01",
+      operationalState: null,
+      registrationState: "registrazione_completata",
+      anagraphicState: "attivo",
+      connectionState: "non_verificato",
+      lastValidUpdateAt: new Date(),
+      serverDirectoryPath: delRobotDir,
+      customerName: "Cliente Test",
+      plantName: "Impianto Test",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    await repo.create(testRobotDel);
+
+    const operatorUser: UserEntity = {
+      id: "op_user_del",
+      username: "operatore_del",
+      roles: ["operatore"],
+      enabled: true,
+      passwordHash: "hash",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    // Caso 1: Operatore prova ad eliminare i dati server -> 403 / INSUFFICIENT_PERMISSIONS
+    let opForbidden = false;
+    try {
+      await service.deleteServerData(operatorUser, "robot-del-01", true);
+    } catch (err: any) {
+      opForbidden = true;
+      assert.strictEqual(err.code, ErrorCode.INSUFFICIENT_PERMISSIONS);
+    }
+    assert.ok(opForbidden, "Operatore deve essere bloccato (403 / INSUFFICIENT_PERMISSIONS)");
+    assert.ok(fs.existsSync(delRobotDir), "La cartella NON deve essere toccata dopo tentativo operatore");
+
+    // Caso 2: Amministratore senza conferma esplicita -> 400 / MISSING_ROBOT_PARAMS
+    let noConfirmErr = false;
+    try {
+      await service.deleteServerData(adminUser, "robot-del-01", false);
+    } catch (err: any) {
+      noConfirmErr = true;
+      assert.strictEqual(err.code, ErrorCode.MISSING_ROBOT_PARAMS);
+    }
+    assert.ok(noConfirmErr, "Amministratore senza conferma deve ricevere errore 400 (MISSING_ROBOT_PARAMS)");
+    assert.ok(fs.existsSync(delRobotDir), "La cartella NON deve essere toccata senza conferma");
+
+    // Caso 3: Amministratore con conferma esplicita -> cartella eliminata con successo e audit log
+    await service.deleteServerData(adminUser, "robot-del-01", true);
+    assert.strictEqual(fs.existsSync(delRobotDir), false, "La cartella sul filesystem del server deve essere stata rimossa definitivamente");
+
+    const auditEvents = await audit.query({ robotId: "robot-del-01" });
+    const delAudit = auditEvents.find((e) => e.operation === AuditOperation.ROBOT_SERVER_DATA_DELETION);
+    assert.ok(delAudit, "Audit event ROBOT_SERVER_DATA_DELETION deve essere registrato");
+    assert.strictEqual(delAudit?.outcome, "SUCCESS");
+    console.log("  PASS: RF-ROB-013 deleteServerData collaudato con successo (RBAC, conferma, rimozione e audit).");
+
+    // Collaudo Fleet Summary aggregato
+    const summary = await service.getFleetSummary(adminUser);
+    assert.strictEqual(summary.status, "OK");
+    assert.ok(summary.totalRobots > 0, "totalRobots deve essere maggiore di 0");
+    assert.strictEqual(typeof summary.online, "number");
+    assert.strictEqual(typeof summary.offline, "number");
+    assert.strictEqual(typeof summary.disabled, "number");
+    assert.ok(summary.byClient["Cliente Test"] !== undefined, "Cliente Test presente nel conteggio aggregato");
+    assert.ok(summary.byPlant["Impianto Test"] !== undefined, "Impianto Test presente nel conteggio aggregato");
+    assert.ok(Array.isArray(summary.robots), "robots deve essere un array di summary");
+    console.log("  PASS: Fleet Summary aggregato collaudato con successo.");
   }
 
   console.log("PASS: Tutti i test di Gestione della Flotta superati con successo.");

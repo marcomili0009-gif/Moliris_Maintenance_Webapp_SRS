@@ -7,6 +7,8 @@ interface RobotEditModalProps {
   isOpen: boolean;
   onClose: () => void;
   onUpdate: (robotId: string, payload: EditRobotPayload) => Promise<boolean>;
+  isAdmin?: boolean;
+  onDeleteServerData?: (robotId: string) => Promise<boolean>;
 }
 
 export const RobotEditModal: React.FC<RobotEditModalProps> = ({
@@ -14,6 +16,8 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
   isOpen,
   onClose,
   onUpdate,
+  isAdmin = false,
+  onDeleteServerData,
 }) => {
   const [displayName, setDisplayName] = useState<string>("");
   const [host, setHost] = useState<string>("");
@@ -26,6 +30,9 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
   const [customerName, setCustomerName] = useState<string>("");
   const [plantName, setPlantName] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  const [showDeleteServerDataConfirm, setShowDeleteServerDataConfirm] = useState<boolean>(false);
+  const [deletingServerData, setDeletingServerData] = useState<boolean>(false);
+  const [deleteServerDataSuccess, setDeleteServerDataSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     if (robot) {
@@ -39,6 +46,9 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
       setCustomerName(robot.customerName ?? "");
       setPlantName(robot.plantName ?? "");
       setError(null);
+      setShowDeleteServerDataConfirm(false);
+      setDeletingServerData(false);
+      setDeleteServerDataSuccess(null);
     }
   }, [robot]);
 
@@ -239,6 +249,70 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
                 />
               </div>
             </div>
+
+            {isAdmin && onDeleteServerData && (
+              <div className="card mt-4 border-danger p-3 bg-light" id="section-delete-server-data">
+                <h5 className="text-danger mb-2">Eliminazione Dati Server (RF-ROB-013)</h5>
+                <p className="small text-muted mb-3">
+                  Elimina definitivamente l'intera cartella e tutti i file archiviati sul filesystem del server per questo robot.
+                  Questa operazione è irreversibile e riservata esclusivamente agli amministratori.
+                </p>
+                {deleteServerDataSuccess && (
+                  <div className="alert alert-success py-2 mb-2" id="alert-server-data-deleted">
+                    {deleteServerDataSuccess}
+                  </div>
+                )}
+                {!showDeleteServerDataConfirm ? (
+                  <button
+                    type="button"
+                    className="btn btn-outline-danger btn-sm"
+                    id="btn-delete-server-data"
+                    onClick={() => setShowDeleteServerDataConfirm(true)}
+                  >
+                    Elimina dati sul server
+                  </button>
+                ) : (
+                  <div className="p-2 border border-danger rounded bg-white">
+                    <p className="text-danger fw-bold small mb-2">
+                      Confermi l'eliminazione definitiva di tutti i dati del robot sul server?
+                    </p>
+                    <div className="d-flex gap-2">
+                      <button
+                        type="button"
+                        className="btn btn-danger btn-sm"
+                        id="btn-confirm-delete-server-data"
+                        disabled={deletingServerData}
+                        onClick={async () => {
+                          setDeletingServerData(true);
+                          try {
+                            const ok = await onDeleteServerData(robot.id);
+                            if (ok) {
+                              setDeleteServerDataSuccess("Dati server del robot eliminati con successo.");
+                              setShowDeleteServerDataConfirm(false);
+                            } else {
+                              setError("Errore durante l'eliminazione dei dati server.");
+                            }
+                          } finally {
+                            setDeletingServerData(false);
+                          }
+                        }}
+                      >
+                        {deletingServerData ? "Eliminazione..." : "Conferma Eliminazione Dati Server"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        id="btn-cancel-delete-server-data"
+                        disabled={deletingServerData}
+                        onClick={() => setShowDeleteServerDataConfirm(false)}
+                      >
+                        Annulla
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="modal-footer">
               <button

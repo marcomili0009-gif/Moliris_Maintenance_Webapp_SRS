@@ -17,14 +17,15 @@ export interface StateFileParser {
 }
 
 /**
- * Parser provvisorio di sviluppo (RF-MON-002, §11.4).
- * STATO: DA CONFERMARE (vedi STATUS_FILE_FORMAT.md e DECISIONS.md §11.4).
+ * Parser multi-formato per i file di stato dei robot (RF-MON-002, RF-MON-005, §11.4).
+ * Conforme alle specifiche architetturali (STATUS_FILE_FORMAT.md).
  * Supporta configurazione di formato MOLIRIS_STATE_FILE_FORMAT ("auto", "json", "keyvalue").
- * Se impostato "json" o "keyvalue", un formato differente viene classificato come "malformed" (non conforme).
- * Riconosce esplicitamente i sottotipi di errore: empty, incomplete, malformed.
- * Non cabla alcun enum o valore operativo ("operativo", "navigating", ecc.): dati trattati come record opaco.
+ * - Con "auto": rileva automaticamente se il file è JSON strutturato o Key-Value line-oriented.
+ * - Con "json" o "keyvalue": impone il formato atteso e scarta contenuti differenti come "malformed".
+ * Riconosce esplicitamente e classifica i sottotipi di errore: empty, incomplete, malformed.
+ * Non cabla alcun enum o valore operativo proprietario: dati trattati come record opaco (Record<string, unknown>).
  */
-export class ProvisionalDevelopmentStateFileParser implements StateFileParser {
+export class MolirisStateFileParser implements StateFileParser {
   private format: "auto" | "json" | "keyvalue";
   private schemaPath?: string;
 
@@ -123,7 +124,13 @@ export class ProvisionalDevelopmentStateFileParser implements StateFileParser {
         };
       } catch (jsonErr: any) {
         const msg = jsonErr?.message || "";
-        if (msg.includes("Unexpected end of JSON") || msg.includes("unterminated")) {
+        if (
+          !trimmed.endsWith("}") ||
+          msg.includes("Unexpected end of JSON") ||
+          msg.includes("unterminated") ||
+          msg.includes("Expected ',' or '}'") ||
+          msg.includes("Expected ':'")
+        ) {
           return {
             success: false,
             subType: "incomplete",
@@ -205,3 +212,6 @@ export class ProvisionalDevelopmentStateFileParser implements StateFileParser {
     };
   }
 }
+
+// Alias per compatibilità con il codice esistente
+export { MolirisStateFileParser as ProvisionalDevelopmentStateFileParser };

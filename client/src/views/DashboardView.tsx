@@ -550,6 +550,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         isOpen={Boolean(editingRobot)}
         onClose={() => setEditingRobot(null)}
         onUpdate={fleet.updateRobot}
+        isAdmin={isAdmin}
+        onDeleteServerData={fleet.deleteServerData}
       />
 
       {/* Modal Conferma Rimozione Robot */}

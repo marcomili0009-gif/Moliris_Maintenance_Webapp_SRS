@@ -16,7 +16,7 @@ import { hashPassword, verifyPassword, toUserProfileDto } from "./user-models.ts
 import { AppPermission } from "./permissions.ts";
 import { ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
-import { type PhysicalFileLogger, normalizeRoleForLog } from "../logging/physical-file-logger.ts";
+import { type PhysicalFileLogger, normalizeRoleForLog, sanitizeLogText } from "../logging/physical-file-logger.ts";
 
 export function registerAuthRoutes(
   app: FastifyInstance,
@@ -75,6 +75,8 @@ export function registerAuthRoutes(
     const body = (req.body as any) || {};
     const username = typeof body.username === "string" ? body.username.trim() : "";
     const password = typeof body.password === "string" ? body.password : "";
+    // Il valore originale serve all'autenticazione; solo la copia escaped finisce nei log.
+    const usernameForLog = sanitizeLogText(username);
 
     const invalidCredsDef = ERROR_CATALOG[ErrorCode.INVALID_CREDENTIALS];
 
@@ -110,7 +112,7 @@ export function registerAuthRoutes(
       // evita che il tempo di risposta riveli l'esistenza o lo stato dell'account.
       await verifyPassword(password, await dummyPasswordHash);
       recordFailure();
-      logger.info(`Tentativo di login fallito per username '${username}'`);
+      logger.info(`Tentativo di login fallito per username '${usernameForLog}'`);
       await auditRepository.record({
         userId: username,
         operation: AuditOperation.AUTH_LOGIN,
@@ -137,7 +139,7 @@ export function registerAuthRoutes(
     const passwordMatch = await verifyPassword(password, user.passwordHash);
     if (!passwordMatch) {
       recordFailure();
-      logger.info(`Password non valida per username '${username}'`);
+      logger.info(`Password non valida per username '${usernameForLog}'`);
       await auditRepository.record({
         userId: username,
         operation: AuditOperation.AUTH_LOGIN,
@@ -410,19 +412,4 @@ export function registerAuthRoutes(
     });
   });
 
-  /**
-   * Endpoint protetto flotta (placeholder SRS §6.1 punto 5)
-   * Richiede permesso AppPermission.FLEET_VIEW (RF-ROB-001, RF-AUTH-005, RNF-SEC-004)
-   */
-  app.get(
-    "/api/fleet/summary",
-    { preHandler: [authMiddleware.requirePermission(AppPermission.FLEET_VIEW)] },
-    async (req: FastifyRequest, reply: FastifyReply) => {
-      return reply.status(200).send({
-        status: "OK",
-        description: "Placeholder schermata della flotta (SRS §6.1 punto 5)",
-        robots: [],
-      });
-    }
-  );
 }

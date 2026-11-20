@@ -222,6 +222,26 @@ export function useFleet(isAuthenticated: boolean) {
     }
   };
 
+  const deleteServerData = async (robotId: string): Promise<boolean> => {
+    try {
+      const res = await apiClient.delete(`/api/robots/${encodeURIComponent(robotId)}/server-data`, {
+        body: JSON.stringify({ confirmation: true }),
+        headers: { "Content-Type": "application/json" },
+      });
+      if (res.ok) {
+        await loadFleet();
+        return true;
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setError(ErrorPresenter.formatError(errData));
+        return false;
+      }
+    } catch (err) {
+      setError(ErrorPresenter.formatError(err));
+      return false;
+    }
+  };
+
   const refreshFleet = async (): Promise<boolean> => {
     setLoading(true);
     setError(null);
@@ -281,6 +301,7 @@ export function useFleet(isAuthenticated: boolean) {
     repairRobot,
     toggleEnableDisable,
     removeRobot,
+    deleteServerData,
     clearError: () => setError(null),
   };
 }

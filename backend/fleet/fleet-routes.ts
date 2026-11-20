@@ -9,6 +9,13 @@ import {
   type RobotRegistrationInput,
   type RobotConfigurationUpdateInput,
 } from "./fleet-types.ts";
+import { parseRequestInput } from "../validation/request-validation.ts";
+import {
+  fleetListQuerySchema,
+  robotConfigurationBodySchema,
+  robotConfirmationBodySchema,
+  robotRegistrationBodySchema,
+} from "../validation/request-schemas.ts";
 
 export function registerFleetRoutes(
   app: FastifyInstance,
@@ -51,7 +58,8 @@ export function registerFleetRoutes(
     async (req: FastifyRequest, reply: FastifyReply) => {
       try {
         const user = req.molirisUser!;
-        const query = (req.query || {}) as { limit?: string; offset?: string };
+        const query = parseRequestInput(fleetListQuerySchema, req.query, reply, "query");
+        if (!query) return reply;
         const rawLimit = query.limit !== undefined ? parseInt(query.limit, 10) : undefined;
         const rawOffset = query.offset !== undefined ? parseInt(query.offset, 10) : undefined;
         const list = await fleetService.listFleet(user, {
@@ -88,8 +96,9 @@ export function registerFleetRoutes(
     async (req: FastifyRequest, reply: FastifyReply) => {
       try {
         const user = req.molirisUser!;
-        const body = (req.body || {}) as RobotRegistrationInput;
-        const result = await fleetService.registerRobot(user, body);
+        const body = parseRequestInput(robotRegistrationBodySchema, req.body, reply, "body");
+        if (!body) return reply;
+        const result = await fleetService.registerRobot(user, body as RobotRegistrationInput);
 
         // Se la registrazione è stata rifiutata per validazione fallita
         if (result.outcome === "registrazione_rifiutata") {
@@ -168,8 +177,9 @@ export function registerFleetRoutes(
       try {
         const user = req.molirisUser!;
         const { robotId } = req.params as { robotId: string };
-        const body = (req.body || {}) as RobotConfigurationUpdateInput;
-        const result = await fleetService.updateConfiguration(user, robotId, body);
+        const body = parseRequestInput(robotConfigurationBodySchema, req.body, reply, "body");
+        if (!body) return reply;
+        const result = await fleetService.updateConfiguration(user, robotId, body as RobotConfigurationUpdateInput);
         return reply.status(200).send({ robot: result });
       } catch (err: any) {
         return handleError(err, reply);
@@ -229,9 +239,49 @@ export function registerFleetRoutes(
       try {
         const user = req.molirisUser!;
         const { robotId } = req.params as { robotId: string };
-        const body = (req.body || {}) as { confirmation?: boolean };
+        const body = parseRequestInput(robotConfirmationBodySchema, req.body, reply, "body");
+        if (!body) return reply;
         await fleetService.removeRobot(user, robotId, body.confirmation === true);
         return reply.status(200).send({ message: "Robot rimosso dall'anagrafica attiva con successo." });
+      } catch (err: any) {
+        return handleError(err, reply);
+      }
+    }
+  );
+
+  // STEP 11 – Eliminazione esplicita dati server robot (RF-ROB-013, CA-ROB-011)
+  app.delete(
+    "/api/robots/:robotId/server-data",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(AppPermission.FS_SERVER_DELETE, extractRobotId),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = req.molirisUser!;
+        const { robotId } = req.params as { robotId: string };
+        const body = parseRequestInput(robotConfirmationBodySchema, req.body, reply, "body");
+        if (!body) return reply;
+        await fleetService.deleteServerData(user, robotId, body.confirmation === true);
+        return reply.status(200).send({ message: "Dati server del robot eliminati con successo." });
+      } catch (err: any) {
+        return handleError(err, reply);
+      }
+    }
+  );
+
+  // STEP 12 – Riepilogo aggregato della flotta (RF-ROB-001, SRS §6.1 punto 5)
+  app.get(
+    "/api/fleet/summary",
+    {
+      preHandler: [authMiddleware.requirePermission(AppPermission.FLEET_VIEW)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = req.molirisUser!;
+        const summary = await fleetService.getFleetSummary(user);
+        return reply.status(200).send(summary);
       } catch (err: any) {
         return handleError(err, reply);
       }
