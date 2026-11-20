@@ -35,6 +35,10 @@ export const App: React.FC = () => {
     setGoHomeTrigger((prev) => prev + 1);
   };
 
+  const handleResetGoHomeTrigger = React.useCallback(() => {
+    setGoHomeTrigger(0);
+  }, []);
+
   if (loading) {
     return (
       <div id="app">
@@ -82,6 +86,7 @@ export const App: React.FC = () => {
           onConfirmSession={confirmActivity || confirmSession}
           setActiveTransfersCount={setActiveTransfersCount}
           goHomeTrigger={goHomeTrigger}
+          onGoHomeHandled={handleResetGoHomeTrigger}
           activeMainView={activeMainView}
           onActiveMainViewChange={(v) => setActiveMainView(v)}
         />

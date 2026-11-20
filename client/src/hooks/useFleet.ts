@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { apiClient } from "../services/api-client.ts";
 import { ErrorPresenter } from "../services/error-presenter.ts";
 import type {
@@ -16,6 +16,9 @@ export function useFleet(isAuthenticated: boolean) {
   const [error, setError] = useState<FormattedError | null>(null);
 
   const [selectedRobot, setSelectedRobot] = useState<RobotDetailDto | null>(null);
+  const selectedRobotRef = useRef<RobotDetailDto | null>(selectedRobot);
+  selectedRobotRef.current = selectedRobot;
+
   const [loadingDetail, setLoadingDetail] = useState<boolean>(false);
 
   const loadFleet = useCallback(async () => {
@@ -38,7 +41,7 @@ export function useFleet(isAuthenticated: boolean) {
     }
   }, [isAuthenticated]);
 
-  const loadRobotDetail = async (robotId: string): Promise<RobotDetailDto | null> => {
+  const loadRobotDetail = useCallback(async (robotId: string): Promise<RobotDetailDto | null> => {
     setLoadingDetail(true);
     try {
       const res = await apiClient.get(`/api/robots/${encodeURIComponent(robotId)}`);
@@ -82,9 +85,9 @@ export function useFleet(isAuthenticated: boolean) {
     } finally {
       setLoadingDetail(false);
     }
-  };
+  }, []);
 
-  const registerRobot = async (
+  const registerRobot = useCallback(async (
     payload: RegisterRobotPayload
   ): Promise<{ outcome?: RegistrationOutcome; error?: FormattedError; fieldErrors?: Record<string, string> }> => {
     try {
@@ -104,14 +107,14 @@ export function useFleet(isAuthenticated: boolean) {
     } catch (err) {
       return { error: ErrorPresenter.formatError(err) };
     }
-  };
+  }, [loadFleet]);
 
-  const updateRobot = async (robotId: string, payload: EditRobotPayload): Promise<boolean> => {
+  const updateRobot = useCallback(async (robotId: string, payload: EditRobotPayload): Promise<boolean> => {
     try {
       const res = await apiClient.put(`/api/robots/${encodeURIComponent(robotId)}/configuration`, payload);
       if (res.ok) {
         await loadFleet();
-        if (selectedRobot?.id === robotId) {
+        if (selectedRobotRef.current?.id === robotId) {
           await loadRobotDetail(robotId);
         }
         return true;
@@ -124,14 +127,14 @@ export function useFleet(isAuthenticated: boolean) {
       setError(ErrorPresenter.formatError(err));
       return false;
     }
-  };
+  }, [loadFleet, loadRobotDetail]);
 
-  const refreshStatus = async (robotId: string): Promise<boolean> => {
+  const refreshStatus = useCallback(async (robotId: string): Promise<boolean> => {
     try {
       const res = await apiClient.post(`/api/robots/${encodeURIComponent(robotId)}/status/refresh`, {});
       if (res.ok) {
         await loadFleet();
-        if (selectedRobot?.id === robotId) {
+        if (selectedRobotRef.current?.id === robotId) {
           await loadRobotDetail(robotId);
         }
         return true;
@@ -144,14 +147,14 @@ export function useFleet(isAuthenticated: boolean) {
       setError(ErrorPresenter.formatError(err));
       return false;
     }
-  };
+  }, [loadFleet, loadRobotDetail]);
 
-  const verifyConnection = async (robotId: string): Promise<boolean> => {
+  const verifyConnection = useCallback(async (robotId: string): Promise<boolean> => {
     try {
       const res = await apiClient.post(`/api/robots/${encodeURIComponent(robotId)}/verify-connection`, {});
       if (res.ok) {
         await loadFleet();
-        if (selectedRobot?.id === robotId) {
+        if (selectedRobotRef.current?.id === robotId) {
           await loadRobotDetail(robotId);
         }
         return true;
@@ -164,9 +167,9 @@ export function useFleet(isAuthenticated: boolean) {
       setError(ErrorPresenter.formatError(err));
       return false;
     }
-  };
+  }, [loadFleet, loadRobotDetail]);
 
-  const repairRobot = async (robotId: string): Promise<boolean> => {
+  const repairRobot = useCallback(async (robotId: string): Promise<boolean> => {
     try {
       const res = await apiClient.post(`/api/robots/${encodeURIComponent(robotId)}/repair`, {});
       if (res.ok) {
@@ -181,15 +184,15 @@ export function useFleet(isAuthenticated: boolean) {
       setError(ErrorPresenter.formatError(err));
       return false;
     }
-  };
+  }, [loadFleet]);
 
-  const toggleEnableDisable = async (robotId: string, currentStatus: string): Promise<boolean> => {
+  const toggleEnableDisable = useCallback(async (robotId: string, currentStatus: string): Promise<boolean> => {
     const action = currentStatus === "attivo" ? "disable" : "enable";
     try {
       const res = await apiClient.post(`/api/robots/${encodeURIComponent(robotId)}/${action}`, {});
       if (res.ok) {
         await loadFleet();
-        if (selectedRobot?.id === robotId) {
+        if (selectedRobotRef.current?.id === robotId) {
           await loadRobotDetail(robotId);
         }
         return true;
@@ -202,9 +205,9 @@ export function useFleet(isAuthenticated: boolean) {
       setError(ErrorPresenter.formatError(err));
       return false;
     }
-  };
+  }, [loadFleet, loadRobotDetail]);
 
-  const removeRobot = async (robotId: string): Promise<boolean> => {
+  const removeRobot = useCallback(async (robotId: string): Promise<boolean> => {
     try {
       const res = await apiClient.post(`/api/robots/${encodeURIComponent(robotId)}/remove`, { confirmation: true });
       if (res.ok) {
@@ -220,9 +223,9 @@ export function useFleet(isAuthenticated: boolean) {
       setError(ErrorPresenter.formatError(err));
       return false;
     }
-  };
+  }, [loadFleet]);
 
-  const deleteServerData = async (robotId: string): Promise<boolean> => {
+  const deleteServerData = useCallback(async (robotId: string): Promise<boolean> => {
     try {
       const res = await apiClient.delete(`/api/robots/${encodeURIComponent(robotId)}/server-data`, {
         body: JSON.stringify({ confirmation: true }),
@@ -240,9 +243,9 @@ export function useFleet(isAuthenticated: boolean) {
       setError(ErrorPresenter.formatError(err));
       return false;
     }
-  };
+  }, [loadFleet]);
 
-  const refreshFleet = async (): Promise<boolean> => {
+  const refreshFleet = useCallback(async (): Promise<boolean> => {
     setLoading(true);
     setError(null);
     try {
@@ -255,7 +258,11 @@ export function useFleet(isAuthenticated: boolean) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [loadFleet]);
+
+  const clearError = useCallback(() => {
+    setError(null);
+  }, []);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -284,24 +291,46 @@ export function useFleet(isAuthenticated: boolean) {
     return () => clearInterval(timer);
   }, [isAuthenticated, loadFleet]);
 
-  return {
-    robots,
-    loading,
-    error,
-    selectedRobot,
-    loadingDetail,
-    loadFleet,
-    refreshFleet,
-    loadRobotDetail,
-    setSelectedRobot,
-    registerRobot,
-    updateRobot,
-    refreshStatus,
-    verifyConnection,
-    repairRobot,
-    toggleEnableDisable,
-    removeRobot,
-    deleteServerData,
-    clearError: () => setError(null),
-  };
+  return useMemo(
+    () => ({
+      robots,
+      loading,
+      error,
+      selectedRobot,
+      loadingDetail,
+      loadFleet,
+      refreshFleet,
+      loadRobotDetail,
+      setSelectedRobot,
+      registerRobot,
+      updateRobot,
+      refreshStatus,
+      verifyConnection,
+      repairRobot,
+      toggleEnableDisable,
+      removeRobot,
+      deleteServerData,
+      clearError,
+    }),
+    [
+      robots,
+      loading,
+      error,
+      selectedRobot,
+      loadingDetail,
+      loadFleet,
+      refreshFleet,
+      loadRobotDetail,
+      setSelectedRobot,
+      registerRobot,
+      updateRobot,
+      refreshStatus,
+      verifyConnection,
+      repairRobot,
+      toggleEnableDisable,
+      removeRobot,
+      deleteServerData,
+      clearError,
+    ]
+  );
 }
