@@ -30,6 +30,12 @@ export const LoginView: React.FC<LoginViewProps> = ({
     }
   }, [sessionConflict]);
 
+  useEffect(() => {
+    if (!logoutStatus && !isConflictOpen && document.activeElement === document.body) {
+      usernameRef.current?.focus({ preventScroll: true });
+    }
+  }, [logoutStatus, isConflictOpen]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (logoutStatus) return;
@@ -79,7 +85,6 @@ export const LoginView: React.FC<LoginViewProps> = ({
                   ref={usernameRef}
                   required
                   autoComplete="username"
-                  autoFocus={!logoutStatus}
                   defaultValue=""
                 />
               </div>
@@ -107,12 +112,12 @@ export const LoginView: React.FC<LoginViewProps> = ({
                 pendingText="Accesso in corso..."
                 disabled={Boolean(logoutStatus)}
               >
-                Login
+                {logoutStatus === "pending" ? "Disconnessione in corso…" : "Login"}
               </DoubleSubmitButton>
             </form>
 
             {logoutStatus === "pending" && (
-              <p id="logout-status" className="text-muted text-center mt-3 mb-0" role="status">
+              <p id="logout-status" className="visually-hidden" role="status">
                 Chiusura della sessione in corso…
               </p>
             )}

@@ -52,6 +52,7 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
     apiClient.invalidateSession();
     setCurrentUser(null);
     setIsAuthenticated(false);
+    setLoading(false);
     setIdleWarning(null);
     setIdleWarningInfo(null);
     setIsIdleWarningOpen(false);
@@ -97,27 +98,27 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
         setLogoutStatus(null);
       }, signal);
     } catch {
-      setLogoutStatus("failed");
+      setLogoutStatus(getPendingLogout() ? "failed" : null);
     } finally {
       logoutInProgressRef.current = false;
     }
   }, [getPendingLogout]);
 
   const checkCurrentUser = useCallback(async (signal?: AbortSignal) => {
+    const generation = apiClient.sessionGeneration;
+    let user: User | null = null;
+    if (!getPendingLogout()) {
+      try {
+        const response = await fetch("/api/auth/me", { cache: "no-store", signal });
+        if (response.ok) user = (await response.json()).user;
+      } catch {}
+    }
+    if (signal?.aborted || generation !== apiClient.sessionGeneration) return;
     if (getPendingLogout()) {
       clearLocalSession();
-      setLoading(false);
       void retryLogout();
       return;
     }
-
-    const generation = apiClient.sessionGeneration;
-    let user: User | null = null;
-    try {
-      const response = await fetch("/api/auth/me", { cache: "no-store", signal });
-      if (response.ok) user = (await response.json()).user;
-    } catch {}
-    if (signal?.aborted || generation !== apiClient.sessionGeneration) return;
     setCurrentUser(user);
     setIsAuthenticated(Boolean(user));
     setLoading(false);
@@ -166,19 +167,22 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
   });
 
   const logout = useCallback(async (contextOrEvent?: unknown): Promise<void> => {
-    if (logoutInProgressRef.current || getPendingLogout()) return;
+    if (logoutInProgressRef.current) return;
     const context = contextOrEvent === "terminale" ? "terminale" : "sessione";
     clearLocalSession();
     setLoginError(null);
     setSessionConflict(null);
-    setLoading(false);
+    if (!getPendingLogout()) {
+      try {
+        localStorage.setItem(pendingLogoutKey, context);
+      } catch {
+        inMemoryLogoutRef.current = context;
+      }
+    }
     try {
-      localStorage.setItem(pendingLogoutKey, context);
       localStorage.removeItem("moliris_last_activity");
       localStorage.removeItem("moliris_idle_action");
-    } catch {
-      inMemoryLogoutRef.current = context;
-    }
+    } catch {}
     await retryLogout();
   }, [clearLocalSession, getPendingLogout, retryLogout]);
 
@@ -300,7 +304,6 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
       if (e.key === pendingLogoutKey) {
         if (e.newValue) {
           clearLocalSession();
-          setLoading(false);
           void retryLogout();
         } else if (!getPendingLogout()) {
           setLogoutStatus(null);

@@ -569,15 +569,14 @@ export function createServer(
   const serveIndex = async (_request: FastifyRequest, reply: FastifyReply) => {
     const indexPath = path.join(distFrontendDir, "index.html");
     if (fs.existsSync(indexPath)) {
-      reply
+      return reply
         .header("Cache-Control", "no-cache, no-store, must-revalidate")
         .header("Pragma", "no-cache")
         .header("Expires", "0")
         .type("text/html")
         .send(fs.readFileSync(indexPath));
-    } else {
-      reply.status(404).send("Frontend React non trovato. Eseguire 'npm run build:client'.");
     }
+    return reply.status(404).send("Frontend React non trovato. Eseguire 'npm run build:client'.");
   };
 
   app.get("/", serveIndex);
