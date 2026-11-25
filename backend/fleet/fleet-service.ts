@@ -697,13 +697,14 @@ export class FleetService {
         diagnosticDetail: failureReason,
       });
 
+      const failedStepMessage = failedStep?.message ? ` Motivo: ${failedStep.message}` : "";
       return {
         outcome: "ssh_non_verificata",
         performedActions,
         skippedActions,
         failedAction: "verifica_connessione_ssh",
         verificationSteps: connCheckResult?.steps,
-        message: "Registrazione rifiutata: connessione SSH verso il robot non verificata con successo in modalità rigorosa (CA-ROB-003).",
+        message: `Registrazione rifiutata: connessione SSH verso il robot non verificata con successo in modalità rigorosa (CA-ROB-003).${failedStepMessage}`,
         diagnosticDetail: failureReason,
         recoveryPath: "Verificare che il robot sia online, che la porta SSH sia raggiungibile e che credenziali e chiave host siano corrette.",
       };
