@@ -44,6 +44,10 @@ export function registerAuthRoutes(
   const loginMaxAttempts = 10;
   const maxTrackedLoginIps = 10_000;
   const dummyPasswordHash = hashPassword(crypto.randomBytes(32).toString("hex"));
+  const pendingLogoutAudits = new Set<Promise<unknown>>();
+  app.addHook("preClose", async () => {
+    await Promise.allSettled(pendingLogoutAudits);
+  });
 
   /**
    * Endpoint di Login (RF-AUTH-001, RF-AUTH-002, §6.1, CA-AUTH-001, CA-AUTH-002)
@@ -279,30 +283,32 @@ export function registerAuthRoutes(
    * Endpoint di Logout (RF-AUTH-004, Prompt #4)
    * Invalida la sessione lato server, registra l'audit con eventuale contesto e ripulisce il cookie.
    */
-  app.post("/api/auth/logout", async (req: FastifyRequest, reply: FastifyReply) => {
+  app.post("/api/auth/logout", (req: FastifyRequest, reply: FastifyReply) => {
     const sessionId = authMiddleware.extractSessionId(req);
     const body = (req.body as any) || {};
     const context = body.context === "terminale" ? "terminale" : "sessione";
     const reason = typeof body.reason === "string" ? body.reason : "MANUAL_LOGOUT";
 
-    if (sessionId) {
-      const session = sessionManager.getSession(sessionId);
-      const username = session ? session.username : "unknown";
-      sessionManager.destroySession(sessionId);
-
-      await auditRepository.record({
-        userId: username,
+    const session = sessionId ? sessionManager.getSession(sessionId) : null;
+    if (session && sessionManager.destroySession(session.sessionId)) {
+      const audit = auditRepository.record({
+        userId: session.username,
         operation: AuditOperation.AUTH_LOGOUT,
         outcome: "SUCCESS",
         timestamp: new Date(),
         details: { context, reason },
-      });
+      }).catch((err: unknown) => {
+        logger.error("Errore di registrazione audit logout", err instanceof Error ? err.message : undefined, {
+          userId: session.username,
+        });
+      }).finally(() => { pendingLogoutAudits.delete(audit); });
+      pendingLogoutAudits.add(audit);
 
       if (fileLogger) {
         fileLogger.logAccess({
           event: "LOGOUT",
-          username,
-          role: normalizeRoleForLog(session?.roles),
+          username: session.username,
+          role: normalizeRoleForLog(session.roles),
           outcome: "SUCCESSO",
           details: reason,
         }).catch(() => {});
@@ -316,7 +322,6 @@ export function registerAuthRoutes(
     reply.header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
     reply.header("Pragma", "no-cache");
     reply.header("Expires", "0");
-    reply.header("Clear-Site-Data", "\"cache\", \"cookies\", \"storage\"");
 
     return reply.status(200).send({
       status: "LOGGED_OUT",

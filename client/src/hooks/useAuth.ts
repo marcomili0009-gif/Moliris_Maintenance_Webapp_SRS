@@ -1,7 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { flushSync } from "react-dom";
 import { apiClient } from "../services/api-client.ts";
 import { ErrorPresenter } from "../services/error-presenter.ts";
 import type { User, IdleWarningInfo } from "../types/auth.ts";
+
+type LogoutContext = "sessione" | "terminale";
+type LogoutStatus = "pending" | "failed" | null;
+const pendingLogoutKey = "moliris_pending_logout";
+
+async function withAuthCookieLock<T>(operation: () => Promise<T>): Promise<T> {
+  // Login e logout scrivono lo stesso cookie, condiviso tra le schede.
+  return navigator.locks ? navigator.locks.request("moliris-auth-cookie", operation) : operation();
+}
 
 export function useAuth(activeTransfersOrOptions: number | { activeTransfersCount?: number } = 0) {
   const initialTransfersCount =
@@ -13,6 +23,7 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [logoutStatus, setLogoutStatus] = useState<LogoutStatus>(null);
   const [sessionConflict, setSessionConflict] = useState<string | null>(null);
   const [idleWarning, setIdleWarning] = useState<string | null>(null);
   const [idleWarningInfo, setIdleWarningInfo] = useState<IdleWarningInfo | null>(null);
@@ -28,30 +39,87 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
   const lastActivityRef = useRef<number>(Date.now());
   const idleCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const hasReportedWarningRef = useRef<boolean>(false);
+  const logoutInProgressRef = useRef(false);
+  const inMemoryLogoutRef = useRef<LogoutContext | null>(null);
   const effectiveActiveTransfers = Math.max(initialTransfersCount, internalActiveTransfers);
   const activeTransfersCountRef = useRef<number>(effectiveActiveTransfers);
   activeTransfersCountRef.current = effectiveActiveTransfers;
 
-  const checkCurrentUser = useCallback(async () => {
-    try {
-      const res = await apiClient.get(`/api/auth/me?_t=${Date.now()}`);
-      if (res.ok) {
-        const data = await res.json();
-        setCurrentUser(data.user);
-        setIsAuthenticated(true);
-      } else {
-        setCurrentUser(null);
-        setIsAuthenticated(false);
-      }
-    } catch {
-      setCurrentUser(null);
-      setIsAuthenticated(false);
-    } finally {
-      setLoading(false);
+  const clearLocalSession = useCallback(() => {
+    apiClient.invalidateSession();
+    setCurrentUser(null);
+    setIsAuthenticated(false);
+    setIdleWarning(null);
+    setIdleWarningInfo(null);
+    setIsIdleWarningOpen(false);
+    setInternalActiveTransfers(0);
+    hasReportedWarningRef.current = false;
+    if (idleCheckIntervalRef.current) {
+      clearInterval(idleCheckIntervalRef.current);
+      idleCheckIntervalRef.current = null;
     }
   }, []);
 
-  const login = async (username: string, password: string): Promise<boolean> => {
+  const getPendingLogout = useCallback((): LogoutContext | null => {
+    if (inMemoryLogoutRef.current) return inMemoryLogoutRef.current;
+    try {
+      const context = localStorage.getItem(pendingLogoutKey);
+      return context === "sessione" || context === "terminale" ? context : null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const retryLogout = useCallback(async (): Promise<void> => {
+    if (logoutInProgressRef.current || !getPendingLogout()) return;
+    logoutInProgressRef.current = true;
+    setLogoutStatus("pending");
+    try {
+      await withAuthCookieLock(async () => {
+        const context = getPendingLogout();
+        if (context) {
+          const response = await apiClient.post("/api/auth/logout", {
+            context,
+            reason: "MANUAL_LOGOUT",
+          }, { cache: "no-store", redirect: "error" });
+          if (!response.ok || (await response.json()).status !== "LOGGED_OUT") {
+            throw new Error("Logout non confermato dal server");
+          }
+
+          try { localStorage.removeItem(pendingLogoutKey); } catch {}
+          inMemoryLogoutRef.current = null;
+        }
+        setLogoutStatus(null);
+      });
+    } catch {
+      setLogoutStatus("failed");
+    } finally {
+      logoutInProgressRef.current = false;
+    }
+  }, [getPendingLogout]);
+
+  const checkCurrentUser = useCallback(async (signal?: AbortSignal) => {
+    if (getPendingLogout()) {
+      clearLocalSession();
+      setLoading(false);
+      void retryLogout();
+      return;
+    }
+
+    const generation = apiClient.sessionGeneration;
+    let user: User | null = null;
+    try {
+      const response = await fetch("/api/auth/me", { cache: "no-store", signal });
+      if (response.ok) user = (await response.json()).user;
+    } catch {}
+    if (signal?.aborted || generation !== apiClient.sessionGeneration) return;
+    setCurrentUser(user);
+    setIsAuthenticated(Boolean(user));
+    setLoading(false);
+  }, [clearLocalSession, getPendingLogout, retryLogout]);
+
+  const login = async (username: string, password: string): Promise<boolean> => withAuthCookieLock(async () => {
+    if (getPendingLogout() || logoutInProgressRef.current) return false;
     setLoginError(null);
     setSessionConflict(null);
     try {
@@ -62,6 +130,7 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
       });
 
       const data = await res.json();
+      if (getPendingLogout()) return false;
 
       if (!res.ok) {
         if (data.code === "SESSION_ALREADY_ACTIVE") {
@@ -75,6 +144,7 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
         return false;
       }
 
+      apiClient.invalidateSession();
       setCurrentUser(data.user);
       setIsAuthenticated(true);
       lastActivityRef.current = Date.now();
@@ -88,58 +158,36 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
       setLoginError(formatted.userMessage);
       return false;
     }
-  };
+  });
 
   const logout = useCallback(async (contextOrEvent?: unknown): Promise<void> => {
-    const validContext = contextOrEvent === "terminale" ? "terminale" : "sessione";
-
-    // 1. Notifica ed invalidazione immediata della sessione lato backend (prioritaria, blocca accessi successivi)
+    if (logoutInProgressRef.current || getPendingLogout()) return;
+    const context = contextOrEvent === "terminale" ? "terminale" : "sessione";
+    clearLocalSession();
+    setLoginError(null);
+    setSessionConflict(null);
+    setLoading(false);
     try {
-      await apiClient.post("/api/auth/logout", {
-        context: validContext,
-        reason: "MANUAL_LOGOUT",
-      });
-    } catch (err) {
-      console.warn("Logout remoto non riuscito o già invalidato:", err);
-    } finally {
-      // 2. Pulizia categorica dello stato client, timer e memorie locali (localStorage, sessionStorage)
-      setCurrentUser(null);
-      setIsAuthenticated(false);
-      setIdleWarning(null);
-      setIdleWarningInfo(null);
-      setIsIdleWarningOpen(false);
-      hasReportedWarningRef.current = false;
-      if (idleCheckIntervalRef.current) {
-        clearInterval(idleCheckIntervalRef.current);
-        idleCheckIntervalRef.current = null;
-      }
-
-      try {
-        localStorage.removeItem("moliris_last_activity");
-        localStorage.setItem(
-          "moliris_idle_action",
-          JSON.stringify({ type: "LOGOUT", timestamp: Date.now() })
-        );
-      } catch {}
-
-      try {
-        sessionStorage.clear();
-      } catch {}
-
-      if (typeof window !== "undefined" && window.history?.replaceState) {
-        window.history.replaceState(null, "", window.location.pathname);
-      }
+      localStorage.setItem(pendingLogoutKey, context);
+      localStorage.removeItem("moliris_last_activity");
+      localStorage.removeItem("moliris_idle_action");
+    } catch {
+      inMemoryLogoutRef.current = context;
     }
-  }, []);
+    await retryLogout();
+  }, [clearLocalSession, getPendingLogout, retryLogout]);
 
   const confirmActivity = useCallback(async (): Promise<void> => {
+    const generation = apiClient.sessionGeneration;
     try {
       await apiClient.post("/api/auth/heartbeat", {});
     } catch {
+      if (generation !== apiClient.sessionGeneration) return;
       try {
         await apiClient.post("/api/auth/session/confirm", { context: "sessione" });
       } catch {}
     }
+    if (generation !== apiClient.sessionGeneration) return;
     lastActivityRef.current = Date.now();
     hasReportedWarningRef.current = false;
     setIdleWarning(null);
@@ -188,6 +236,10 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
   // Al termine del trasferimento (successo, errore o annullamento) il timer riparte dal valore predefinito
   const prevActiveTransfersRef = useRef<number>(effectiveActiveTransfers);
   useEffect(() => {
+    if (!isAuthenticated) {
+      prevActiveTransfersRef.current = effectiveActiveTransfers;
+      return;
+    }
     if (prevActiveTransfersRef.current > 0 && effectiveActiveTransfers === 0) {
       lastActivityRef.current = Date.now();
       hasReportedWarningRef.current = false;
@@ -203,35 +255,55 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
       hasReportedWarningRef.current = false;
     }
     prevActiveTransfersRef.current = effectiveActiveTransfers;
-  }, [effectiveActiveTransfers]);
+  }, [effectiveActiveTransfers, isAuthenticated]);
 
   useEffect(() => {
-    apiClient.onSessionExpired(() => {
-      setCurrentUser(null);
-      setIsAuthenticated(false);
-      setIdleWarning(null);
-      setIdleWarningInfo(null);
-    });
+    const controller = new AbortController();
+    const unsubscribeExpired = apiClient.onSessionExpired(clearLocalSession);
+    const unsubscribeActivity = apiClient.onQualifiedActivity(touchActivity);
+    void checkCurrentUser(controller.signal);
 
-    apiClient.onQualifiedActivity(() => {
-      touchActivity();
-    });
-
-    checkCurrentUser();
-  }, [checkCurrentUser, touchActivity]);
+    const handlePageHide = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        // Il browser può ripristinare il DOM senza ricaricare la pagina.
+        flushSync(() => {
+          clearLocalSession();
+          setLoading(true);
+        });
+      }
+    };
+    const handlePageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) void checkCurrentUser(controller.signal);
+    };
+    const handleOnline = () => { void retryLogout(); };
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("pageshow", handlePageShow);
+    window.addEventListener("online", handleOnline);
+    return () => {
+      controller.abort();
+      unsubscribeExpired();
+      unsubscribeActivity();
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("pageshow", handlePageShow);
+      window.removeEventListener("online", handleOnline);
+    };
+  }, [checkCurrentUser, clearLocalSession, retryLogout, touchActivity]);
 
   // Sincronizzazione multi-scheda via StorageEvent (Prompt #4)
   useEffect(() => {
     const handleStorage = (e: StorageEvent) => {
-      if (e.key === "moliris_idle_action" && e.newValue) {
+      if (e.key === pendingLogoutKey) {
+        if (e.newValue) {
+          clearLocalSession();
+          setLoading(false);
+          void retryLogout();
+        } else if (!getPendingLogout()) {
+          setLogoutStatus(null);
+        }
+      } else if (e.key === "moliris_idle_action" && e.newValue) {
         try {
           const action = JSON.parse(e.newValue);
-          if (action.type === "LOGOUT") {
-            setCurrentUser(null);
-            setIsAuthenticated(false);
-            setIdleWarning(null);
-            setIdleWarningInfo(null);
-          } else if (action.type === "CONFIRM") {
+          if (action.type === "CONFIRM") {
             lastActivityRef.current = Date.now();
             hasReportedWarningRef.current = false;
             setIdleWarning(null);
@@ -255,7 +327,7 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
 
     window.addEventListener("storage", handleStorage);
     return () => window.removeEventListener("storage", handleStorage);
-  }, [sessionTimeoutMinutes, sessionWarningMinutes]);
+  }, [clearLocalSession, getPendingLogout, retryLogout, sessionTimeoutMinutes, sessionWarningMinutes]);
 
   // Gestione scheda in background / visibilità (Prompt #4)
   useEffect(() => {
@@ -379,6 +451,7 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
     }
 
     const runIdleCheck = () => {
+      if (getPendingLogout()) return;
       const now = Date.now();
       // Sospensione inattività se vi sono trasferimenti in corso (Prompt #4)
       if (activeTransfersCountRef.current > 0) {
@@ -449,7 +522,7 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
     return () => {
       if (idleCheckIntervalRef.current) clearInterval(idleCheckIntervalRef.current);
     };
-  }, [isAuthenticated, sessionTimeoutMinutes, sessionWarningMinutes, idleWarningInfo, isIdleWarningOpen]);
+  }, [getPendingLogout, isAuthenticated, sessionTimeoutMinutes, sessionWarningMinutes, idleWarningInfo, isIdleWarningOpen]);
 
   const isAdmin = currentUser?.roles.includes("amministratore") ?? false;
   const isOperator = currentUser?.roles.includes("operatore") ?? false;
@@ -459,6 +532,7 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
     isAuthenticated,
     loading,
     loginError,
+    logoutStatus,
     sessionConflict,
     idleWarning,
     idleWarningInfo,
@@ -468,6 +542,7 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
     isOperator,
     login,
     logout,
+    retryLogout,
     confirmActivity,
     confirmSession,
     dismissIdleWarning,

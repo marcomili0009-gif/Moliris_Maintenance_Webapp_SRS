@@ -10,6 +10,7 @@ import { createServer } from "../../backend/server.ts";
 import { SessionManager } from "../../backend/auth/session-manager.ts";
 import { InMemoryUserRepository } from "../../backend/auth/user-repository.ts";
 import { InMemoryAuditRepository } from "../../storage/audit-repository.ts";
+import { AuditOperation } from "../../storage/audit-models.ts";
 import { hashPassword } from "../../backend/auth/user-models.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
 import { loadAndValidateConfig } from "../../config/configuration.ts";
@@ -121,8 +122,38 @@ assert.strictEqual(meBeforeRes.statusCode, 200, "Prima del logout /api/auth/me d
 const meBeforeData = JSON.parse(meBeforeRes.body);
 assert.strictEqual(meBeforeData.user.username, "test_logout_user", "Username deve coincidere");
 
-// 3. Esecuzione del Logout tramite POST /api/auth/logout
-const logoutRes = await app.inject({
+// Simula un lookup già in corso e una scrittura audit MongoDB lenta.
+const originalFindById = userRepo.findById.bind(userRepo);
+const originalRecord = auditRepo.record.bind(auditRepo);
+let releaseLookup!: () => void;
+let announceLookup!: () => void;
+let releaseAudit!: () => void;
+let announceAuditWritten!: () => void;
+const lookupGate = new Promise<void>((resolve) => { releaseLookup = resolve; });
+const lookupStarted = new Promise<void>((resolve) => { announceLookup = resolve; });
+const auditGate = new Promise<void>((resolve) => { releaseAudit = resolve; });
+const auditWritten = new Promise<void>((resolve) => { announceAuditWritten = resolve; });
+userRepo.findById = async (id) => {
+  announceLookup();
+  await lookupGate;
+  return originalFindById(id);
+};
+auditRepo.record = async (event) => {
+  if (event.operation !== AuditOperation.AUTH_LOGOUT) return originalRecord(event);
+  await auditGate;
+  const persisted = await originalRecord(event);
+  announceAuditWritten();
+  return persisted;
+};
+const pendingMe = app.inject({
+  method: "GET",
+  url: "/api/auth/me",
+  headers: { cookie: sessionCookie },
+}).then((response) => response);
+await lookupStarted;
+
+// 3. Il logout deve rispondere e scadere il cookie mentre l'audit è ancora bloccato.
+const pendingLogout = app.inject({
   method: "POST",
   url: "/api/auth/logout",
   headers: {
@@ -134,7 +165,20 @@ const logoutRes = await app.inject({
     context: "sessione",
     reason: "MANUAL_LOGOUT",
   },
+}).then((response) => response);
+let responseTimeout: ReturnType<typeof setTimeout> | undefined;
+const logoutRes = await Promise.race([
+  pendingLogout,
+  new Promise<never>((_, reject) => {
+    responseTimeout = setTimeout(() => reject(new Error("Il logout attende la scrittura audit")), 2000);
+  }),
+]).finally(() => {
+  clearTimeout(responseTimeout);
+  releaseLookup();
+  releaseAudit();
 });
+assert.strictEqual((await pendingMe).statusCode, 401, "Anche un controllo avviato prima della revoca deve essere respinto");
+await auditWritten;
 
 assert.strictEqual(logoutRes.statusCode, 200, "Logout deve restituire status 200 OK");
 const logoutSetCookie = String(logoutRes.headers["set-cookie"]);
@@ -167,6 +211,7 @@ const fleetAfterRes = await app.inject({
   },
 });
 assert.strictEqual(fleetAfterRes.statusCode, 401, "Dopo il logout, endpoint protetti con il vecchio cookie DEVONO restituire 401");
+assert.strictEqual(fleetAfterRes.headers["cache-control"], "no-store");
 
 // 6. Verifica audit log dell'operazione di logout
 const auditEvents = await auditRepo.query({ userId: "test_logout_user" });

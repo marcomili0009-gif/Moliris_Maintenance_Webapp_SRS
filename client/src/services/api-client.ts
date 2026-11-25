@@ -1,15 +1,26 @@
 // Requisiti soddisfatti: SRS §1.2, §2.4 (vincoli 3-5), §2.5, RNF-SEC-001, RNF-SEC-002, RNF-SEC-004, RF-AUTH-003, RF-AUTH-006
 
 export class ApiClient {
-  private sessionExpiredListeners: Array<() => void> = [];
-  private activityListeners: Array<() => void> = [];
+  private sessionExpiredListeners = new Set<() => void>();
+  private activityListeners = new Set<() => void>();
+  private sessionVersion = 0;
 
-  public onSessionExpired(listener: () => void): void {
-    this.sessionExpiredListeners.push(listener);
+  public get sessionGeneration(): number {
+    return this.sessionVersion;
   }
 
-  public onQualifiedActivity(listener: () => void): void {
-    this.activityListeners.push(listener);
+  public invalidateSession(): void {
+    this.sessionVersion++;
+  }
+
+  public onSessionExpired(listener: () => void): () => void {
+    this.sessionExpiredListeners.add(listener);
+    return () => { this.sessionExpiredListeners.delete(listener); };
+  }
+
+  public onQualifiedActivity(listener: () => void): () => void {
+    this.activityListeners.add(listener);
+    return () => { this.activityListeners.delete(listener); };
   }
 
   public notifyQualifiedActivity(): void {
@@ -56,6 +67,7 @@ export class ApiClient {
    */
   public async request(endpoint: string, options: RequestInit = {}): Promise<Response> {
     this.assertLocalBackendEndpoint(endpoint);
+    const sessionGeneration = this.sessionGeneration;
 
     const headers: Record<string, string> = {
       ...((options.headers as Record<string, string>) || {}),
@@ -87,12 +99,12 @@ export class ApiClient {
         (options.method === "POST" && /^\/api\/auth\/session\/warning(?:\?.*)?$/.test(endpoint)) ||
         (options.method === "POST" && /^\/api\/auth\/logout(?:\?.*)?$/.test(endpoint));
 
-      if (!isAutomaticBackgroundCall) {
+      if (sessionGeneration === this.sessionGeneration && !isAutomaticBackgroundCall) {
         this.notifyQualifiedActivity();
       }
 
       if (response.status === 401) {
-        this.notifySessionExpired();
+        if (sessionGeneration === this.sessionGeneration) this.notifySessionExpired();
         const err: any = new Error("La sessione è scaduta o non valida. Effettuare nuovamente il login.");
         err.code = "AUTH_INVALID_CREDENTIALS";
         err.status = 401;

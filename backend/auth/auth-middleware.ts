@@ -63,6 +63,7 @@ export class AuthMiddleware {
    * Guardia di autenticazione: verifica sessione valida e non scaduta (RF-AUTH-003, RF-AUTH-006).
    */
   public async authenticate(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+    reply.header("Cache-Control", "no-store");
     const sessionId = this.extractSessionId(req);
 
     if (!sessionId) {
@@ -89,6 +90,17 @@ export class AuthMiddleware {
     }
 
     const user = await this.userRepository.findById(session.userId);
+    const currentSession = this.sessionManager.validate(sessionId);
+    if (!currentSession) {
+      const errDef = ERROR_CATALOG[ErrorCode.INVALID_CREDENTIALS];
+      reply.status(401).send({
+        code: errDef.code,
+        message: "Sessione scaduta o non valida. Effettuare nuovamente il login.",
+        classification: errDef.classification,
+      });
+      return;
+    }
+
     if (!user || !user.enabled) {
       await this.recordSecurityError(session.username, undefined, "USER_DISABLED_OR_NOT_FOUND");
       this.sessionManager.destroySession(sessionId);
@@ -135,7 +147,7 @@ export class AuthMiddleware {
       this.sessionManager.touchSession(sessionId);
     }
 
-    req.molirisSession = session;
+    req.molirisSession = currentSession;
     req.molirisUser = user;
   }
 

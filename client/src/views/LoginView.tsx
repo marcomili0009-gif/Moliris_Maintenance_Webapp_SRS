@@ -6,6 +6,8 @@ import { Modal } from "../components/common/Modal.tsx";
 interface LoginViewProps {
   onLogin: (username: string, password: string) => Promise<boolean>;
   error: string | null;
+  logoutStatus?: "pending" | "failed" | null;
+  onRetryLogout?: () => Promise<void>;
   sessionConflict?: string | null;
   onDismissSessionConflict?: () => void;
 }
@@ -13,6 +15,8 @@ interface LoginViewProps {
 export const LoginView: React.FC<LoginViewProps> = ({
   onLogin,
   error,
+  logoutStatus,
+  onRetryLogout,
   sessionConflict,
   onDismissSessionConflict,
 }) => {
@@ -28,6 +32,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (logoutStatus) return;
     const currentUsername = usernameRef.current?.value.trim() || "";
     const currentPassword = passwordRef.current?.value || "";
     // RNF-SEC-002: pulizia immediata della password dal campo form all'invio
@@ -74,7 +79,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                   ref={usernameRef}
                   required
                   autoComplete="username"
-                  autoFocus
+                  autoFocus={!logoutStatus}
                   defaultValue=""
                 />
               </div>
@@ -100,10 +105,30 @@ export const LoginView: React.FC<LoginViewProps> = ({
                 id="btn-login"
                 className="btn btn-success w-100 py-2 fw-semibold"
                 pendingText="Accesso in corso..."
+                disabled={Boolean(logoutStatus)}
               >
                 Login
               </DoubleSubmitButton>
             </form>
+
+            {logoutStatus === "pending" && (
+              <p id="logout-status" className="text-muted text-center mt-3 mb-0" role="status">
+                Chiusura della sessione in corso…
+              </p>
+            )}
+            {logoutStatus === "failed" && (
+              <div id="logout-status" className="alert alert-danger mt-3 mb-0 text-center" role="alert">
+                <p className="mb-2">Chiusura della sessione in attesa. Verifica la connessione e riprova.</p>
+                <DoubleSubmitButton
+                  id="btn-retry-logout"
+                  type="button"
+                  className="btn btn-outline-danger btn-sm"
+                  onAsyncClick={onRetryLogout}
+                >
+                  Riprova
+                </DoubleSubmitButton>
+              </div>
+            )}
 
             <div
               id="login-error"

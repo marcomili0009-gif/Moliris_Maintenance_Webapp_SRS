@@ -272,6 +272,8 @@ const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
 const sessionConflictOnly = process.env["SESSION_CONFLICT_ONLY"] === "1";
 // Segnale dedicato per saltare il resto dell'E2E mantenendo attivo il cleanup nel finally.
 const sessionConflictOnlyComplete = new Error("Session-conflict-only frontend test complete.");
+const logoutOnly = process.env["LOGOUT_ONLY"] === "1";
+const logoutOnlyComplete = new Error("Logout-only frontend test complete.");
 
 try {
   Object.defineProperty(globalThis, "window", {
@@ -419,6 +421,86 @@ async function evaluateInBrowser<T>(expression: string): Promise<T> {
   return res.result?.value as T;
 }
 
+async function waitForBrowser(expression: string): Promise<void> {
+  for (let attempt = 0; attempt < 80; attempt++) {
+    if (await evaluateInBrowser<boolean>(expression)) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.fail(`Condizione browser non soddisfatta: ${expression}`);
+}
+
+async function setBrowserNetwork(latency: number, offline = false): Promise<void> {
+  await sendCdpCommand("Network.emulateNetworkConditions", {
+    offline,
+    latency,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+  });
+}
+
+async function testLogout(): Promise<void> {
+  // Conserva nella cronologia una pagina che ha già mostrato la dashboard.
+  await sendCdpCommand("Page.navigate", { url: `${serverBaseUrl}/index.html` });
+  await waitForBrowser("location.pathname === '/index.html' && Boolean(document.querySelector('#btn-logout'))");
+  await setBrowserNetwork(1_200);
+  try {
+    const beforeLogout = networkRequestsWithMethod.filter(({ url }) => url.endsWith("/api/auth/logout")).length;
+    const feedbackMs = await evaluateInBrowser<number>(`new Promise((resolve, reject) => {
+      const start = performance.now();
+      const observer = new MutationObserver(() => {
+        if (document.querySelector('#login-section') && !document.querySelector('#dashboard-section, #current-username')) {
+          observer.disconnect();
+          clearTimeout(timeout);
+          requestAnimationFrame(() => resolve(performance.now() - start));
+        }
+      });
+      const timeout = setTimeout(() => {
+        observer.disconnect();
+        reject(new Error('Il login pubblico non è apparso'));
+      }, 4000);
+      observer.observe(document.body, { childList: true, subtree: true });
+      const button = document.getElementById('btn-logout');
+      button.click();
+      button.click();
+    })`);
+    console.log(`  -> Logout Chrome, latenza di rete di 1200 ms: feedback in ${feedbackMs.toFixed(1)} ms.`);
+    assert.ok(feedbackMs <= 100, "Il login pubblico deve apparire entro 100 ms dal clic");
+    await waitForBrowser("!document.querySelector('#logout-status')");
+    const afterLogout = networkRequestsWithMethod.filter(({ url }) => url.endsWith("/api/auth/logout")).length;
+    assert.strictEqual(afterLogout - beforeLogout, 1, "Due clic devono produrre un solo POST di logout");
+  } finally {
+    await setBrowserNetwork(0);
+  }
+
+  await evaluateInBrowser<void>("history.back(); void 0");
+  await waitForBrowser("location.pathname === '/' && Boolean(document.querySelector('#login-section'))");
+  assert.equal(await evaluateInBrowser("Boolean(document.querySelector('#dashboard-section, #current-username'))"), false);
+
+  await evaluateInBrowser<void>(`{
+    document.getElementById('username').value = 'admin';
+    document.getElementById('password').value = 'AdminPassword123!';
+    document.getElementById('btn-login').click();
+  }`);
+  await waitForBrowser("Boolean(document.querySelector('#btn-logout'))");
+
+  await setBrowserNetwork(0, true);
+  try {
+    await evaluateInBrowser<void>("document.getElementById('btn-logout').click()");
+    await waitForBrowser("Boolean(document.querySelector('#btn-retry-logout'))");
+    assert.equal(await evaluateInBrowser("document.querySelector('#btn-login').disabled"), true);
+    assert.equal(await evaluateInBrowser("Boolean(document.querySelector('#dashboard-section, #current-username'))"), false);
+    await evaluateInBrowser<void>("document.getElementById('btn-retry-logout').click()");
+    await waitForBrowser("Boolean(document.querySelector('#btn-retry-logout:not(:disabled)'))");
+  } finally {
+    await setBrowserNetwork(0);
+  }
+  await waitForBrowser("!document.querySelector('#logout-status') && !document.querySelector('#btn-login').disabled");
+  await sendCdpCommand("Page.reload");
+  await waitForBrowser("Boolean(document.querySelector('#login-section'))");
+  assert.equal(await evaluateInBrowser("Boolean(document.querySelector('#dashboard-section, #current-username'))"), false);
+  console.log("  PASS: Logout Chrome con clic ripetuti, Indietro, rete assente, nuovo tentativo, riconnessione e ricarica.");
+}
+
 try {
   console.log(`  -> Navigazione su ${serverBaseUrl}...`);
   await sendCdpCommand("Page.navigate", { url: serverBaseUrl });
@@ -523,6 +605,11 @@ try {
     "document.getElementById('current-username').textContent"
   );
   assert.strictEqual(usernameText, "admin", "L'username visualizzato deve essere admin");
+
+  if (logoutOnly) {
+    await testLogout();
+    throw logoutOnlyComplete;
+  }
 
   // Attesa popolamento flotta
   await new Promise((r) => setTimeout(r, 600));
@@ -1262,9 +1349,10 @@ try {
   }
   console.log("  PASS: Il browser non ha inviato alcuna richiesta verso host di robot; tutte le chiamate passano da Fastify.");
 
+  await testLogout();
   console.log("  PASS: Test E2E React completato con successo su Google Chrome!");
 } catch (error) {
-  if (error !== sessionConflictOnlyComplete) {
+  if (error !== sessionConflictOnlyComplete && error !== logoutOnlyComplete) {
     throw error;
   }
 } finally {

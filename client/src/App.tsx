@@ -13,6 +13,7 @@ export const App: React.FC = () => {
     isAuthenticated,
     loading,
     loginError,
+    logoutStatus,
     sessionConflict,
     idleWarning,
     idleWarningInfo,
@@ -20,6 +21,7 @@ export const App: React.FC = () => {
     idleRemainingMinutes,
     login,
     logout,
+    retryLogout,
     confirmActivity,
     confirmSession,
     dismissSessionConflict,
@@ -69,6 +71,8 @@ export const App: React.FC = () => {
         <LoginView
           onLogin={login}
           error={loginError}
+          logoutStatus={logoutStatus}
+          onRetryLogout={retryLogout}
           sessionConflict={sessionConflict}
           onDismissSessionConflict={dismissSessionConflict}
         />
