@@ -180,6 +180,18 @@ export function registerFleetRoutes(
         const body = parseRequestInput(robotConfigurationBodySchema, req.body, reply, "body");
         if (!body) return reply;
         const result = await fleetService.updateConfiguration(user, robotId, body as RobotConfigurationUpdateInput);
+        if (
+          body.remoteMonitoringPath !== undefined ||
+          body.host !== undefined ||
+          body.sshPort !== undefined ||
+          body.hostKeyVerification !== undefined ||
+          body.password !== undefined ||
+          body.privateKey !== undefined
+        ) {
+          await fleetService.verifyConnection(user, robotId).catch(() => {});
+          const refreshed = await fleetService.getRobotDetail(user, robotId);
+          return reply.status(200).send({ robot: refreshed.robot, availableFeatures: refreshed.availableFeatures });
+        }
         return reply.status(200).send({ robot: result });
       } catch (err: any) {
         return handleError(err, reply);

@@ -25,6 +25,10 @@ import { ApiClient } from "./src/services/api-client.ts";
 import { filterRobots } from "./src/utils/filterRobots.ts";
 import { buildBulkTargets, hasBulkSourceSelection } from "./src/types/transfer.ts";
 import type { RobotSummaryDto } from "./src/types/fleet.ts";
+import React from "react";
+import { renderToString } from "react-dom/server";
+import { ErrorModal } from "./src/components/common/ErrorModal.tsx";
+import { NotificationBanner } from "./src/components/common/NotificationBanner.tsx";
 
 console.log("--> Esecuzione test E2E React Frontend su Google Chrome CDP...");
 
@@ -57,6 +61,35 @@ const netError = ErrorPresenter.formatError(new TypeError("Failed to fetch"));
 assert.strictEqual(netError.code, "NETWORK_DISCONNECTED");
 assert.ok(netError.userMessage.includes("VPN Moliris"));
 console.log("  PASS: ErrorPresenter React verifica tutte le categorie §9 con sanitizzazione totale.");
+
+// Test 1a: Pop-up ATTENZIONE per errori operativi (invece del banner inline)
+console.log("  -> Test ErrorModal e NotificationBanner: verifica pop-up ATTENZIONE per errori");
+const testError = {
+  code: "NETWORK_DISCONNECTED",
+  userMessage: "Applicazione non raggiungibile. Verificare la connessione di rete e l'accesso alla VPN Moliris.",
+  classification: "recuperabile" as const,
+};
+const errorModalHtml = renderToString(
+  React.createElement(ErrorModal, { isOpen: true, error: testError, onClose: () => {} })
+);
+assert.ok(errorModalHtml.includes("ATTENZIONE"), "La modale di errore deve mostrare 'ATTENZIONE' come titolo");
+assert.ok(errorModalHtml.includes("NETWORK_DISCONNECTED"), "La modale deve mostrare il codice errore NETWORK_DISCONNECTED");
+assert.ok(errorModalHtml.includes("modal-error-alert"), "La modale deve avere id 'modal-error-alert'");
+assert.ok(errorModalHtml.includes("btn-error-modal-close"), "La modale deve includere il pulsante di chiusura 'btn-error-modal-close'");
+assert.ok(errorModalHtml.includes("Ho capito"), "Il pulsante di chiusura deve recitare 'Ho capito'");
+
+const bannerWithErrorHtml = renderToString(
+  React.createElement(NotificationBanner, { error: testError, onDismiss: () => {} })
+);
+assert.ok(bannerWithErrorHtml.includes("ATTENZIONE"), "NotificationBanner deve delegare l'errore alla modale pop-up ATTENZIONE");
+assert.ok(bannerWithErrorHtml.includes('style="display:none"'), "NotificationBanner non deve mostrare banner di errore visibile inline");
+
+const bannerWithMsgOnlyHtml = renderToString(
+  React.createElement(NotificationBanner, { message: "Operazione completata" })
+);
+assert.ok(bannerWithMsgOnlyHtml.includes("Operazione completata"), "NotificationBanner deve mostrare i messaggi informativi inline");
+assert.ok(!bannerWithMsgOnlyHtml.includes("modal-error-alert"), "NotificationBanner non deve aprire modale per soli messaggi informativi");
+console.log("  PASS: ErrorModal e NotificationBanner verificati: pop-up ATTENZIONE attivo per errori operativi.");
 
 // Test 1b: Wizard Caricamento Massivo - stato sorgente e contratto destinazioni
 const bulkTargets = buildBulkTargets({
@@ -1260,6 +1293,96 @@ try {
   );
   assert.strictEqual(isFleetActiveAfterHome, true, "Il click sul logo deve riportare alla Home (vista Flotta)");
   console.log("  PASS: AppNavbar logo funge da pulsante Home verso Flotta senza ricaricare la pagina.");
+
+  // Test Regressione: Sequenza di navigazione Logo -> Trasferimenti -> Logs
+  console.log("  -> Test Regressione Navigazione: Sequenza Logo -> Trasferimenti -> Logs (nessun blocco su Flotta)");
+
+  // 1. Clic sul logo: la vista è Flotta
+  await evaluateInBrowser<void>(`
+    document.querySelector('nav.navbar a.navbar-brand').click();
+  `);
+  await new Promise((r) => setTimeout(r, 200));
+  const isFleetAfterLogo = await evaluateInBrowser<boolean>(
+    "Boolean(document.getElementById('fleet-table')) && document.getElementById('fleet-view-container')?.style.display !== 'none'"
+  );
+  assert.strictEqual(isFleetAfterLogo, true, "Dopo il clic sul logo, la vista attiva deve essere Flotta");
+
+  // 2. Clic su Gestione file/trasferimenti (nav-files) e selezione tab Trasferimenti
+  await evaluateInBrowser<void>(`{
+    const filesNavBtn = document.getElementById('nav-files') || document.querySelector('button[data-view="files"]');
+    filesNavBtn?.click();
+    setTimeout(() => {
+      const trfBtn = document.querySelector('button[data-view="transfers"]');
+      trfBtn?.click();
+    }, 50);
+  }`);
+  await new Promise((r) => setTimeout(r, 300));
+
+  const isTransfersActive = await evaluateInBrowser<boolean>(`{
+    const filesActive = document.getElementById('nav-files')?.classList.contains('active');
+    const fsContainerVisible = document.getElementById('fs-view-container')?.style.display !== 'none';
+    const trfTabActive = document.querySelector('button[data-view="transfers"]')?.classList.contains('active');
+    Boolean(filesActive && fsContainerVisible && trfTabActive)
+  }`);
+  assert.strictEqual(isTransfersActive, true, "Dopo il logo, il clic su Trasferimenti deve mostrare la vista Trasferimenti e non restare bloccato su Flotta");
+
+  // 3. Clic su Logs (nav-logs)
+  await evaluateInBrowser<void>(`
+    const logsNavBtn = document.getElementById('nav-logs') || document.querySelector('button[data-view="logs"]');
+    logsNavBtn?.click();
+  `);
+  await new Promise((r) => setTimeout(r, 300));
+
+  const isLogsActive = await evaluateInBrowser<boolean>(
+    "Boolean(document.getElementById('logs-view-container')) && Boolean(document.getElementById('nav-logs')?.classList.contains('active'))"
+  );
+  assert.strictEqual(isLogsActive, true, "Dopo il logo e Trasferimenti, il clic su Logs deve mostrare la vista Logs");
+
+  // 4. Sequenza specifica di smontaggio: Logs -> Logo -> Logs -> Trasferimenti
+  console.log("  -> Test Regressione Smontaggio Dashboard: Sequenza Logs -> Logo -> Logs -> Trasferimenti");
+  // Logo da Logs
+  await evaluateInBrowser<void>(`
+    document.querySelector('nav.navbar a.navbar-brand').click();
+  `);
+  await new Promise((r) => setTimeout(r, 200));
+
+  // Di nuovo a Logs (Dashboard viene smontata)
+  await evaluateInBrowser<void>(`
+    document.getElementById('nav-logs')?.click();
+  `);
+  await new Promise((r) => setTimeout(r, 200));
+
+  // A Trasferimenti (Dashboard viene rimontata con goHomeTrigger azzerato in App)
+  await evaluateInBrowser<void>(`{
+    const filesNavBtn = document.getElementById('nav-files') || document.querySelector('button[data-view="files"]');
+    filesNavBtn?.click();
+    setTimeout(() => {
+      const trfBtn = document.querySelector('button[data-view="transfers"]');
+      trfBtn?.click();
+    }, 50);
+  }`);
+  await new Promise((r) => setTimeout(r, 300));
+
+  const isTransfersActiveAfterUnmount = await evaluateInBrowser<boolean>(`{
+    const filesActive = document.getElementById('nav-files')?.classList.contains('active');
+    const fsContainerVisible = document.getElementById('fs-view-container')?.style.display !== 'none';
+    const trfTabActive = document.querySelector('button[data-view="transfers"]')?.classList.contains('active');
+    Boolean(filesActive && fsContainerVisible && trfTabActive)
+  }`);
+  assert.strictEqual(
+    isTransfersActiveAfterUnmount,
+    true,
+    "Dopo smontaggio Dashboard in Logs e clic su Trasferimenti, la vista deve rimanere Trasferimenti e NON forzare Flotta"
+  );
+
+  console.log("  PASS: Regressione superata: entrambe le sequenze (Logo -> Trasferimenti -> Logs e Logs -> Logo -> Logs -> Trasferimenti) verificate con successo.");
+
+  // Torna alla vista Flotta per preservare lo stato dei test successivi
+  await evaluateInBrowser<void>(`
+    const fleetNavBtn = document.getElementById('nav-fleet') || document.querySelector('button[data-view="fleet"]');
+    fleetNavBtn?.click();
+  `);
+  await new Promise((r) => setTimeout(r, 200));
 
   // Test Prompt #4: Modale avviso inattività, countdown, azioni Conferma ed Esci, e accessibilità
   console.log("  -> Test Prompt #4: Verifica modale avviso inattività su Chrome (azioni Conferma/Esci, countdown, accessibilità)");

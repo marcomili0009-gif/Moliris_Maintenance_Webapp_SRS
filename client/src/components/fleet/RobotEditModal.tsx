@@ -42,7 +42,9 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
       setPassword("");
       setPrivateKey("");
       setFingerprint("");
-      setRemoteMonitoringPath("");
+      setRemoteMonitoringPath(
+        (robot as any).remoteMonitoringPath || ((robot as any).stateFilePaths?.[0] ?? "")
+      );
       setCustomerName(robot.customerName ?? "");
       setPlantName(robot.plantName ?? "");
       setError(null);
@@ -67,7 +69,12 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
       plantName: plantName.trim() || undefined,
       password: password ? password : undefined,
       privateKey: privateKey.trim() ? privateKey.trim() : undefined,
-      fingerprint: fingerprint.trim() ? fingerprint.trim() : undefined,
+      hostKeyVerification: fingerprint.trim()
+        ? {
+            fingerprint: fingerprint.trim(),
+            strictHostKeyChecking: true,
+          }
+        : undefined,
       remoteMonitoringPath: remoteMonitoringPath.trim() ? remoteMonitoringPath.trim() : undefined,
     };
 
@@ -244,6 +251,7 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
                   type="text"
                   id="edit-monitoringPath"
                   name="remoteMonitoringPath"
+                  placeholder="es. /etc/os-release"
                   value={remoteMonitoringPath}
                   onChange={(e) => setRemoteMonitoringPath(e.target.value)}
                 />

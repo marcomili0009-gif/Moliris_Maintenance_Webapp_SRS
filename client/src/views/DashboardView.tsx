@@ -32,6 +32,7 @@ interface DashboardViewProps {
   onConfirmSession?: () => Promise<void>;
   setActiveTransfersCount?: (count: number) => void;
   goHomeTrigger?: number;
+  onGoHomeHandled?: () => void;
   activeMainView?: "fleet" | "files";
   onActiveMainViewChange?: (view: "fleet" | "files") => void;
 }
@@ -43,6 +44,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onConfirmSession,
   setActiveTransfersCount,
   goHomeTrigger,
+  onGoHomeHandled,
   activeMainView,
   onActiveMainViewChange,
 }) => {
@@ -51,12 +53,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Navigazione principale ("fleet" o "files")
   const [internalActiveView, setInternalActiveView] = useState<"fleet" | "files">("fleet");
   const effectiveView = activeMainView ?? internalActiveView;
-  const handleViewChange = (view: "fleet" | "files") => {
-    setInternalActiveView(view);
-    if (onActiveMainViewChange) {
-      onActiveMainViewChange(view);
-    }
-  };
+  const handleViewChange = React.useCallback(
+    (view: "fleet" | "files") => {
+      setInternalActiveView(view);
+      if (onActiveMainViewChange) {
+        onActiveMainViewChange(view);
+      }
+    },
+    [onActiveMainViewChange]
+  );
 
   // Sotto-tab vista unificata file ("server" | "general" | "remote" | "transfers")
   const [activeSubTab, setActiveSubTab] = useState<"server" | "general" | "remote" | "transfers">("server");
@@ -171,10 +176,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setFilterResetTrigger((prev) => prev + 1);
   }, []);
 
+  const { setSelectedRobot } = fleet;
+
   const handleGoHome = React.useCallback(() => {
     handleViewChange("fleet");
     handleResetFilters();
-    fleet.setSelectedRobot(null);
+    setSelectedRobot(null);
     setEditingRobot(null);
     setIsRegisterOpen(false);
     setIsBulkUploadOpen(false);
@@ -194,13 +201,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
     // Preserva intatti i trasferimenti attivi e la sessione terminale aperta
     window.scrollTo({ top: 0, behavior: "smooth" });
-  }, [fleet, handleResetFilters]);
+  }, [handleViewChange, handleResetFilters, setSelectedRobot]);
+
+  const lastHandledGoHomeTrigger = React.useRef(0);
 
   React.useEffect(() => {
-    if (goHomeTrigger !== undefined && goHomeTrigger > 0) {
-      handleGoHome();
+    if (goHomeTrigger === 0) {
+      lastHandledGoHomeTrigger.current = 0;
+      return;
     }
-  }, [goHomeTrigger, handleGoHome]);
+    if (goHomeTrigger !== undefined && goHomeTrigger > 0 && goHomeTrigger > lastHandledGoHomeTrigger.current) {
+      lastHandledGoHomeTrigger.current = goHomeTrigger;
+      handleGoHome();
+      if (onGoHomeHandled) {
+        onGoHomeHandled();
+      }
+    }
+  }, [goHomeTrigger, handleGoHome, onGoHomeHandled]);
 
   // Modals state
   const [isRegisterOpen, setIsRegisterOpen] = useState<boolean>(false);
