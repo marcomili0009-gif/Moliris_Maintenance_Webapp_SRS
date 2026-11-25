@@ -58,6 +58,7 @@ export interface RobotRepository {
   updatePlantNameForRobots(plantId: string, newName: string): Promise<number>;
   listByClientId(clientId: string): Promise<RobotEntity[]>;
   listByPlantId(plantId: string): Promise<RobotEntity[]>;
+  deleteById(id: string): Promise<boolean>;
 }
 
 /**
@@ -321,6 +322,10 @@ export class InMemoryRobotRepository implements RobotRepository {
       }
     }
     return list;
+  }
+
+  async deleteById(id: string): Promise<boolean> {
+    return this.robots.delete(id);
   }
 }
 
@@ -677,6 +682,18 @@ export class MongoRobotRepository implements RobotRepository {
       throw new MolirisAppError(
         ErrorCode.DB_PERSISTENCE_ERROR,
         `Errore MongoDB durante listByPlantId: ${err.message}`
+      );
+    }
+  }
+
+  async deleteById(id: string): Promise<boolean> {
+    try {
+      const res = await this.collection.deleteOne({ id });
+      return res.deletedCount > 0;
+    } catch (err: any) {
+      throw new MolirisAppError(
+        ErrorCode.DB_PERSISTENCE_ERROR,
+        `Errore MongoDB durante deleteById: ${err.message}`
       );
     }
   }

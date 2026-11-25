@@ -336,20 +336,20 @@ try {
     const oldFile = path.join(oldDir, "logs", "essential-history.log");
     fs.writeFileSync(oldFile, "CRITICAL AUDIT LOGS FROM OLD ROBOT");
 
-    // 2. Rimuove il robot (richiede confirm: true)
+    // 2. Rimuove il robot (richiede confirm: true) -> eliminazione fisica dal DB
     await fleetService.removeRobot(adminUser, "robot-old", true);
 
     const oldEntity = await repo.findById("robot-old");
-    assert.strictEqual(oldEntity?.anagraphicState, "rimosso");
+    assert.strictEqual(oldEntity, null, "Il robot eliminato deve essere rimosso anche dal database");
 
     // 3. Verifica che i file e la directory vecchia siano ancora intatti (RF-ROB-013, CA-ROB-011)
     assert.ok(fs.existsSync(oldFile), "I file storici del robot rimosso non devono MAI essere cancellati");
     assert.strictEqual(fs.readFileSync(oldFile, "utf8"), "CRITICAL AUDIT LOGS FROM OLD ROBOT");
 
-    // 4. Tentativo di riutilizzare il VECCHIO ID: categoricamente respinto (RF-ROB-006, Problema 1d)
+    // 4. Riutilizzo dell'ID dopo eliminazione dal DB: ora consentito
     const reuseOldIdRes = await fleetService.registerRobot(adminUser, {
-      id: "robot-old", // Già usato in passato
-      displayName: "Attempt Reusing Old ID",
+      id: "robot-old",
+      displayName: "Re-registered Old ID",
       customerName: "Cliente Security",
       remoteUsername: "operator_dev",
       host: "192.168.100.5",
@@ -358,10 +358,10 @@ try {
       password: "pass",
       hostKeyVerification: { fingerprint: "4".repeat(64) },
     });
-    assert.strictEqual(reuseOldIdRes.outcome, "registrazione_rifiutata", "Un ID non può mai essere riutilizzato anche se il robot è stato rimosso");
-    assert.ok(reuseOldIdRes.validationErrors?.id);
+    assert.strictEqual(reuseOldIdRes.outcome, "ssh_non_verificata", "Dopo l'eliminazione dal DB, l'ID può essere riutilizzato");
 
-    // 5. Re-registrazione dello STESSO dispositivo con NUOVO ID: ha successo
+    // 5. Rimozione e re-registrazione dello STESSO dispositivo con NUOVO ID: ha successo
+    await fleetService.removeRobot(adminUser, "robot-old", true);
     const newReg = await fleetService.registerRobot(adminUser, {
       id: "robot-new",
       displayName: "New Robot for Same Device",

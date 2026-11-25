@@ -1274,10 +1274,12 @@ export class FleetService {
     }
     await this.connectionManager.closeConnectionsForRobot(robotId);
 
-    // Cambia stato anagrafico a 'rimosso' (preservando database storico e file su filesystem)
-    await this.robotRepository.updateAnagraphicState(robotId, "rimosso");
+    // Elimina credenziali dal vault e il documento del robot dal database (preservando file sul server e audit log)
+    await this.credentialProvider.remove(robotId);
+    await this.robotRepository.deleteById(robotId);
 
     await this.recordAudit(user.username, AuditOperation.ROBOT_REMOVAL, robotId, "SUCCESS", {
+      deletedFromDatabase: true,
       serverDirectoryPreserved: robot.serverDirectoryPath,
     });
   }

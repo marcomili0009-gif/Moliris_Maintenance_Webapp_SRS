@@ -612,9 +612,13 @@ try {
 
     await service.removeRobot(adminUser, "robot-remove-01", true);
 
-    // Robot rimosso NON compare nella lista attiva (RF-ROB-014, CA-ROB-012)
+    // Robot rimosso NON compare nella lista attiva né nel DB
     const listAfterRemoval = await service.listFleet(adminUser);
     assert.strictEqual(listAfterRemoval.some(r => r.id === "robot-remove-01"), false);
+    await assert.rejects(
+      async () => await service.getRobotDetail(adminUser, "robot-remove-01"),
+      (err: any) => err instanceof MolirisAppError && err.code === ErrorCode.MISSING_ROBOT_PARAMS
+    );
 
     // Directory e file rimangono intatti sul server (RF-ROB-013, CA-ROB-011)
     assert(fs.existsSync(robotDir), "La directory server del robot rimosso non deve essere cancellata");
