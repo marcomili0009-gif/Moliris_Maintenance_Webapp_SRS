@@ -98,6 +98,25 @@ body {
   display: none;
 }
 
+/* Conserva la schermatura delle modali lasciando accessibile il logout. */
+#app:has(.modal:not(.hidden)):not(:has(.terminal-expanded)) > .navbar:has(#btn-logout) {
+  z-index: 1056;
+  pointer-events: none;
+}
+
+#app:has(.modal:not(.hidden)):not(:has(.terminal-expanded)) > .navbar:has(#btn-logout)::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+}
+
+#app:has(.modal:not(.hidden)):not(:has(.terminal-expanded)) > .navbar #btn-logout {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+}
+
 .modal-content {
   background-color: #ffffff;
   border-radius: 8px;
@@ -109,6 +128,15 @@ body {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border-color);
+}
+
+#app:has(> .navbar #btn-logout) .modal > .modal-content:not(.modal-terminal-window) {
+  max-height: min(90vh, calc(100vh - 2 * var(--moliris-navbar-height, 0px)));
+}
+
+#app:has(> .navbar #btn-logout) #modal-terminal > .modal-terminal-window:not(.terminal-expanded) {
+  position: relative;
+  top: max(0px, calc(var(--moliris-navbar-height, 0px) - (100vh - var(--terminal-window-height)) / 2));
 }
 
 .modal-large {
@@ -399,9 +427,10 @@ body {
 /* Stili Finestra Terminale Remoto PTY (RF-SSH-003, RNF-UX-004) */
 /* Il terminale si apre SEMPRE in formato ridotto; l'espansione è opt-in. */
 .modal-terminal-window {
+  --terminal-window-height: min(540px, 79vh);
   max-width: min(1100px, 92vw);
   width: min(1100px, 74vw);
-  height: min(540px, 79vh);
+  height: var(--terminal-window-height);
   max-height: 90vh;
   background-color: #1e1e1e;
   color: #f1f1f1;
@@ -533,9 +562,9 @@ body {
   }
 
   .modal-terminal-window {
+    --terminal-window-height: min(420px, 78vh);
     width: 96vw;
     max-width: 96vw;
-    height: min(420px, 78vh);
   }
 }
 

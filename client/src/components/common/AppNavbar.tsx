@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useLayoutEffect, useRef } from "react";
 import logo from "@/assets/Moliris_white.png";
 import type { User } from "../../types/auth.ts";
 
@@ -26,8 +26,29 @@ export const AppNavbar: React.FC<AppNavbarProps> = ({
   activeView = "fleet",
   onViewChange,
 }) => {
+  const navbarRef = useRef<HTMLElement>(null);
+  const hasLogout = Boolean(user && onLogout);
+
+  useLayoutEffect(() => {
+    const navbar = navbarRef.current;
+    const app = navbar?.parentElement;
+    if (!navbar || !app || !hasLogout) return;
+
+    const updateHeight = () => {
+      app.style.setProperty("--moliris-navbar-height", `${navbar.getBoundingClientRect().height}px`);
+    };
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(navbar);
+    return () => {
+      observer.disconnect();
+      app.style.removeProperty("--moliris-navbar-height");
+    };
+  }, [hasLogout]);
+
   return (
     <nav
+      ref={navbarRef}
       className="navbar navbar-expand navbar-dark bg-dark sticky-top px-3 py-2"
       aria-label="Barra principale Moliris"
     >

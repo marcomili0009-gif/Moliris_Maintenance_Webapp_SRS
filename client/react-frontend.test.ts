@@ -444,10 +444,17 @@ let cdpMsgId = 1;
 const pendingCdpReplies = new Map<number, (reply: any) => void>();
 const networkRequestsMade: string[] = [];
 const networkRequestsWithMethod: Array<{ method: string; url: string }> = [];
+const browserJavaScriptErrors: string[] = [];
 
 cdpWs.onmessage = (event) => {
   try {
     const data = JSON.parse(event.data as string);
+    if (data.method === "Runtime.exceptionThrown") {
+      const details = data.params.exceptionDetails;
+      browserJavaScriptErrors.push(details.exception?.description || details.text);
+    } else if (data.method === "Runtime.consoleAPICalled" && data.params.type === "error") {
+      browserJavaScriptErrors.push(data.params.args.map((arg: any) => arg.value ?? arg.description).join(" "));
+    }
     if (data.method === "Network.requestWillBeSent") {
       const reqUrl = data.params?.request?.url;
       if (reqUrl) {
@@ -517,6 +524,7 @@ async function setBrowserNetwork(latency: number, offline = false): Promise<void
 }
 
 async function testLogout(): Promise<void> {
+  const initialBrowserErrors = browserJavaScriptErrors.length;
   // Conserva nella cronologia una pagina che ha già mostrato la dashboard.
   await sendCdpCommand("Page.navigate", { url: `${serverBaseUrl}/index.html` });
   await waitForBrowser("location.pathname === '/index.html' && Boolean(document.querySelector('#btn-logout'))");
@@ -543,7 +551,16 @@ async function testLogout(): Promise<void> {
     })`);
     console.log(`  -> Logout Chrome, latenza di rete di 1200 ms: feedback in ${feedbackMs.toFixed(1)} ms.`);
     assert.ok(feedbackMs <= 100, "Il login pubblico deve apparire entro 100 ms dal clic");
+    const pendingCardHeight = await evaluateInBrowser<number>(
+      "document.querySelector('#login-section').getBoundingClientRect().height"
+    );
+    assert.equal(await evaluateInBrowser("document.querySelector('#logout-status')?.role"), "status");
     await waitForBrowser("!document.querySelector('#logout-status')");
+    const confirmedCardHeight = await evaluateInBrowser<number>(
+      "document.querySelector('#login-section').getBoundingClientRect().height"
+    );
+    assert.equal(confirmedCardHeight, pendingCardHeight, "La conferma non deve spostare il layout del login");
+    await waitForBrowser("document.activeElement?.id === 'username'");
     const afterLogout = networkRequestsWithMethod.filter(({ url }) => url.endsWith("/api/auth/logout")).length;
     assert.strictEqual(afterLogout - beforeLogout, 1, "Due clic devono produrre un solo POST di logout");
   } finally {
@@ -576,6 +593,7 @@ async function testLogout(): Promise<void> {
   await sendCdpCommand("Page.reload");
   await waitForBrowser("Boolean(document.querySelector('#login-section'))");
   assert.equal(await evaluateInBrowser("Boolean(document.querySelector('#dashboard-section, #current-username'))"), false);
+  assert.deepEqual(browserJavaScriptErrors.slice(initialBrowserErrors), [], "Nessun errore JavaScript con rete lenta e assente");
   console.log("  PASS: Logout Chrome con clic ripetuti, Indietro, rete assente, nuovo tentativo, riconnessione e ricarica.");
 }
 
@@ -591,15 +609,42 @@ async function loginAgain(): Promise<void> {
 
 async function testLogoutCycles(): Promise<void> {
   const pageTimeOrigin = await evaluateInBrowser<number>("performance.timeOrigin");
+  const initialBrowserErrors = browserJavaScriptErrors.length;
   const countLogoutRequests = () => networkRequestsWithMethod.filter(
     ({ method, url }) => method === "POST" && url.endsWith("/api/auth/logout")
   ).length;
   for (let cycle = 1; cycle <= 20; cycle++) {
     if (cycle > 1) await loginAgain();
+    if (cycle === 2) {
+      await evaluateInBrowser("document.getElementById('btn-register-robot').click()");
+      await waitForBrowser("Boolean(document.getElementById('modal-robot-register'))");
+    }
+    if (cycle === 3) {
+      // Intento già condiviso, prima che la scheda riceva l'evento storage.
+      await evaluateInBrowser("localStorage.setItem('moliris_pending_logout', 'sessione')");
+    }
+    if (cycle === 4 || cycle === 5) {
+      await evaluateInBrowser("window._molirisSimulateInactivity(28)");
+      await waitForBrowser("Boolean(document.getElementById('modal-idle-warning'))");
+    }
+    if (cycle === 6) {
+      await evaluateInBrowser("document.getElementById('btn-server-terminal').click()");
+      await waitForBrowser("document.getElementById('terminal-session-status')?.textContent === 'Connesso'");
+    }
+    const expectedTarget = cycle === 5 ? "btn-idle-logout" : "btn-logout";
+    const beforeHeartbeat = networkRequestsWithMethod.filter(
+      ({ url }) => url.endsWith("/api/auth/heartbeat")
+    ).length;
     const beforeLogout = countLogoutRequests();
-    const { feedbackMs, confirmedMs } = await evaluateInBrowser<{ feedbackMs: number; confirmedMs: number }>(
-      `new Promise((resolve, reject) => {
-        const start = performance.now();
+    const { x, y, hit } = await evaluateInBrowser<{ x: number; y: number; hit: string }>(`(() => {
+      const button = document.getElementById('${expectedTarget}');
+      const bounds = button.getBoundingClientRect();
+      const x = bounds.x + bounds.width / 2;
+      const y = bounds.y + bounds.height / 2;
+      let start = performance.now();
+      const startMeasure = () => { start = performance.now(); };
+      window.addEventListener('pointerdown', startMeasure, { capture: true, once: true });
+      window.molirisLogoutMeasure = new Promise((resolve) => {
         let feedbackMs;
         const observer = new MutationObserver(() => {
           if (!document.querySelector('#login-section') || document.querySelector('#current-username')) return;
@@ -612,18 +657,32 @@ async function testLogoutCycles(): Promise<void> {
         });
         const timer = setTimeout(() => {
           observer.disconnect();
-          reject(new Error('Logout ciclo ${cycle} senza conferma entro 4 s'));
+          window.removeEventListener('pointerdown', startMeasure, true);
+          resolve(null);
         }, 4000);
         observer.observe(document.body, { childList: true, subtree: true, attributes: true });
-        const button = document.getElementById('btn-logout');
-        button.click();
-        button.click();
-      })`
+      });
+      const target = document.elementFromPoint(x, y);
+      return { x, y, hit: target?.id || target?.className || target?.tagName || 'none' };
+    })()`);
+    const click = (type: string, clickCount: number) =>
+      sendCdpCommand("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount });
+    const inputs = [click("mousePressed", 1), click("mouseReleased", 1)];
+    if (cycle >= 6 && cycle % 2 === 0) inputs.push(click("mousePressed", 2), click("mouseReleased", 2));
+    await Promise.all(inputs);
+    const measurement = await evaluateInBrowser<{ feedbackMs: number; confirmedMs: number } | null>(
+      "window.molirisLogoutMeasure"
     );
+    assert.ok(measurement, `Ciclo ${cycle}: nessuna conferma dopo il clic Chrome, elemento colpito: ${hit}`);
+    assert.equal(hit, expectedTarget, `Ciclo ${cycle}: il clic deve raggiungere il pulsante di uscita`);
+    const { feedbackMs, confirmedMs } = measurement;
     console.log(`LOGOUT_CYCLE ${cycle} ${feedbackMs.toFixed(1)} ${confirmedMs.toFixed(1)}`);
     assert.ok(feedbackMs < 100, `Ciclo ${cycle}: feedback entro 100 ms`);
     assert.ok(confirmedMs < 1_000, `Ciclo ${cycle}: conferma entro 1 secondo`);
     assert.equal(countLogoutRequests() - beforeLogout, 1, `Ciclo ${cycle}: un solo POST`);
+    assert.equal(networkRequestsWithMethod.filter(
+      ({ url }) => url.endsWith("/api/auth/heartbeat")
+    ).length, beforeHeartbeat, `Ciclo ${cycle}: uscire non deve confermare l'inattività`);
     assert.equal(sessionManager.getActiveSessionsCount("user_admin"), 0, `Ciclo ${cycle}: sessione revocata`);
     const { cookies } = await sendCdpCommand("Network.getCookies", { urls: [serverBaseUrl] });
     assert.ok(!cookies.some(({ name }: { name: string }) => name === "__Host-moliris_session"),
@@ -632,6 +691,7 @@ async function testLogoutCycles(): Promise<void> {
       "fetch('/api/auth/me', {cache:'no-store', signal:AbortSignal.timeout(2000)}).then(response => response.status)"
     ), 401, `Ciclo ${cycle}: sessione precedente inutilizzabile`);
   }
+  assert.deepEqual(browserJavaScriptErrors.slice(initialBrowserErrors), [], "Nessun errore JavaScript durante il logout");
   assert.equal(await evaluateInBrowser<number>("performance.timeOrigin"), pageTimeOrigin, "Nessun reload tra i cicli");
   console.log("  PASS: 20 cicli consecutivi di login/logout nello stesso documento Chrome.");
 }
@@ -778,6 +838,7 @@ try {
   if (logoutCyclesOnly) {
     await testLogoutCycles();
     await testStalledLogout();
+    await testLogout();
     throw logoutCyclesOnlyComplete;
   }
   if (logoutOnly) {
