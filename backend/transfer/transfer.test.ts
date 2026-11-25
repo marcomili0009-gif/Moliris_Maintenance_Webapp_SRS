@@ -11,6 +11,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { Readable, PassThrough } from "stream";
+import { setTimeout as delay } from "node:timers/promises";
 import { execSync } from "child_process";
 import ssh2 from "ssh2";
 import { type SystemConfiguration } from "../../config/configuration.ts";
@@ -562,6 +563,53 @@ fs.writeFileSync(validPreexistingServerPath, "VALID_SERVER_PREEXISTING_DATA_ORIG
   assert.strictEqual(Buffer.concat(chunks).toString("utf-8"), clientPayload);
 
   console.log("  PASS: CA-FS-004 - Trasferimenti Computer ↔ Robot intermediati da backend senza SSH diretto.");
+}
+
+// =========================================================================
+// Revoca mentre il collegamento di lettura SFTP è in apertura.
+{
+  const session = sessionManager.createSession(userAuthorized);
+  const context = sessionManager.createAuthorizedContext(session, userAuthorized, testRobot.id);
+  const filename = "closing-read-on-revocation.txt";
+  const finalPath = path.join(testRobot.serverDirectoryPath, filename);
+  const originalOpen = remoteFsService.openRemoteReadStream.bind(remoteFsService);
+  let announceOpen!: () => void;
+  let allowReturn!: () => void;
+  const handleOpened = new Promise<void>((resolve) => { announceOpen = resolve; });
+  const holdHandle = new Promise<void>((resolve) => { allowReturn = resolve; });
+  let cleanupCalled = false;
+
+  remoteFsService.openRemoteReadStream = async (...args) => {
+    const handle = await originalOpen(...args);
+    announceOpen();
+    await holdHandle;
+    return {
+      stream: handle.stream,
+      cleanup: async () => {
+        cleanupCalled = true;
+        await handle.cleanup();
+      },
+    };
+  };
+
+  const transfer = transferService.executeServerRobotTransfer(context, testRobot, {
+    direction: "ROBOT_TO_SERVER",
+    remotePath: "robot_log.txt",
+    serverRelativePath: filename,
+  }).then(() => "completed", (error) => error.code);
+  try {
+    assert.equal(await Promise.race([handleOpened.then(() => "open"), delay(3000, "timeout", { ref: false })]), "open");
+    sessionManager.destroySession(session.sessionId);
+    allowReturn();
+    assert.equal(await Promise.race([transfer, delay(3000, "timeout", { ref: false })]), ErrorCode.INVALID_CREDENTIALS);
+    assert.equal(cleanupCalled, true, "Il canale ottenuto dopo la revoca deve essere rilasciato");
+    assert.equal(fs.existsSync(finalPath), false);
+  } finally {
+    allowReturn();
+    sessionManager.destroySession(session.sessionId);
+    remoteFsService.openRemoteReadStream = originalOpen;
+  }
+  console.log("  PASS: SFTP aperto in ritardo dopo la revoca rilasciato senza pubblicare il file.");
 }
 
 // =========================================================================
@@ -1128,7 +1176,7 @@ fs.writeFileSync(validPreexistingServerPath, "VALID_SERVER_PREEXISTING_DATA_ORIG
   // 3. Avvio in background (HTTP 202), destinazione inesistente rifiutata subito, Riprova e Rimuovi
   const cookieHeader = {
     cookie: `__Host-moliris_session=${sessionAuth.sessionId}`,
-    origin: "http://localhost",
+    origin: "https://localhost",
     host: "localhost",
   };
   const bgSource = "bg_source.bin";

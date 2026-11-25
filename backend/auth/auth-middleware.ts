@@ -80,24 +80,14 @@ export class AuthMiddleware {
     const session = this.sessionManager.validate(sessionId);
     if (!session) {
       await this.recordSecurityError("anonymous", undefined, "SESSION_EXPIRED_OR_INVALID");
-      const errDef = ERROR_CATALOG[ErrorCode.INVALID_CREDENTIALS];
-      reply.status(401).send({
-        code: errDef.code,
-        message: "Sessione scaduta o non valida. Effettuare nuovamente il login.",
-        classification: errDef.classification,
-      });
+      this.rejectExpiredSession(reply);
       return;
     }
 
     const user = await this.userRepository.findById(session.userId);
     const currentSession = this.sessionManager.validate(sessionId);
     if (!currentSession) {
-      const errDef = ERROR_CATALOG[ErrorCode.INVALID_CREDENTIALS];
-      reply.status(401).send({
-        code: errDef.code,
-        message: "Sessione scaduta o non valida. Effettuare nuovamente il login.",
-        classification: errDef.classification,
-      });
+      this.rejectExpiredSession(reply);
       return;
     }
 
@@ -143,12 +133,22 @@ export class AuthMiddleware {
       (req.method === "POST" && /^\/api\/auth\/session\/warning(?:\?.*)?$/.test(req.url)) ||
       (req.method === "POST" && /^\/api\/auth\/logout(?:\?.*)?$/.test(req.url));
 
-    if (!isBackgroundOrPolling) {
-      this.sessionManager.touchSession(sessionId);
+    if (!isBackgroundOrPolling && !this.sessionManager.touchSession(sessionId)) {
+      this.rejectExpiredSession(reply);
+      return;
     }
 
     req.molirisSession = currentSession;
     req.molirisUser = user;
+  }
+
+  private rejectExpiredSession(reply: FastifyReply): void {
+    const errDef = ERROR_CATALOG[ErrorCode.INVALID_CREDENTIALS];
+    reply.status(401).send({
+      code: errDef.code,
+      message: "Sessione scaduta o non valida. Effettuare nuovamente il login.",
+      classification: errDef.classification,
+    });
   }
 
   /**

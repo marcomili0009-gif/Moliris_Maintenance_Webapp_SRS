@@ -282,6 +282,39 @@ const loginAfterExpiryRes = await makeHttpsRequest("POST", "/api/auth/login", {
 assert.strictEqual(loginAfterExpiryRes.status, 200, "La scadenza inattività deve liberare lo slot di login");
 console.log("  PASS: Login concorrenti atomici, conflitto SESSION_ALREADY_ACTIVE, logout e scadenza sessione.");
 
+// MOL-P1-001: la scrittura audit di un login fallisce dopo l'allocazione.
+{
+  const account = { ...singleSessionUser, id: "audit-failure", username: "audit_failure_fixture" };
+  await userRepo.create(account);
+  const record = auditRepo.record.bind(auditRepo);
+  let fail = true;
+  auditRepo.record = async (event) => {
+    if (fail && event.operation === AuditOperation.AUTH_LOGIN && event.outcome === "SUCCESS") {
+      fail = false;
+      throw new Error("Archivio audit temporaneamente indisponibile");
+    }
+    return record(event);
+  };
+  const signIn = () => makeHttpsRequest("POST", "/api/auth/login", {
+    username: account.username, password: singleSessionPassword,
+  });
+  try {
+    const rejected = await signIn();
+    assert.equal(rejected.status, 500);
+    assert.equal(rejected.headers["set-cookie"], undefined);
+    assert.equal(sessionManager.getActiveSessionsCount(account.id), 0);
+    const recovered = await signIn();
+    assert.equal(recovered.status, 200);
+    assert.match(String(recovered.headers["set-cookie"]), /HttpOnly/);
+    const events = await auditRepo.query({ userId: account.username });
+    assert.equal(events.filter(event => event.operation === AuditOperation.AUTH_LOGIN && event.outcome === "SUCCESS").length, 1);
+  } finally {
+    auditRepo.record = record;
+    sessionManager.destroySessionsForUser(account.id);
+  }
+  console.log("  PASS: MOL-P1-001 - Rollback sessione su errore audit e login successivo.");
+}
+
 // CA-AUTH-002: Credenziali non valide -> nessun accesso
 const badPasswordRes = await makeHttpsRequest("POST", "/api/auth/login", {
   username: "operatore_test",

@@ -1,276 +1,371 @@
-// Requisiti soddisfatti: RNF-PERF-001, RNF-PERF-003, RNF-REL-005, SRS §10.3, §11.2, §11.5
-/**
- * Script di test di carico per Moliris Maintenance Webapp (SRS v1.0).
- * Simula N robot e M utenti concorrenti per verificare la corretta applicazione dei limiti
- * di concorrenza (§10.3, RNF-PERF-003), l'assenza di deadlock e la stabilità del backend
- * con 25 utenti concorrenti (§11.2) e un massimo di 20 sessioni terminale PTY simultanee.
- *
- * Utilizzo:
- *   npx tsx scripts/load-test.ts [--users=25] [--robots=10] [--terminals=20] [--transfers=10]
- */
-
-import { MolirisLogger } from "../logging/logger.ts";
-import { TerminalService } from "../backend/terminal/terminal-service.ts";
-import { TransferService } from "../backend/transfer/transfer-service.ts";
-import { SessionManager, AuthorizedContext } from "../backend/auth/session-manager.ts";
-import { InMemoryRobotRepository } from "../storage/robot-repository.ts";
-import { InMemoryAuditRepository } from "../storage/audit-repository.ts";
-import { ServerFilesystemService } from "../storage/server-fs.ts";
-import { RemoteFilesystemService } from "../backend/remote-fs/remote-fs-service.ts";
-import { RobotConnectionManager } from "../backend/connection/robot-connection-manager.ts";
+// Requisiti verificati su fixture: RNF-PERF-001, RNF-PERF-003, RNF-REL-005, SRS §10.3, §11.2, §11.5.
+import assert from "node:assert/strict";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
+import { once } from "node:events";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import type { AddressInfo } from "node:net";
+import os from "node:os";
+import path from "node:path";
+import { PassThrough } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
+import ssh2, { type Connection } from "ssh2";
+import { DEFAULT_ROLE_PERMISSIONS } from "../backend/auth/permissions.ts";
+import { SessionManager, type AuthorizedContext } from "../backend/auth/session-manager.ts";
+import type { UserEntity } from "../backend/auth/user-models.ts";
 import { InMemoryCredentialProvider } from "../backend/connection/credential-provider.ts";
-import { DefaultHostKeyVerifier } from "../backend/connection/host-key-verifier.ts";
-import { loadAndValidateConfig, type SystemConfiguration } from "../config/configuration.ts";
-import { AppPermission, DEFAULT_ROLE_PERMISSIONS } from "../backend/auth/permissions.ts";
-import { type RobotEntity } from "../storage/robot-models.ts";
-import { type UserEntity } from "../backend/auth/user-models.ts";
-import { MolirisAppError, ErrorCode } from "../errors/app-errors.ts";
-import fs from "fs";
-import os from "os";
-import path from "path";
-import { Readable, PassThrough } from "stream";
+import { computeHostKeyFingerprint, DefaultHostKeyVerifier } from "../backend/connection/host-key-verifier.ts";
+import { RobotConnectionManager } from "../backend/connection/robot-connection-manager.ts";
+import { RemoteFilesystemService } from "../backend/remote-fs/remote-fs-service.ts";
+import { TerminalService } from "../backend/terminal/terminal-service.ts";
+import { TransferStatus } from "../backend/transfer/transfer-models.ts";
+import { TransferService } from "../backend/transfer/transfer-service.ts";
+import type { SystemConfiguration } from "../config/configuration.ts";
+import { ErrorCode, MolirisAppError } from "../errors/app-errors.ts";
+import { MolirisLogger } from "../logging/logger.ts";
+import { AuditOperation } from "../storage/audit-models.ts";
+import { InMemoryAuditRepository } from "../storage/audit-repository.ts";
+import type { RobotEntity } from "../storage/robot-models.ts";
+import { InMemoryRobotRepository } from "../storage/robot-repository.ts";
+import { ServerFilesystemService } from "../storage/server-fs.ts";
 
-function parseArgs(): { users: number; robots: number; terminals: number; transfers: number } {
-  const args = process.argv.slice(2);
-  let users = 25;
-  let robots = 10;
-  let terminals = 20;
-  let transfers = 10;
+// Avvio: node --import tsx scripts/load-test.ts [--users=25] [--robots=10] [--terminals=20] [--transfers=10]
+const STEP_TIMEOUT_MS = 5_000;
+const FILE_BYTES = 256 * 1024;
+const FIRST_CHUNK_BYTES = 4 * 1024;
+const FIXTURE_HOST = "127.0.0.1";
 
-  for (const arg of args) {
-    if (arg.startsWith("--users=")) users = parseInt(arg.split("=")[1], 10) || users;
-    if (arg.startsWith("--robots=")) robots = parseInt(arg.split("=")[1], 10) || robots;
-    if (arg.startsWith("--terminals=")) terminals = parseInt(arg.split("=")[1], 10) || terminals;
-    if (arg.startsWith("--transfers=")) transfers = parseInt(arg.split("=")[1], 10) || transfers;
+type Terminal = Awaited<ReturnType<TerminalService["openTerminalSession"]>>;
+type Transfer = Awaited<ReturnType<TransferService["uploadClientToServer"]>>;
+type LoadUser = { user: UserEntity; context: AuthorizedContext; robot: RobotEntity };
+type Upload = {
+  user: LoadUser;
+  filename: string;
+  data: Buffer;
+  checksum: string;
+  stream: PassThrough;
+  task: Promise<void>;
+  outcome?: PromiseSettledResult<Transfer>;
+  completedElapsedMs?: number;
+};
+
+function parseArgs() {
+  const params = { users: 25, robots: 10, terminals: 20, transfers: 10 };
+  for (const arg of process.argv.slice(2)) {
+    const match = /^--(users|robots|terminals|transfers)=(\d+)$/.exec(arg);
+    if (!match) throw new Error(`Argomento non valido: ${arg}`);
+    const value = Number(match[2]);
+    if (!Number.isInteger(value) || value < 1 || value > 100) {
+      throw new Error(`--${match[1]} deve essere compreso tra 1 e 100`);
+    }
+    params[match[1] as keyof typeof params] = value;
   }
+  return params;
+}
 
-  return { users, robots, terminals, transfers };
+function stages(users: number, cap: number): number[] {
+  const saturation = Math.min(users, cap);
+  return [...new Set([1, Math.ceil(saturation / 3), Math.ceil(2 * saturation / 3), saturation, users])];
+}
+
+async function waitUntil(condition: () => boolean, description: string): Promise<void> {
+  const deadline = performance.now() + STEP_TIMEOUT_MS;
+  while (!condition()) {
+    if (performance.now() >= deadline) throw new Error(`Timeout: ${description}`);
+    await delay(20);
+  }
+}
+
+function latencyMs(values: number[]) {
+  const ordered = [...values].sort((a, b) => a - b);
+  const percentile = (fraction: number) => Number(ordered[Math.ceil(ordered.length * fraction) - 1].toFixed(1));
+  return { samples: ordered.length, p50: percentile(0.5), p95: percentile(0.95), max: percentile(1) };
+}
+
+async function checkEcho(terminal: Terminal, marker: string): Promise<number> {
+  const started = performance.now();
+  const returned = once(terminal.ptyChannel, "data", { signal: AbortSignal.timeout(STEP_TIMEOUT_MS) });
+  terminal.ptyChannel.write(marker);
+  const [echo] = await returned;
+  assert.equal(String(echo), marker, "Il round trip PTY deve restituire i byte inviati");
+  return performance.now() - started;
+}
+
+function fixtureUser(index: number, role: "admin" | "operatore"): UserEntity {
+  return {
+    id: `load-user-${index}`, username: `load-user-${index}`, roles: [role], enabled: true,
+    passwordHash: "fixture-no-login", createdAt: new Date(), updatedAt: new Date(),
+  };
 }
 
 async function runLoadTest(): Promise<void> {
   const params = parseArgs();
-  console.log("=== Moliris Maintenance Webapp - Test di Carico Concorrenza ===");
-  console.log(`Parametri: ${params.users} Utenti | ${params.robots} Robot | Limite Terminali: ${params.terminals} | Trasferimenti Simultanei: ${params.transfers}`);
-
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "moliris-load-test-"));
-  const fsRootDir = path.join(tmpDir, "server-fs");
-  fs.mkdirSync(fsRootDir, { recursive: true });
-
-  const logger = new MolirisLogger();
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "moliris-load-"));
+  const fsRoot = path.join(tmpDir, "server-fs");
+  const password = randomBytes(24).toString("hex");
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs1", format: "pem" },
+    publicKeyEncoding: { type: "pkcs1", format: "pem" },
+  });
+  const parsedKey = ssh2.utils.parseKey(privateKey);
+  assert.ok(!Array.isArray(parsedKey) && !(parsedKey instanceof Error));
+  const fingerprint = computeHostKeyFingerprint(parsedKey.getPublicSSH()).sha256Hex;
+  const sshClients = new Set<Connection>();
+  const sshErrors: string[] = [];
+  const sshServer = new ssh2.Server({ hostKeys: [privateKey] }, (client) => {
+    sshClients.add(client);
+    client.once("close", () => sshClients.delete(client));
+    client.on("error", (error) => sshErrors.push(error.message));
+    client.on("authentication", (ctx) => {
+      if (ctx.method === "password" && /^loadrobot\d+$/.test(ctx.username) && ctx.password === password) ctx.accept();
+      else ctx.reject();
+    });
+    client.on("ready", () => client.on("session", (accept) => {
+      const session = accept();
+      session.on("pty", (acceptPty) => acceptPty());
+      session.on("shell", (acceptShell) => {
+        const shell = acceptShell();
+        shell.on("data", (data: Buffer) => shell.write(data));
+        shell.on("error", (error: Error) => sshErrors.push(error.message));
+      });
+    }));
+  });
+  // Il limite per robot lascia misurare quello globale, anche con una sola fixture.
+  const perRobot = Math.ceil(params.users / params.robots);
   const config: SystemConfiguration = {
-    serverFilesystemRoot: fsRootDir,
-    pollingIntervalSeconds: 0,
-    sshConnectionTimeoutMs: 3000,
-    maxConcurrentTransfersPerUser: 2,
-    maxConcurrentTransfersPerRobot: 2,
-    maxConcurrentTransfersServer: params.transfers,
-    tempFileRetentionMinutes: 60,
-    stateFilePaths: ["/PERCORSO/DA/DEFINIRE/stato_robot.json"],
-    inactiveSessionTimeoutMinutes: 30,
-    sessionAbsoluteMaxMinutes: 480,
-    tlsCertPath: path.join(tmpDir, "dummy_cert.pem"),
-    tlsKeyPath: path.join(tmpDir, "dummy_key.pem"),
-    credentialProviderType: "in-memory",
-    masterKeyFilePath: undefined,
-    registrationMode: "rigorosa",
-    auditLogRetentionDays: 365,
-    robotUsernameUniqueness: "per_host",
-    defaultSshPort: 22,
-    transferChunkSizeBytes: 32 * 1024,
-    transferChecksumAlgorithm: "sha256",
-    transferOverwritePolicy: "richiedi_conferma",
-    transferVerifyMode: "stream",
-    robotNonAtomicReplace: false,
-    transferSpaceMarginMb: 0,
-    stateFileFormat: "auto",
+    serverFilesystemRoot: fsRoot, pollingIntervalSeconds: 1, sshConnectionTimeoutMs: 3_000,
+    maxConcurrentTransfersPerUser: 1, maxConcurrentTransfersPerRobot: perRobot,
+    maxConcurrentTransfersServer: params.transfers, maxConcurrentTerminalSessionsPerUser: 1,
+    maxConcurrentTerminalSessionsPerRobot: perRobot, maxConcurrentTerminalSessionsServer: params.terminals,
+    transferConcurrencyQueuePolicy: "rifiuta", transferVerifyMode: "readback",
+    transferIdleTimeoutMs: 10_000, tempFileRetentionMinutes: 60,
+    stateFilePaths: ["/fixture/status"], inactiveSessionTimeoutMinutes: 30, sessionAbsoluteMaxMinutes: 480,
+    tlsCertPath: path.join(tmpDir, "unused.pem"), tlsKeyPath: path.join(tmpDir, "unused.key"),
+    registrationMode: "rigorosa", credentialProviderType: "in-memory", auditLogRetentionDays: 1, defaultSshPort: 22,
   };
-
-  const sessionManager = new SessionManager(config.inactiveSessionTimeoutMinutes, config.sessionAbsoluteMaxMinutes);
+  const logger = new MolirisLogger();
+  const audit = new InMemoryAuditRepository();
   const robotRepo = new InMemoryRobotRepository();
-  const auditRepo = new InMemoryAuditRepository();
-  const serverFsService = new ServerFilesystemService(fsRootDir, auditRepo, logger);
-
-  const credProvider = new InMemoryCredentialProvider(["password"]);
-  const hostVerifier = new DefaultHostKeyVerifier();
-  const connManager = new RobotConnectionManager(credProvider, hostVerifier, {
-    maxConcurrentPerUser: 5,
-    maxConcurrentPerRobot: 5,
-    maxConcurrentServer: 30,
-    connectionTimeoutMs: 3000,
+  const credentials = new InMemoryCredentialProvider(["password"]);
+  const connections = new RobotConnectionManager(credentials, new DefaultHostKeyVerifier(), {
+    maxConcurrentPerUser: 1, maxConcurrentPerRobot: perRobot, maxConcurrentServer: params.users,
+    connectionTimeoutMs: config.sshConnectionTimeoutMs,
   }, logger);
+  const sessions = new SessionManager(config.inactiveSessionTimeoutMinutes, config.sessionAbsoluteMaxMinutes);
+  const serverFs = new ServerFilesystemService(fsRoot, audit, logger);
+  const remoteFs = new RemoteFilesystemService(config, connections, audit, logger);
+  const terminals = new TerminalService(config, robotRepo, audit, connections, sessions, DEFAULT_ROLE_PERMISSIONS, logger);
+  const transfers = new TransferService(config, robotRepo, serverFs, remoteFs, sessions, audit, logger);
+  const opened: Terminal[] = [];
+  const uploads: Upload[] = [];
+  let overflowTerminals = 0;
+  let overflowTransfers = 0;
+  const openLatency: number[] = [];
+  const echoLatency: number[] = [];
+  const transferLatency: number[] = [];
+  let peakConnections = 0;
+  let peakRss = process.memoryUsage().rss;
+  const startingRss = peakRss;
+  const sampleResources = () => {
+    peakRss = Math.max(peakRss, process.memoryUsage().rss);
+    peakConnections = Math.max(peakConnections, sshClients.size);
+  };
+  const sampler = setInterval(sampleResources, 20);
+  const cpuStart = process.cpuUsage();
+  const runStarted = performance.now();
 
-  // Mock shell interattiva per simulare shell PTY senza connessione socket remota
-  connManager.acquireConnection = async (_user: string, _robot: any) => ({
-    openPtyStream: async () => {
-      const stream = new PassThrough() as any;
-      stream.setWindow = () => {};
-      return stream;
-    },
-    release: async () => {},
-    close: async () => {},
-  } as any);
-
-  const remoteFsService = new RemoteFilesystemService(config, connManager, auditRepo, logger);
-  const terminalService = new TerminalService(
-    config,
-    robotRepo,
-    auditRepo,
-    connManager,
-    sessionManager,
-    DEFAULT_ROLE_PERMISSIONS,
-    logger
-  );
-  const transferService = new TransferService(
-    config,
-    robotRepo,
-    serverFsService,
-    remoteFsService,
-    sessionManager,
-    auditRepo,
-    logger
-  );
-
-  // 1. Registrazione di N robot simulati
-  const robots: RobotEntity[] = [];
-  for (let i = 1; i <= params.robots; i++) {
-    const rId = `robot_load_${String(i).padStart(2, "0")}`;
-    const robotDir = path.join(fsRootDir, `op_remote_${i}_${rId}`);
-    fs.mkdirSync(robotDir, { recursive: true });
-    fs.mkdirSync(path.join(robotDir, ".tmp"), { recursive: true });
-
-    const rEntity: RobotEntity = {
-      id: rId,
-      displayName: `Robot Carico ${i}`,
-      host: `127.0.0.${i}`,
-      sshPort: 22,
-      remoteUsername: `op_remote_${i}`,
-      sshAuthMethod: "password",
-      credentialReference: "cred_pwd",
-      serverDirectoryPath: robotDir,
-      anagraphicState: "attivo",
-      registrationState: "registrazione_completata",
-      connectionState: "raggiungibile",
-      operationalState: null,
-      lastValidUpdateAt: null,
-      hostKeyVerification: { fingerprint: "SHA256:dummy", strictHostKeyChecking: true },
-      stateFilePaths: [path.join(robotDir, ".tmp", "stato.json")],
-      lastAttemptOutcome: { timestamp: new Date(), success: true, stage: "connection" },
-      lastConnectionVerification: { timestamp: new Date(), success: true },
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    await robotRepo.create(rEntity);
-    robots.push(rEntity);
-  }
-
-  // 2. Creazione di M utenti e sessioni (fino a 25 concorrenti, §11.2)
-  const users: UserEntity[] = [];
-  const userContexts: AuthorizedContext[] = [];
-  for (let i = 1; i <= params.users; i++) {
-    const u: UserEntity = {
-      id: `user_load_${String(i).padStart(2, "0")}`,
-      username: `operatore_${i}`,
-      passwordHash: "dummy_hash",
-      roles: ["operatore"],
-      enabled: true,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    users.push(u);
-    const s = sessionManager.createSession(u);
-    const assignedRobot = robots[(i - 1) % robots.length];
-    const ctx = sessionManager.createAuthorizedContext(s, u, assignedRobot.id, DEFAULT_ROLE_PERMISSIONS);
-    userContexts.push(ctx);
-  }
-
-  console.log(`[OK] Creati con successo ${userContexts.length} contesti utente concorrenti.`);
-
-  // 3. Verifica limite concorrenza terminali: 25 utenti tentano di aprire terminali (limite: 20)
-  console.log(`\n--- Test Concorrenza Terminali (25 utenti vs limite 20) ---`);
-  let terminalSuccess = 0;
-  let terminalRejected = 0;
-
-  for (let i = 0; i < userContexts.length; i++) {
-    const ctx = userContexts[i];
-    const user = users[i];
-    const assignedRobot = robots[i % robots.length];
-    try {
-      await terminalService.openTerminalSession(user, assignedRobot.id, { cols: 80, rows: 24 }, ctx.sessionId);
-      terminalSuccess++;
-    } catch (err: any) {
-      if (err instanceof MolirisAppError && (err.code === ErrorCode.INSUFFICIENT_STORAGE || err.message.includes("raggiunto"))) {
-        terminalRejected++;
-      } else {
-        console.error(`Errore inatteso terminale utente ${i}:`, err.message);
-      }
-    }
-  }
-
-  console.log(`Sessioni Terminale Avviate: ${terminalSuccess} (Massimo atteso: <= ${params.terminals})`);
-  console.log(`Sessioni Terminale Rifiutate con codice sicuro: ${terminalRejected}`);
-  if (terminalSuccess > params.terminals) {
-    throw new Error(`VIOLAZIONE CONCORRENZA: avviate ${terminalSuccess} sessioni su massimo consentito ${params.terminals}`);
-  }
-  console.log(`[OK] Nessun deadlock o crash rilevato. Limiti terminali rispettati categoricamente.`);
-
-  // 4. Chiusura ordinata di tutte le sessioni terminale e verifica liberazione slot a 0
-  console.log(`Chiusura di tutte le sessioni terminale in corso...`);
-  await terminalService.closeAll("LOAD_TEST_CLEANUP" as any);
-  const remainingCount = terminalService.getActiveSessionCount();
-  console.log(`Sessioni terminale rimanenti dopo cleanup: ${remainingCount}`);
-  if (remainingCount !== 0) {
-    throw new Error(`PERDITA RISORSE: rimangono ${remainingCount} sessioni non chiuse.`);
-  }
-  console.log(`[OK] Rilascio completo contatori a zero risorse residue.`);
-
-  // 5. Test concorrenza trasferimenti file su server
-  console.log(`\n--- Test Concorrenza Trasferimenti Server (Limite: ${params.transfers}) ---`);
-  let trfSuccess = 0;
-  let trfRejected = 0;
-  const inProgressStreams: PassThrough[] = [];
-
-  for (let i = 0; i < userContexts.length; i++) {
-    const ctx = userContexts[i];
-    const assignedRobot = robots[i % robots.length];
-    const pt = new PassThrough();
-    inProgressStreams.push(pt);
-
-    try {
-      // Avvio upload client to server con stream aperto (rimane in progress)
-      transferService.uploadClientToServer(
-        ctx,
-        assignedRobot,
-        "",
-        `file_load_${i}.dat`,
-        pt,
-        { overwrite: true },
-        50000
-      ).catch(() => {});
-
-      trfSuccess++;
-    } catch (err: any) {
-      if (err instanceof MolirisAppError) {
-        trfRejected++;
-      }
-    }
-  }
-
-  // Pulizia stream di test
-  for (const pt of inProgressStreams) {
-    pt.destroy();
-  }
-  transferService.stopCleanupTask();
-
-  // Pulizia directory temporanee
   try {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  } catch {}
+    const listening = once(sshServer, "listening", { signal: AbortSignal.timeout(STEP_TIMEOUT_MS) });
+    sshServer.listen(0, FIXTURE_HOST);
+    await listening;
+    const sshPort = (sshServer.address() as AddressInfo).port;
+    const robots: RobotEntity[] = [];
+    for (let i = 0; i < params.robots; i++) {
+      const id = `load-robot-${i}`;
+      const remoteUsername = `loadrobot${i}`;
+      const robot: RobotEntity = {
+        id, remoteUsername, host: FIXTURE_HOST, sshPort, displayName: `Robot fixture ${i}`,
+        sshAuthMethod: "password", credentialReference: await credentials.store(id, { method: "password", password }),
+        hostKeyVerification: { fingerprint, strictHostKeyChecking: true },
+        serverDirectoryPath: path.join(fsRoot, `${remoteUsername}_${id}`), anagraphicState: "attivo",
+        registrationState: "registrazione_completata", connectionState: "raggiungibile",
+        operationalState: null, lastValidUpdateAt: null, stateFilePaths: config.stateFilePaths,
+        lastAttemptOutcome: { timestamp: new Date(), success: true, stage: "connection" },
+        lastConnectionVerification: { timestamp: new Date(), success: true },
+        createdAt: new Date(), updatedAt: new Date(),
+      };
+      await mkdir(robot.serverDirectoryPath);
+      await robotRepo.create(robot);
+      robots.push(robot);
+    }
+    const users: LoadUser[] = Array.from({ length: params.users }, (_, i) => {
+      const user = fixtureUser(i, "admin");
+      const robot = robots[i % robots.length];
+      return {
+        user, robot,
+        context: sessions.createAuthorizedContext(sessions.createSession(user), user, robot.id, DEFAULT_ROLE_PERMISSIONS),
+      };
+    });
+    console.log(JSON.stringify({ event: "LOAD_PROFILE", ...params, uploadBytesPerUser: FILE_BYTES, ssh: "strict-loopback" }));
 
-  console.log(`\n=== TEST DI CARICO COMPLETATO CON SUCCESSO ===`);
-  console.log(`Coerenza garantita tra 25 utenti concorrenti e limite massimo 20 terminali.`);
+    const deniedUser = fixtureUser(params.users, "operatore");
+    const deniedSession = sessions.createSession(deniedUser);
+    await assert.rejects(
+      terminals.openTerminalSession(deniedUser, robots[0].id, {}, deniedSession.sessionId),
+      (error) => error instanceof MolirisAppError && error.code === ErrorCode.INSUFFICIENT_PERMISSIONS,
+      "Il controllo RBAC deve continuare a negare il terminale all'operatore",
+    );
+    assert.equal(connections.getActiveConnectionCount(), 0);
+
+    let attempted = 0;
+    for (const target of stages(users.length, params.terminals)) {
+      const results = await Promise.allSettled(users.slice(attempted, target).map(async ({ user, robot, context }) => {
+        const started = performance.now();
+        const terminal = await terminals.openTerminalSession(user, robot.id, { cols: 80, rows: 24 }, context.sessionId);
+        openLatency.push(performance.now() - started);
+        return terminal;
+      }));
+      for (const result of results) {
+        if (result.status === "fulfilled") opened.push(result.value);
+        else {
+          const error: unknown = result.reason;
+          const expected = error instanceof MolirisAppError && error.code === ErrorCode.INSUFFICIENT_STORAGE &&
+            error.diagnosticDetail.startsWith("Numero massimo di sessioni terminale contemporanee sul server raggiunto");
+          if (!expected) throw error;
+          overflowTerminals++;
+        }
+      }
+      assert.equal(opened.length, Math.min(target, params.terminals), "Aperture PTY confermate");
+      assert.equal(overflowTerminals, Math.max(0, target - params.terminals), "Rifiuti PTY dovuti al solo limite globale");
+      assert.equal(terminals.getActiveSessionCount(), opened.length);
+      assert.equal(connections.getActiveConnectionCount(), opened.length);
+      assert.equal(sshClients.size, opened.length);
+      echoLatency.push(...await Promise.all(opened.map((terminal, i) => checkEcho(terminal, `stage-${target}-${i}`))));
+      sampleResources();
+      console.log(JSON.stringify({ event: "TERMINAL_STAGE", attempted: target, active: opened.length, overflow: overflowTerminals }));
+      attempted = target;
+    }
+    await delay(500);
+    echoLatency.push(...await Promise.all(opened.map((terminal, i) => checkEcho(terminal, `still-open-${i}`))));
+    assert.deepEqual(sshErrors, [], "Nessun errore dal server SSH durante i round trip");
+    await terminals.closeAll();
+    await waitUntil(() => sshClients.size === 0, "chiusura socket SSH lato fixture");
+    assert.equal(terminals.getActiveSessionCount(), 0);
+    assert.equal(connections.getActiveConnectionCount(), 0);
+
+    attempted = 0;
+    for (const target of stages(users.length, params.transfers)) {
+      for (let i = attempted; i < target; i++) {
+        const user = users[i];
+        const filename = `load-${i}.bin`;
+        const data = Buffer.alloc(FILE_BYTES, i);
+        const checksum = createHash("sha256").update(data).digest("hex");
+        const stream = new PassThrough();
+        stream.write(data.subarray(0, FIRST_CHUNK_BYTES));
+        const started = performance.now();
+        const operation = transfers.uploadClientToServer(
+          user.context, user.robot, "", filename, stream, { expectedChecksum: checksum }, data.length,
+        );
+        const upload: Upload = { user, filename, data, checksum, stream, task: Promise.resolve() };
+        upload.task = operation.then(
+          (value) => {
+            upload.completedElapsedMs = performance.now() - started;
+            upload.outcome = { status: "fulfilled", value };
+          },
+          (reason: unknown) => { upload.outcome = { status: "rejected", reason }; },
+        );
+        uploads.push(upload);
+      }
+      const activeUploads = () => transfers.listTransfers(users[0].context)
+        .filter((record) => record.status === TransferStatus.IN_PROGRESS);
+      await waitUntil(
+        () => activeUploads().length + uploads.filter((item) => item.outcome).length >= target &&
+          uploads.every((item) => item.outcome || item.stream.readableLength === 0),
+        `avvio o rifiuto verificabile di ${target} upload`,
+      );
+      const active = activeUploads();
+      overflowTransfers = 0;
+      for (const upload of uploads) {
+        if (!upload.outcome) continue;
+        assert.equal(upload.outcome.status, "rejected", "Un upload con stream aperto non può essere già completato");
+        const error: unknown = upload.outcome.reason;
+        const expected = error instanceof MolirisAppError && error.code === ErrorCode.TRANSFER_INTERRUPTED &&
+          error.diagnosticDetail.startsWith(`Limite trasferimenti simultanei raggiunto (server: ${params.transfers}/${params.transfers},`);
+        if (!expected) throw error;
+        overflowTransfers++;
+      }
+      assert.equal(active.length, Math.min(target, params.transfers), "Upload realmente attivi");
+      assert.equal(overflowTransfers, Math.max(0, target - params.transfers), "Rifiuti upload dovuti al solo limite globale");
+      sampleResources();
+      console.log(JSON.stringify({ event: "UPLOAD_STAGE", attempted: target, active: active.length, overflow: overflowTransfers }));
+      attempted = target;
+    }
+
+    const admitted = uploads.filter((item) => !item.outcome);
+    for (const upload of admitted) upload.stream.end(upload.data.subarray(FIRST_CHUNK_BYTES));
+    await waitUntil(() => admitted.every((upload) => upload.outcome !== undefined), "completamento upload");
+    for (const upload of admitted) {
+      assert.equal(upload.outcome?.status, "fulfilled", `Upload fallito: ${upload.filename}`);
+      const completed = upload.outcome.value;
+      assert.equal(completed.status, TransferStatus.COMPLETED);
+      assert.equal(completed.transferredBytes, upload.data.length);
+      assert.equal(completed.checksum, upload.checksum);
+      assert.equal(completed.integrityVerification?.verified, true);
+      assert.deepEqual(await readFile(path.join(upload.user.robot.serverDirectoryPath, upload.filename)), upload.data);
+      assert.ok(upload.completedElapsedMs !== undefined);
+      transferLatency.push(upload.completedElapsedMs);
+    }
+    for (const user of users) assert.equal(transfers.getActiveTransfersCountForSession(user.context.sessionId), 0);
+    const entries = await audit.query();
+    assert.equal(entries.filter((e) => e.operation === AuditOperation.TERMINAL_OPEN && e.outcome === "SUCCESS").length, opened.length);
+    assert.equal(entries.filter((e) => e.operation === AuditOperation.TRANSFER_COMPLETE && e.outcome === "SUCCESS").length, admitted.length);
+    const tempEntries = await Promise.all(robots.map((robot) => readdir(path.join(robot.serverDirectoryPath, ".tmp")).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    })));
+    assert.ok(tempEntries.every((names) => names.length === 0), "Nessun file temporaneo residuo");
+    assert.deepEqual(sshErrors, [], "Nessun errore durante la chiusura SSH");
+  } finally {
+    clearInterval(sampler);
+    for (const upload of uploads) upload.stream.destroy();
+    for (const user of uploads.map((upload) => upload.user)) {
+      transfers.cancelTransfersForSession(user.context.sessionId, user.context.userId, "LOAD_TEST_CLEANUP");
+    }
+    await Promise.all(uploads.map((upload) => upload.task));
+    await terminals.closeAll();
+    await connections.closeAll();
+    for (const client of sshClients) client.end();
+    sshServer.close();
+    transfers.stopCleanupTask();
+    sessions.dispose();
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+
+  const durationMs = performance.now() - runStarted;
+  const cpu = process.cpuUsage(cpuStart);
+  const endRss = process.memoryUsage().rss;
+  const toMiB = (bytes: number) => Number((bytes / 1024 ** 2).toFixed(1));
+  console.log(JSON.stringify({
+    event: "LOAD_PASS",
+    durationMs: Number(durationMs.toFixed(1)),
+    terminalOpened: opened.length, terminalOverflow: overflowTerminals, terminalRbacDenied: 1,
+    uploadsCompleted: transferLatency.length, uploadOverflow: overflowTransfers,
+    bytesVerified: transferLatency.length * FILE_BYTES, unexpectedErrors: 0,
+    terminalOpenMs: latencyMs(openLatency), terminalEchoMs: latencyMs(echoLatency),
+    uploadCompletionIncludingStagingMs: latencyMs(transferLatency),
+    cpuUserMs: cpu.user / 1_000, cpuSystemMs: cpu.system / 1_000,
+    cpuPercentOfOneCore: Number(((cpu.user + cpu.system) / durationMs / 10).toFixed(1)),
+    rssStartMiB: toMiB(startingRss), sampledRssPeakMiB: toMiB(Math.max(peakRss, endRss)), rssEndMiB: toMiB(endRss),
+    sshConnectionsPeak: peakConnections,
+    terminalsRemaining: terminals.getActiveSessionCount(), sshConnectionsRemaining: sshClients.size,
+  }));
 }
 
-runLoadTest().catch((err) => {
-  console.error("ERRORE FATALE TEST DI CARICO:", err);
+const watchdog = setTimeout(() => {
+  console.error("LOAD_FAIL: tempo complessivo massimo superato (45 s)");
   process.exit(1);
-});
+}, 45_000);
+runLoadTest().catch((error: unknown) => {
+  console.error("LOAD_FAIL:", error);
+  process.exitCode = 1;
+}).finally(() => clearTimeout(watchdog));

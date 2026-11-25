@@ -17,6 +17,7 @@ export interface EncryptedCredentialDocument {
   authTag: string; // hex
   keyVersion: number;
   updatedAt: Date;
+  removalPending?: boolean;
 }
 
 /**
@@ -75,6 +76,7 @@ export class MongoCredentialProvider implements CredentialProvider {
           keyVersion,
           updatedAt: new Date(),
         },
+        $unset: { removalPending: "" },
       },
       { upsert: true }
     );
@@ -93,6 +95,14 @@ export class MongoCredentialProvider implements CredentialProvider {
   public async remove(robotId: string): Promise<void> {
     if (!robotId) return;
     await this.collection.deleteOne({ robotId: robotId.trim() });
+  }
+
+  public async markForRemoval(robotId: string): Promise<void> {
+    await this.collection.updateOne({ robotId }, { $set: { removalPending: true } });
+  }
+
+  public async purgeMarked(robotId: string): Promise<void> {
+    await this.collection.deleteOne({ robotId, removalPending: true });
   }
 
   public async getCredentials(

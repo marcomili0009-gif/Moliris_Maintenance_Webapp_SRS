@@ -243,6 +243,9 @@ export class InMemoryRobotRepository implements RobotRepository {
     if (!existing) {
       throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot non trovato per id: ${id}`);
     }
+    if (existing.anagraphicState === "rimosso" && newState !== "rimosso") {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Rimozione del robot già avviata.");
+    }
 
     // Regola RF-ROB-013, CA-ROB-011: la disabilitazione o rimozione dall'anagrafica attiva
     // altera ESCLUSIVAMENTE lo stato logico, senza MAI toccare o cancellare i file sul server
@@ -573,7 +576,7 @@ export class MongoRobotRepository implements RobotRepository {
     try {
       // RF-ROB-013, CA-ROB-011: aggiornamento puramente anagrafico su DB, nessun filesystem touch
       const result = await this.collection.findOneAndUpdate(
-        { id },
+        newState === "rimosso" ? { id } : { id, anagraphicState: { $ne: "rimosso" } },
         {
           $set: {
             anagraphicState: newState,
@@ -583,7 +586,7 @@ export class MongoRobotRepository implements RobotRepository {
         { returnDocument: "after", projection: { _id: 0 } }
       );
       if (!result) {
-        throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot non trovato per id: ${id}`);
+        throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot non trovato o in rimozione: ${id}`);
       }
       return result as RobotEntity;
     } catch (err: any) {

@@ -35,6 +35,8 @@ export interface CredentialProvider {
   ): Promise<string>;
 
   remove(robotId: string): Promise<void>;
+  markForRemoval(robotId: string): Promise<void>;
+  purgeMarked(robotId: string): Promise<void>;
 }
 
 /**
@@ -42,7 +44,7 @@ export interface CredentialProvider {
  * Utilizzabile in ambienti di sviluppo e test (fail-closed in produzione se NODE_ENV=production).
  */
 export class InMemoryCredentialProvider implements CredentialProvider {
-  private secrets: Map<string, { robotId: string; reference: string; material: AuthenticationMaterial; keyVersion: number }> = new Map();
+  private secrets: Map<string, { robotId: string; reference: string; material: AuthenticationMaterial; keyVersion: number; removalPending?: boolean }> = new Map();
   private allowedMethods?: ("key" | "password")[];
 
   constructor(allowedMethods?: ("key" | "password")[]) {
@@ -102,6 +104,18 @@ export class InMemoryCredentialProvider implements CredentialProvider {
       if (v.robotId === cleanId) {
         this.secrets.delete(k);
       }
+    }
+  }
+
+  public async markForRemoval(robotId: string): Promise<void> {
+    for (const entry of this.secrets.values()) {
+      if (entry.robotId === robotId) entry.removalPending = true;
+    }
+  }
+
+  public async purgeMarked(robotId: string): Promise<void> {
+    for (const [reference, entry] of this.secrets) {
+      if (entry.robotId === robotId && entry.removalPending) this.secrets.delete(reference);
     }
   }
 

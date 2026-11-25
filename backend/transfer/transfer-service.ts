@@ -8,6 +8,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { PassThrough, pipeline, type Readable, type Writable } from "stream";
+import { pipeline as pipelineWithSignal } from "node:stream/promises";
 import { type SystemConfiguration } from "../../config/configuration.ts";
 import { type RobotEntity } from "../../storage/robot-models.ts";
 import { type RobotRepository } from "../../storage/robot-repository.ts";
@@ -65,6 +66,7 @@ export class TransferService {
 
   // Registro in memoria dei trasferimenti attivi e recenti (RF-TRF-006, RNF-SEC-007)
   private transfers: Map<string, TransferRecord> = new Map();
+  private readonly promotingTransfers = new WeakSet<TransferRecord>();
 
   // Tracciamento concorrenza (RF-TRF-012, RNF-PERF-003, CA-TRF-007)
   private activeCountByUser: Map<string, number> = new Map();
@@ -237,6 +239,31 @@ export class TransferService {
     };
   }
 
+  private assertActiveSession(sessionId: string): void {
+    if (!this.sessionManager.isSessionActive(sessionId)) {
+      throw new MolirisAppError(ErrorCode.INVALID_CREDENTIALS, "Sessione utente non valida o scaduta.");
+    }
+  }
+
+  private registerTransfer(record: TransferRecord): void {
+    this.assertActiveSession(record.userSessionId);
+    this.transfers.set(record.transferId, record);
+  }
+
+  private assertTransferActive(record: TransferRecord): void {
+    this.assertActiveSession(record.userSessionId);
+    if (record.abortController.signal.aborted) {
+      throw new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Trasferimento annullato o interrotto.");
+    }
+  }
+
+  private beginPromotion(record: TransferRecord): void {
+    this.assertTransferActive(record);
+    // Il file è già verificato. Lascia concludere il commit già avviato
+    // senza concorrere con la pulizia della destinazione temporanea.
+    this.promotingTransfers.add(record);
+  }
+
   /**
    * Memorizza la richiesta originale (per Riprova/Riprendi) e notifica che il record è visibile
    * in lista (stato QUEUED) prima di slot e handshake SSH.
@@ -380,7 +407,7 @@ export class TransferService {
       totalBytes: totalBytes || null,
       expectedChecksum: options?.expectedChecksum,
     });
-    this.transfers.set(transferId, record);
+    this.registerTransfer(record);
 
     const destLockKey = `server:${robot.id}:${targetRelative}`;
     let slotAcquired = false;
@@ -388,6 +415,7 @@ export class TransferService {
     try {
       await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
       slotAcquired = true;
+      this.assertTransferActive(record);
       record.status = TransferStatus.IN_PROGRESS;
       this.acquireDestinationLock(destLockKey);
       lockAcquired = true;
@@ -414,6 +442,7 @@ export class TransferService {
       const finalStat = await fs.promises.stat(tempFilePath);
       if (finalStat.size !== record.transferredBytes) {
         try { await fs.promises.unlink(tempFilePath); } catch {}
+        this.assertTransferActive(record);
         record.status = TransferStatus.INTEGRITY_FAILED;
         throw new MolirisAppError(
           ErrorCode.INTEGRITY_CHECK_FAILED,
@@ -427,6 +456,7 @@ export class TransferService {
         const readbackDigest = await this.computeLocalFileDigest(tempFilePath);
         if (readbackDigest.toLowerCase() !== (record.computedChecksum || "").toLowerCase()) {
           try { await fs.promises.unlink(tempFilePath); } catch {}
+          this.assertTransferActive(record);
           record.status = TransferStatus.INTEGRITY_FAILED;
           throw new MolirisAppError(
             ErrorCode.INTEGRITY_CHECK_FAILED,
@@ -444,6 +474,7 @@ export class TransferService {
       if (!fs.existsSync(targetDir)) {
         await fs.promises.mkdir(targetDir, { recursive: true });
       }
+      this.beginPromotion(record);
       await fs.promises.rename(tempFilePath, finalServerPath);
 
       const isReadback = this.config.transferVerifyMode === "readback";
@@ -584,6 +615,8 @@ export class TransferService {
       }
     });
 
+    if (record.abortController.signal.aborted) abortHandler();
+
     return outStream;
   }
 
@@ -627,7 +660,7 @@ export class TransferService {
       destinationPath: filename,
       totalBytes: stat.size,
     });
-    this.transfers.set(record.transferId, record);
+    this.registerTransfer(record);
 
     let slotAcquired = false;
     let released = false;
@@ -640,6 +673,7 @@ export class TransferService {
     try {
       await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
       slotAcquired = true;
+      this.assertTransferActive(record);
       record.status = TransferStatus.IN_PROGRESS;
       await this.recordAuditStart(record);
 
@@ -655,6 +689,7 @@ export class TransferService {
       };
       record.cleanupHandlers.push(cleanupSource);
 
+      this.assertTransferActive(record);
       const outStream = this.createTrackedDownloadStream({
         record,
         sourceStream: rawStream,
@@ -756,7 +791,7 @@ export class TransferService {
       totalBytes: stat.size,
       expectedChecksum: req.expectedChecksum,
     });
-    this.transfers.set(record.transferId, record);
+    this.registerTransfer(record);
     this.markAccepted(record, req);
 
     const destLockKey = `robot:${robot.id}:${req.remotePath}`;
@@ -766,6 +801,7 @@ export class TransferService {
     try {
       await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
       slotAcquired = true;
+      this.assertTransferActive(record);
       record.status = TransferStatus.IN_PROGRESS;
       this.acquireDestinationLock(destLockKey);
       lockAcquired = true;
@@ -847,6 +883,7 @@ export class TransferService {
         }
       }
 
+      this.assertTransferActive(record);
       this.signalAccepted(record, req);
 
       const localReadStream = fs.createReadStream(sourceServerPath, {
@@ -896,6 +933,7 @@ export class TransferService {
 
       if (remoteStat.size !== record.transferredBytes) {
         await this.safeUnlinkRobotFile(sftp, robot.id, remoteTempPath);
+        this.assertTransferActive(record);
         record.status = TransferStatus.INTEGRITY_FAILED;
         throw new MolirisAppError(
           ErrorCode.INTEGRITY_CHECK_FAILED,
@@ -910,6 +948,7 @@ export class TransferService {
         const readbackDigest = await this.computeRemoteFileDigest(sftp, remoteTempPath);
         if (readbackDigest.toLowerCase() !== (record.computedChecksum || "").toLowerCase()) {
           await this.safeUnlinkRobotFile(sftp, robot.id, remoteTempPath);
+          this.assertTransferActive(record);
           record.status = TransferStatus.INTEGRITY_FAILED;
           throw new MolirisAppError(
             ErrorCode.INTEGRITY_CHECK_FAILED,
@@ -920,7 +959,7 @@ export class TransferService {
       }
 
       // 3. Sostituzione atomica e controllo anti-corsa TOCTOU prima della promozione sulla STESSA sftp
-      await this.promoteRemoteTempFile(sftp, remoteTempPath, finalTargetRemote, req.overwrite === true, robot.id);
+      await this.promoteRemoteTempFile(sftp, remoteTempPath, finalTargetRemote, req.overwrite === true, robot.id, record);
 
       record.integrityLabel = isReadback
         ? "completato — digest + dimensione verificata e readback remoto"
@@ -1006,15 +1045,17 @@ export class TransferService {
       totalBytes: null,
       expectedChecksum: req.expectedChecksum,
     });
-    this.transfers.set(record.transferId, record);
+    this.registerTransfer(record);
     this.markAccepted(record, req);
 
     const destLockKey = `server:${robot.id}:${targetServerRelative}`;
     let slotAcquired = false;
     let lockAcquired = false;
+    let remoteReadHandle: Awaited<ReturnType<RemoteFilesystemService["openRemoteReadStream"]>> | null = null;
     try {
       await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
       slotAcquired = true;
+      this.assertTransferActive(record);
       record.status = TransferStatus.IN_PROGRESS;
       this.acquireDestinationLock(destLockKey);
       lockAcquired = true;
@@ -1062,7 +1103,6 @@ export class TransferService {
         }
       }
 
-      let remoteReadHandle: any = null;
       const tempWriteStream = fs.createWriteStream(tempFilePath, {
         mode: 0o700,
         flags: writeFlags,
@@ -1082,6 +1122,7 @@ export class TransferService {
       remoteReadHandle = await this.remoteFsService.openRemoteReadStream(context, robot, req.remotePath, {
         start: startOffset,
       });
+      this.assertTransferActive(record);
       this.signalAccepted(record, req);
 
       await this.streamWithTrackingAndChecksum(
@@ -1099,6 +1140,7 @@ export class TransferService {
       const finalStat = await fs.promises.stat(tempFilePath);
       if (finalStat.size !== record.transferredBytes) {
         try { await fs.promises.unlink(tempFilePath); } catch {}
+        this.assertTransferActive(record);
         record.status = TransferStatus.INTEGRITY_FAILED;
         throw new MolirisAppError(
           ErrorCode.INTEGRITY_CHECK_FAILED,
@@ -1113,6 +1155,7 @@ export class TransferService {
         const readbackDigest = await this.computeLocalFileDigest(tempFilePath);
         if (readbackDigest.toLowerCase() !== (record.computedChecksum || "").toLowerCase()) {
           try { await fs.promises.unlink(tempFilePath); } catch {}
+          this.assertTransferActive(record);
           record.status = TransferStatus.INTEGRITY_FAILED;
           throw new MolirisAppError(
             ErrorCode.INTEGRITY_CHECK_FAILED,
@@ -1130,6 +1173,7 @@ export class TransferService {
       if (!fs.existsSync(targetDir)) {
         await fs.promises.mkdir(targetDir, { recursive: true });
       }
+      this.beginPromotion(record);
       await fs.promises.rename(tempFilePath, finalServerPath);
 
       record.integrityLabel = isReadback
@@ -1155,6 +1199,9 @@ export class TransferService {
         record.error || "Trasferimento file interrotto prima del completamento."
       );
     } finally {
+      if (remoteReadHandle) {
+        try { await remoteReadHandle.cleanup(); } catch {}
+      }
       if (lockAcquired) this.releaseDestinationLock(destLockKey);
       if (slotAcquired) this.releaseTransferSlot(context.userId, robot.id);
     }
@@ -1201,7 +1248,7 @@ export class TransferService {
       totalBytes: totalBytes || null,
       expectedChecksum: options?.expectedChecksum,
     });
-    this.transfers.set(record.transferId, record);
+    this.registerTransfer(record);
 
     const destLockKey = `robot:${robot.id}:${displayDirectory}/${safeFilename}`;
     let slotAcquired = false;
@@ -1210,6 +1257,7 @@ export class TransferService {
     try {
       await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
       slotAcquired = true;
+      this.assertTransferActive(record);
       record.status = TransferStatus.IN_PROGRESS;
       this.acquireDestinationLock(destLockKey);
       lockAcquired = true;
@@ -1304,6 +1352,7 @@ export class TransferService {
 
       if (remoteStat.size !== record.transferredBytes) {
         await this.safeUnlinkRobotFile(sftp, robot.id, remoteTempPath);
+        this.assertTransferActive(record);
         record.status = TransferStatus.INTEGRITY_FAILED;
         throw new MolirisAppError(
           ErrorCode.INTEGRITY_CHECK_FAILED,
@@ -1318,6 +1367,7 @@ export class TransferService {
         const readbackDigest = await this.computeRemoteFileDigest(sftp, remoteTempPath);
         if (readbackDigest.toLowerCase() !== (record.computedChecksum || "").toLowerCase()) {
           await this.safeUnlinkRobotFile(sftp, robot.id, remoteTempPath);
+          this.assertTransferActive(record);
           record.status = TransferStatus.INTEGRITY_FAILED;
           throw new MolirisAppError(
             ErrorCode.INTEGRITY_CHECK_FAILED,
@@ -1328,7 +1378,7 @@ export class TransferService {
       }
 
       // 3. Sostituzione atomica e promozione sulla STESSA sftp
-      await this.promoteRemoteTempFile(sftp, remoteTempPath, finalResolvedRemote, options?.overwrite === true, robot.id);
+      await this.promoteRemoteTempFile(sftp, remoteTempPath, finalResolvedRemote, options?.overwrite === true, robot.id, record);
 
       record.integrityLabel = isReadback
         ? "completato — digest + dimensione verificata e readback remoto"
@@ -1396,7 +1446,7 @@ export class TransferService {
       destinationPath: filename,
       totalBytes: stats.size,
     });
-    this.transfers.set(record.transferId, record);
+    this.registerTransfer(record);
 
     let slotAcquired = false;
     let released = false;
@@ -1410,6 +1460,7 @@ export class TransferService {
     try {
       await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
       slotAcquired = true;
+      this.assertTransferActive(record);
       record.status = TransferStatus.IN_PROGRESS;
       await this.recordAuditStart(record);
 
@@ -1426,6 +1477,7 @@ export class TransferService {
       };
       record.cleanupHandlers.push(cleanupSource);
 
+      this.assertTransferActive(record);
       const outStream = this.createTrackedDownloadStream({
         record,
         sourceStream: remoteReadHandle.stream,
@@ -1503,7 +1555,7 @@ export class TransferService {
       totalBytes: totalBytes || null,
       expectedChecksum: options?.expectedChecksum,
     });
-    this.transfers.set(record.transferId, record);
+    this.registerTransfer(record);
 
     await fs.promises.mkdir(path.dirname(finalPath), { recursive: true, mode: 0o750 });
     const tempFilePath = path.join(
@@ -1518,6 +1570,7 @@ export class TransferService {
     try {
       await this.acquireTransferSlot(context.userId, TransferService.GENERAL_SERVER_ID, record.abortController.signal);
       slotAcquired = true;
+      this.assertTransferActive(record);
       record.status = TransferStatus.IN_PROGRESS;
       this.acquireDestinationLock(destLockKey);
       lockAcquired = true;
@@ -1543,6 +1596,7 @@ export class TransferService {
       const finalStat = await fs.promises.stat(tempFilePath);
       if (finalStat.size !== record.transferredBytes) {
         try { await fs.promises.unlink(tempFilePath); } catch {}
+        this.assertTransferActive(record);
         record.status = TransferStatus.INTEGRITY_FAILED;
         throw new MolirisAppError(
           ErrorCode.INTEGRITY_CHECK_FAILED,
@@ -1555,6 +1609,7 @@ export class TransferService {
         const readbackDigest = await this.computeLocalFileDigest(tempFilePath);
         if (readbackDigest.toLowerCase() !== (record.computedChecksum || "").toLowerCase()) {
           try { await fs.promises.unlink(tempFilePath); } catch {}
+          this.assertTransferActive(record);
           record.status = TransferStatus.INTEGRITY_FAILED;
           throw new MolirisAppError(
             ErrorCode.INTEGRITY_CHECK_FAILED,
@@ -1567,6 +1622,7 @@ export class TransferService {
       // Ricontrollo TOCTOU e promozione atomica (RF-TRF-009, CA-TRF-005)
       await this.checkServerOverwritePolicy(finalPath, options);
       await fs.promises.mkdir(path.dirname(finalPath), { recursive: true, mode: 0o750 });
+      this.beginPromotion(record);
       await fs.promises.rename(tempFilePath, finalPath);
 
       const isReadback = this.config.transferVerifyMode === "readback";
@@ -1730,7 +1786,7 @@ export class TransferService {
       destinationPath: filename,
       totalBytes: stat.size,
     });
-    this.transfers.set(record.transferId, record);
+    this.registerTransfer(record);
 
     let slotAcquired = false;
     let released = false;
@@ -1743,6 +1799,7 @@ export class TransferService {
     try {
       await this.acquireTransferSlot(context.userId, TransferService.GENERAL_SERVER_ID, record.abortController.signal);
       slotAcquired = true;
+      this.assertTransferActive(record);
       record.status = TransferStatus.IN_PROGRESS;
       await this.recordAuditStart(record);
 
@@ -1755,6 +1812,7 @@ export class TransferService {
       };
       record.cleanupHandlers.push(cleanupSource);
 
+      this.assertTransferActive(record);
       const outStream = this.createTrackedDownloadStream({
         record,
         sourceStream: rawStream,
@@ -1807,28 +1865,11 @@ export class TransferService {
 
     const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm, this.getChunkSize());
 
-    await new Promise<void>((resolve, reject) => {
-      const abortHandler = () => {
-        const abortErr = new MolirisAppError(
-          ErrorCode.TRANSFER_INTERRUPTED,
-          "Trasferimento annullato o interrotto."
-        );
-        sourceStream.destroy(abortErr);
-        destStream.destroy(abortErr);
-        reject(abortErr);
-      };
-
-      record.abortController.signal.addEventListener("abort", abortHandler, { once: true });
-
-      // Pipelining nativo Node.js: source -> progressTracker -> checksumStream -> destStream
-      pipeline(sourceStream, progressTracker, checksumStream, destStream, (err) => {
-        record.abortController.signal.removeEventListener("abort", abortHandler);
-        if (err) return reject(err);
-
-        record.computedChecksum = checksumStream.getDigest() || undefined;
-        resolve();
-      });
+    await pipelineWithSignal(sourceStream, progressTracker, checksumStream, destStream, {
+      signal: record.abortController.signal,
     });
+    this.assertTransferActive(record);
+    record.computedChecksum = checksumStream.getDigest() || undefined;
 
     // STEP 4 – Verifica di integrità (RF-TRF-008, CA-TRF-004)
     if (expectedChecksum && record.computedChecksum) {
@@ -1870,13 +1911,15 @@ export class TransferService {
       );
     }
 
-    if (TransferService.TERMINAL_STATUSES.has(record.status)) {
+    if (TransferService.TERMINAL_STATUSES.has(record.status) || this.promotingTransfers.has(record)) {
       return this.toDto(record);
     }
 
     record.status = TransferStatus.CANCELLED;
     record.completedAt = new Date();
-    record.error = "Trasferimento annullato dall'utente.";
+    record.error = reason === "SESSION_TERMINATED_EXPIRED"
+      ? "Trasferimento interrotto perché la sessione è scaduta."
+      : "Trasferimento annullato dall'utente.";
     record.integrityLabel = "integrità non verificata";
     record.abortController.abort();
 
@@ -2507,16 +2550,16 @@ export class TransferService {
   }
 
   public listTransfers(context: AuthorizedContext, robotId?: string): TransferDto[] {
-    const list: TransferDto[] = [];
+    const list: TransferRecord[] = [];
     const isAdmin = Array.isArray(context.roles) && context.roles.some((r) => r.toLowerCase() === "admin");
-    for (const record of Array.from(this.transfers.values())) {
+    for (const record of this.transfers.values()) {
       if (robotId && record.robotId !== robotId) continue;
       if (isAdmin || record.userId === context.userId || context.targetRobotId === record.robotId || !context.targetRobotId) {
-        list.push(this.toDto(record));
+        list.push(record);
       }
     }
-    // Ordina i più recenti per primi
-    return list.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+    return list.sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())
+      .map((record) => this.toDto(record));
   }
 
   private toDto(record: TransferRecord): TransferDto {
@@ -2902,7 +2945,8 @@ export class TransferService {
     remoteTempPath: string,
     finalPath: string,
     overwriteConfirmed: boolean,
-    robotId: string
+    robotId: string,
+    record: TransferRecord
   ): Promise<void> {
     // Controllo anti-corsa TOCTOU su destinazione finale subito prima della promozione
     const exists = await new Promise<boolean>((resolve) => {
@@ -2934,6 +2978,7 @@ export class TransferService {
         typeof sftpClient.ext_openssh_rename === "function";
 
       if (hasPosixRename) {
+        this.beginPromotion(record);
         await new Promise<void>((resolve, reject) => {
           sftpClient.ext_openssh_rename(remoteTempPath, finalPath, (err: any) => {
             if (err) return reject(this.remoteFsService.mapSftpError(err, finalPath, robotId));
@@ -2946,6 +2991,7 @@ export class TransferService {
             robotId,
             targetPath: finalPath,
           });
+          this.beginPromotion(record);
           await new Promise<void>((res) => sftpClient.unlink(finalPath, () => res()));
           await new Promise<void>((resolve, reject) => {
             sftpClient.rename(remoteTempPath, finalPath, (err: any) => {
@@ -2963,6 +3009,7 @@ export class TransferService {
         }
       }
     } else {
+      this.beginPromotion(record);
       await new Promise<void>((resolve, reject) => {
         sftpClient.rename(remoteTempPath, finalPath, (err: any) => {
           if (err) return reject(this.remoteFsService.mapSftpError(err, finalPath, robotId));
@@ -2973,6 +3020,7 @@ export class TransferService {
   }
 
   private async recordAuditStart(record: TransferRecord): Promise<void> {
+    this.assertTransferActive(record);
     await this.auditRepository.record({
       userId: record.userId,
       operation: AuditOperation.TRANSFER_START,
@@ -2988,6 +3036,7 @@ export class TransferService {
         totalBytes: record.totalBytes,
       },
     });
+    this.assertTransferActive(record);
   }
 
   private async recordAuditSuccess(record: TransferRecord): Promise<void> {
@@ -3100,7 +3149,7 @@ export class TransferService {
       totalBytes,
     });
     record.status = TransferStatus.IN_PROGRESS;
-    this.transfers.set(record.transferId, record);
+    this.registerTransfer(record);
     await this.recordAuditStart(record);
     return record;
   }
@@ -3123,6 +3172,7 @@ export class TransferService {
     checksum: string | null
   ): Promise<void> {
     if (this.isTerminalRecord(record)) return;
+    this.assertTransferActive(record);
     record.status = TransferStatus.COMPLETED;
     record.completedAt = new Date();
     record.computedChecksum = checksum || undefined;
@@ -3442,7 +3492,7 @@ export class TransferService {
               ],
             };
             record = genRecord;
-            this.transfers.set(transferId, genRecord);
+            this.registerTransfer(genRecord);
             await this.recordAuditStart(genRecord);
 
             this.batchTransferManager?.setItemInProgress(batchId, batchItemId, {
@@ -3633,7 +3683,7 @@ export class TransferService {
               ],
             };
             record = serverRecord;
-            this.transfers.set(transferId, serverRecord);
+            this.registerTransfer(serverRecord);
             await this.recordAuditStart(serverRecord);
 
             this.batchTransferManager?.setItemInProgress(batchId, batchItemId, {
@@ -3655,39 +3705,25 @@ export class TransferService {
             const readStream = fs.createReadStream(staged.stagingPath);
             const writeStream = fs.createWriteStream(tempPartPath, { mode: 0o600 });
 
-            await new Promise<void>((resolve, reject) => {
-              const onAbort = () => {
-                const abortErr = new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Trasferimento annullato con il blocco massivo.");
-                readStream.destroy(abortErr);
-                writeStream.destroy(abortErr);
-                reject(abortErr);
-              };
-              serverRecord.abortController.signal.addEventListener("abort", onAbort, { once: true });
-              readStream.on("data", (chunk: Buffer | string) => {
-                const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-                hash.update(buf);
-                writtenBytes += buf.length;
-                serverRecord.transferredBytes = writtenBytes;
-                const elapsedSec = Math.max(0.001, (Date.now() - startTime) / 1000);
-                serverRecord.speedBytesPerSec = Math.round(writtenBytes / elapsedSec);
-                if (serverRecord.totalBytes && serverRecord.speedBytesPerSec > 0) {
-                  const remaining = Math.max(0, serverRecord.totalBytes - writtenBytes);
-                  serverRecord.etaSeconds = Math.ceil(remaining / serverRecord.speedBytesPerSec);
-                }
-                serverRecord.lastProgressUpdateAt = Date.now();
-                this.batchTransferManager?.updateItemProgress(batchId, batchItemId, writtenBytes);
-              });
-              pipeline(readStream, writeStream, (err) => {
-                serverRecord.abortController.signal.removeEventListener("abort", onAbort);
-                if (err) reject(err);
-                else resolve();
-              });
+            readStream.on("data", (chunk: Buffer | string) => {
+              const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+              hash.update(buf);
+              writtenBytes += buf.length;
+              serverRecord.transferredBytes = writtenBytes;
+              const elapsedSec = Math.max(0.001, (Date.now() - startTime) / 1000);
+              serverRecord.speedBytesPerSec = Math.round(writtenBytes / elapsedSec);
+              if (serverRecord.totalBytes && serverRecord.speedBytesPerSec > 0) {
+                const remaining = Math.max(0, serverRecord.totalBytes - writtenBytes);
+                serverRecord.etaSeconds = Math.ceil(remaining / serverRecord.speedBytesPerSec);
+              }
+              serverRecord.lastProgressUpdateAt = Date.now();
+              this.batchTransferManager?.updateItemProgress(batchId, batchItemId, writtenBytes);
+            });
+            await pipelineWithSignal(readStream, writeStream, {
+              signal: serverRecord.abortController.signal,
             }).catch(async (err) => {
               if (serverRecord.status !== TransferStatus.CANCELLED) {
-                serverRecord.status = TransferStatus.FAILED;
-                serverRecord.error = err.message;
-                serverRecord.completedAt = new Date();
-                await this.recordAuditFailure(serverRecord, err);
+                await this.handleTransferFailure(serverRecord, err);
               }
               try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
               throw err;
@@ -3724,6 +3760,7 @@ export class TransferService {
             await fs.promises.mkdir(path.dirname(finalPath), { recursive: true, mode: 0o750 });
 
             // Sostituzione atomica via rename
+            this.beginPromotion(record);
             await fs.promises.rename(tempPartPath, finalPath);
 
             serverRecord.status = TransferStatus.COMPLETED;
@@ -3832,7 +3869,7 @@ export class TransferService {
               ],
             };
             record = targetRecord;
-            this.transfers.set(transferId, targetRecord);
+            this.registerTransfer(targetRecord);
             await this.recordAuditStart(targetRecord);
 
             this.batchTransferManager?.setItemInProgress(batchId, batchItemId, {
@@ -3855,45 +3892,29 @@ export class TransferService {
               mode: 0o600,
             });
 
-            await new Promise<void>((resolve, reject) => {
-              const onAbort = () => {
-                const abortErr = new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Trasferimento annullato con il blocco massivo.");
-                readStream.destroy(abortErr);
-                remoteWriteStream.destroy(abortErr);
-                reject(abortErr);
-              };
-              targetRecord.abortController.signal.addEventListener("abort", onAbort, { once: true });
-              readStream.on("data", (chunk: Buffer | string) => {
-                const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-                hash.update(buf);
-                writtenBytes += buf.length;
-                if (record) {
-                  record.transferredBytes = writtenBytes;
-                  const elapsedSec = Math.max(0.001, (Date.now() - startTime) / 1000);
-                  record.speedBytesPerSec = Math.round(writtenBytes / elapsedSec);
-                  if (record.totalBytes && record.speedBytesPerSec > 0) {
-                    const remaining = Math.max(0, record.totalBytes - writtenBytes);
-                    record.etaSeconds = Math.ceil(remaining / record.speedBytesPerSec);
-                  }
-                  record.lastProgressUpdateAt = Date.now();
-                  this.batchTransferManager?.updateItemProgress(batchId, batchItemId, writtenBytes);
+            readStream.on("data", (chunk: Buffer | string) => {
+              const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+              hash.update(buf);
+              writtenBytes += buf.length;
+              if (record) {
+                record.transferredBytes = writtenBytes;
+                const elapsedSec = Math.max(0.001, (Date.now() - startTime) / 1000);
+                record.speedBytesPerSec = Math.round(writtenBytes / elapsedSec);
+                if (record.totalBytes && record.speedBytesPerSec > 0) {
+                  const remaining = Math.max(0, record.totalBytes - writtenBytes);
+                  record.etaSeconds = Math.ceil(remaining / record.speedBytesPerSec);
                 }
-              });
-              pipeline(readStream, remoteWriteStream, (err) => {
-                targetRecord.abortController.signal.removeEventListener("abort", onAbort);
-                if (err) reject(err);
-                else resolve();
-              });
-            }).catch(async (err) => {
-              if (record && record.status !== TransferStatus.CANCELLED) {
-                record.status = TransferStatus.FAILED;
-                record.error = err.message;
-                record.completedAt = new Date();
-                await this.recordAuditFailure(record, err);
+                record.lastProgressUpdateAt = Date.now();
+                this.batchTransferManager?.updateItemProgress(batchId, batchItemId, writtenBytes);
               }
-              try {
-                await new Promise<void>((res) => sftp.unlink(tempRemotePartPath, () => res()));
-              } catch {}
+            });
+            await pipelineWithSignal(readStream, remoteWriteStream, {
+              signal: targetRecord.abortController.signal,
+            }).catch(async (err) => {
+              if (targetRecord.status !== TransferStatus.CANCELLED) {
+                await this.handleTransferFailure(targetRecord, err);
+              }
+              await this.safeUnlinkRobotFile(sftp, robot.id, tempRemotePartPath);
               throw err;
             });
 
@@ -3945,7 +3966,8 @@ export class TransferService {
               tempRemotePartPath,
               finalRemotePath,
               overwrite === true,
-              robot.id
+              robot.id,
+              record
             );
 
             if (record) {
@@ -3968,10 +3990,7 @@ export class TransferService {
           } catch (err: any) {
             const errMsg = err.userMessage || err.message || "Errore durante trasferimento al robot";
             if (record && record.status !== TransferStatus.CANCELLED) {
-              record.status = TransferStatus.FAILED;
-              record.error = errMsg;
-              record.completedAt = new Date();
-              await this.recordAuditFailure(record, err).catch(() => {});
+              await this.handleTransferFailure(record, err);
               this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
             } else if (!record) {
               this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
@@ -4173,7 +4192,7 @@ export class TransferService {
         destinationPath: `robot:${targetRobot.id}:${finalDestPath}`,
         totalBytes: sourceSize,
       });
-      this.transfers.set(transferId, targetRecord);
+      this.registerTransfer(targetRecord);
 
       let lockAcquired = false;
       try {
@@ -4276,7 +4295,8 @@ export class TransferService {
           tempDestPath,
           resolvedDestPath,
           overwrite,
-          targetRobot.id
+          targetRobot.id,
+          targetRecord
         );
         writeStream = null;
 
@@ -4337,6 +4357,7 @@ export class TransferService {
           if (currentMeta.size !== sourceMeta.size || (sourceMeta.modifiedAt && currentMeta.modifiedAt && currentMeta.modifiedAt !== sourceMeta.modifiedAt)) {
             sourceDeleteError = "Cancellazione sorgente annullata: il file sorgente è stato modificato durante il trasferimento.";
           } else {
+            this.assertActiveSession(context.sessionId);
             await this.remoteFsService.deleteRemoteFile(context, sourceRobot, sourceRemotePath);
             sourceDeleted = true;
           }

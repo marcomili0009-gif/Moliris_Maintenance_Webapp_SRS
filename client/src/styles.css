@@ -79,6 +79,23 @@ body {
   outline-offset: 4px;
 }
 
+@media (max-width: 575.98px) {
+  .navbar .moliris-navbar-inner {
+    flex-wrap: wrap;
+    row-gap: 0.25rem;
+  }
+
+  .navbar .moliris-navbar-start {
+    display: contents !important;
+  }
+
+  .navbar .moliris-navbar-menu {
+    order: 1;
+    flex: 1 0 100%;
+    flex-wrap: wrap;
+  }
+}
+
 /* Modals Overlay (React Modal component) */
 .modal {
   position: fixed;

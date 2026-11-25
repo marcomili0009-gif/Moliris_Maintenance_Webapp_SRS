@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { RegisterRobotPayload, RegistrationOutcome } from "../../types/fleet.ts";
 import type { FormattedError } from "../../types/error.ts";
 
@@ -39,11 +39,46 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
   const [generalError, setGeneralError] = useState<string | null>(null);
   // Stato di caricamento del pulsante "Crea Robot" durante la verifica SSH (RF-ROB-007)
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const firstInputRef = useRef<HTMLInputElement>(null);
+
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    const previous = document.activeElement;
+    firstInputRef.current?.focus({ preventScroll: true });
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) {
+        previous.focus({ preventScroll: true });
+      }
+    };
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
     const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape" && !isSubmitting) onClose();
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusedDialog = ev.target instanceof Element ? ev.target.closest(".modal") : null;
+      if (focusedDialog && focusedDialog !== dialog) return;
+      if (ev.key === "Escape" && !isSubmitting) {
+        ev.preventDefault();
+        onClose();
+      }
+      if (ev.key !== "Tab" || ev.defaultPrevented) return;
+      const controls = Array.from(dialog.querySelectorAll<HTMLElement>(
+        "button:not(:disabled), input:not(:disabled):not([type=hidden]), select:not(:disabled), textarea:not(:disabled), a[href], summary, [tabindex]"
+      )).filter((element) => {
+        if (element.tabIndex < 0 || !element.getClientRects().length) return false;
+        const collapsed = element.closest("details:not([open])");
+        return !collapsed || collapsed.querySelector(":scope > summary") === element;
+      });
+      const first = controls[0];
+      const last = controls.at(-1);
+      const active = document.activeElement;
+      if (!controls.some((control) => control === active) || active === (ev.shiftKey ? first : last)) {
+        ev.preventDefault();
+        (ev.shiftKey ? last : first)?.focus();
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -126,7 +161,7 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
   };
 
   return (
-    <div id="modal-robot-register" className="modal" role="dialog" aria-modal="true" aria-labelledby="register-robot-title">
+    <div ref={dialogRef} id="modal-robot-register" className="modal" role="dialog" aria-modal="true" aria-labelledby="register-robot-title">
       <div className="modal-content modal-large modal-register">
         <div className="modal-header modal-register-header">
           <h3 id="register-robot-title">Registrazione Nuovo Robot</h3>
@@ -174,6 +209,7 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
                 <input
                   type="text"
                   id="reg-displayName"
+                  ref={firstInputRef}
                   name="displayName"
                   required
                   placeholder="es. Robot Ispettivo 1"
@@ -425,7 +461,7 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
               {/* SFTP Parameters */}
               <div className="form-group full-width">
                 <details>
-                  <summary style={{ cursor: "pointer", fontWeight: 500, marginBottom: "0.5rem" }}>
+                  <summary id="reg-sftp-options" style={{ cursor: "pointer", fontWeight: 500, marginBottom: "0.5rem" }}>
                     Parametri di accesso SFTP (SOLO se differenti da SSH)
                   </summary>
                   <div className="sftp-subgrid">

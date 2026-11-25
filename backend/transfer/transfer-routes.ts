@@ -8,7 +8,8 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
-import { pipeline, type Readable } from "stream";
+import { type Readable } from "stream";
+import { pipeline } from "node:stream/promises";
 import { type TransferService } from "./transfer-service.ts";
 import { type RobotRepository } from "../../storage/robot-repository.ts";
 import { type SessionManager } from "../auth/session-manager.ts";
@@ -598,38 +599,68 @@ export function registerTransferRoutes(
       reply.hijack();
       reply.raw.writeHead(200, {
         "Content-Type": "text/event-stream; charset=utf-8",
-        "Cache-Control": "no-cache, no-transform",
+        "Cache-Control": "no-store, no-transform",
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
       });
 
       let closed = false;
+      let interval: ReturnType<typeof setInterval> | undefined;
+      let previousTransfers: string | undefined;
+      let lastWriteAt = 0;
+      const stop = () => {
+        if (closed) return;
+        closed = true;
+        clearInterval(interval);
+        unsubscribe();
+      };
+      const end = () => {
+        if (closed) return;
+        stop();
+        if (!reply.raw.destroyed) reply.raw.end();
+      };
+      const unsubscribe = sessionManager.onSessionTerminated((sessionId) => {
+        if (sessionId === context.sessionId) end();
+      });
+      reply.raw.once("close", stop);
       const sendSnapshot = () => {
         if (closed || reply.raw.destroyed) return;
+        if (!sessionManager.validate(context.sessionId)) {
+          end();
+          return;
+        }
+        if (reply.raw.writableNeedDrain) return;
+
         const list = transferService.listTransfers(context);
+        const transfers = JSON.stringify(list);
+        const now = Date.now();
+        if (transfers === previousTransfers) {
+          if (now - lastWriteAt >= 15_000) {
+            reply.raw.write(": keep-alive\n\n");
+            lastWriteAt = now;
+          }
+          return;
+        }
+
         const payload = {
           transfers: list,
           activeCount: list.filter((t) => isActiveTransferStatus(t.status)).length,
           totalCount: list.length,
-          timestamp: new Date().toISOString(),
+          timestamp: new Date(now).toISOString(),
         };
         reply.raw.write(`event: snapshot\ndata: ${JSON.stringify(payload)}\n\n`);
+        previousTransfers = transfers;
+        lastWriteAt = now;
       };
 
       sendSnapshot();
+      if (closed) return reply;
       if (query.once === "1") {
-        reply.raw.end();
+        end();
         return reply;
       }
 
-      const interval = setInterval(sendSnapshot, 1000);
-      const close = () => {
-        if (closed) return;
-        closed = true;
-        clearInterval(interval);
-      };
-      req.raw.on("close", close);
-      reply.raw.on("close", close);
+      interval = setInterval(sendSnapshot, 1000);
       return reply;
     }
   );
@@ -913,31 +944,26 @@ export function registerTransferRoutes(
             const writeStream = fs.createWriteStream(stagingPath, { mode: 0o600 });
 
             try {
-              await new Promise<void>((resolve, reject) => {
-                part.file.on("data", (chunk: Buffer | string) => {
-                  const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-                  hash.update(buf);
-                  totalBytes += buf.length;
+              part.file.on("data", (chunk: Buffer | string) => {
+                const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                hash.update(buf);
+                totalBytes += buf.length;
 
-                  // Avanzamento in tempo reale della ricezione browser → server.
-                  const now = Date.now();
-                  const elapsed = now - speedWindowStartedAt;
-                  if (elapsed >= 200) {
-                    const speed = Math.round(((totalBytes - speedWindowBytes) / elapsed) * 1000);
-                    const total = stagingRecord.totalBytes;
-                    const eta = total && speed > 0
-                      ? Math.max(0, Math.ceil((total - totalBytes) / speed))
-                      : null;
-                    transferService.updateBulkStagingTransfer(stagingRecord, totalBytes, speed, eta);
-                    speedWindowBytes = totalBytes;
-                    speedWindowStartedAt = now;
-                  }
-                });
-                pipeline(part.file, writeStream, (err) => {
-                  if (err) reject(err);
-                  else resolve();
-                });
+                // Avanzamento in tempo reale della ricezione browser → server.
+                const now = Date.now();
+                const elapsed = now - speedWindowStartedAt;
+                if (elapsed >= 200) {
+                  const speed = Math.round(((totalBytes - speedWindowBytes) / elapsed) * 1000);
+                  const total = stagingRecord.totalBytes;
+                  const eta = total && speed > 0
+                    ? Math.max(0, Math.ceil((total - totalBytes) / speed))
+                    : null;
+                  transferService.updateBulkStagingTransfer(stagingRecord, totalBytes, speed, eta);
+                  speedWindowBytes = totalBytes;
+                  speedWindowStartedAt = now;
+                }
               });
+              await pipeline(part.file, writeStream, { signal: stagingRecord.abortController.signal });
             } catch (streamErr: any) {
               await transferService.failBulkStagingTransfer(stagingRecord, streamErr);
               throw streamErr;

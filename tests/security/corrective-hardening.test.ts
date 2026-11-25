@@ -76,6 +76,19 @@ try {
   const docAlpha = await coll.findOne({ robotId: "robot_alpha" });
   assert.ok(docAlpha);
 
+  const recoveryId = "robot_removal_recovery";
+  const recoveryRef = await mongoCredProvider.store(recoveryId, secretMaterial);
+  await mongoCredProvider.markForRemoval(recoveryId);
+  assert.deepEqual(await mongoCredProvider.getCredentials(recoveryRef, "password"), secretMaterial);
+  assert.equal((await coll.findOne({ robotId: recoveryId }))?.removalPending, true);
+  await mongoCredProvider.store(recoveryId, secretMaterial);
+  await mongoCredProvider.purgeMarked(recoveryId);
+  assert.deepEqual(await mongoCredProvider.getCredentials(recoveryRef, "password"), secretMaterial);
+  await mongoCredProvider.markForRemoval(recoveryId);
+  await mongoCredProvider.purgeMarked(recoveryId);
+  await mongoCredProvider.purgeMarked(recoveryId);
+  assert.equal(await coll.findOne({ robotId: recoveryId }), null);
+
   const tamperedDoc: EncryptedCredentialDocument = {
     ...docAlpha,
     authTag: "00000000000000000000000000000000",

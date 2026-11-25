@@ -9,6 +9,7 @@ import { InMemoryAuditRepository } from "../../storage/audit-repository.ts";
 import { TerminalService } from "../../backend/terminal/terminal-service.ts";
 import { DefaultDenyTerminalSessionSharingPolicy } from "../../backend/terminal/terminal-models.ts";
 import { EventEmitter } from "events";
+import { mock } from "node:test";
 
 console.log("--> Esecuzione test suite Prompt Correttivo #4 (Gestione avvisi inattività, pop-up, trasferimenti e audit)...");
 
@@ -33,6 +34,61 @@ const adminUser: UserEntity = {
   createdAt: new Date(),
   updatedAt: new Date(),
 };
+
+// Il tetto assoluto è indipendente da rinnovo, consultazione e controllo periodico.
+for (const check of [
+  (manager: SessionManager, id: string) => manager.validate(id) === null,
+  (manager: SessionManager, id: string) => !manager.touchSession(id),
+  (manager: SessionManager, id: string) => manager.getRemainingInactivityMs(id) === null,
+  (manager: SessionManager, id: string) => {
+    manager.purgeExpiredSessions();
+    return manager.getActiveSessionsCount(testUser.id) === 0;
+  },
+]) {
+  const manager = new SessionManager(1, 2);
+  try {
+    const { sessionId } = manager.createSession(testUser);
+    const expirations: string[] = [];
+    const terminations: string[] = [];
+    manager.onSessionExpired((_, reason) => expirations.push(reason));
+    manager.onSessionTerminated((_, __, reason) => terminations.push(reason));
+    manager.setActiveTransferChecker(() => 1);
+    manager.setActiveTransfersProvider(() => 2);
+    manager._simulateInactivity(sessionId, 1);
+    assert.equal(manager.touchSession(sessionId), true, "Un trasferimento sospende la sola inattività");
+    manager._simulateAge(sessionId, 2);
+    assert.ok(check(manager, sessionId));
+    assert.equal(manager.getSession(sessionId), null);
+    assert.deepEqual(expirations, ["ABSOLUTE_TIMEOUT"]);
+    assert.deepEqual(terminations, ["EXPIRED"]);
+  } finally {
+    manager.dispose();
+  }
+}
+
+{
+  // Nessun polling o messaggio deve essere necessario per attivare la revoca.
+  mock.timers.enable({ apis: ["Date", "setTimeout"] });
+  const manager = new SessionManager(1, 2);
+  try {
+    const session = manager.createSession(testUser);
+    const alreadyLoggedOut = manager.createSession(testUser);
+    const expirations: string[] = [];
+    manager.onSessionExpired((expired) => expirations.push(expired.sessionId));
+    manager.setActiveTransferChecker(() => 1);
+    manager.destroySession(alreadyLoggedOut.sessionId);
+    mock.timers.tick(119_999);
+    assert.equal(manager.touchSession(session.sessionId), true);
+    assert.deepEqual(expirations, []);
+    mock.timers.tick(1);
+    assert.deepEqual(expirations, [session.sessionId]);
+    assert.equal(manager.validate(session.sessionId), null);
+  } finally {
+    manager.dispose();
+    mock.timers.reset();
+  }
+}
+console.log("  PASS: Tetto assoluto con trasferimenti attivi, heartbeat, task periodico e timer autonomo al millisecondo di scadenza.");
 
 // =========================================================================
 // TEST 1: Avviso mostrato al preavviso corretto (Sessione Generale e Terminale)

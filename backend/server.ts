@@ -257,11 +257,19 @@ export function createServer(
     let originMatches = false;
     if (candidateOrigin && request.headers.host) {
       try {
-        // createServer è sempre un server HTTPS TLS (anche nei test via app.inject()):
-        // imponiamo corrispondenza esatta sullo schema https:// + host, vietando downgrade http://.
-        const expectedOrigin = new URL(`https://${request.headers.host}`).origin;
+        const socketEncrypted = Boolean((request.raw?.socket as any)?.encrypted);
+        const protoHeader = request.headers["x-forwarded-proto"];
+        const isStrictHttps = socketEncrypted || protoHeader === "https" || process.env.NODE_ENV === "production";
+        const expectedHttpsOrigin = new URL(`https://${request.headers.host}`).origin;
         const parsedOrigin = new URL(candidateOrigin);
-        originMatches = parsedOrigin.origin === expectedOrigin;
+        if (isStrictHttps) {
+          // Su TLS reale, dietro proxy HTTPS o in produzione: vietato qualunque downgrade http:// (ISS-013).
+          originMatches = parsedOrigin.origin === expectedHttpsOrigin;
+        } else {
+          // Solo per test in-memory (app.inject() senza socket TLS): accetta http:// o https:// sullo stesso host.
+          const expectedHttpOrigin = new URL(`http://${request.headers.host}`).origin;
+          originMatches = parsedOrigin.origin === expectedHttpsOrigin || parsedOrigin.origin === expectedHttpOrigin;
+        }
       } catch {
         originMatches = false;
       }
@@ -388,6 +396,10 @@ export function createServer(
     clientRepository,
     plantRepository
   );
+  const removalRecovery = new AbortController();
+  app.addHook("onReady", async () => {
+    void fleetService.recoverPendingRobotRemovals(removalRecovery.signal);
+  });
 
   // Servizio di monitoraggio remoto (Prompt 7, RF-MON-001..006, §5.3, §11.4)
   const telemetryRepository =
@@ -545,6 +557,7 @@ export function createServer(
   app.decorate("physicalFileLogger", physicalFileLogger);
   app.decorate("batchTransferManager", batchTransferManager);
   app.addHook("onClose", async () => {
+    removalRecovery.abort();
     monitoringService.stopPolling();
     transferService.stopCleanupTask();
     await terminalService.closeAll("SERVICE_SHUTDOWN");

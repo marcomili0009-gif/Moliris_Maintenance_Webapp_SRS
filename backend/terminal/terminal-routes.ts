@@ -215,6 +215,11 @@ export function registerTerminalRoutes(
       }
 
       const user = await userRepository.findById(userSession.userId);
+      if (!sessionManager.isSessionActive(userSessionId)) {
+        socket.send(JSON.stringify({ type: "error", message: "Sessione utente non valida o scaduta." }));
+        socket.close(4401, "Session Expired");
+        return;
+      }
       if (!user || !user.enabled) {
         socket.send(JSON.stringify({ type: "error", message: "Account utente disabilitato o non trovato." }));
         socket.close(4401, "User Disabled");

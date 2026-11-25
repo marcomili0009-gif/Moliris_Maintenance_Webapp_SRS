@@ -63,6 +63,9 @@ export class FleetService {
   private directoryNamingPolicy: StandardRobotDirectoryNamingPolicy;
   private terminalService?: TerminalService;
   private activeEntityRenameLocks: Set<string> = new Set();
+  private robotRegistrations = new Set<string>();
+  private robotRemovals = new Map<string, Promise<void>>();
+  private robotUpdates = new Set<string>();
 
   constructor(
     config: SystemConfiguration,
@@ -505,9 +508,35 @@ export class FleetService {
       };
     }
 
-    const host = validation.normalizedHost!;
-    const sshPort = validation.normalizedPort!;
+    const id = input.id.trim();
+    const registrationBusy: RegistrationResult = {
+      outcome: "registrazione_rifiutata",
+      performedActions,
+      skippedActions: ["verifica_connessione_ssh", "creazione_directory", "persistenza_database"],
+      message: "Una registrazione o rimozione per questo ID è ancora in corso. Riprovare.",
+    };
+    if (this.robotRemovals.has(id) || this.robotRegistrations.has(id)) {
+      return registrationBusy;
+    }
+    this.robotRegistrations.add(id);
+    try {
+      if (await this.auditRepository.findRobotRemoval(id)) return registrationBusy;
+      return await this.persistRegistration(
+        user, input, validation.normalizedHost!, validation.normalizedPort!, performedActions, skippedActions
+      );
+    } finally {
+      this.robotRegistrations.delete(id);
+    }
+  }
 
+  private async persistRegistration(
+    user: UserEntity,
+    input: RobotRegistrationInput,
+    host: string,
+    sshPort: number,
+    performedActions: string[],
+    skippedActions: string[]
+  ): Promise<RegistrationResult> {
     // Risoluzione credenziali: memorizzazione sicura nel CredentialProvider (RF-ROB-005, RNF-SEC-002)
     let storedCredentialRef: string | undefined;
     if (input.sshAuthMethod === "password" && input.password) {
@@ -990,6 +1019,22 @@ export class FleetService {
     robotId: string,
     update: RobotConfigurationUpdateInput
   ): Promise<RobotDetailDto> {
+    if (this.robotRemovals.has(robotId) || this.robotUpdates.has(robotId)) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Un'altra modifica del robot è in corso.");
+    }
+    this.robotUpdates.add(robotId);
+    try {
+      return await this.applyConfiguration(user, robotId, update);
+    } finally {
+      this.robotUpdates.delete(robotId);
+    }
+  }
+
+  private async applyConfiguration(
+    user: UserEntity,
+    robotId: string,
+    update: RobotConfigurationUpdateInput
+  ): Promise<RobotDetailDto> {
     if (!hasPermission(user, AppPermission.ROBOT_CONFIG_UPDATE, robotId, this.roleMapping)) {
       await this.recordAudit(user.username, AuditOperation.SECURITY_AUTHORIZATION_ERROR, robotId, "FAILURE", {
         reason: "PERMISSION_DENIED_ROBOT_CONFIG_UPDATE",
@@ -1003,6 +1048,9 @@ export class FleetService {
     const robot = await this.robotRepository.findById(robotId);
     if (!robot) {
       throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${robotId}' non trovato.`);
+    }
+    if (robot.anagraphicState === "rimosso") {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Rimozione del robot già avviata.");
     }
 
     // Immutabilità di ID e remoteUsername dopo la registrazione (Problema 6a)
@@ -1267,25 +1315,78 @@ export class FleetService {
       );
     }
 
+    return this.runRobotRemoval(robotId, user.username);
+  }
+
+  public async recoverPendingRobotRemovals(signal?: AbortSignal): Promise<void> {
+    try {
+      for await (const robotId of this.auditRepository.listPendingRobotRemovalIds(signal)) {
+        if (signal?.aborted) break;
+        try {
+          await this.runRobotRemoval(robotId);
+        } catch (err) {
+          if (!signal?.aborted) {
+            this.logger.error("Ripresa rimozione robot fallita", (err as Error).message, { robotId });
+          }
+        }
+      }
+    } catch (err) {
+      if (!signal?.aborted) {
+        this.logger.error("Lettura rimozioni robot in sospeso fallita", (err as Error).message);
+      }
+    }
+  }
+
+  private async runRobotRemoval(robotId: string, userId?: string): Promise<void> {
+    const existing = this.robotRemovals.get(robotId);
+    if (existing) return existing;
+    if (this.robotUpdates.has(robotId) || this.robotRegistrations.has(robotId)) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Una modifica del robot è in corso.");
+    }
+    const removal = this.finishRobotRemoval(robotId, userId);
+    this.robotRemovals.set(robotId, removal);
+    try {
+      await removal;
+    } finally {
+      this.robotRemovals.delete(robotId);
+    }
+  }
+
+  private async finishRobotRemoval(robotId: string, userId?: string): Promise<void> {
+    let intent = await this.auditRepository.findRobotRemoval(robotId);
+    if (!intent && userId === undefined) return;
     const robot = await this.robotRepository.findById(robotId);
-    if (!robot) {
-      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${robotId}' non trovato.`);
+    if (!intent && robot && userId !== undefined) {
+      intent = await this.auditRepository.beginRobotRemoval({
+        robotId,
+        robotCreatedAt: robot.createdAt,
+        userId,
+        serverDirectoryPath: robot.serverDirectoryPath,
+      });
     }
 
-    // Chiude eventuali connessioni e sessioni terminale attive
-    if (this.terminalService) {
-      await this.terminalService.closeSessionsForRobot(robotId, "ADMIN_DISABLED");
+    if (robot && intent) {
+      if (robot.createdAt.getTime() !== intent.robotCreatedAt.getTime()) {
+        throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, "L'anagrafica è cambiata durante la rimozione.");
+      }
+      // Blocca l'uso del robot e conserva il segreto finché l'anagrafica non è cancellata.
+      if (robot.anagraphicState !== "rimosso") {
+        await this.robotRepository.updateAnagraphicState(robotId, "rimosso");
+      }
+      await this.terminalService?.closeSessionsForRobot(robotId, "ADMIN_DISABLED");
+      await this.connectionManager.closeConnectionsForRobot(robotId);
+      await this.credentialProvider.markForRemoval(robotId);
+      const deleted = await this.robotRepository.deleteById(robotId);
+      if (!deleted && await this.robotRepository.findById(robotId)) {
+        throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, "Rimozione anagrafica non completata. Riprovare.");
+      }
     }
-    await this.connectionManager.closeConnectionsForRobot(robotId);
 
-    // Elimina credenziali dal vault e il documento del robot dal database (preservando file sul server e audit log)
-    await this.credentialProvider.remove(robotId);
-    await this.robotRepository.deleteById(robotId);
-
-    await this.recordAudit(user.username, AuditOperation.ROBOT_REMOVAL, robotId, "SUCCESS", {
-      deletedFromDatabase: true,
-      serverDirectoryPreserved: robot.serverDirectoryPath,
-    });
+    await this.credentialProvider.purgeMarked(robotId);
+    if (intent) {
+      await this.auditRepository.recordRobotRemoval(intent);
+      await this.auditRepository.clearRobotRemoval(intent);
+    }
   }
 
   /**

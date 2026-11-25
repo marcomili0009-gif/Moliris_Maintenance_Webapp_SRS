@@ -270,13 +270,18 @@ export function registerAuthRoutes(
       }
     }
 
-    await auditRepository.record({
-      userId: user.username,
-      operation: AuditOperation.AUTH_LOGIN,
-      outcome: "SUCCESS",
-      timestamp: new Date(),
-      details: { roles: user.roles },
-    });
+    try {
+      await auditRepository.record({
+        userId: user.username,
+        operation: AuditOperation.AUTH_LOGIN,
+        outcome: "SUCCESS",
+        timestamp: new Date(),
+        details: { roles: user.roles },
+      });
+    } catch (error) {
+      sessionManager.destroySession(session.sessionId, "LOGIN_FAILED");
+      throw error;
+    }
 
     if (fileLogger) {
       fileLogger.logAccess({
@@ -359,12 +364,9 @@ export function registerAuthRoutes(
     "/api/auth/session/confirm",
     { preHandler: [authMiddleware.authenticate.bind(authMiddleware)] },
     async (req: FastifyRequest, reply: FastifyReply) => {
-      const session = req.molirisSession!;
       const user = req.molirisUser!;
       const body = (req.body as any) || {};
       const context = body.context === "terminale" ? "terminale" : "sessione";
-
-      sessionManager.touchSession(session.sessionId);
 
       await auditRepository.record({
         userId: user.username,
@@ -416,7 +418,6 @@ export function registerAuthRoutes(
     { preHandler: [authMiddleware.authenticate.bind(authMiddleware)] },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const session = req.molirisSession!;
-      sessionManager.touchSession(session.sessionId);
       return reply.status(200).send({
         success: true,
         lastActivityAt: session.lastActivityAt,

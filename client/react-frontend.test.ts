@@ -612,6 +612,48 @@ async function loginAgain(): Promise<void> {
   assert.equal(sessionManager.getActiveSessionsCount("user_admin"), 1);
 }
 
+async function testResponsiveNavigationAndRegistrationFocus(): Promise<void> {
+  try {
+    for (const width of [320, 360, 390, 414, 768, 1024, 1920]) {
+      await sendCdpCommand("Emulation.setDeviceMetricsOverride", {
+        width, height: 900, deviceScaleFactor: 1, mobile: false,
+      });
+      const bounds = await evaluateInBrowser<{ viewport: number; scrollWidth: number; right: number; hit: boolean }>(
+        `(() => {
+          const button = document.querySelector('#btn-logout');
+          const rect = button.getBoundingClientRect();
+          return { viewport: innerWidth, scrollWidth: document.documentElement.scrollWidth, right: rect.right,
+            hit: button.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)) };
+        })()`
+      );
+      assert.equal(bounds.viewport, width);
+      assert.ok(bounds.right <= width && bounds.hit, `Disconnetti interamente cliccabile a ${width}px`);
+      assert.equal(bounds.scrollWidth, width, `Pagina senza overflow orizzontale a ${width}px`);
+      console.log(`RESPONSIVE ${width} PASS`);
+    }
+  } finally {
+    await sendCdpCommand("Emulation.clearDeviceMetricsOverride");
+  }
+  const key = async (name: string, code: number, modifiers = 0) => {
+    await sendCdpCommand("Input.dispatchKeyEvent", { type: "keyDown", key: name, windowsVirtualKeyCode: code, modifiers });
+    await sendCdpCommand("Input.dispatchKeyEvent", { type: "keyUp", key: name, windowsVirtualKeyCode: code, modifiers });
+  };
+  await evaluateInBrowser("document.querySelector('#btn-register-robot').focus(); document.querySelector('#btn-register-robot').click()");
+  await waitForBrowser("document.activeElement?.id === 'reg-displayName'");
+  const focusId = () => evaluateInBrowser<string>("document.activeElement?.id");
+  await evaluateInBrowser("document.querySelector('#btn-submit-register').focus()");
+  await key("Tab", 9, 8);
+  const last = await focusId();
+  assert.notEqual(last, "btn-submit-register");
+  assert.ok(await evaluateInBrowser("document.querySelector('#modal-robot-register').contains(document.activeElement)"));
+  await key("Tab", 9);
+  assert.equal(await focusId(), "btn-submit-register");
+  await key("Escape", 27);
+  await waitForBrowser("!document.querySelector('#modal-robot-register')");
+  assert.equal(await focusId(), "btn-register-robot");
+  console.log("  PASS: Focus iniziale, Tab, Shift+Tab, Escape e ripristino del focus.");
+}
+
 async function testLogoutCycles(): Promise<void> {
   const pageTimeOrigin = await evaluateInBrowser<number>("performance.timeOrigin");
   const initialBrowserErrors = browserJavaScriptErrors.length;
@@ -646,6 +688,7 @@ async function testLogoutCycles(): Promise<void> {
       const bounds = button.getBoundingClientRect();
       const x = bounds.x + bounds.width / 2;
       const y = bounds.y + bounds.height / 2;
+      performance.clearResourceTimings();
       let start = performance.now();
       const startMeasure = () => { start = performance.now(); };
       window.addEventListener('pointerdown', startMeasure, { capture: true, once: true });
@@ -681,7 +724,11 @@ async function testLogoutCycles(): Promise<void> {
     assert.ok(measurement, `Ciclo ${cycle}: nessuna conferma dopo il clic Chrome, elemento colpito: ${hit}`);
     assert.equal(hit, expectedTarget, `Ciclo ${cycle}: il clic deve raggiungere il pulsante di uscita`);
     const { feedbackMs, confirmedMs } = measurement;
-    console.log(`LOGOUT_CYCLE ${cycle} ${feedbackMs.toFixed(1)} ${confirmedMs.toFixed(1)}`);
+    const apiMs = await evaluateInBrowser<number>(
+      "performance.getEntriesByType('resource').filter(entry=>entry.name.endsWith('/api/auth/logout')).at(-1)?.duration ?? -1"
+    );
+    assert.ok(apiMs >= 0, "Durata della richiesta API logout disponibile");
+    console.log(`LOGOUT_CYCLE ${cycle} ${feedbackMs.toFixed(1)} ${confirmedMs.toFixed(1)} ${apiMs.toFixed(1)}`);
     assert.ok(feedbackMs < 100, `Ciclo ${cycle}: feedback entro 100 ms`);
     assert.ok(confirmedMs < 1_000, `Ciclo ${cycle}: conferma entro 1 secondo`);
     assert.equal(countLogoutRequests() - beforeLogout, 1, `Ciclo ${cycle}: un solo POST`);
@@ -841,6 +888,7 @@ try {
   assert.strictEqual(usernameText, "admin", "L'username visualizzato deve essere admin");
 
   if (logoutCyclesOnly) {
+    await testResponsiveNavigationAndRegistrationFocus();
     await testLogoutCycles();
     await testStalledLogout();
     await testLogout();
@@ -1679,6 +1727,7 @@ try {
   }
   console.log("  PASS: Il browser non ha inviato alcuna richiesta verso host di robot; tutte le chiamate passano da Fastify.");
 
+  await testResponsiveNavigationAndRegistrationFocus();
   await testLogoutCycles();
   await testStalledLogout();
   await testLogout();
