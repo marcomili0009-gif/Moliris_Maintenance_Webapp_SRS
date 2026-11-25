@@ -1392,6 +1392,54 @@ try {
     assert.ok(summary.byPlant["Impianto Test"] !== undefined, "Impianto Test presente nel conteggio aggregato");
     assert.ok(Array.isArray(summary.robots), "robots deve essere un array di summary");
     console.log("  PASS: Fleet Summary aggregato collaudato con successo.");
+
+    // =========================================================================
+    // Collaudo RF-ROB-014 / §10.2: Stato 'avviso' da STATE_FILE_UNREADABLE mantiene SSH/SFTP/Trasferimenti attivi
+    // =========================================================================
+    const warnRepo = new InMemoryRobotRepository();
+    const { service: warnService } = createService({ registrationMode: "differita" }, warnRepo);
+    await warnService.registerRobot(adminUser, {
+      id: "robot-warn-01",
+      displayName: "Robot Avviso Monitoraggio",
+      customerName: "Cliente Test",
+      remoteUsername: "warnuser",
+      host: "127.0.0.1",
+      sshPort: testServerPort,
+      sshAuthMethod: "password",
+      password: "ValidPass123!",
+      hostKeyVerification: {
+        fingerprint: serverFingerprintInfo.sha256Hex,
+        strictHostKeyChecking: true,
+      },
+      remoteMonitoringPath: "/opt/moliris/status/bad.txt",
+    });
+    await warnRepo.updateRegistrationState("robot-warn-01", "registrazione_completata", {
+      timestamp: new Date(),
+      success: true,
+      message: "Verifica connessione riuscita.",
+    });
+    await warnRepo.updateConnectionState("robot-warn-01", "avviso", {
+      timestamp: new Date(),
+      success: false,
+      stage: "monitoring",
+      errorCode: ErrorCode.STATE_FILE_UNREADABLE,
+      subType: "malformed",
+      diagnosticMessage: "File di stato non interpretabile",
+    });
+
+    const warnDetail = await warnService.getRobotDetail(adminUser, "robot-warn-01");
+    assert.strictEqual(warnDetail.availableFeatures.terminal, true, "Terminale PTY deve restare attivo con stato 'avviso' se SSH/SFTP è verificato");
+    assert.strictEqual(warnDetail.availableFeatures.remoteFs, true, "Filesystem Remoto SFTP deve restare attivo con stato 'avviso' se SSH/SFTP è verificato");
+    assert.strictEqual(warnDetail.availableFeatures.transfers, true, "Trasferimenti devono restare attivi con stato 'avviso' se SSH/SFTP è verificato");
+    assert.strictEqual(warnDetail.availableFeatures.monitoring, false, "Monitoraggio deve risultare false su file non interpretabile");
+
+    // Sincronizzazione stateFilePaths su updateConfiguration con remoteMonitoringPath
+    const syncedRobot = await warnService.updateConfiguration(adminUser, "robot-warn-01", {
+      remoteMonitoringPath: "/etc/os-release",
+    });
+    assert.strictEqual(syncedRobot.remoteMonitoringPath, "/etc/os-release");
+    assert.deepStrictEqual(syncedRobot.stateFilePaths, ["/etc/os-release"]);
+    console.log("  PASS: RF-ROB-014 (avviso monitoraggio non blocca SSH/SFTP/Trasferimenti) e sync stateFilePaths verificati.");
   }
 
   console.log("PASS: Tutti i test di Gestione della Flotta superati con successo.");

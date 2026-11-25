@@ -105,6 +105,13 @@ export class FleetService {
     const isRemoved = robot.anagraphicState === "rimosso";
     const isDisabled = robot.anagraphicState === "disabilitato";
     const isConnReachable = robot.connectionState === "raggiungibile";
+    const isMonitoringWarningOnly =
+      robot.connectionState === "avviso" &&
+      (robot.lastConnectionVerification?.success === true ||
+        (robot.lastAttemptOutcome?.stage === "monitoring" &&
+          robot.lastAttemptOutcome?.subType !== "connection_error" &&
+          robot.lastAttemptOutcome?.subType !== "timeout"));
+    const isSshSftpAvailable = isConnReachable || isMonitoringWarningOnly;
     const isRegistered = robot.registrationState === "registrazione_completata" || robot.registrationState === "completata_con_funzionalita_non_verificate";
 
     // 1. Monitoraggio (STATUS_VIEW)
@@ -116,6 +123,8 @@ export class FleetService {
       monitoringReason = "Robot disabilitato: operazioni operative sospese.";
     } else if (!hasPermission(user, AppPermission.STATUS_VIEW, robot.id, this.roleMapping)) {
       monitoringReason = "Autorizzazione insufficiente (permesso STATUS_VIEW non accordato).";
+    } else if (isMonitoringWarningOnly) {
+      monitoringReason = "File di stato remoto assente o non interpretabile (connessione SSH/SFTP attiva).";
     } else if (!isRegistered || !isConnReachable) {
       monitoringReason = "Stato di connessione non verificato o robot non raggiungibile.";
     } else {
@@ -131,7 +140,7 @@ export class FleetService {
       terminalReason = "Robot disabilitato: sessioni di terminale non consentite.";
     } else if (!hasPermission(user, AppPermission.TERMINAL_OPEN, robot.id, this.roleMapping)) {
       terminalReason = "Autorizzazione insufficiente (permesso TERMINAL_OPEN non accordato).";
-    } else if (!isRegistered || !isConnReachable) {
+    } else if (!isRegistered || !isSshSftpAvailable) {
       terminalReason = "Terminale non disponibile: connessione SSH non verificata o non raggiungibile.";
     } else {
       terminal = true;
@@ -146,7 +155,7 @@ export class FleetService {
       remoteFsReason = "Robot disabilitato: navigazione remota bloccata.";
     } else if (!hasPermission(user, AppPermission.FS_REMOTE_NAVIGATE, robot.id, this.roleMapping)) {
       remoteFsReason = "Autorizzazione insufficiente (permesso FS_REMOTE_NAVIGATE non accordato).";
-    } else if (!isRegistered || !isConnReachable) {
+    } else if (!isRegistered || !isSshSftpAvailable) {
       remoteFsReason = "Filesystem remoto non disponibile: connessione non verificata.";
     } else {
       remoteFs = true;
@@ -177,7 +186,7 @@ export class FleetService {
       transfersReason = "Robot disabilitato: trasferimenti sospesi.";
     } else if (!hasTransferPerm) {
       transfersReason = "Autorizzazione insufficiente (permessi di trasferimento non accordati).";
-    } else if (!isRegistered || !isConnReachable) {
+    } else if (!isRegistered || !isSshSftpAvailable) {
       transfersReason = "Trasferimenti non disponibili: connessione SFTP non verificata o non raggiungibile.";
     } else {
       transfers = true;
@@ -1102,7 +1111,13 @@ export class FleetService {
     if (credentialRef !== undefined) cleanUpdate.credentialReference = credentialRef;
     if (update.hostKeyVerification !== undefined) cleanUpdate.hostKeyVerification = update.hostKeyVerification;
     if (update.stateFilePaths !== undefined) cleanUpdate.stateFilePaths = update.stateFilePaths;
-    if (update.remoteMonitoringPath !== undefined) cleanUpdate.remoteMonitoringPath = update.remoteMonitoringPath;
+    if (update.remoteMonitoringPath !== undefined) {
+      cleanUpdate.remoteMonitoringPath = update.remoteMonitoringPath;
+      if (update.stateFilePaths === undefined) {
+        const trimmedPath = update.remoteMonitoringPath.trim();
+        cleanUpdate.stateFilePaths = trimmedPath ? [trimmedPath] : [...this.config.stateFilePaths];
+      }
+    }
     if (update.sftpParameters !== undefined) cleanUpdate.sftpParameters = update.sftpParameters;
     if (update.customParameters !== undefined) cleanUpdate.customParameters = update.customParameters;
 

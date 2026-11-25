@@ -47,6 +47,12 @@ export interface RobotDetailDto extends RobotSummaryDto {
   };
 }
 
+export interface HostKeyVerificationDto {
+  fingerprint?: string;
+  knownHostsPath?: string;
+  strictHostKeyChecking?: boolean;
+}
+
 export interface RegisterRobotPayload {
   id: string;
   displayName: string;
@@ -57,6 +63,7 @@ export interface RegisterRobotPayload {
   password?: string;
   privateKey?: string;
   passphrase?: string;
+  hostKeyVerification?: HostKeyVerificationDto;
   fingerprint?: string;
   knownHostsPath?: string;
   strictHostKeyChecking?: boolean;
@@ -69,14 +76,19 @@ export interface RegisterRobotPayload {
 }
 
 export interface RegistrationOutcome {
-  caseCode: "CASO_1" | "CASO_2" | "CASO_3" | "CASO_4" | "CASO_5" | "CASO_6";
-  success: boolean;
-  title: string;
-  description: string;
+  caseCode?: "CASO_1" | "CASO_2" | "CASO_3" | "CASO_4" | "CASO_5" | "CASO_6" | string;
+  outcome?: string;
+  success?: boolean;
+  title?: string;
+  description?: string;
+  message?: string;
   robotId?: string;
   robot?: RobotSummaryDto;
   suggestedAction?: string;
+  recoveryPath?: string;
   warning?: string;
+  performedActions?: string[];
+  skippedActions?: string[];
 }
 
 export interface EditRobotPayload {
@@ -87,7 +99,10 @@ export interface EditRobotPayload {
   password?: string;
   privateKey?: string;
   passphrase?: string;
+  hostKeyVerification?: HostKeyVerificationDto;
   fingerprint?: string;
+  knownHostsPath?: string;
+  strictHostKeyChecking?: boolean;
   remoteMonitoringPath?: string;
   customerName?: string;
   plantName?: string;

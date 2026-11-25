@@ -87,16 +87,32 @@ export function useFleet(isAuthenticated: boolean) {
     }
   }, []);
 
+  const normalizeRobotPayload = (raw: any) => {
+    const { fingerprint, knownHostsPath, strictHostKeyChecking, ...rest } = raw;
+    if (rest.hostKeyVerification) return rest;
+    if (fingerprint || knownHostsPath) {
+      return {
+        ...rest,
+        hostKeyVerification: {
+          ...(fingerprint ? { fingerprint } : {}),
+          ...(knownHostsPath ? { knownHostsPath } : {}),
+          strictHostKeyChecking: strictHostKeyChecking ?? true,
+        },
+      };
+    }
+    return rest;
+  };
+
   const registerRobot = useCallback(async (
     payload: RegisterRobotPayload
   ): Promise<{ outcome?: RegistrationOutcome; error?: FormattedError; fieldErrors?: Record<string, string> }> => {
     try {
-      const res = await apiClient.post("/api/robots", payload);
+      const res = await apiClient.post("/api/robots", normalizeRobotPayload(payload));
       const data = await res.json();
 
       if (res.ok && data.outcome) {
         await loadFleet();
-        return { outcome: data.outcome };
+        return { outcome: typeof data.outcome === "string" ? data : data.outcome };
       } else {
         const fieldErrors = data.fieldErrors || data.validationErrors;
         if (fieldErrors) {
@@ -111,7 +127,7 @@ export function useFleet(isAuthenticated: boolean) {
 
   const updateRobot = useCallback(async (robotId: string, payload: EditRobotPayload): Promise<boolean> => {
     try {
-      const res = await apiClient.put(`/api/robots/${encodeURIComponent(robotId)}/configuration`, payload);
+      const res = await apiClient.put(`/api/robots/${encodeURIComponent(robotId)}/configuration`, normalizeRobotPayload(payload));
       if (res.ok) {
         await loadFleet();
         if (selectedRobotRef.current?.id === robotId) {

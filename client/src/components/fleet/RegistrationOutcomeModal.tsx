@@ -2,10 +2,18 @@ import React from "react";
 import type { RegistrationOutcome } from "../../types/fleet.ts";
 
 interface RegistrationOutcomeModalProps {
-  outcome: RegistrationOutcome | null;
+  outcome: RegistrationOutcome | string | null;
   isOpen: boolean;
   onClose: () => void;
 }
+
+const OUTCOME_LABELS: Record<string, string> = {
+  registrazione_completata: "Registrazione Completata",
+  registrazione_completata_con_avvisi: "Registrazione Completata con Avvisi",
+  ssh_non_verificata: "SSH Non Verificata (Modalità Differita)",
+  completata_con_funzionalita_non_verificate: "Completata con Funzionalità Non Verificate",
+  creazione_directory_fallita: "Creazione Directory Fallita",
+};
 
 export const RegistrationOutcomeModal: React.FC<RegistrationOutcomeModalProps> = ({
   outcome,
@@ -14,13 +22,32 @@ export const RegistrationOutcomeModal: React.FC<RegistrationOutcomeModalProps> =
 }) => {
   if (!isOpen || !outcome) return null;
 
-  const isSuccess = outcome.success;
+  const normalized: RegistrationOutcome =
+    typeof outcome === "string"
+      ? { outcome, success: outcome === "registrazione_completata" }
+      : outcome;
+
+  const rawCode = normalized.caseCode || normalized.outcome || "registrazione_completata";
+  const displayCaseCode = OUTCOME_LABELS[rawCode] ? `${rawCode} (${OUTCOME_LABELS[rawCode]})` : rawCode;
+  const isSuccess =
+    normalized.success !== undefined
+      ? normalized.success
+      : rawCode === "registrazione_completata";
+  const description = normalized.description || normalized.message || "Operazione completata.";
+  const warningText =
+    normalized.warning ||
+    (rawCode === "ssh_non_verificata" || rawCode === "registrazione_completata_con_avvisi"
+      ? "Alcune verifiche o funzionalità richiedono controllo prima dell'uso operativo."
+      : undefined);
+  const suggestedAction = normalized.suggestedAction || normalized.recoveryPath;
+  const performedActions = Array.isArray(normalized.performedActions) ? normalized.performedActions : [];
+  const skippedActions = Array.isArray(normalized.skippedActions) ? normalized.skippedActions : [];
 
   return (
     <div id="modal-registration-outcome" className="modal" role="dialog" aria-modal="true">
       <div className="modal-content">
         <div className="modal-header">
-          <h3 id="outcome-modal-title">{outcome.title || "Riepilogo Esito Registrazione"}</h3>
+          <h3 id="outcome-modal-title">{normalized.title || "Riepilogo Esito Registrazione"}</h3>
           <button
             type="button"
             className="btn-close"
@@ -41,20 +68,42 @@ export const RegistrationOutcomeModal: React.FC<RegistrationOutcomeModalProps> =
             }}
           >
             <div className="font-semibold text-sm">
-              Codice Caso: <span className="badge">{outcome.caseCode}</span>
+              Codice Caso: <span className="badge text-bg-secondary ms-1">{displayCaseCode}</span>
             </div>
-            <p className="mt-1 text-sm">{outcome.description}</p>
+            <p className="mt-2 mb-0 text-sm">{description}</p>
           </div>
 
-          {outcome.warning && (
-            <div className="alert-box alert-warning text-sm mb-3">
-              <strong>Avvertenza:</strong> {outcome.warning}
+          {warningText && (
+            <div className="alert-box alert-warning text-sm mb-3 p-2 rounded border border-warning">
+              <strong>Avvertenza:</strong> {warningText}
             </div>
           )}
 
-          {outcome.suggestedAction && (
-            <div className="text-sm text-gray-700 bg-gray-50 p-2.5 rounded border border-gray-200">
-              <strong>Azione suggerita:</strong> {outcome.suggestedAction}
+          {performedActions.length > 0 && (
+            <div className="text-sm mb-3">
+              <strong>Azioni eseguite:</strong>
+              <ul className="mb-0 mt-1 ps-3">
+                {performedActions.map((act) => (
+                  <li key={act}><code>{act}</code></li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {skippedActions.length > 0 && (
+            <div className="text-sm mb-3 text-muted">
+              <strong>Azioni saltate:</strong>
+              <ul className="mb-0 mt-1 ps-3">
+                {skippedActions.map((act) => (
+                  <li key={act}><code>{act}</code></li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {suggestedAction && (
+            <div className="text-sm text-gray-700 bg-light p-2.5 rounded border">
+              <strong>Azione suggerita:</strong> {suggestedAction}
             </div>
           )}
         </div>

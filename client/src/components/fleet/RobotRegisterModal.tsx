@@ -91,9 +91,14 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
       password: sshAuthMethod === "password" ? password : undefined,
       privateKey: sshAuthMethod === "key" ? privateKey : undefined,
       passphrase: sshAuthMethod === "key" && passphrase ? passphrase : undefined,
-      fingerprint: fingerprint.trim() || undefined,
-      knownHostsPath: knownHostsPath.trim() || undefined,
-      strictHostKeyChecking: true,
+      hostKeyVerification:
+        fingerprint.trim() || knownHostsPath.trim()
+          ? {
+              ...(fingerprint.trim() ? { fingerprint: fingerprint.trim() } : {}),
+              ...(knownHostsPath.trim() ? { knownHostsPath: knownHostsPath.trim() } : {}),
+              strictHostKeyChecking: true,
+            }
+          : undefined,
       remoteMonitoringPath: remoteMonitoringPath.trim() || undefined,
       sftpHost: sftpHost.trim() || undefined,
       sftpPort: sftpPort ? Number(sftpPort) : undefined,
@@ -407,7 +412,7 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
                   type="text"
                   id="reg-remoteMonitoringPath"
                   name="remoteMonitoringPath"
-                  placeholder="es. /opt/moliris/status/robot.txt"
+                  placeholder="es. /etc/os-release"
                   value={remoteMonitoringPath}
                   onChange={(e) => setRemoteMonitoringPath(e.target.value)}
                 />
