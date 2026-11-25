@@ -34,7 +34,7 @@ import { type HostKeyVerifier, DefaultHostKeyVerifier } from "./connection/host-
 import { RobotConnectionManager } from "./connection/robot-connection-manager.ts";
 import { FleetService } from "./fleet/fleet-service.ts";
 import { registerFleetRoutes } from "./fleet/fleet-routes.ts";
-import { type StateFileParser, ProvisionalDevelopmentStateFileParser } from "./monitoring/state-file-parser.ts";
+import { type StateFileParser, MolirisStateFileParser } from "./monitoring/state-file-parser.ts";
 import { RemoteRobotReader } from "./monitoring/robot-reader.ts";
 import { MonitoringService } from "./monitoring/monitoring-service.ts";
 import { registerMonitoringRoutes } from "./monitoring/monitoring-routes.ts";
@@ -221,48 +221,47 @@ export function createServer(
         (appConfig as typeof appConfig & { transferResumeEnabled?: boolean }).transferResumeEnabled ?? true,
       futureExtensions: appConfig.futureExtensions,
       bulkUploadConfig: {
-        maxConcurrentFiles: (appConfig as any).bulkUploadConfig?.maxConcurrentFiles ?? 5,
+        maxConcurrentFiles: (appConfig as any).bulkUploadConfig?.maxConcurrentFiles ?? 20,
         chunkSizeBytes: (appConfig as any).bulkUploadConfig?.chunkSizeBytes ?? 1024 * 1024,
       },
     });
   });
 
-  // Intestazioni difensive globali per il frontend.
-  app.addHook("onSend", async (_request, reply, payload) => {
+  // Intestazioni difensive globali per il frontend (ISS-013, ISS-023).
+  app.addHook("onSend", async (request, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("X-Frame-Options", "DENY");
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
     reply.header(
       "Content-Security-Policy",
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' wss:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-elem 'self'; img-src 'self' data:; connect-src 'self' wss:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
     );
-    if (process.env.NODE_ENV === "production") {
+    const socketEncrypted = Boolean((request.raw?.socket as any)?.encrypted);
+    const forwardedHttps = request.headers["x-forwarded-proto"] === "https";
+    if (socketEncrypted || forwardedHttps || process.env.NODE_ENV === "production") {
       reply.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
     }
     return payload;
   });
 
   // SameSite=Strict limita le richieste cross-site, ma non i sottodomini dello
-  // stesso site. Per richieste mutative autenticate via cookie imponiamo anche
-  // un controllo Origin esatto, mantenendo bearer token e client non-browser.
+  // stesso site. Per richieste mutative autenticate via cookie imponiamo un
+  // controllo Origin (o Referer fallback) esatto sullo schema + host (ISS-013).
   app.addHook("onRequest", async (request, reply) => {
     const isMutation = !["GET", "HEAD", "OPTIONS"].includes(request.method);
     const hasSessionCookie = /(?:^|;\s*)__Host-moliris_session=[^;]+/.test(request.headers.cookie || "");
     if (!isMutation || !hasSessionCookie || !request.url.startsWith("/api/")) return;
 
-    const origin = request.headers.origin;
+    const candidateOrigin = request.headers.origin || request.headers.referer;
     let originMatches = false;
-    if (origin && request.headers.host) {
+    if (candidateOrigin && request.headers.host) {
       try {
-        const socketEncrypted = Boolean((request.raw?.socket as any)?.encrypted);
-        const protoHeader = request.headers["x-forwarded-proto"];
-        const isHttps = socketEncrypted || protoHeader === "https" || (request as any).protocol === "https";
-        const expectedOrigin = new URL(`${isHttps ? "https" : "http"}://${request.headers.host}`).origin;
-        const parsedOrigin = new URL(origin);
-        originMatches =
-          parsedOrigin.origin === expectedOrigin ||
-          (parsedOrigin.host === request.headers.host && (parsedOrigin.protocol === "https:" || parsedOrigin.protocol === "http:"));
+        // createServer è sempre un server HTTPS TLS (anche nei test via app.inject()):
+        // imponiamo corrispondenza esatta sullo schema https:// + host, vietando downgrade http://.
+        const expectedOrigin = new URL(`https://${request.headers.host}`).origin;
+        const parsedOrigin = new URL(candidateOrigin);
+        originMatches = parsedOrigin.origin === expectedOrigin;
       } catch {
         originMatches = false;
       }
@@ -393,7 +392,7 @@ export function createServer(
   // Servizio di monitoraggio remoto (Prompt 7, RF-MON-001..006, §5.3, §11.4)
   const telemetryRepository =
     deps.telemetryRepository || (deps.db ? new MongoTelemetryRepository(deps.db) : new InMemoryTelemetryRepository());
-  const stateFileParser = deps.stateFileParser || new ProvisionalDevelopmentStateFileParser(config.stateFileFormat, config.stateFileSchemaPath);
+  const stateFileParser = deps.stateFileParser || new MolirisStateFileParser(config.stateFileFormat, config.stateFileSchemaPath);
   const remoteRobotReader = deps.remoteRobotReader || new RemoteRobotReader(
     connectionManager,
     config.sshConnectionTimeoutMs,
@@ -435,6 +434,7 @@ export function createServer(
 
   // Collegamento verificatore trasferimenti attivi per terminalService e sessionManager (Prompt #4, Requisito #4)
   transferService.setPhysicalFileLogger(physicalFileLogger);
+  transferService.setBatchTransferManager(batchTransferManager);
   sessionManager.setActiveTransfersProvider((userId) => transferService.countActiveTransfersForUser(userId));
 
   terminalService.setActiveTransferChecker((sessionId, userId) => {
@@ -734,10 +734,14 @@ export async function startServer(): Promise<void> {
     const plantRepository = new MongoPlantRepository(db);
     await plantRepository.initIndexes();
 
+    const telemetryRepository = new MongoTelemetryRepository(db);
+    await telemetryRepository.initIndexes();
+
     const server = createServer(config, logger, {
       robotRepository,
       clientRepository,
       plantRepository,
+      telemetryRepository,
       auditRepository,
       credentialProvider,
       userRepository,
@@ -755,6 +759,25 @@ export async function startServer(): Promise<void> {
 
     await server.listen({ port, host });
 
+    // ISS-013: redirect opzionale HTTP -> HTTPS quando MOLIRIS_HTTP_REDIRECT_PORT è configurata
+    const httpRedirectPort = Number(process.env["MOLIRIS_HTTP_REDIRECT_PORT"]);
+    let httpRedirectServer: import("http").Server | null = null;
+    if (Number.isInteger(httpRedirectPort) && httpRedirectPort > 0 && httpRedirectPort <= 65535 && httpRedirectPort !== port) {
+      const httpMod = await import("http");
+      httpRedirectServer = httpMod.createServer((req, res) => {
+        const reqHost = (req.headers.host || "localhost").split(":")[0];
+        const targetPort = port === 443 ? "" : `:${port}`;
+        const location = `https://${reqHost}${targetPort}${req.url || "/"}`;
+        res.writeHead(301, { Location: location });
+        res.end();
+      });
+      await new Promise<void>((resolve, reject) => {
+        httpRedirectServer!.once("error", reject);
+        httpRedirectServer!.listen(httpRedirectPort, host, () => resolve());
+      });
+      logger.info(`Redirect HTTP -> HTTPS attivo su ${host}:${httpRedirectPort} -> porta HTTPS ${port}`);
+    }
+
     logger.info(`Backend HTTPS avviato con successo su ${host}:${port}`);
     (server as any).monitoringService?.startPolling();
 
@@ -765,6 +788,9 @@ export async function startServer(): Promise<void> {
       shuttingDown = true;
       logger.info(`Ricevuto segnale ${signal}: avvio chiusura ordinata (RNF-REL-005)...`);
       try {
+        if (httpRedirectServer) {
+          await new Promise<void>((resolve) => httpRedirectServer!.close(() => resolve()));
+        }
         await server.close();
         (server as any).terminalService?.closeAll("SERVICE_SHUTDOWN");
         connectionManager.closeAll();

@@ -82,6 +82,7 @@ export interface TransferProgressSnapshot {
  */
 export interface TransferDto {
   transferId: string;
+  batchId?: string;
   userId: string;
   robotId: string;
   direction: TransferDirection;
@@ -118,6 +119,7 @@ export interface TransferDto {
  */
 export interface TransferRecord {
   transferId: string;
+  batchId?: string;
   userId: string;
   userSessionId: string;
   robotId: string;

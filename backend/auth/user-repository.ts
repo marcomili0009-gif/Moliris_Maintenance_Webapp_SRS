@@ -3,6 +3,12 @@
 import { type Db, type Collection } from "mongodb";
 import { type UserEntity } from "./user-models.ts";
 import { MolirisAppError, ErrorCode } from "../../errors/app-errors.ts";
+import { normalizeRoles } from "./roles.ts";
+
+/** ISS-020: i ruoli esposti sono sempre canonici (admin / operatore). */
+function withCanonicalRoles<T extends { roles?: string[] }>(user: T): T {
+  return user.roles ? { ...user, roles: normalizeRoles(user.roles) } : user;
+}
 
 export interface UserRepository {
   findByUsername(username: string): Promise<UserEntity | null>;
@@ -18,7 +24,7 @@ export class InMemoryUserRepository implements UserRepository {
   async findByUsername(username: string): Promise<UserEntity | null> {
     for (const u of this.users.values()) {
       if (u.username.toLowerCase() === username.toLowerCase()) {
-        return structuredClone(u);
+        return withCanonicalRoles(structuredClone(u));
       }
     }
     return null;
@@ -26,7 +32,7 @@ export class InMemoryUserRepository implements UserRepository {
 
   async findById(id: string): Promise<UserEntity | null> {
     const user = this.users.get(id);
-    return user ? structuredClone(user) : null;
+    return user ? withCanonicalRoles(structuredClone(user)) : null;
   }
 
   async create(user: UserEntity): Promise<UserEntity> {
@@ -48,7 +54,7 @@ export class InMemoryUserRepository implements UserRepository {
           `Nome utente '${user.username}' già utilizzato. Scegliere uno username differente.`
         );
       }
-      const cloned = structuredClone(user);
+      const cloned = withCanonicalRoles(structuredClone(user));
       this.users.set(cloned.id, cloned);
       return structuredClone(cloned);
     } finally {
@@ -90,6 +96,12 @@ export class MongoUserRepository implements UserRepository {
         { unique: true, name: "username_unique_case_insensitive", collation: { locale: "en", strength: 2 } }
       );
       await this.collection.createIndex({ id: 1 }, { unique: true });
+      // ISS-020: migrazione idempotente dell'alias legacy 'amministratore' -> 'admin'.
+      await this.collection.updateMany(
+        { roles: "amministratore" } as any,
+        { $set: { "roles.$[legacy]": "admin" } } as any,
+        { arrayFilters: [{ legacy: "amministratore" }] }
+      );
     } catch (err: any) {
       throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore inizializzazione indici utenti: ${err.message}`);
     }
@@ -101,7 +113,7 @@ export class MongoUserRepository implements UserRepository {
         { username },
         { projection: { _id: 0 }, collation: { locale: "en", strength: 2 } }
       );
-      return doc ? (doc as UserEntity) : null;
+      return doc ? withCanonicalRoles(doc as UserEntity) : null;
     } catch (err: any) {
       throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore query utente per username: ${err.message}`);
     }
@@ -110,7 +122,7 @@ export class MongoUserRepository implements UserRepository {
   async findById(id: string): Promise<UserEntity | null> {
     try {
       const doc = await this.collection.findOne({ id }, { projection: { _id: 0 } });
-      return doc ? (doc as UserEntity) : null;
+      return doc ? withCanonicalRoles(doc as UserEntity) : null;
     } catch (err: any) {
       throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore query utente per id: ${err.message}`);
     }
@@ -126,8 +138,9 @@ export class MongoUserRepository implements UserRepository {
       );
     }
     try {
-      await this.collection.insertOne(structuredClone(user));
-      return structuredClone(user);
+      const canonical = withCanonicalRoles(structuredClone(user));
+      await this.collection.insertOne(canonical);
+      return structuredClone(canonical);
     } catch (err: any) {
       if (err.code === 11000) {
         throw new MolirisAppError(
@@ -146,7 +159,7 @@ export class MongoUserRepository implements UserRepository {
         { id },
         {
           $set: {
-            ...update,
+            ...(update.roles ? { ...update, roles: normalizeRoles(update.roles) } : update),
             updatedAt: new Date(),
           },
         },
@@ -155,7 +168,7 @@ export class MongoUserRepository implements UserRepository {
       if (!result) {
         throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Utente non trovato per id: ${id}`);
       }
-      return result as UserEntity;
+      return withCanonicalRoles(result as UserEntity);
     } catch (err: any) {
       throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore aggiornamento utente: ${err.message}`);
     }

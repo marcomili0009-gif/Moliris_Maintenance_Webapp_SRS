@@ -39,15 +39,34 @@ export function registerAuthRoutes(
     });
   }
   const loginAttempts = new Map<string, { count: number; windowStartedAt: number; blockedUntil: number }>();
+  const loginAttemptsByAccount = new Map<string, { count: number; windowStartedAt: number; blockedUntil: number }>();
   (app as any)._molirisLoginAttempts = loginAttempts;
+  (app as any)._molirisLoginAttemptsByAccount = loginAttemptsByAccount;
   const loginWindowMs = 5 * 60 * 1000;
   const loginMaxAttempts = 10;
-  const maxTrackedLoginIps = 10_000;
+  const maxTrackedLoginKeys = 10_000;
   const dummyPasswordHash = hashPassword(crypto.randomBytes(32).toString("hex"));
   const pendingLogoutAudits = new Set<Promise<unknown>>();
   app.addHook("preClose", async () => {
     await Promise.allSettled(pendingLogoutAudits);
   });
+
+  const getOrInitBucket = (
+    map: Map<string, { count: number; windowStartedAt: number; blockedUntil: number }>,
+    key: string,
+    now: number
+  ) => {
+    let bucket = map.get(key);
+    if (!bucket || now - bucket.windowStartedAt >= loginWindowMs) {
+      if (!bucket && map.size >= maxTrackedLoginKeys) {
+        const oldestKey = map.keys().next().value;
+        if (oldestKey !== undefined) map.delete(oldestKey);
+      }
+      bucket = { count: 0, windowStartedAt: now, blockedUntil: 0 };
+      map.set(key, bucket);
+    }
+    return bucket;
+  };
 
   /**
    * Endpoint di Login (RF-AUTH-001, RF-AUTH-002, §6.1, CA-AUTH-001, CA-AUTH-002)
@@ -55,30 +74,32 @@ export function registerAuthRoutes(
   app.post("/api/auth/login", async (req: FastifyRequest, reply: FastifyReply) => {
     const ip = req.ip || "unknown";
     const now = Date.now();
-    let attempt = loginAttempts.get(ip);
-    if (!attempt || now - attempt.windowStartedAt >= loginWindowMs) {
-      if (!attempt && loginAttempts.size >= maxTrackedLoginIps) {
-        const oldestIp = loginAttempts.keys().next().value;
-        if (oldestIp !== undefined) loginAttempts.delete(oldestIp);
-      }
-      attempt = { count: 0, windowStartedAt: now, blockedUntil: 0 };
-      loginAttempts.set(ip, attempt);
-    }
+    const ipAttempt = getOrInitBucket(loginAttempts, ip, now);
+
+    const body = (req.body as any) || {};
+    const username = typeof body.username === "string" ? body.username.trim() : "";
+    const password = typeof body.password === "string" ? body.password : "";
+    const accountKey = username ? username.toLowerCase() : "";
+    const accountAttempt = accountKey ? getOrInitBucket(loginAttemptsByAccount, accountKey, now) : null;
+
     const recordFailure = () => {
-      attempt!.count++;
-      if (attempt!.count >= loginMaxAttempts) attempt!.blockedUntil = now + loginWindowMs;
+      ipAttempt.count++;
+      if (ipAttempt.count >= loginMaxAttempts) ipAttempt.blockedUntil = now + loginWindowMs;
+      if (accountAttempt) {
+        accountAttempt.count++;
+        if (accountAttempt.count >= loginMaxAttempts) accountAttempt.blockedUntil = now + loginWindowMs;
+      }
     };
-    if (attempt.blockedUntil > now) {
-      reply.header("Retry-After", String(Math.ceil((attempt.blockedUntil - now) / 1000)));
+
+    const blockedUntil = Math.max(ipAttempt.blockedUntil, accountAttempt?.blockedUntil || 0);
+    if (blockedUntil > now) {
+      reply.header("Retry-After", String(Math.ceil((blockedUntil - now) / 1000)));
       return reply.status(429).send({
         code: "AUTH_RATE_LIMITED",
         message: "Troppi tentativi di accesso. Riprova più tardi.",
       });
     }
 
-    const body = (req.body as any) || {};
-    const username = typeof body.username === "string" ? body.username.trim() : "";
-    const password = typeof body.password === "string" ? body.password : "";
     // Il valore originale serve all'autenticazione; solo la copia escaped finisce nei log.
     const usernameForLog = sanitizeLogText(username);
 
@@ -155,7 +176,7 @@ export function registerAuthRoutes(
         fileLogger.logAccess({
           event: "LOGIN",
           username,
-          role: "Operatore",
+          role: normalizeRoleForLog(user.roles),
           outcome: "FALLIMENTO",
           details: "Password errata",
         }).catch(() => {});
@@ -168,6 +189,7 @@ export function registerAuthRoutes(
     }
 
     loginAttempts.delete(ip);
+    if (accountKey) loginAttemptsByAccount.delete(accountKey);
 
     // Creazione della sessione autenticata (§6.1 punto 4)
     // Se l'utente ha subito un reset password, assicuriamo che la nuova sessione sia temporalmente

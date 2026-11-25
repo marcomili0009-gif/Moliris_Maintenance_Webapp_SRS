@@ -46,7 +46,7 @@ async function testPhysicalFileLogger() {
   const accessLine = await logger.logAccess({
     event: "LOGIN",
     username: "admin_test",
-    role: "amministratore",
+    role: "admin",
     outcome: "SUCCESSO",
     details: "Autenticazione riuscita con IP 127.0.0.1",
   });
@@ -279,7 +279,7 @@ async function testOperatorAclAndTerminal() {
   const adminUser = {
     id: "admin_acl_01",
     username: "admin_acl",
-    roles: ["amministratore"],
+    roles: ["admin"],
   };
 
   // 4a. Path authorization guard: Admin sempre ammesso

@@ -390,15 +390,16 @@ export const RobotRegisterModal: React.FC<RobotRegisterModalProps> = ({
                     />
                   </div>
 
-                  <div className="form-check">
+                  <div className="form-check d-flex align-items-center gap-2 mt-2 ps-0">
                     <input
                       type="checkbox"
                       id="reg-strictHostKey"
                       name="strictHostKeyChecking"
+                      className="form-check-input m-0 flex-shrink-0"
                       checked
                       disabled
                     />
-                    <label htmlFor="reg-strictHostKey">
+                    <label htmlFor="reg-strictHostKey" className="form-check-label m-0 small text-secondary">
                       StrictHostKeyChecking (Sempre attivo, verifica obbligatoria)
                     </label>
                   </div>

@@ -10,6 +10,7 @@ interface ModalProps {
   size?: "normal" | "large" | "terminal";
   role?: "dialog" | "alertdialog";
   ariaLabelledBy?: string;
+  disableDismiss?: boolean;
 }
 
 export const Modal: React.FC<ModalProps> = ({
@@ -22,8 +23,10 @@ export const Modal: React.FC<ModalProps> = ({
   size = "normal",
   role = "dialog",
   ariaLabelledBy,
+  disableDismiss = false,
 }) => {
   useEffect(() => {
+    if (disableDismiss) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && isOpen) {
         onClose();
@@ -31,7 +34,7 @@ export const Modal: React.FC<ModalProps> = ({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, disableDismiss]);
 
   if (!isOpen) return null;
 
@@ -47,18 +50,20 @@ export const Modal: React.FC<ModalProps> = ({
       aria-modal="true"
       aria-labelledby={ariaLabelledBy}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (!disableDismiss && e.target === e.currentTarget) onClose();
       }}
     >
       <div className={`modal-content ${sizeClass}`}>
         <div className="modal-header">
           {typeof title === "string" ? <h3 id={ariaLabelledBy}>{title}</h3> : title}
-          <button
-            type="button"
-            className="btn-close"
-            onClick={onClose}
-            aria-label="Chiudi finestra"
-          />
+          {!disableDismiss && (
+            <button
+              type="button"
+              className="btn-close"
+              onClick={onClose}
+              aria-label="Chiudi finestra"
+            />
+          )}
         </div>
         <div className="modal-body">{children}</div>
         {footer && <div className="modal-footer">{footer}</div>}

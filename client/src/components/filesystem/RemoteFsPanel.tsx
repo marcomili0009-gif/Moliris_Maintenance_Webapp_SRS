@@ -1,11 +1,12 @@
-import React, { useRef } from "react";
-import { Radio, RefreshCw, UploadCloud } from "lucide-react";
+import React, { useRef, useState } from "react";
+import { FolderPlus, Radio, RefreshCw, UploadCloud } from "lucide-react";
 import type { DirectoryListing, FsEntry } from "../../types/filesystem.ts";
 import type { FormattedError } from "../../types/error.ts";
 import type { RobotSummaryDto } from "../../types/fleet.ts";
 import { FsTable } from "./FsTable.tsx";
 import { FsBreadcrumb } from "./FsBreadcrumb.tsx";
 import { RobotCombobox } from "../common/RobotCombobox.tsx";
+import { NewFolderModal } from "../common/NewFolderModal.tsx";
 
 interface RemoteFsPanelProps {
   robotId: string;
@@ -19,6 +20,7 @@ interface RemoteFsPanelProps {
   onUp: () => void;
   onNavigateDir: (dirName: string) => void;
   onNavigatePath?: (path: string) => void;
+  onCreateFolder?: (name: string) => Promise<{ success: boolean; error?: string }>;
   onUpload: (file: File) => void;
   onDownload: (fileName: string) => void;
   onTransferToServer: (fileName: string, entry?: FsEntry) => void;
@@ -38,6 +40,7 @@ export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
   onUp,
   onNavigateDir,
   onNavigatePath,
+  onCreateFolder,
   onUpload,
   onDownload,
   onTransferToServer,
@@ -45,6 +48,7 @@ export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
   onDeleteFolder,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isNewFolderOpen, setIsNewFolderOpen] = useState(false);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -169,6 +173,19 @@ export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
         />
 
         <div className="fs-actions">
+          {onCreateFolder && (
+            <button
+              type="button"
+              id="btn-fs-remote-mkdir"
+              className="btn btn-outline-primary btn-sm fs-toolbar-btn"
+              title="Crea una nuova cartella sul robot"
+              onClick={() => setIsNewFolderOpen(true)}
+              disabled={!robotId || loading}
+            >
+              <FolderPlus size={15} aria-hidden="true" />
+              Nuova Cartella
+            </button>
+          )}
           <input
             type="file"
             id="fs-remote-file-input"
@@ -209,6 +226,15 @@ export const RemoteFsPanel: React.FC<RemoteFsPanelProps> = ({
         onDeleteFolder={onDeleteFolder}
         transferActionLabel="Copia su Server"
       />
+
+      {onCreateFolder && (
+        <NewFolderModal
+          isOpen={isNewFolderOpen}
+          currentPath={currentPath || "/"}
+          onClose={() => setIsNewFolderOpen(false)}
+          onCreate={onCreateFolder}
+        />
+      )}
     </div>
   );
 };

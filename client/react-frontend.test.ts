@@ -85,11 +85,13 @@ assert.ok(bannerWithErrorHtml.includes("ATTENZIONE"), "NotificationBanner deve d
 assert.ok(bannerWithErrorHtml.includes('style="display:none"'), "NotificationBanner non deve mostrare banner di errore visibile inline");
 
 const bannerWithMsgOnlyHtml = renderToString(
-  React.createElement(NotificationBanner, { message: "Operazione completata" })
+  React.createElement(NotificationBanner, { message: "Operazione completata", onDismiss: () => {} })
 );
-assert.ok(bannerWithMsgOnlyHtml.includes("Operazione completata"), "NotificationBanner deve mostrare i messaggi informativi inline");
-assert.ok(!bannerWithMsgOnlyHtml.includes("modal-error-alert"), "NotificationBanner non deve aprire modale per soli messaggi informativi");
-console.log("  PASS: ErrorModal e NotificationBanner verificati: pop-up ATTENZIONE attivo per errori operativi.");
+assert.ok(bannerWithMsgOnlyHtml.includes("Operazione completata"), "NotificationBanner deve mostrare i messaggi informativi nel pop-up");
+assert.ok(bannerWithMsgOnlyHtml.includes("modal-notification-info"), "NotificationBanner deve aprire la modale pop-up per i messaggi informativi");
+assert.ok(bannerWithMsgOnlyHtml.includes('style="display:none"'), "NotificationBanner non deve mostrare banner inline per le notifiche");
+assert.ok(!bannerWithMsgOnlyHtml.includes("modal-error-alert"), "NotificationBanner non deve aprire modale di errore per soli messaggi informativi");
+console.log("  PASS: ErrorModal e NotificationBanner verificati: tutte le notifiche appaiono come pop-up a schermo.");
 
 // Test 1b: Wizard Caricamento Massivo - stato sorgente e contratto destinazioni
 const bulkTargets = buildBulkTargets({
@@ -253,7 +255,7 @@ await userRepo.create({
   id: "user_admin",
   username: "admin",
   passwordHash: adminHash,
-  roles: ["amministratore"],
+  roles: ["admin"],
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -492,6 +494,9 @@ async function sendCdpCommand(method: string, params: any = {}): Promise<any> {
 await sendCdpCommand("Page.enable");
 await sendCdpCommand("Network.enable");
 await sendCdpCommand("Runtime.enable");
+await sendCdpCommand("Page.addScriptToEvaluateOnNewDocument", {
+  source: "window.__ENABLE_INACTIVITY_TEST_HOOKS__ = true;",
+});
 
 async function evaluateInBrowser<T>(expression: string): Promise<T> {
   const res = await sendCdpCommand("Runtime.evaluate", {

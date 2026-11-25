@@ -79,7 +79,7 @@ fs.mkdirSync(robotRecord.serverDirectoryPath, { recursive: true });
 const userAdmin: any = {
   id: "user-admin",
   username: "admin",
-  roles: ["amministratore"],
+  roles: ["admin"],
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),

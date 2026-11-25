@@ -301,7 +301,7 @@ const operatorUser: UserEntity = {
 const adminUser: UserEntity = {
   id: "user-admin",
   username: "admin_test",
-  roles: ["amministratore"],
+  roles: ["admin"],
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),

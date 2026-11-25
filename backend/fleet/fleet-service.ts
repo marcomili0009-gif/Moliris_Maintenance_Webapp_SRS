@@ -1136,8 +1136,11 @@ export class FleetService {
 
       const trimmedCustomer = update.customerName.trim();
       if (trimmedCustomer === "") {
-        cleanUpdate.customerName = "";
-        cleanUpdate.clientId = "";
+        throw new MolirisAppError(
+          ErrorCode.MISSING_ROBOT_PARAMS,
+          "Il nome cliente è obbligatorio e non può essere rimosso.",
+          "Il nome cliente è obbligatorio."
+        );
       } else {
         const client = await this.clientRepository.findOrCreate(trimmedCustomer);
         cleanUpdate.clientId = client.id;
@@ -1298,9 +1301,9 @@ export class FleetService {
     const robotId = typeof arg1 === "string" ? arg1 : (arg2 as string);
     const confirmed = typeof confirmation === "boolean" ? confirmation : typeof arg2 === "boolean" ? arg2 : false;
 
-    // Solo admin/amministratore (RF-ROB-013)
+    // Solo admin (RF-ROB-013)
     const isAdmin = (user.roles || []).some(
-      (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore"
+      (r) => r.toLowerCase() === "admin"
     );
     if (!isAdmin || !hasPermission(user, AppPermission.FS_SERVER_DELETE, robotId, this.roleMapping)) {
       await this.recordAudit(user.username, AuditOperation.SECURITY_AUTHORIZATION_ERROR, robotId, "FAILURE", {

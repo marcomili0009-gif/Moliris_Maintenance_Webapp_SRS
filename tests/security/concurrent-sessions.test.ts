@@ -60,19 +60,32 @@ const env = {
 };
 
 const config = loadAndValidateConfig(env);
-const appConfig = loadConfig();
+// ISS-004: verifica che config/config.json di default imposti maxSessionsPerAccount = 1
+const defaultAppConfig = loadConfig({ env: {} });
+assert.strictEqual(
+  defaultAppConfig.maxSessionsPerAccount,
+  1,
+  "config/config.json di default deve imporre maxSessionsPerAccount = 1 (ISS-004)"
+);
+assert.strictEqual(
+  defaultAppConfig.futureExtensions.maxSessionsPerAccount,
+  1,
+  "config/config.json futureExtensions.maxSessionsPerAccount di default deve essere 1 (ISS-004)"
+);
+
+const appConfig = loadConfig({ env });
 const logger = new MolirisLogger();
 
-// Verifichiamo che appConfig rilevi maxSessionsPerAccount = 3
+// Verifichiamo che l'override env imposti maxSessionsPerAccount = 3 per il test multi-sessione
 assert.strictEqual(
   appConfig.maxSessionsPerAccount,
   3,
-  "appConfig.maxSessionsPerAccount deve essere configurato a 3"
+  "appConfig.maxSessionsPerAccount deve essere configurato a 3 via env"
 );
 assert.strictEqual(
   appConfig.futureExtensions.maxSessionsPerAccount,
   3,
-  "appConfig.futureExtensions.maxSessionsPerAccount deve essere sincronizzato a 3"
+  "appConfig.futureExtensions.maxSessionsPerAccount deve essere sincronizzato a 3 via env"
 );
 
 const userRepo = new InMemoryUserRepository();

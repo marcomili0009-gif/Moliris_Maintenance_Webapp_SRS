@@ -28,7 +28,7 @@ const adminUser: UserEntity = {
   id: "user_p4_admin",
   username: "admin_p4",
   passwordHash: "dummy_hash",
-  roles: ["amministratore"],
+  roles: ["admin"],
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),

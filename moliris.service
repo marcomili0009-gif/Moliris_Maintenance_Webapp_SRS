@@ -11,6 +11,9 @@ Group=moliris
 WorkingDirectory=/opt/moliris/Moliris_Maintenance_Webapp_SRS
 EnvironmentFile=/etc/moliris/moliris.env
 Environment=NODE_ENV=production
+Environment=MOLIRIS_LOGS_DIR=/var/log/moliris
+LogsDirectory=moliris
+LogsDirectoryMode=0700
 ExecStart=/usr/bin/node dist/backend/server.js
 Restart=on-failure
 # RestartSec=5 definisce l'intervallo di attesa prima del riavvio del processo da parte di systemd;
@@ -29,7 +32,7 @@ CapabilityBoundingSet=
 ProtectSystem=strict
 ProtectHome=true
 PrivateDevices=true
-ReadWritePaths=/var/lib/moliris/server-fs
+ReadWritePaths=/var/lib/moliris/server-fs /var/log/moliris
 ReadOnlyPaths=/etc/moliris /opt/moliris/Moliris_Maintenance_Webapp_SRS
 PrivateTmp=true
 ProtectClock=true

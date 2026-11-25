@@ -44,7 +44,7 @@ const logger = new MolirisLogger();
 const adminUser: UserEntity = {
   id: "admin-user",
   username: "admin_test",
-  roles: ["amministratore"],
+  roles: ["admin"],
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -423,7 +423,7 @@ try {
     const userContext = {
       user: adminUser,
       permissions: new Set([AppPermission.FS_SERVER_NAVIGATE, AppPermission.FS_SERVER_DOWNLOAD]),
-      effectiveRole: "amministratore",
+      effectiveRole: "admin",
     } as any;
 
     const list = await serverFs.listDirectory(userContext, legacyRobot, "logs");
@@ -606,7 +606,7 @@ try {
     const userContext = {
       user: adminUser,
       permissions: new Set([AppPermission.FS_SERVER_NAVIGATE, AppPermission.FS_SERVER_UPLOAD]),
-      effectiveRole: "amministratore",
+      effectiveRole: "admin",
     } as any;
 
     // Assicuriamo directory temporanea .tmp con permessi 0700

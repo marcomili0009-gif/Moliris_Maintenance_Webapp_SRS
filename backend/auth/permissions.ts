@@ -3,6 +3,7 @@
 // RF-SRVFS-002, RF-SRVFS-003, RF-SRVFS-004, RF-TRF-002, RF-TRF-003, RNF-SEC-004, CA-SSH-005
 
 import { type UserEntity } from "./user-models.ts";
+import { normalizeRoles } from "./roles.ts";
 
 /**
  * Catalogo tassativo dei permessi operativi prescritti dalla specifica (SRS §2.2, RF-AUTH-005).
@@ -115,26 +116,6 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionMapping = {
     AppPermission.ROBOT_DISABLE,
     AppPermission.ROBOT_REMOVE,
   ],
-  amministratore: [
-    AppPermission.FLEET_VIEW,
-    AppPermission.STATUS_VIEW,
-    AppPermission.STATUS_REFRESH_MANUAL,
-    AppPermission.TERMINAL_OPEN,
-    AppPermission.FS_REMOTE_NAVIGATE,
-    AppPermission.FS_REMOTE_DOWNLOAD,
-    AppPermission.FS_REMOTE_UPLOAD,
-    AppPermission.FS_REMOTE_DELETE,
-    AppPermission.FS_SERVER_NAVIGATE,
-    AppPermission.FS_SERVER_UPLOAD,
-    AppPermission.FS_SERVER_DOWNLOAD,
-    AppPermission.FS_SERVER_DELETE,
-    AppPermission.TRANSFER_SERVER_ROBOT,
-    AppPermission.TRANSFER_CLIENT_ROBOT,
-    AppPermission.ROBOT_REGISTER,
-    AppPermission.ROBOT_CONFIG_UPDATE,
-    AppPermission.ROBOT_DISABLE,
-    AppPermission.ROBOT_REMOVE,
-  ],
 };
 
 /**
@@ -166,7 +147,7 @@ export function hasPermission(
   }
 
   // 3. Verifica i permessi associati ai ruoli dell'utente secondo il roleMapping configurato
-  for (const role of user.roles) {
+  for (const role of normalizeRoles(user.roles)) {
     const perms = roleMapping[role];
     if (perms && perms.includes(permission)) {
       return true;

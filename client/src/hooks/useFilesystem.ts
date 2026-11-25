@@ -6,6 +6,14 @@ import type { DirectoryListing, FsEntry } from "../types/filesystem.ts";
 import type { FormattedError } from "../types/error.ts";
 import type { TransferStartResult } from "../types/transfer.ts";
 
+export type UploadOutcome = "ok" | "conflict" | "error";
+
+function isOverwriteConflictResponse(status: number, errData: any): boolean {
+  const msg = typeof errData?.message === "string" ? errData.message.toLowerCase() : "";
+  if (msg.includes("categoricamente")) return false;
+  return status === 409 || msg.includes("già esistente") || msg.includes("esiste già");
+}
+
 function normalizeDirectoryListing(data: any, fallbackPath = "/"): DirectoryListing {
   if (!data) {
     return {
@@ -30,10 +38,18 @@ function normalizeDirectoryListing(data: any, fallbackPath = "/"): DirectoryList
     modifiedAt: it.modifiedAt || it.mtime || new Date().toISOString(),
     permissions: it.permissions,
     target: it.target,
-    scope: it.scope === "robot" ? "robot" : it.scope === "general" ? "general" : undefined,
+    scope:
+      it.scope === "deleted_robot"
+        ? "deleted_robot"
+        : it.scope === "robot"
+        ? "robot"
+        : it.scope === "general"
+        ? "general"
+        : undefined,
     robotId: typeof it.robotId === "string" ? it.robotId : undefined,
     displayName: typeof it.displayName === "string" ? it.displayName : undefined,
     exists: typeof it.exists === "boolean" ? it.exists : undefined,
+    isDeletedRobot: Boolean(it.isDeletedRobot || it.scope === "deleted_robot"),
   }));
 
   return {
@@ -64,11 +80,13 @@ export function useFilesystem() {
   const [remoteLoading, setRemoteLoading] = useState<boolean>(false);
   const [remoteError, setRemoteError] = useState<FormattedError | null>(null);
 
-  // General Server Archive state (§3)
+  // General Server Archive state (§3) + Deleted Robot Archive state (ISS-017)
   const [generalPath, setGeneralPath] = useState<string>("/");
   const [generalListing, setGeneralListing] = useState<DirectoryListing | null>(null);
   const [generalLoading, setGeneralLoading] = useState<boolean>(false);
   const [generalError, setGeneralError] = useState<FormattedError | null>(null);
+  const [deletedRobotFolder, setDeletedRobotFolder] = useState<string | null>(null);
+  const [deletedRobotSubPath, setDeletedRobotSubPath] = useState<string>("/");
 
   const setServerRobotId = useCallback((id: string) => {
     setServerRobotIdState(id);
@@ -161,6 +179,8 @@ export function useFilesystem() {
 
   // Load General Server Directory (§3)
   const loadGeneralDirectory = useCallback(async (path = "/") => {
+    setDeletedRobotFolder(null);
+    setDeletedRobotSubPath("/");
     setGeneralLoading(true);
     setGeneralError(null);
     try {
@@ -182,13 +202,129 @@ export function useFilesystem() {
     }
   }, []);
 
-  // Navigate Up General (§3)
+  // Load Deleted Robot Server Directory (ISS-017, Decisione #3)
+  const loadDeletedRobotDirectory = useCallback(async (folderName: string, subPath = "/") => {
+    setGeneralLoading(true);
+    setGeneralError(null);
+    try {
+      const cleanSub = !subPath || subPath === "/" ? "/" : subPath.startsWith("/") ? subPath : `/${subPath}`;
+      const url = `/api/fs/deleted-robots/${encodeURIComponent(folderName)}/list?path=${encodeURIComponent(cleanSub)}`;
+      const res = await apiClient.get(url);
+      if (res.ok) {
+        const data = await res.json();
+        const normalized = normalizeDirectoryListing(data, cleanSub);
+        setDeletedRobotFolder(folderName);
+        setDeletedRobotSubPath(normalized.path);
+        setGeneralListing(normalized);
+        setGeneralPath(normalized.path === "/" ? `/${folderName}` : `/${folderName}${normalized.path}`);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setGeneralError(ErrorPresenter.formatError(errData));
+      }
+    } catch (err) {
+      setGeneralError(ErrorPresenter.formatError(err));
+    } finally {
+      setGeneralLoading(false);
+    }
+  }, []);
+
+  // Navigate Up General (§3 + ISS-017 deleted robot support)
   const navigateGeneralUp = () => {
+    if (deletedRobotFolder) {
+      if (!deletedRobotSubPath || deletedRobotSubPath === "/") {
+        void loadGeneralDirectory("/");
+        return;
+      }
+      const parts = deletedRobotSubPath.split("/").filter(Boolean);
+      parts.pop();
+      const parentSub = parts.length > 0 ? `/${parts.join("/")}` : "/";
+      void loadDeletedRobotDirectory(deletedRobotFolder, parentSub);
+      return;
+    }
     if (generalPath === "/" || !generalPath) return;
     const parts = generalPath.split("/").filter(Boolean);
     parts.pop();
     const parentPath = parts.length > 0 ? `/${parts.join("/")}` : "/";
     loadGeneralDirectory(parentPath);
+  };
+
+  // Navigate Directory in General (handles both general archive and deleted robot folder)
+  const navigateGeneralDir = (dirName: string) => {
+    if (deletedRobotFolder) {
+      const nextSub = deletedRobotSubPath.endsWith("/")
+        ? `${deletedRobotSubPath}${dirName}`
+        : `${deletedRobotSubPath}/${dirName}`;
+      void loadDeletedRobotDirectory(deletedRobotFolder, nextSub);
+      return;
+    }
+    const newPath = generalPath.endsWith("/") ? `${generalPath}${dirName}` : `${generalPath}/${dirName}`;
+    void loadGeneralDirectory(newPath);
+  };
+
+  // Navigate Path in General (breadcrumb)
+  const navigateGeneralPath = (targetPath: string) => {
+    if (!targetPath || targetPath === "/") {
+      void loadGeneralDirectory("/");
+      return;
+    }
+    if (deletedRobotFolder) {
+      const prefix = `/${deletedRobotFolder}`;
+      if (targetPath === prefix) {
+        void loadDeletedRobotDirectory(deletedRobotFolder, "/");
+        return;
+      }
+      if (targetPath.startsWith(`${prefix}/`)) {
+        void loadDeletedRobotDirectory(deletedRobotFolder, targetPath.slice(prefix.length));
+        return;
+      }
+    }
+    void loadGeneralDirectory(targetPath);
+  };
+
+  // Delete Deleted Robot Folder permanently (admin-only, ISS-017)
+  const deleteDeletedRobotFolder = async (
+    folderName: string,
+    expectedFileCount = 0,
+    expectedDirectoryCount = 0
+  ): Promise<boolean> => {
+    try {
+      const res = await apiClient.delete(
+        `/api/fs/deleted-robots/${encodeURIComponent(folderName)}?expectedFileCount=${expectedFileCount}&expectedDirectoryCount=${expectedDirectoryCount}`
+      );
+      if (res.ok) {
+        await loadGeneralDirectory("/");
+        return true;
+      }
+      const errData = await res.json().catch(() => ({}));
+      setGeneralError(ErrorPresenter.formatError(errData));
+      return false;
+    } catch (err) {
+      setGeneralError(ErrorPresenter.formatError(err));
+      return false;
+    }
+  };
+
+  // Create Folder in Remote SFTP Directory (ISS-023)
+  const createRemoteFolder = async (
+    robotId: string,
+    folderName: string,
+    parentPath: string = remotePath
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!robotId) return { success: false, error: "Nessun robot selezionato." };
+    try {
+      const res = await apiClient.post(`/api/robots/${encodeURIComponent(robotId)}/fs/remote/mkdir`, {
+        name: folderName,
+        path: parentPath,
+      });
+      if (res.ok) {
+        await loadRemoteDirectory(robotId, parentPath);
+        return { success: true };
+      }
+      const errData = await res.json().catch(() => ({}));
+      return { success: false, error: errData.message || "Errore nella creazione della cartella sul robot." };
+    } catch (err: any) {
+      return { success: false, error: err.message || "Errore di connessione." };
+    }
   };
 
   // Create Folder in Dedicated Robot Server Directory (§4)
@@ -237,8 +373,8 @@ export function useFilesystem() {
     }
   };
 
-  // Upload to General Server Archive (§3)
-  const uploadToGeneral = async (file: File, targetPath: string, overwrite = false): Promise<boolean> => {
+  // Upload to General Server Archive (§3, ISS-008)
+  const uploadToGeneral = async (file: File, targetPath: string, overwrite = false): Promise<UploadOutcome> => {
     try {
       const cleanSubPath = targetPath === "/" ? "" : targetPath.replace(/^\//, "");
       const url = `/api/fs/general/upload?filename=${encodeURIComponent(file.name)}&path=${encodeURIComponent(cleanSubPath)}${overwrite ? "&overwrite=true" : ""}`;
@@ -254,23 +390,34 @@ export function useFilesystem() {
       });
       if (res.ok) {
         await loadGeneralDirectory(generalPath);
-        return true;
+        return "ok";
       } else {
         const errData = await res.json().catch(() => ({}));
+        if (!overwrite && isOverwriteConflictResponse(res.status, errData)) {
+          return "conflict";
+        }
         setGeneralError(ErrorPresenter.formatError(errData));
-        return false;
+        return "error";
       }
     } catch (err) {
       setGeneralError(ErrorPresenter.formatError(err));
-      return false;
+      return "error";
     }
   };
 
-  // Download from General Server Archive (§3)
+  // Download from General Server Archive (§3 + ISS-017 deleted robot support)
   const downloadFromGeneral = async (fileName: string) => {
-    const filePath = generalPath.endsWith("/") ? `${generalPath}${fileName}` : `${generalPath}/${fileName}`;
     try {
-      const url = `/api/fs/general/download?path=${encodeURIComponent(filePath)}`;
+      let url = "";
+      if (deletedRobotFolder) {
+        const fileSubPath = deletedRobotSubPath.endsWith("/")
+          ? `${deletedRobotSubPath}${fileName}`
+          : `${deletedRobotSubPath}/${fileName}`;
+        url = `/api/fs/deleted-robots/${encodeURIComponent(deletedRobotFolder)}/download?path=${encodeURIComponent(fileSubPath)}`;
+      } else {
+        const filePath = generalPath.endsWith("/") ? `${generalPath}${fileName}` : `${generalPath}/${fileName}`;
+        url = `/api/fs/general/download?path=${encodeURIComponent(filePath)}`;
+      }
       apiClient.assertLocalBackendEndpoint(url);
       const preflight = await apiClient.get(`${url}&preflight=1`);
       if (!preflight.ok) {
@@ -336,9 +483,9 @@ export function useFilesystem() {
     }
   };
 
-  // Upload to Server
-  const uploadToServer = async (file: File, targetPath: string, overwrite = false): Promise<boolean> => {
-    if (!serverRobotId) return false;
+  // Upload to Server (ISS-008)
+  const uploadToServer = async (file: File, targetPath: string, overwrite = false): Promise<UploadOutcome> => {
+    if (!serverRobotId) return "error";
     try {
       const cleanSubPath = targetPath === "/" ? "" : targetPath.replace(/^\//, "");
       const url = `/api/robots/${encodeURIComponent(serverRobotId)}/transfers/client-server/upload?filename=${encodeURIComponent(file.name)}&subPath=${encodeURIComponent(cleanSubPath)}${overwrite ? "&overwrite=true" : ""}`;
@@ -354,21 +501,24 @@ export function useFilesystem() {
       });
       if (res.ok) {
         await loadServerDirectory(serverRobotId, serverPath);
-        return true;
+        return "ok";
       } else {
         const errData = await res.json().catch(() => ({}));
+        if (!overwrite && isOverwriteConflictResponse(res.status, errData)) {
+          return "conflict";
+        }
         setServerError(ErrorPresenter.formatError(errData));
-        return false;
+        return "error";
       }
     } catch (err) {
       setServerError(ErrorPresenter.formatError(err));
-      return false;
+      return "error";
     }
   };
 
-  // Upload to Remote SFTP
-  const uploadToRemote = async (file: File, targetPath: string, overwrite = false): Promise<boolean> => {
-    if (!remoteRobotId) return false;
+  // Upload to Remote SFTP (ISS-008)
+  const uploadToRemote = async (file: File, targetPath: string, overwrite = false): Promise<UploadOutcome> => {
+    if (!remoteRobotId) return "error";
     try {
       const url = `/api/robots/${encodeURIComponent(remoteRobotId)}/transfers/client-robot/upload?filename=${encodeURIComponent(file.name)}&remoteDirectory=${encodeURIComponent(targetPath)}${overwrite ? "&overwrite=true" : ""}`;
       const res = await apiClient.request(url, {
@@ -383,15 +533,18 @@ export function useFilesystem() {
       });
       if (res.ok) {
         await loadRemoteDirectory(remoteRobotId, remotePath);
-        return true;
+        return "ok";
       } else {
         const errData = await res.json().catch(() => ({}));
+        if (!overwrite && isOverwriteConflictResponse(res.status, errData)) {
+          return "conflict";
+        }
         setRemoteError(ErrorPresenter.formatError(errData));
-        return false;
+        return "error";
       }
     } catch (err) {
       setRemoteError(ErrorPresenter.formatError(err));
-      return false;
+      return "error";
     }
   };
 
@@ -636,13 +789,18 @@ export function useFilesystem() {
     generalListing,
     generalLoading,
     generalError,
+    deletedRobotFolder,
     loadGeneralDirectory,
+    loadDeletedRobotDirectory,
     navigateGeneralUp,
+    navigateGeneralDir,
+    navigateGeneralPath,
     createGeneralFolder,
     uploadToGeneral,
     downloadFromGeneral,
     deleteFromGeneral,
     deleteGeneralFolder,
+    deleteDeletedRobotFolder,
     clearGeneralError: () => setGeneralError(null),
 
     remoteRobotId,
@@ -653,6 +811,7 @@ export function useFilesystem() {
     remoteError,
     loadRemoteDirectory,
     navigateRemoteUp,
+    createRemoteFolder,
     uploadToRemote,
     downloadFromRemote,
     deleteFromRemote,

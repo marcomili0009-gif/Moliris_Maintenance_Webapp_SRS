@@ -233,8 +233,9 @@ await runDtoSecurityTests();
 
 // 3. Esecuzione test con MongoDB reale (se mongod è attivo localmente)
 const mongoUri = "mongodb://127.0.0.1:27017";
+let client: MongoClient | null = null;
 try {
-  const client = new MongoClient(mongoUri);
+  client = new MongoClient(mongoUri, { serverSelectionTimeoutMS: 2000 });
   await client.connect();
   const testDb = client.db("moliris_test_storage");
   await testDb.dropDatabase(); // Pulizia database di test
@@ -248,10 +249,13 @@ try {
   await runAuditRepositoryTestSuite("MongoAuditRepository (Live MongoDB)", mongoAuditRepo);
 
   await testDb.dropDatabase();
-  await client.close();
   console.log("  PASS: Test su MongoDB reale completati con successo.");
 } catch (err: any) {
   console.log("  NOTA: Test MongoDB reale saltato:", err.message);
+} finally {
+  if (client) {
+    await client.close().catch(() => {});
+  }
 }
 
 console.log("PASS: Tutti i test del livello di persistenza completati con successo.");

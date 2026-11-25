@@ -396,7 +396,7 @@ try {
     updatedAt: new Date(),
   });
 
-  const adminTermUser = { ...userEntity, roles: ["amministratore"] };
+  const adminTermUser = { ...userEntity, roles: ["admin"] };
   const termSession = await termService.openTerminalSession(adminTermUser, "robot_term_test", { cols: 80, rows: 24 }, termUserSession?.sessionId || "session_term_123");
   assert.strictEqual(termService.getActiveSessionCount(), 1);
 

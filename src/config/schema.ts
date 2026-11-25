@@ -104,14 +104,14 @@ export const AppConfigSchema = z.object({
     .default(5),
 
   /**
-   * 2. Timeout massimo attività sessione terminale SSH (watchdog timer) in minuti (default: 60)
+   * 2. Timeout massimo attività sessione terminale SSH (watchdog timer) in minuti (default: 15)
    */
   sshTerminalActiveTimeoutMinutes: z
     .number({ message: "sshTerminalActiveTimeoutMinutes deve essere un numero" })
     .int("sshTerminalActiveTimeoutMinutes deve essere un intero")
     .min(1, "sshTerminalActiveTimeoutMinutes deve essere almeno 1 minuto")
     .max(1440, "sshTerminalActiveTimeoutMinutes non può superare 24 ore (1440 min)")
-    .default(60),
+    .default(15),
 
   /**
    * Preavviso inattività sessione terminale SSH in minuti (default: 5)
@@ -134,13 +134,13 @@ export const AppConfigSchema = z.object({
     .default(10),
 
   /**
-   * 4. Terminali SSH concorrenti aperti per singolo robot (default: 1, es. configurabile fino a 2)
+   * 4. Terminali SSH concorrenti aperti per singolo robot (default: 1, massimo 2)
    */
   maxConcurrentTerminalsPerRobot: z
     .number({ message: "maxConcurrentTerminalsPerRobot deve essere un numero" })
     .int("maxConcurrentTerminalsPerRobot deve essere un intero")
     .min(1, "maxConcurrentTerminalsPerRobot deve essere almeno 1")
-    .max(10, "maxConcurrentTerminalsPerRobot non può superare 10")
+    .max(2, "maxConcurrentTerminalsPerRobot non può superare 2")
     .default(1),
 
   /**

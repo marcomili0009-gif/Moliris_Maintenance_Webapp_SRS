@@ -111,7 +111,7 @@ export function normalizeRoleForLog(roleOrRoles?: string | string[]): string {
   const roles = Array.isArray(roleOrRoles) ? roleOrRoles : [roleOrRoles];
   const isAdmin = roles.some((r) => {
     const lower = (r || "").toLowerCase();
-    return lower === "amministratore" || lower === "admin";
+    return lower === "admin";
   });
   return isAdmin ? "Amministratore" : "Operatore";
 }
@@ -124,14 +124,30 @@ export class PhysicalFileLogger {
   private logDir: string;
   private accessLogPath: string;
   private transfersLogPath: string;
+  private maxFileSizeBytes: number;
+  private maxRotatedFiles: number;
   private initialized = false;
 
-  constructor(logDir?: string) {
+  constructor(logDir?: string, options?: { maxFileSizeBytes?: number; maxRotatedFiles?: number }) {
     this.logDir = logDir
       ? path.resolve(logDir)
       : path.resolve(process.cwd(), "logs");
     this.accessLogPath = path.join(this.logDir, "access.log");
     this.transfersLogPath = path.join(this.logDir, "transfers.log");
+    const envMaxBytes = Number(process.env["MOLIRIS_LOG_MAX_BYTES"]);
+    const envMaxFiles = Number(process.env["MOLIRIS_LOG_MAX_FILES"]);
+    this.maxFileSizeBytes =
+      options?.maxFileSizeBytes && options.maxFileSizeBytes > 0
+        ? options.maxFileSizeBytes
+        : Number.isFinite(envMaxBytes) && envMaxBytes > 0
+        ? envMaxBytes
+        : 10 * 1024 * 1024; // 10 MB predefinito
+    this.maxRotatedFiles =
+      options?.maxRotatedFiles && options.maxRotatedFiles > 0
+        ? options.maxRotatedFiles
+        : Number.isFinite(envMaxFiles) && envMaxFiles > 0
+        ? Math.min(envMaxFiles, 20)
+        : 5;
   }
 
   public getLogDir(): string {
@@ -171,9 +187,34 @@ export class PhysicalFileLogger {
     this.initialized = true;
   }
 
+  private async rotateIfNeeded(filePath: string, incomingBytes: number): Promise<void> {
+    try {
+      const stat = await fs.promises.stat(filePath);
+      if (stat.size + incomingBytes <= this.maxFileSizeBytes) return;
+
+      for (let i = this.maxRotatedFiles; i >= 1; i--) {
+        const src = i === 1 ? filePath : `${filePath}.${i - 1}`;
+        const dst = `${filePath}.${i}`;
+        if (!fs.existsSync(src)) continue;
+        if (i === this.maxRotatedFiles && fs.existsSync(dst)) {
+          await fs.promises.unlink(dst).catch(() => {});
+        }
+        await fs.promises.rename(src, dst);
+        await fs.promises.chmod(dst, 0o600).catch(() => {});
+      }
+
+      await fs.promises.writeFile(filePath, "", { mode: 0o600 });
+      await fs.promises.chmod(filePath, 0o600).catch(() => {});
+    } catch {
+      // Se il file non esiste ancora, appendFile lo creerà con mode 0600
+    }
+  }
+
   private async append(filePath: string, line: string): Promise<void> {
     await this.ensureInitialized();
-    await fs.promises.appendFile(filePath, line + "\n", { encoding: "utf-8", mode: 0o600 });
+    const payload = line + "\n";
+    await this.rotateIfNeeded(filePath, Buffer.byteLength(payload, "utf-8"));
+    await fs.promises.appendFile(filePath, payload, { encoding: "utf-8", mode: 0o600 });
     try {
       await fs.promises.chmod(filePath, 0o600);
     } catch {}

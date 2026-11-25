@@ -49,16 +49,19 @@ export interface ServerFileItem {
    * Provenienza dell'elemento nella vista aggregata dell'Archivio Generale.
    * - "general": contenuto reale dell'archivio condiviso
    * - "robot": directory dedicata di un robot registrato, mostrata come collegamento
+   * - "deleted_robot": directory residua sul server di un robot eliminato dall'anagrafica
    */
-  scope?: "general" | "robot";
+  scope?: "general" | "robot" | "deleted_robot";
   /** ID del robot a cui appartiene la directory (solo scope "robot"). */
   robotId?: string;
-  /** Etichetta leggibile del robot (solo scope "robot"). */
+  /** Etichetta leggibile del robot (solo scope "robot" o "deleted_robot"). */
   displayName?: string;
   /** true se la directory del robot esiste realmente sul filesystem. */
   exists?: boolean;
   /** Flag esplicito per badge 'Cartella Robot' */
   isRobotFolder?: boolean;
+  /** Flag esplicito per badge 'Eliminato' su directory di robot rimossi dall'anagrafica (ISS-017). */
+  isDeletedRobot?: boolean;
 }
 
 export interface DirectoryInspectionResult {
@@ -124,7 +127,7 @@ export class ServerFilesystemService {
     const roles = context.roles || [];
     const isAdmin = roles.some((r) => {
       const lower = r.toLowerCase();
-      return lower === "amministratore" || lower === "admin";
+      return lower === "admin";
     });
     return !isAdmin;
   }
@@ -615,7 +618,9 @@ export class ServerFilesystemService {
     }
 
     const generalRoot = path.resolve(this.generalFsRoot);
+    const generalDirName = path.basename(generalRoot).toLowerCase();
     const knownNames = new Set(items.map((item) => item.name.toLowerCase()));
+    const activeRobotDirNames = new Set<string>();
     const robotItems: ServerFileItem[] = [];
 
     for (const robot of robots ?? []) {
@@ -629,7 +634,9 @@ export class ServerFilesystemService {
       if (robotDir === generalRoot) continue;
 
       const name = path.basename(robotDir);
-      if (!name || knownNames.has(name.toLowerCase())) continue;
+      if (!name) continue;
+      activeRobotDirNames.add(name.toLowerCase());
+      if (knownNames.has(name.toLowerCase())) continue;
       knownNames.add(name.toLowerCase());
 
       let modifiedAt = new Date(0);
@@ -660,7 +667,47 @@ export class ServerFilesystemService {
       });
     }
 
-    const merged = [...items, ...robotItems];
+    // ISS-017 (Decisione #3): cartelle di robot rimossi dall'anagrafica ma preservate su disco.
+    // Restano visibili e navigabili in Archivio Generale con etichetta "Eliminato".
+    const deletedRobotItems: ServerFileItem[] = [];
+    if (fs.existsSync(this.fsRoot)) {
+      try {
+        const rootEntries = await fs.promises.readdir(this.fsRoot, { withFileTypes: true });
+        for (const ent of rootEntries) {
+          if (ent.name.startsWith(".") || ent.name === ".tmp" || ent.name === ".tmp_bulk") continue;
+          const lower = ent.name.toLowerCase();
+          if (lower === generalDirName || activeRobotDirNames.has(lower)) continue;
+          if (!ent.isDirectory()) continue;
+
+          const candidateDir = path.resolve(this.fsRoot, ent.name);
+          if (path.dirname(candidateDir) !== this.fsRoot) continue;
+          try {
+            const realRoot = await fs.promises.realpath(this.fsRoot);
+            const realCandidate = await fs.promises.realpath(candidateDir);
+            if (!realCandidate.startsWith(realRoot + path.sep)) continue;
+            const st = await fs.promises.stat(candidateDir);
+            if (!st.isDirectory()) continue;
+            deletedRobotItems.push({
+              name: ent.name,
+              type: "directory",
+              size: null,
+              modifiedAt: st.mtime,
+              scope: "deleted_robot",
+              isRobotFolder: true,
+              isDeletedRobot: true,
+              displayName: ent.name,
+              exists: true,
+            });
+          } catch {
+            // Directory non accessibile o symlink non valido: ignorata in sicurezza
+          }
+        }
+      } catch {
+        // Root non leggibile: nessuna esposizione parziale
+      }
+    }
+
+    const merged = [...items, ...robotItems, ...deletedRobotItems];
     merged.sort((a, b) => {
       if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
       return (a.displayName || a.name).localeCompare(b.displayName || b.name, undefined, {
@@ -1641,6 +1688,326 @@ export class ServerFilesystemService {
         scope: "general",
       },
     });
+  }
+
+  // =========================================================================
+  // CARTELLE DI ROBOT ELIMINATI IN ARCHIVIO GENERALE (ISS-017, Decisione #3)
+  // =========================================================================
+
+  private isAdminContext(context: AuthorizedContext): boolean {
+    return Array.isArray(context.roles) && context.roles.some((r) => (r || "").toLowerCase() === "admin");
+  }
+
+  private async resolveDeletedRobotRoot(
+    folderName: string,
+    activeRobots: RobotEntity[]
+  ): Promise<string> {
+    const cleanName = (folderName || "").trim();
+    if (
+      !cleanName ||
+      cleanName === "." ||
+      cleanName === ".." ||
+      cleanName.startsWith(".") ||
+      cleanName.includes("/") ||
+      cleanName.includes("\\") ||
+      cleanName.includes("\0")
+    ) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Nome cartella robot eliminato non valido: '${cleanName}'`,
+        "Nome della cartella non valido."
+      );
+    }
+
+    const generalDirName = path.basename(path.resolve(this.generalFsRoot)).toLowerCase();
+    if (cleanName.toLowerCase() === generalDirName) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Operazione vietata sulla directory dell'archivio generale.",
+        "Operazione non consentita su questa directory."
+      );
+    }
+
+    for (const robot of activeRobots ?? []) {
+      if (!robot?.serverDirectoryPath) continue;
+      const activeName = path.basename(path.resolve(robot.serverDirectoryPath));
+      if (activeName.toLowerCase() === cleanName.toLowerCase()) {
+        throw new MolirisAppError(
+          ErrorCode.INSUFFICIENT_PERMISSIONS,
+          `La cartella '${cleanName}' appartiene a un robot ancora attivo (${robot.id}).`,
+          "Questa cartella appartiene a un robot attivo nell'anagrafica."
+        );
+      }
+    }
+
+    const candidate = path.resolve(this.fsRoot, cleanName);
+    if (path.dirname(candidate) !== this.fsRoot || !fs.existsSync(candidate)) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Cartella del robot eliminato '${cleanName}' non trovata.`,
+        "Cartella del robot eliminato non trovata."
+      );
+    }
+
+    const realRoot = await fs.promises.realpath(this.fsRoot);
+    const realCandidate = await fs.promises.realpath(candidate);
+    if (!realCandidate.startsWith(realRoot + path.sep)) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Violazione jail filesystem: collegamento simbolico esterno a fsRoot.",
+        "Accesso non consentito."
+      );
+    }
+
+    const st = await fs.promises.lstat(candidate);
+    if (!st.isDirectory()) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Il percorso '${cleanName}' non è una directory.`,
+        "Il percorso specificato non è una directory."
+      );
+    }
+
+    return candidate;
+  }
+
+  private async resolveDeletedRobotSubPath(
+    folderName: string,
+    activeRobots: RobotEntity[],
+    relativeSubPath?: string
+  ): Promise<{ rootDir: string; targetPath: string }> {
+    const rootDir = await this.resolveDeletedRobotRoot(folderName, activeRobots);
+    const trimmed = (relativeSubPath || "").replace(/^[/\\]+/, "").trim();
+    if (!trimmed || trimmed === ".") {
+      return { rootDir, targetPath: rootDir };
+    }
+    if (trimmed.includes("\0") || trimmed.split(/[/\\]/).includes("..")) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Tentativo di path traversal nella directory del robot eliminato.",
+        "Percorso non valido."
+      );
+    }
+
+    const resolved = path.resolve(rootDir, trimmed);
+    if (resolved !== rootDir && !resolved.startsWith(rootDir + path.sep)) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Tentativo di uscita dal perimetro della directory del robot eliminato.",
+        "Percorso non consentito."
+      );
+    }
+
+    if (fs.existsSync(resolved)) {
+      const realRoot = await fs.promises.realpath(rootDir);
+      const realResolved = await fs.promises.realpath(resolved);
+      if (realResolved !== realRoot && !realResolved.startsWith(realRoot + path.sep)) {
+        throw new MolirisAppError(
+          ErrorCode.INSUFFICIENT_PERMISSIONS,
+          "Symlink esterno al perimetro della directory del robot eliminato.",
+          "Percorso non consentito."
+        );
+      }
+    }
+
+    return { rootDir, targetPath: resolved };
+  }
+
+  public async listDeletedRobotDirectory(
+    context: AuthorizedContext,
+    activeRobots: RobotEntity[],
+    folderName: string,
+    relativeSubPath?: string
+  ): Promise<ServerFileItem[]> {
+    if (!context.permissions.has(AppPermission.FS_SERVER_NAVIGATE)) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Permesso FS_SERVER_NAVIGATE richiesto.",
+        "Autorizzazioni insufficienti per navigare l'archivio."
+      );
+    }
+
+    const isOp = this.isOperator(context);
+    const trimmedSub = (relativeSubPath ?? "").trim();
+    const isRoot = !trimmedSub || trimmedSub === "." || trimmedSub === "/" || trimmedSub === "\\";
+    if (isOp && !isRoot) {
+      this.assertOperatorAccess(context, relativeSubPath, "LIST");
+    }
+
+    const { targetPath } = await this.resolveDeletedRobotSubPath(folderName, activeRobots, isRoot ? "" : relativeSubPath);
+    if (!fs.existsSync(targetPath)) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Percorso specificato non trovato.");
+    }
+    const stat = await fs.promises.stat(targetPath);
+    if (!stat.isDirectory()) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Il percorso specificato non è una directory.");
+    }
+
+    const entries = await fs.promises.readdir(targetPath, { withFileTypes: true });
+    const items: ServerFileItem[] = [];
+    const effectiveAllowed =
+      context.allowedPaths && context.allowedPaths.length > 0 ? context.allowedPaths : this.operatorAllowedPaths;
+
+    for (const entry of entries) {
+      if (entry.name === ".tmp" || entry.name === ".moliris_tmp" || entry.name.startsWith(".")) {
+        continue;
+      }
+      if (isOp && isRoot && effectiveAllowed && effectiveAllowed.length > 0) {
+        const isAllowed = effectiveAllowed.some((root) => {
+          const rootSegs = root.split("/").filter(Boolean);
+          return rootSegs.length === 0 || rootSegs[0] === entry.name;
+        });
+        if (!isAllowed) continue;
+      }
+
+      const fullItemPath = path.join(targetPath, entry.name);
+      try {
+        const itemStat = await fs.promises.stat(fullItemPath);
+        items.push({
+          name: entry.name,
+          type: entry.isDirectory() ? "directory" : "file",
+          size: entry.isDirectory() ? null : itemStat.size,
+          modifiedAt: itemStat.mtime,
+          scope: "deleted_robot",
+        });
+      } catch {}
+    }
+
+    items.sort((a, b) => {
+      if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    });
+
+    return items;
+  }
+
+  public async openDeletedRobotFileReadStream(
+    context: AuthorizedContext,
+    activeRobots: RobotEntity[],
+    folderName: string,
+    relativeFilePath: string
+  ): Promise<{ stream: Readable; filename: string; totalBytes: number }> {
+    if (!context.permissions.has(AppPermission.FS_SERVER_DOWNLOAD)) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Permesso FS_SERVER_DOWNLOAD richiesto.",
+        "Autorizzazioni insufficienti per scaricare il file."
+      );
+    }
+    if (this.isOperator(context)) {
+      this.assertOperatorAccess(context, relativeFilePath, "DOWNLOAD");
+    }
+
+    const { targetPath } = await this.resolveDeletedRobotSubPath(folderName, activeRobots, relativeFilePath);
+    if (!fs.existsSync(targetPath)) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "File non trovato nella cartella del robot eliminato.");
+    }
+    const stat = await fs.promises.stat(targetPath);
+    if (!stat.isFile()) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Il percorso specificato non è un file regolare.");
+    }
+
+    return {
+      stream: fs.createReadStream(targetPath),
+      filename: path.basename(targetPath),
+      totalBytes: stat.size,
+    };
+  }
+
+  public async inspectDeletedRobotDirectory(
+    context: AuthorizedContext,
+    activeRobots: RobotEntity[],
+    folderName: string
+  ): Promise<DirectoryInspectionResult> {
+    if (!this.isAdminContext(context) || !context.permissions.has(AppPermission.ROBOT_REMOVE)) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Solo gli amministratori possono ispezionare ed eliminare definitivamente le cartelle dei robot eliminati.",
+        "Operazione riservata esclusivamente agli amministratori."
+      );
+    }
+
+    const targetDir = await this.resolveDeletedRobotRoot(folderName, activeRobots);
+    const { fileCount, dirCount, totalSize } = await this.inspectDirRecursive(targetDir);
+
+    return {
+      path: `/${path.basename(targetDir)}`,
+      name: path.basename(targetDir),
+      isEmpty: fileCount === 0 && dirCount === 0,
+      fileCount,
+      dirCount,
+      directoryCount: dirCount,
+      totalItems: fileCount + dirCount,
+      totalCount: fileCount + dirCount,
+      totalSize,
+    };
+  }
+
+  public async deleteDeletedRobotDirectory(
+    context: AuthorizedContext,
+    activeRobots: RobotEntity[],
+    folderName: string,
+    options: {
+      expectedFileCount?: number;
+      expectedDirectoryCount?: number;
+    } = {}
+  ): Promise<{ fileCount: number; directoryCount: number }> {
+    if (!this.isAdminContext(context) || !context.permissions.has(AppPermission.ROBOT_REMOVE)) {
+      await this.auditRepository.record({
+        userId: context.username,
+        operation: AuditOperation.SECURITY_AUTHORIZATION_ERROR,
+        outcome: "FAILURE",
+        timestamp: new Date(),
+        details: {
+          reason: "NON_ADMIN_DELETE_DELETED_ROBOT_FOLDER",
+          folderName,
+        },
+      });
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Solo gli amministratori possono eliminare definitivamente le cartelle dei robot eliminati.",
+        "Operazione riservata esclusivamente agli amministratori."
+      );
+    }
+
+    const targetDir = await this.resolveDeletedRobotRoot(folderName, activeRobots);
+    const { fileCount, dirCount } = await this.inspectDirRecursive(targetDir);
+
+    if (
+      options.expectedFileCount !== undefined &&
+      options.expectedDirectoryCount !== undefined &&
+      (fileCount !== options.expectedFileCount || dirCount !== options.expectedDirectoryCount)
+    ) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        "PREFLIGHT_STALE: il contenuto della cartella del robot eliminato è cambiato dopo la conferma."
+      );
+    }
+
+    await fs.promises.rm(targetDir, { recursive: true, force: false });
+
+    this.logger.info("Cartella di robot eliminato rimossa definitivamente dal server", {
+      folderName: path.basename(targetDir),
+      fileCount,
+      directoryCount: dirCount,
+      userId: context.username,
+    });
+
+    await this.auditRepository.record({
+      userId: context.username,
+      operation: AuditOperation.ROBOT_SERVER_DATA_DELETION,
+      robotId: path.basename(targetDir),
+      outcome: "SUCCESS",
+      timestamp: new Date(),
+      details: {
+        folderName: path.basename(targetDir),
+        fileCount,
+        directoryCount: dirCount,
+        scope: "deleted_robot",
+      },
+    });
+
+    return { fileCount, directoryCount: dirCount };
   }
 
   private assertAuthorizedContext(

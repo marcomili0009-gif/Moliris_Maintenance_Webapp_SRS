@@ -24,6 +24,7 @@ export interface RobotSummaryDto {
   remoteUsername: string;
   host: string;
   sshPort: number;
+  sshAuthMethod?: "key" | "password";
   connectionState: ConnectionState;
   operationalState: OperationalState;
   lastValidUpdateAt: Date | null;
@@ -95,6 +96,7 @@ export function toRobotSummaryDto(robot: RobotEntity, staleThresholdSeconds?: nu
     remoteUsername: robot.remoteUsername,
     host: robot.host,
     sshPort: robot.sshPort,
+    sshAuthMethod: robot.sshAuthMethod,
     connectionState: robot.connectionState,
     operationalState: robot.operationalState,
     lastValidUpdateAt: robot.lastValidUpdateAt,

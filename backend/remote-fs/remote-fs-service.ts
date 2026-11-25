@@ -410,7 +410,7 @@ export class RemoteFilesystemService {
     const roles = context.roles || [];
     const isAdmin = roles.some((r) => {
       const lower = r.toLowerCase();
-      return lower === "amministratore" || lower === "admin";
+      return lower === "admin";
     });
 
     if (!isAdmin) {
@@ -655,7 +655,7 @@ export class RemoteFilesystemService {
       const roles = context.roles || [];
       const isAdmin = roles.some((r) => {
         const lower = r.toLowerCase();
-        return lower === "amministratore" || lower === "admin";
+        return lower === "admin";
       });
       const effectiveAllowed =
         context.allowedPaths && context.allowedPaths.length > 0
@@ -1676,6 +1676,84 @@ export class RemoteFilesystemService {
       `Errore SFTP remoto: ${redactSensitiveData(err?.message || "Errore sconosciuto")}`,
       "Impossibile completare l'operazione sul filesystem del robot."
     );
+  }
+
+  /**
+   * Creazione controllata di una nuova directory sul filesystem remoto del robot via SFTP (ISS-023).
+   */
+  public async createRemoteDirectory(
+    context: AuthorizedContext,
+    robot: RobotEntity,
+    parentPath: string,
+    folderName: string
+  ): Promise<{ path: string; name: string }> {
+    if (context.targetRobotId && context.targetRobotId !== robot.id) {
+      await this.recordSecurityViolation(context.username, robot.id, "CROSS_ROBOT_ACCESS_ATTEMPT", {
+        contextRobotId: context.targetRobotId,
+        targetRobotId: robot.id,
+      });
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Operazione non consentita: contesto autorizzato per un robot differente.`
+      );
+    }
+
+    if (!context.permissions.has(AppPermission.FS_REMOTE_UPLOAD)) {
+      await this.recordSecurityViolation(context.username, robot.id, "PERMISSION_DENIED_FS_REMOTE_MKDIR");
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Utente '${context.username}' non autorizzato a creare cartelle sul robot '${robot.id}'.`
+      );
+    }
+
+    const trimmedName = (folderName || "").trim();
+    if (
+      !trimmedName ||
+      trimmedName === "." ||
+      trimmedName === ".." ||
+      trimmedName.includes("/") ||
+      trimmedName.includes("\\") ||
+      trimmedName.includes("\0")
+    ) {
+      throw new MolirisAppError(
+        ErrorCode.REMOTE_FS_ERROR,
+        `Nome cartella remota non valido: '${trimmedName}'`,
+        "Nome della cartella non valido."
+      );
+    }
+
+    this.assertRobotAccessible(robot);
+
+    const managedConn = await this.connectionManager.acquireConnection(context.username, robot);
+    try {
+      const sftp = await managedConn.getSftpClient();
+      const baseDir = await this.resolveAndValidatePath(parentPath, context, robot, sftp);
+      const targetPath = path.posix.join(baseDir, trimmedName);
+      const validatedTarget = await this.resolveAndValidatePath(targetPath, context, robot, sftp);
+
+      // Verifica se esiste già
+      const alreadyExists = await new Promise<boolean>((resolve) => {
+        sftp.stat(validatedTarget, (err: any) => resolve(!err));
+      });
+      if (alreadyExists) {
+        throw new MolirisAppError(
+          ErrorCode.REMOTE_FS_ERROR,
+          `La cartella '${trimmedName}' esiste già sul robot.`,
+          `La cartella '${trimmedName}' esiste già.`
+        );
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        sftp.mkdir(validatedTarget, { mode: 0o750 }, (err: any) => {
+          if (err) return reject(this.mapSftpError(err, validatedTarget, robot.id));
+          resolve();
+        });
+      });
+
+      return { path: validatedTarget, name: trimmedName };
+    } finally {
+      await managedConn.close().catch(() => {});
+    }
   }
 
   /**

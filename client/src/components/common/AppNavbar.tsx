@@ -109,7 +109,7 @@ export const AppNavbar: React.FC<AppNavbarProps> = ({
                   Gestione file/trasferimenti
                 </button>
               </li>
-              {user.roles?.some((r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore") && (
+              {user.roles?.some((r) => r.toLowerCase() === "admin") && (
                 <li className="nav-item">
                   <button
                     type="button"

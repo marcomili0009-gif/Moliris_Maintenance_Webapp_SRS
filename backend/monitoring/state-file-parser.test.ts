@@ -4,16 +4,9 @@ import assert from "assert";
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { MolirisStateFileParser, ProvisionalDevelopmentStateFileParser } from "./state-file-parser.ts";
+import { MolirisStateFileParser } from "./state-file-parser.ts";
 
 console.log("--> Esecuzione test suite MolirisStateFileParser (RF-MON-002)...");
-
-// Test 1: Retrocompatibilità alias export
-assert.strictEqual(
-  MolirisStateFileParser,
-  ProvisionalDevelopmentStateFileParser,
-  "ProvisionalDevelopmentStateFileParser deve essere un alias identico di MolirisStateFileParser"
-);
 
 // Test 2: Modalità 'auto' con contenuto JSON valido
 {

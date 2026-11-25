@@ -194,7 +194,7 @@ export async function authorizeOperatorPath(
   const roles = (user as any).roles || [];
   const isAdmin = roles.some((r: string) => {
     const lower = (r || "").toLowerCase();
-    return lower === "amministratore" || lower === "admin";
+    return lower === "admin";
   });
 
   if (isAdmin) {
@@ -206,9 +206,8 @@ export async function authorizeOperatorPath(
     return lower === "operatore" || lower === "operator";
   });
 
-  if (!isOperator) {
-    return;
-  }
+  // ISS-002: fail-closed. Qualsiasi ruolo non-admin (operatore o sconosciuto) è soggetto alla jail.
+  void isOperator;
 
   const allowedPaths = (user as any).allowedPaths;
   const hasAllowedRoots = Array.isArray(allowedPaths) && allowedPaths.length > 0;
@@ -270,7 +269,7 @@ export async function assertPathAuthorized(
   const roles = context.roles || [];
   const isAdmin = roles.some((r) => {
     const lower = r.toLowerCase();
-    return lower === "amministratore" || lower === "admin";
+    return lower === "admin";
   });
 
   if (isAdmin) {

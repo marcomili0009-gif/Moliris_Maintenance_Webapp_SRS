@@ -59,7 +59,7 @@ const adminUser = {
   id: "security-admin-id",
   username: "security_admin",
   passwordHash: "not-used-by-this-suite",
-  roles: ["amministratore"],
+  roles: ["admin"],
   enabled: true,
   createdAt: now,
   updatedAt: now,

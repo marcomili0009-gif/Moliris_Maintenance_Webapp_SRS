@@ -492,4 +492,81 @@ export function registerRemoteFsRoutes(
       }
     }
   );
+
+  /**
+   * Creazione controllata di una nuova directory sul filesystem remoto SFTP del robot (ISS-023)
+   */
+  app.post(
+    "/api/robots/:robotId/fs/remote/mkdir",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(
+          AppPermission.FS_REMOTE_UPLOAD,
+          (req) => (req.params as any).robotId
+        ),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { robotId } = req.params as { robotId: string };
+      const body = (req.body as any) || {};
+      const folderName = typeof body.folderName === "string" ? body.folderName : body.name;
+      const parentPath = typeof body.path === "string" ? body.path : (body.parentPath || "");
+
+      if (!folderName || !String(folderName).trim()) {
+        return reply.status(400).send({
+          code: ErrorCode.MISSING_ROBOT_PARAMS,
+          message: "Nome della cartella obbligatorio.",
+          classification: "recuperabile",
+        });
+      }
+
+      const robot = await robotRepository.findById(robotId);
+      if (!robot) {
+        return reply.status(404).send({
+          code: ErrorCode.MISSING_ROBOT_PARAMS,
+          message: `Robot con identificativo '${robotId}' non trovato nell'anagrafica.`,
+          classification: "richiede_intervento_amministrativo",
+        });
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        robot.id,
+        roleMapping
+      );
+
+      try {
+        const candidatePath = parentPath
+          ? `${parentPath.replace(/\/+$/, "")}/${String(folderName).trim()}`
+          : String(folderName).trim();
+        await authorizeOperatorPath(context, "remote", robot.id, candidatePath);
+        const result = await remoteFsService.createRemoteDirectory(context, robot, parentPath, String(folderName));
+        return reply.status(201).send({
+          success: true,
+          message: `Cartella '${result.name}' creata con successo sul robot.`,
+          path: result.path,
+          name: result.name,
+        });
+      } catch (err: any) {
+        if (err instanceof MolirisAppError) {
+          let statusCode = 400;
+          if (err.code === ErrorCode.INSUFFICIENT_PERMISSIONS) statusCode = 403;
+          else if (err.userMessage.toLowerCase().includes("esiste già")) statusCode = 409;
+          else if (err.code === ErrorCode.HOST_UNREACHABLE) statusCode = 503;
+          else if (err.code === ErrorCode.TIMEOUT_ERROR) statusCode = 504;
+          return reply.status(statusCode).send({
+            code: err.code,
+            message: err.userMessage,
+            classification: err.classification,
+          });
+        }
+        return reply.status(500).send({
+          code: ErrorCode.REMOTE_FS_ERROR,
+          message: "Errore durante la creazione della cartella remota.",
+          classification: "recuperabile",
+        });
+      }
+    }
+  );
 }

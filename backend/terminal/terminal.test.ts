@@ -185,11 +185,11 @@ const connectionManager = new RobotConnectionManager(
   logger
 );
 
-// Utenti e ruoli (RF-04: terminale riservato esclusivamente ad admin / amministratore)
+// Utenti e ruoli (RF-04: terminale riservato esclusivamente ad admin)
 const opUserAuthorized: UserEntity = {
   id: "u_admin_term",
   username: "admin_term",
-  roles: ["amministratore"],
+  roles: ["admin"],
   enabled: true,
   updatedAt: new Date(),
   passwordHash: "mock_hash",
@@ -199,7 +199,7 @@ const opUserAuthorized: UserEntity = {
 const opUserAttacker: UserEntity = {
   id: "u_attacker",
   username: "admin_malevolo",
-  roles: ["amministratore"],
+  roles: ["admin"],
   enabled: true,
   updatedAt: new Date(),
   passwordHash: "mock_hash",
@@ -228,11 +228,6 @@ const opUserDenied: UserEntity = {
 
 const roleMapping: RolePermissionMapping = {
   admin: [
-    AppPermission.FLEET_VIEW,
-    AppPermission.STATUS_VIEW,
-    AppPermission.TERMINAL_OPEN,
-  ],
-  amministratore: [
     AppPermission.FLEET_VIEW,
     AppPermission.STATUS_VIEW,
     AppPermission.TERMINAL_OPEN,

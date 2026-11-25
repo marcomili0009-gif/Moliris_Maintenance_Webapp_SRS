@@ -6,6 +6,7 @@ export interface RobotSummaryDto {
   remoteUsername: string;
   host: string;
   sshPort: number;
+  sshAuthMethod?: "password" | "key";
   anagraphicState: "attivo" | "disabilitato" | "rimosso";
   connectionState: "non_verificato" | "raggiungibile" | "non_raggiungibile" | "errore" | "avviso";
   operationalState: Record<string, unknown> | null;

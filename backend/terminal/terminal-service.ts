@@ -23,6 +23,25 @@ import {
 } from "./terminal-models.ts";
 import { type TerminalConcurrencyLimits, DEFAULT_TERMINAL_LIMITS } from "./terminal-limits.ts";
 
+/**
+ * Costruisce l'ambiente isolato della shell del Terminale Server (ISS-003, RNF-SEC-002).
+ * Nessuna variabile applicativa (MOLIRIS_*, MONGODB_URI, NODE_*, ecc.) viene propagata.
+ */
+export function buildServerTerminalEnv(cols: number, rows: number): Record<string, string> {
+  const safeCols = Math.max(10, Math.min(300, Math.floor(Number(cols) || 80)));
+  const safeRows = Math.max(5, Math.min(100, Math.floor(Number(rows) || 24)));
+  return {
+    PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    HOME: process.env.HOME || "/tmp",
+    USER: process.env.USER || "",
+    LANG: process.env.LANG || "C.UTF-8",
+    SHELL: "/bin/bash",
+    TERM: "xterm-256color",
+    COLUMNS: String(safeCols),
+    LINES: String(safeRows),
+  };
+}
+
 export interface ProcessPtyModes {
   opost?: boolean;
   onlcr?: boolean;
@@ -377,7 +396,7 @@ export class TerminalService {
     userSessionId: string
   ): Promise<TerminalSession> {
     // 1. Verifica autorizzazione centrale per QUEL robot e ruolo Admin (RF-04, RF-AUTH-005, CA-SSH-005, §6.4 passo 3)
-    const isAdmin = Array.isArray(user.roles) && user.roles.some((r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore");
+    const isAdmin = Array.isArray(user.roles) && user.roles.some((r) => r.toLowerCase() === "admin");
     if (!isAdmin || !hasPermission(user, AppPermission.TERMINAL_OPEN, robotId, this.roleMapping)) {
       await this.auditRepository.record({
         userId: user.username,
@@ -583,7 +602,7 @@ export class TerminalService {
     initialDimensions: { cols?: number; rows?: number },
     userSessionId: string
   ): Promise<TerminalSession> {
-    const isAdmin = Array.isArray(user.roles) && user.roles.some((r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore");
+    const isAdmin = Array.isArray(user.roles) && user.roles.some((r) => r.toLowerCase() === "admin");
     if (!isAdmin) {
       await this.auditRepository.record({
         userId: user.username,
@@ -627,12 +646,9 @@ export class TerminalService {
     const rows = initialDimensions?.rows || 24;
 
     const proc = spawn("script", ["-q", "-c", "/bin/bash", "/dev/null"], {
-      env: {
-        ...process.env,
-        TERM: "xterm-256color",
-        COLUMNS: String(cols),
-        LINES: String(rows),
-      },
+      // ISS-003: niente ereditarietà di process.env (URI DB, percorsi chiavi, segreti).
+      // Solo una allowlist minima necessaria a una shell interattiva.
+      env: buildServerTerminalEnv(cols, rows),
     });
 
     const ptyChannel = new ProcessPtyChannel(proc, { opost: true, onlcr: true, echo: true });
@@ -702,7 +718,7 @@ export class TerminalService {
     }
 
     // 1c. Verifica ruolo Admin (RF-04: terminale riservato esclusivamente agli admin)
-    const isAdmin = Array.isArray(requestingUser.roles) && requestingUser.roles.some((r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore");
+    const isAdmin = Array.isArray(requestingUser.roles) && requestingUser.roles.some((r) => r.toLowerCase() === "admin");
     if (!isAdmin) {
       this.auditRepository.record({
         userId: requestingUser.username,

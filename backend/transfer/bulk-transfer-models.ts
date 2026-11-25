@@ -1,11 +1,11 @@
 // Requisiti soddisfatti: RF-TRF-001, RF-TRF-002, RF-TRF-003, RF-TRF-004, RF-TRF-005,
 // RF-TRF-009, RF-TRF-011, RF-AUTH-005, RF-SRVFS-005, RNF-SEC-004, RNF-SEC-005, RNF-REL-004, RNF-PERF-001
 
-export type BulkTargetType = "server" | "robot";
+export type BulkTargetType = "server" | "robot" | "general";
 
 export interface BulkTarget {
   type: BulkTargetType;
-  robotId: string;
+  robotId?: string;
   directory?: string; // Sotto-percorso relativo sul server o cartella remota sul robot
 }
 
@@ -47,6 +47,7 @@ export interface BulkFileResult {
 
 export interface BulkUploadResponse {
   success: boolean;
+  batchId?: string;
   totalFiles: number;
   results: BulkFileResult[];
   summary: {

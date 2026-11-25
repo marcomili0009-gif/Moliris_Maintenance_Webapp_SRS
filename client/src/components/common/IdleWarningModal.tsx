@@ -38,39 +38,49 @@ export const IdleWarningModal: React.FC<IdleWarningModalProps> = ({
 
   if (!isOpen) return null;
 
-  const minutes = Math.floor(Math.max(0, remainingSeconds) / 60);
-  const seconds = Math.floor(Math.max(0, remainingSeconds) % 60);
+  const safeRemaining = Math.max(0, Math.floor(remainingSeconds));
+  const minutes = Math.floor(safeRemaining / 60);
+  const seconds = safeRemaining % 60;
   const formattedCountdown = `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  const warningWindowTotalSeconds = 300;
+  const progressPercent = Math.min(100, Math.max(0, Math.round((safeRemaining / warningWindowTotalSeconds) * 100)));
+  const isCritical = safeRemaining <= 60;
 
   const contextLabel =
     context === "terminale"
-      ? `Terminale ${targetName ? `(${targetName})` : ""}`
-      : "Sessione di lavoro generale";
+      ? `Terminale SSH${targetName ? ` — ${targetName}` : ""}`
+      : "Sessione applicativa";
 
   const defaultMessage =
     context === "terminale"
-      ? `Il terminale SSH verrà disconnesso per inattività tra ${formattedCountdown}.`
-      : `La sessione applicativa scadrà per inattività tra ${formattedCountdown}. Eseguire un'azione per mantenerla attiva.`;
+      ? `Il terminale SSH verrà disconnesso per inattività allo scadere del conto alla rovescia.`
+      : `La sessione verrà chiusa automaticamente per inattività allo scadere del conto alla rovescia.`;
 
   return (
     <Modal
       id="modal-idle-warning"
       isOpen={isOpen}
-      onClose={onConfirm}
+      onClose={() => {}}
+      disableDismiss={true}
       title={
-        <div className="d-flex align-items-center gap-2">
-          <span className="badge bg-warning text-dark text-uppercase px-2 py-1" id="idle-warning-badge">
-            {context === "terminale" ? "Terminale" : "Sessione"}
-          </span>
-          <h3 id="idle-warning-title" className="m-0 fs-5">
-            Avviso di inattività
-          </h3>
+        <div className="d-flex align-items-center justify-content-between gap-2 w-100">
+          <div className="d-flex align-items-center gap-2">
+            <span
+              className={`badge ${isCritical ? "text-bg-danger" : "text-bg-warning"} text-uppercase`}
+              id="idle-warning-badge"
+            >
+              {context === "terminale" ? "Terminale" : "Sessione"}
+            </span>
+            <h3 id="idle-warning-title" className="h5 mb-0 fw-semibold">
+              Avviso di inattività
+            </h3>
+          </div>
         </div>
       }
       role="alertdialog"
       ariaLabelledBy="idle-warning-title"
       footer={
-        <div className="d-flex justify-content-end gap-2 w-100">
+        <div className="d-flex justify-content-between align-items-center gap-2 w-100">
           <button
             type="button"
             id="btn-idle-logout"
@@ -87,7 +97,7 @@ export const IdleWarningModal: React.FC<IdleWarningModalProps> = ({
             type="button"
             id="btn-idle-confirm"
             ref={confirmBtnRef}
-            className="btn btn-primary"
+            className="btn btn-primary px-4"
             onClick={onConfirm}
           >
             Conferma
@@ -95,23 +105,42 @@ export const IdleWarningModal: React.FC<IdleWarningModalProps> = ({
         </div>
       }
     >
-      <div className="text-center py-2">
-        <p className="text-muted mb-2" id="idle-warning-context-desc">
-          Contesto interessato: <strong>{contextLabel}</strong>
-        </p>
+      <div className="py-2">
+        <div className="d-flex align-items-center justify-content-between border rounded px-3 py-2 bg-light mb-3 small">
+          <span className="text-secondary">Contesto interessato</span>
+          <strong id="idle-warning-context-desc" className="text-dark">
+            {contextLabel}
+          </strong>
+        </div>
 
-        <div className="my-3">
+        <div className="text-center border rounded p-3 mb-3 bg-white">
+          <div className="text-uppercase small text-secondary fw-semibold mb-1">
+            Tempo residuo prima della disconnessione
+          </div>
           <div
             id="idle-warning-countdown"
-            className="fs-1 fw-bold font-monospace text-danger"
+            className={`display-5 fw-bold font-monospace mb-2 ${isCritical ? "text-danger" : "text-dark"}`}
             aria-live="polite"
           >
             {formattedCountdown}
           </div>
-          <small className="text-muted">tempo residuo prima della disconnessione</small>
+          <div
+            className="progress"
+            role="progressbar"
+            aria-label="Tempo residuo prima della scadenza"
+            aria-valuenow={progressPercent}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            style={{ height: "6px" }}
+          >
+            <div
+              className={`progress-bar ${isCritical ? "bg-danger" : "bg-warning"}`}
+              style={{ width: `${progressPercent}%`, transition: "width 0.3s linear" }}
+            />
+          </div>
         </div>
 
-        <p id="idle-warning-message" className="mb-0 text-secondary">
+        <p id="idle-warning-message" className="mb-0 small text-secondary text-center">
           {message || defaultMessage}
         </p>
       </div>

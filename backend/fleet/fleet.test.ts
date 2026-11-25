@@ -98,8 +98,8 @@ const testConfig: SystemConfiguration = {
 // Utenti per i test
 const adminUser: UserEntity = {
   id: "admin_01",
-  username: "amministratore",
-  roles: ["amministratore"],
+  username: "admin",
+  roles: ["admin"],
   enabled: true,
     updatedAt: new Date(),
     passwordHash: "mock_hash",
@@ -968,13 +968,21 @@ try {
     assert.strictEqual(updatedLegacy.customerName, "Cliente Aggiunto");
     assert.strictEqual(updatedLegacy.plantName, "Impianto Aggiunto");
 
-    // 6. Rimozione/Svuotamento dei dati cliente e impianto durante modifica
-    const clearedLegacy = await service.updateConfiguration(adminUser, "robot-legacy-01", {
-      customerName: "",
+    // 6. Svuotamento impianto consentito (opzionale), svuotamento cliente rifiutato (obbligatorio - ISS-011)
+    await assert.rejects(
+      async () => {
+        await service.updateConfiguration(adminUser, "robot-legacy-01", {
+          customerName: "",
+        });
+      },
+      (err: any) => err.code === ErrorCode.MISSING_ROBOT_PARAMS
+    );
+
+    const clearedPlant = await service.updateConfiguration(adminUser, "robot-legacy-01", {
       plantName: "",
     });
-    assert.strictEqual(clearedLegacy.customerName, undefined);
-    assert.strictEqual(clearedLegacy.plantName, undefined);
+    assert.strictEqual(clearedPlant.customerName, "Cliente Aggiunto");
+    assert.strictEqual(clearedPlant.plantName, undefined);
 
     // 7. Persistenza dei dati dopo il riavvio del backend (simulato riutilizzando il repository esistente)
     const { service: restartedService } = createService({ registrationMode: "differita" }, repo, clientRepo, plantRepo);

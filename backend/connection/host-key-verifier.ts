@@ -58,6 +58,47 @@ export function isValidSha256Fingerprint(fingerprint: string): boolean {
   return false;
 }
 
+function timingSafeEqualStrings(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, "utf8");
+  const bufB = Buffer.from(b, "utf8");
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function timingSafeEqualBuffers(a: Buffer, b: Buffer): boolean {
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+/**
+ * Verifica se un entry host OpenSSH (in chiaro o hashed `|1|<salt>|<hash>`)
+ * corrisponde a uno dei pattern candidati (ISS-024).
+ */
+function matchesKnownHostsPattern(hostEntry: string, targetPatterns: string[]): boolean {
+  if (hostEntry.startsWith("|1|")) {
+    const segments = hostEntry.split("|");
+    // Formato: "" | "1" | base64Salt | base64Hash
+    if (segments.length !== 4 || !segments[2] || !segments[3]) {
+      return false;
+    }
+    try {
+      const salt = Buffer.from(segments[2], "base64");
+      const expectedHash = Buffer.from(segments[3], "base64");
+      if (salt.length === 0 || expectedHash.length === 0) return false;
+      for (const candidate of targetPatterns) {
+        const computed = crypto.createHmac("sha1", salt).update(candidate, "utf8").digest();
+        if (timingSafeEqualBuffers(computed, expectedHash)) {
+          return true;
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+  return targetPatterns.includes(hostEntry);
+}
+
 /**
  * Verifica l'impronta o la chiave pubblica dell'host all'interno di un file known_hosts di OpenSSH (RNF-SEC-003).
  */
@@ -75,12 +116,13 @@ export function verifyAgainstKnownHosts(
   try {
     const content = fs.readFileSync(trimmedPath, "utf-8");
     const lines = content.split("\n");
-    const portSuffix = port !== 22 ? `:${port}` : "";
-    const targetPatterns = [
-      host,
-      `[${host}]:${port}`,
-      port !== 22 ? `[${host}]${portSuffix}` : host,
-    ];
+    const targetPatterns = Array.from(
+      new Set([
+        host,
+        `[${host}]:${port}`,
+        ...(port === 22 ? [host] : []),
+      ])
+    );
 
     for (const rawLine of lines) {
       const line = rawLine.trim();
@@ -92,14 +134,12 @@ export function verifyAgainstKnownHosts(
       const keyBase64 = parts[2];
       const hostsInLine = hostPart.split(",");
 
-      const hostMatches = hostsInLine.some(
-        (h) => targetPatterns.includes(h) || h === host || h === `[${host}]:${port}`
-      );
+      const hostMatches = hostsInLine.some((h) => matchesKnownHostsPattern(h, targetPatterns));
 
       if (hostMatches) {
         try {
           const entryKeyBuffer = Buffer.from(keyBase64, "base64");
-          if (entryKeyBuffer.equals(serverHostKey)) {
+          if (timingSafeEqualBuffers(entryKeyBuffer, serverHostKey)) {
             const fp = computeHostKeyFingerprint(entryKeyBuffer);
             return { matched: true, expectedFingerprint: fp.openSshFormat };
           }
@@ -166,23 +206,23 @@ export class DefaultHostKeyVerifier implements HostKeyVerifier {
 
     let matched = false;
 
-    // Confronto rigoroso:
+    // Confronto rigoroso in tempo costante (ISS-024):
     // Formato OpenSSH: "SHA256:" seguito da base64 CASE-SENSITIVE
     if (expected.startsWith("SHA256:") || expected.startsWith("sha256:")) {
       const cleanExpected = expected.replace(/^SHA256:/i, "").replace(/=+$/, "");
       const cleanReceived = sha256Base64.replace(/=+$/, "");
       // CASE-SENSITIVE: nessun toLowerCase() sul base64!
-      if (cleanExpected === cleanReceived) {
+      if (timingSafeEqualStrings(cleanExpected, cleanReceived)) {
         matched = true;
       }
     } else if (/^[0-9a-fA-F]{64}$/.test(expected)) {
       // Formato esadecimale: confronto case-insensitive
-      if (expected.toLowerCase() === sha256Hex.toLowerCase()) {
+      if (timingSafeEqualStrings(expected.toLowerCase(), sha256Hex.toLowerCase())) {
         matched = true;
       }
     } else {
       // Base64 nudo senza prefisso: case-sensitive
-      if (expected.replace(/=+$/, "") === sha256Base64.replace(/=+$/, "")) {
+      if (timingSafeEqualStrings(expected.replace(/=+$/, ""), sha256Base64.replace(/=+$/, ""))) {
         matched = true;
       }
     }

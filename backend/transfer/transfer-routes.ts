@@ -776,12 +776,12 @@ export function registerTransferRoutes(
       ],
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
-      if (!req.molirisUser?.roles.includes("amministratore")) {
+      if (!req.molirisUser?.roles.includes("admin")) {
         return sendErrorReply(
           reply,
           403,
           ErrorCode.INSUFFICIENT_PERMISSIONS,
-          "Operazione consentita solo agli utenti con ruolo 'amministratore'."
+          "Operazione consentita solo agli utenti con ruolo 'admin'."
         );
       }
       try {
@@ -823,10 +823,14 @@ export function registerTransferRoutes(
       );
 
       try {
+        // ISS-002: la jail Operatore è sempre applicata; directory omessa => "/" (403 per operatore, mai bypass).
         for (const target of body.targets) {
-          if (target.directory) {
-            await authorizeOperatorPath(context, target.type === "server" ? "server" : "remote", target.robotId, target.directory);
-          }
+          await authorizeOperatorPath(
+            context,
+            target.type === "robot" ? "remote" : "server",
+            target.type === "general" ? undefined : target.robotId,
+            target.directory ?? ""
+          );
         }
         const response = await transferService.checkBulkConflicts(context, body);
         return reply.status(200).send(response);
@@ -970,9 +974,19 @@ export function registerTransferRoutes(
                 const parsedTargets = typeof part.value === "string" ? JSON.parse(part.value) : part.value;
                 const validatedTargets = parseRequestInput(bulkTargetsSchema, parsedTargets, reply, "body");
                 if (!validatedTargets) return reply;
+                // ISS-002: verifica immediata jail Operatore prima dello staging su disco dei file successivi
+                for (const target of validatedTargets) {
+                  await authorizeOperatorPath(
+                    context,
+                    target.type === "robot" ? "remote" : "server",
+                    target.type === "general" ? undefined : target.robotId,
+                    target.directory ?? ""
+                  );
+                }
                 targets = validatedTargets;
               } catch (err: any) {
                 if (reply.sent) return reply;
+                if (err instanceof MolirisAppError) throw err;
                 throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Campo 'targets' non valido o JSON malformato.");
               }
             } else if (part.fieldname === "overwrite") {
@@ -999,9 +1013,12 @@ export function registerTransferRoutes(
         }
 
         for (const target of targets) {
-          if (target.directory) {
-            await authorizeOperatorPath(context, target.type === "server" ? "server" : "remote", target.robotId, target.directory);
-          }
+          await authorizeOperatorPath(
+            context,
+            target.type === "robot" ? "remote" : "server",
+            target.type === "general" ? undefined : target.robotId,
+            target.directory ?? ""
+          );
         }
 
         // Se overwrite non è confermata, esegui pre-check dei conflitti
@@ -1074,10 +1091,14 @@ export function registerTransferRoutes(
         for (const sp of body.sourcePaths) {
           await authorizeOperatorPath(context, "server", body.sourceRobotId, sp);
         }
+        // ISS-002: la jail Operatore è sempre applicata; directory omessa => "/" (403 per operatore, mai bypass).
         for (const target of body.targets) {
-          if (target.directory) {
-            await authorizeOperatorPath(context, target.type === "server" ? "server" : "remote", target.robotId, target.directory);
-          }
+          await authorizeOperatorPath(
+            context,
+            target.type === "robot" ? "remote" : "server",
+            target.type === "general" ? undefined : target.robotId,
+            target.directory ?? ""
+          );
         }
         const response = await transferService.executeBulkServerSource(context, {
           sourceScope: body.sourceScope || "general",
@@ -1114,10 +1135,10 @@ export function registerTransferRoutes(
 
       try {
         await authorizeOperatorPath(context, "remote", body.sourceRobotId, body.sourceRemotePath);
-        if (body.commonTargetDirectory) {
-          for (const tid of body.targetRobotIds) {
-            await authorizeOperatorPath(context, "remote", tid, body.commonTargetDirectory);
-          }
+        // ISS-002: ogni destinazione (per-robot o comune) deve ricadere negli allowedPaths; mai omissioni.
+        for (const tid of body.targetRobotIds) {
+          const destDir = body.targetRemotePaths?.[tid] || body.commonTargetDirectory || "";
+          await authorizeOperatorPath(context, "remote", tid, destDir);
         }
         const response = await transferService.executeRobotToRobotTransfer(context, {
           sourceRobotId: body.sourceRobotId,
@@ -1150,7 +1171,7 @@ export function registerTransferRoutes(
       const roles = Array.isArray(user.roles) ? user.roles : [];
       const isAdmin = roles.some((r) => {
         const lower = (r || "").toLowerCase();
-        return lower === "amministratore" || lower === "admin";
+        return lower === "admin";
       });
 
       const batches = batchTransferManager
@@ -1175,7 +1196,7 @@ export function registerTransferRoutes(
       const roles = Array.isArray(user.roles) ? user.roles : [];
       const isAdmin = roles.some((r) => {
         const lower = (r || "").toLowerCase();
-        return lower === "amministratore" || lower === "admin";
+        return lower === "admin";
       });
 
       const batch = batchTransferManager?.getBatch(batchId);
@@ -1213,7 +1234,7 @@ export function registerTransferRoutes(
       const roles = Array.isArray(user.roles) ? user.roles : [];
       const isAdmin = roles.some((r) => {
         const lower = (r || "").toLowerCase();
-        return lower === "amministratore" || lower === "admin";
+        return lower === "admin";
       });
 
       if (!batchTransferManager) {
@@ -1265,12 +1286,8 @@ async function runServerRobotTransfer(
   body: StartServerRobotTransferRequest,
   background: boolean
 ): Promise<FastifyReply> {
-  if (body.serverRelativePath) {
-    await authorizeOperatorPath(context, "server", robot.id, body.serverRelativePath);
-  }
-  if (body.remotePath) {
-    await authorizeOperatorPath(context, "remote", robot.id, body.remotePath);
-  }
+  await authorizeOperatorPath(context, "server", robot.id, body.serverRelativePath ?? "");
+  await authorizeOperatorPath(context, "remote", robot.id, body.remotePath ?? "");
   if (!background) {
     const dto = await transferService.executeServerRobotTransfer(context, robot, body);
     return reply.status(200).send(dto);

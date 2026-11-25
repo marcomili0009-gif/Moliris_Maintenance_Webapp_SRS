@@ -318,7 +318,7 @@ const testUser: UserEntity = {
   id: "user_perf_admin",
   username: "perf_admin",
   passwordHash: await hashPassword("PerfSecretPass123!"),
-  roles: ["amministratore"],
+  roles: ["admin"],
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),

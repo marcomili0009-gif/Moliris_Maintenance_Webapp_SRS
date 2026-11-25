@@ -47,7 +47,7 @@ const BULK_ITEM_REGEX =
 
 export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
   const isAdmin = user.roles.some(
-    (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore"
+    (r) => r.toLowerCase() === "admin"
   );
 
   const [activeTab, setActiveTab] = useState<"access" | "transfers">("access");
@@ -212,14 +212,18 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
       }
       const bulkItemMatch = line.match(BULK_ITEM_REGEX);
       if (bulkItemMatch) {
+        const itemIndex = bulkItemMatch[2]?.trim();
+        const itemTotal = bulkItemMatch[3]?.trim();
+        const reason = bulkItemMatch[6]?.trim();
+        const extraDetails = bulkItemMatch[8]?.trim();
         return {
           raw: line,
           isBulkItem: true,
           batchId: bulkItemMatch[1]?.trim(),
-          filename: bulkItemMatch[3]?.trim(),
-          outcome: bulkItemMatch[4]?.trim().toUpperCase(),
-          direction: bulkItemMatch[6]?.trim(),
-          details: `[FILE ${bulkItemMatch[2]?.trim()}/${bulkItemMatch[2]?.trim()}] ${bulkItemMatch[5]?.trim() || ""}`,
+          filename: bulkItemMatch[4]?.trim(),
+          outcome: bulkItemMatch[5]?.trim().toUpperCase(),
+          direction: bulkItemMatch[7]?.trim(),
+          details: `[FILE ${itemIndex}/${itemTotal}]${reason ? ` (${reason})` : ""}${extraDetails ? ` ${extraDetails}` : ""}`,
         };
       }
       const stdMatch = line.match(TRANSFER_STANDARD_REGEX);

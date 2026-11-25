@@ -98,7 +98,7 @@ const adminUser: any = {
   id: "user_adm_01",
   username: "admin_test",
   passwordHash: adminHash,
-  roles: ["amministratore"],
+  roles: ["admin"],
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -596,8 +596,9 @@ console.log("  PASS: Limitazione tentativi di login e intestazione Retry-After."
 
   // 3. Test vincolo unicità su MongoDB reale con indice univoco e collation case-insensitive
   const mongoUri = process.env["MOLIRIS_MONGODB_URI"] || process.env["MOLIRIS_MONGO_URI"] || "mongodb://127.0.0.1:27017";
+  let mongoClient: MongoClient | null = null;
   try {
-    const mongoClient = new MongoClient(mongoUri);
+    mongoClient = new MongoClient(mongoUri, { serverSelectionTimeoutMS: 2000 });
     await mongoClient.connect();
     const testDb = mongoClient.db(`moliris_auth_rf03_${Date.now()}`);
     const mongoRepo = new MongoUserRepository(testDb);
@@ -641,9 +642,12 @@ console.log("  PASS: Limitazione tentativi di login e intestazione Retry-After."
     assert.strictEqual(mongoRejected.length, 1, "La registrazione concorrente duplicata deve essere rigettata su MongoDB");
 
     await testDb.dropDatabase();
-    await mongoClient.close();
   } catch (mongoErr: any) {
     console.log("  [Nota: Test MongoDB saltato o parziale]", mongoErr.message);
+  } finally {
+    if (mongoClient) {
+      await mongoClient.close().catch(() => {});
+    }
   }
 
   console.log("  PASS: RF-03 - Nome utente univoco case-insensitive, rigetto duplicati con password diverse e concorrenza verificati.");
@@ -659,6 +663,9 @@ console.log("  PASS: Limitazione tentativi di login e intestazione Retry-After."
   if ((app as any)._molirisLoginAttempts) {
     (app as any)._molirisLoginAttempts.clear();
   }
+  if ((app as any)._molirisLoginAttemptsByAccount) {
+    (app as any)._molirisLoginAttemptsByAccount.clear();
+  }
 
   // Setup utente dedicato per il test reset
   const resetUserPasswordInitial = "OldSecurePassword123!";
@@ -670,7 +677,7 @@ console.log("  PASS: Limitazione tentativi di login e intestazione Retry-After."
     id: resetUserId,
     username: resetUsername,
     passwordHash: await hashPassword(resetUserPasswordInitial),
-    roles: ["amministratore"],
+    roles: ["admin"],
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),

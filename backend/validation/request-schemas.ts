@@ -73,11 +73,17 @@ export const serverRobotTransferBodySchema = transferBodySchema.extend({
   remotePath: z.string(),
 }).passthrough();
 
-export const bulkTargetSchema = z.object({
-  type: z.enum(["server", "robot"]),
-  robotId: z.string().min(1),
-  directory: optionalText,
-}).passthrough();
+export const bulkTargetSchema = z
+  .object({
+    type: z.enum(["server", "robot", "general"]),
+    robotId: z.string().optional(),
+    directory: optionalText,
+  })
+  .passthrough()
+  .refine(
+    (t) => t.type === "general" || (typeof t.robotId === "string" && t.robotId.trim().length > 0),
+    { message: "robotId è obbligatorio per destinazioni 'server' o 'robot'." }
+  );
 
 export const bulkTargetsSchema = z.array(bulkTargetSchema);
 

@@ -24,7 +24,7 @@ console.log("--> Esecuzione test unitari Modulo di Configurazione (SRS §2)...")
   const config = loadConfig({ env: {}, overrides: {}, cwd: defaultsDir });
 
   assert.strictEqual(config.sessionInactivityTimeoutMinutes, 30, "Default sessionInactivityTimeoutMinutes deve essere 30");
-  assert.strictEqual(config.sshTerminalActiveTimeoutMinutes, 60, "Default sshTerminalActiveTimeoutMinutes deve essere 60");
+  assert.strictEqual(config.sshTerminalActiveTimeoutMinutes, 15, "Default sshTerminalActiveTimeoutMinutes deve essere 15");
   assert.strictEqual(config.maxConcurrentWebUsers, 10, "Default maxConcurrentWebUsers deve essere 10");
   assert.strictEqual(config.maxConcurrentTerminalsPerRobot, 1, "Default maxConcurrentTerminalsPerRobot deve essere 1");
 
@@ -107,7 +107,7 @@ console.log("--> Esecuzione test unitari Modulo di Configurazione (SRS §2)...")
     "sshTerminalActiveTimeoutMinutes negativo deve fallire"
   );
 
-  // 2d. Concorrenza terminali per robot fuori range (< 1 o > 10)
+  // 2d. Concorrenza terminali per robot fuori range (< 1 o > 2)
   assert.throws(
     () => loadConfig({ env: {}, overrides: { maxConcurrentTerminalsPerRobot: 0 } }),
     (err: any) => {
@@ -116,6 +116,16 @@ console.log("--> Esecuzione test unitari Modulo di Configurazione (SRS §2)...")
       return true;
     },
     "maxConcurrentTerminalsPerRobot < 1 deve fallire"
+  );
+
+  assert.throws(
+    () => loadConfig({ env: {}, overrides: { maxConcurrentTerminalsPerRobot: 3 } }),
+    (err: any) => {
+      assert(err instanceof ConfigValidationError);
+      assert(err.issues.some((i: any) => i.path.includes("maxConcurrentTerminalsPerRobot")));
+      return true;
+    },
+    "maxConcurrentTerminalsPerRobot > 2 deve fallire (ISS-005)"
   );
 
   assert.throws(

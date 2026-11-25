@@ -203,12 +203,12 @@ export async function seedInitialUsers(
       id: "user_admin_01",
       username: "admin",
       passwordHash: adminPasswordHash,
-      roles: ["amministratore"],
+      roles: ["admin"],
       enabled: true,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    console.log("  Utente 'admin' creato con successo (Ruolo: amministratore).");
+    console.log("  Utente 'admin' creato con successo (Ruolo: admin).");
   } else {
     console.log("  Utente 'admin' già presente.");
   }

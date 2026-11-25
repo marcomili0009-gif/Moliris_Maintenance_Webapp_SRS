@@ -24,6 +24,7 @@ export function normalizeTransfer(dto: any): TransferProgress {
   const filename = String(dto.filename || dto.sourceFile || "Trasferimento");
   return {
     transferId: String(dto.transferId),
+    batchId: dto.batchId ? String(dto.batchId) : undefined,
     robotId: dto.robotId,
     filename,
     sourcePath: String(dto.sourcePath || ""),
@@ -119,6 +120,23 @@ export function useTransfers(isAuthenticated: boolean) {
     }
   }, [syncNow]);
 
+  /** Annulla selettivamente un intero batch di caricamento massivo (ISS-009, Requisito #9). */
+  const cancelBatch = useCallback(async (batchId: string): Promise<boolean> => {
+    try {
+      const res = await apiClient.post(`/api/transfers/batches/${encodeURIComponent(batchId)}/cancel`, {});
+      if (res.ok) {
+        void syncNow();
+        return true;
+      }
+      const errData = await res.json().catch(() => ({}));
+      setError(ErrorPresenter.formatError(errData));
+      return false;
+    } catch (err) {
+      setError(ErrorPresenter.formatError(err));
+      return false;
+    }
+  }, [syncNow]);
+
   /** Riprova/Riprende un trasferimento fallito, annullato o interrotto (RF-TRF-010). */
   const retryTransfer = useCallback(async (transferId: string): Promise<boolean> => {
     try {
@@ -174,13 +192,24 @@ export function useTransfers(isAuthenticated: boolean) {
       });
       const data = await res.json();
       if (res.ok) {
-        const conflicts: BulkConflict[] = (data.conflicts || []).map((conflict: any) => ({
-          targetType: conflict.target?.type === "server" ? "server" : "robot",
-          targetId: conflict.target?.robotId || "",
-          targetName: conflict.target?.robotId || "Destinazione",
-          filename: conflict.filename,
-          targetPath: conflict.destinationPath || "",
-        }));
+        const conflicts: BulkConflict[] = (data.conflicts || []).map((conflict: any) => {
+          const targetType =
+            conflict.target?.type === "general"
+              ? "general"
+              : conflict.target?.type === "server"
+              ? "server"
+              : "robot";
+          return {
+            targetType,
+            targetId: conflict.target?.robotId || (targetType === "general" ? "general" : ""),
+            targetName:
+              targetType === "general"
+                ? "Archivio Generale Server"
+                : conflict.target?.robotId || "Destinazione",
+            filename: conflict.filename,
+            targetPath: conflict.destinationPath || "",
+          };
+        });
         return {
           hasConflicts: data.hasConflicts || false,
           conflicts,
@@ -228,16 +257,27 @@ export function useTransfers(isAuthenticated: boolean) {
       const data = await res.json();
       if (res.ok) {
         const results: BulkUploadTargetResult[] = (data.results || []).flatMap((fileResult: any) =>
-          (fileResult.targets || []).map((targetResult: any) => ({
-            targetType: targetResult.target?.type === "server" ? "server" : "robot",
-            targetId: targetResult.target?.robotId || "",
-            targetName: targetResult.target?.robotId || "Destinazione",
-            success: Boolean(targetResult.success),
-            transferredFiles: targetResult.success ? [fileResult.filename] : [],
-            failedFiles: targetResult.success
-              ? []
-              : [{ filename: fileResult.filename, reason: targetResult.error || "Trasferimento non riuscito" }],
-          }))
+          (fileResult.targets || []).map((targetResult: any) => {
+            const targetType =
+              targetResult.target?.type === "general"
+                ? "general"
+                : targetResult.target?.type === "server"
+                ? "server"
+                : "robot";
+            return {
+              targetType,
+              targetId: targetResult.target?.robotId || (targetType === "general" ? "general" : ""),
+              targetName:
+                targetType === "general"
+                  ? "Archivio Generale Server"
+                  : targetResult.target?.robotId || "Destinazione",
+              success: Boolean(targetResult.success),
+              transferredFiles: targetResult.success ? [fileResult.filename] : [],
+              failedFiles: targetResult.success
+                ? []
+                : [{ filename: fileResult.filename, reason: targetResult.error || "Trasferimento non riuscito" }],
+            };
+          })
         );
         const anyFailure =
           data.success === false ||
@@ -309,6 +349,7 @@ export function useTransfers(isAuthenticated: boolean) {
     refresh: loadTransfers,
     syncNow,
     cancelTransfer,
+    cancelBatch,
     retryTransfer,
     removeTransfer,
     cleanupAllTemp,

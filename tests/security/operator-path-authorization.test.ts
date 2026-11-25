@@ -121,7 +121,7 @@ async function testAuthorization() {
     sessionId: "sess_02",
     userId: "admin_01",
     username: "admin",
-    roles: ["amministratore"],
+    roles: ["admin"],
     permissions: new Set([AppPermission.FS_REMOTE_NAVIGATE]),
   };
 
@@ -178,7 +178,7 @@ async function testMigration() {
   const users = [
     { id: "1", username: "op1", roles: ["operatore"], allowedPaths: undefined },
     { id: "2", username: "op2", roles: ["operatore"], allowedPaths: ["/custom/root"] },
-    { id: "3", username: "adm", roles: ["amministratore"], allowedPaths: undefined },
+    { id: "3", username: "adm", roles: ["admin"], allowedPaths: undefined },
   ];
 
   const fakeDb = {

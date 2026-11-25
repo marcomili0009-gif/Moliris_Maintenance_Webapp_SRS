@@ -226,7 +226,7 @@ export function registerTerminalRoutes(
         const resetTime = new Date(user.passwordChangedAt).getTime();
         const sessionTime = new Date(userSession.createdAt).getTime();
         if (sessionTime <= resetTime) {
-          sessionManager.destroySession(sessionId, "PASSWORD_RESET");
+          sessionManager.destroySession(userSessionId, "PASSWORD_RESET");
           socket.send(JSON.stringify({ type: "error", message: "Sessione utente revocata a seguito del cambio password." }));
           socket.close(4401, "Session Revoked");
           return;
@@ -235,7 +235,7 @@ export function registerTerminalRoutes(
 
       // RF-04: Controllo di sicurezza lato backend per WebSocket diretto - Riservato esclusivamente ad Admin
       const session = terminalService.getSession(sessionId);
-      const isAdmin = Array.isArray(user.roles) && user.roles.some((r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore");
+      const isAdmin = Array.isArray(user.roles) && user.roles.some((r) => r.toLowerCase() === "admin");
       if (!isAdmin) {
         await auditRepository.record({
           userId: user.username,
@@ -273,7 +273,7 @@ export function registerTerminalRoutes(
           });
         }
 
-        if (session.userId !== user.id && !user.roles.includes("amministratore")) {
+        if (session.userId !== user.id && !user.roles.includes("admin")) {
           await auditRepository.record({
             userId: user.username,
             operation: AuditOperation.SECURITY_AUTHORIZATION_ERROR,

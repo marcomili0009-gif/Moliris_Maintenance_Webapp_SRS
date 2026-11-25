@@ -23,9 +23,15 @@ interface FsTableProps {
   emptyMessage?: React.ReactNode;
   emptyHint?: string;
   loading?: boolean;
+  isAdmin?: boolean;
+  readOnlyMode?: boolean;
   onNavigateDir: (dirName: string) => void;
   /** Invocato quando l'utente apre una directory di robot dall'Archivio Generale aggregato. */
   onOpenRobot?: (robotId: string) => void;
+  /** Invocato quando l'utente apre una directory di un robot eliminato dall'Archivio Generale (ISS-017). */
+  onOpenDeletedRobot?: (folderName: string) => void;
+  /** Invocato dall'amministratore per eliminare definitivamente la cartella di un robot eliminato (ISS-017). */
+  onDeleteDeletedRobot?: (folderName: string) => void;
   onDownload: (fileName: string) => void;
   onTransfer?: (fileName: string, entry?: FsEntry) => void;
   onDelete: (fileName: string) => void;
@@ -87,8 +93,12 @@ export const FsTable: React.FC<FsTableProps> = ({
   emptyMessage = "Nessun elemento presente.",
   emptyHint,
   loading = false,
+  isAdmin = false,
+  readOnlyMode = false,
   onNavigateDir,
   onOpenRobot,
+  onOpenDeletedRobot,
+  onDeleteDeletedRobot,
   onDownload,
   onTransfer,
   onDelete,
@@ -151,14 +161,19 @@ export const FsTable: React.FC<FsTableProps> = ({
               const isDir = entry.type === "directory";
               const isSymlink = entry.type === "symlink";
               const isRobotEntry = entry.scope === "robot";
+              const isDeletedRobotEntry = Boolean(entry.isDeletedRobot || (entry.scope === "deleted_robot" && !readOnlyMode));
               const robotId = entry.robotId;
-              const displayLabel = isRobotEntry && entry.displayName ? entry.displayName : entry.name;
+              const displayLabel = (isRobotEntry || isDeletedRobotEntry) && entry.displayName ? entry.displayName : entry.name;
               const extension = !isDir && !isSymlink ? getExtension(entry.name) : "";
               const FileIcon = getFileIcon(entry.name);
               const modified = formatModified(entry.modifiedAt || entry.mtime);
               const rowKey = `${entry.scope || "general"}:${robotId || entry.name}:${entry.name}`;
 
               const openEntry = () => {
+                if (isDeletedRobotEntry && onOpenDeletedRobot) {
+                  onOpenDeletedRobot(entry.name);
+                  return;
+                }
                 if (isRobotEntry && robotId && onOpenRobot) {
                   onOpenRobot(robotId);
                   return;
@@ -171,16 +186,16 @@ export const FsTable: React.FC<FsTableProps> = ({
               return (
                 <tr
                   key={rowKey}
-                  className={`fs-row ${isDir ? "fs-row-dir" : "fs-row-file"} ${isRobotEntry ? "fs-row-robot" : ""}`}
+                  className={`fs-row ${isDir ? "fs-row-dir" : "fs-row-file"} ${isRobotEntry || isDeletedRobotEntry ? "fs-row-robot" : ""}`}
                   onDoubleClick={isDir ? openEntry : undefined}
                 >
                   <td className="fs-cell-name">
                     <div className="fs-entry">
                       <span
-                        className={`fs-entry-icon ${isDir ? "is-dir" : "is-file"} ${isRobotEntry ? "is-robot" : ""}`}
+                        className={`fs-entry-icon ${isDir ? "is-dir" : "is-file"} ${isRobotEntry || isDeletedRobotEntry ? "is-robot" : ""}`}
                         aria-hidden="true"
                       >
-                        {isRobotEntry ? (
+                        {isRobotEntry || isDeletedRobotEntry ? (
                           <Bot size={19} strokeWidth={1.9} />
                         ) : isDir ? (
                           <Folder size={19} strokeWidth={1.9} />
@@ -195,10 +210,16 @@ export const FsTable: React.FC<FsTableProps> = ({
                             type="button"
                             className="fs-entry-name fs-entry-button"
                             onClick={openEntry}
-                            title={isRobotEntry ? `Apri il filesystem del robot ${robotId}` : `Apri la cartella ${entry.name}`}
+                            title={
+                              isDeletedRobotEntry
+                                ? `Apri i file archiviati del robot eliminato ${entry.name}`
+                                : isRobotEntry
+                                ? `Apri il filesystem del robot ${robotId}`
+                                : `Apri la cartella ${entry.name}`
+                            }
                           >
                             <span className="fs-entry-label">{displayLabel}</span>
-                            {!isRobotEntry && <span className="fs-entry-dir-slash">/</span>}
+                            {!isRobotEntry && !isDeletedRobotEntry && <span className="fs-entry-dir-slash">/</span>}
                           </button>
                         ) : (
                           <span className="fs-entry-name" title={entry.name}>
@@ -207,7 +228,16 @@ export const FsTable: React.FC<FsTableProps> = ({
                         )}
 
                         <span className="fs-entry-meta">
-                          {isRobotEntry ? (
+                          {isDeletedRobotEntry ? (
+                            <>
+                              <span className="badge text-bg-danger" data-badge="deleted-robot">
+                                Eliminato
+                              </span>
+                              <span className="fs-entry-subtitle">
+                                Cartella server di robot rimosso dall&apos;anagrafica
+                              </span>
+                            </>
+                          ) : isRobotEntry ? (
                             <>
                               <span className="fs-chip fs-chip-robot">
                                 <Bot size={11} strokeWidth={2} aria-hidden="true" />
@@ -256,12 +286,30 @@ export const FsTable: React.FC<FsTableProps> = ({
                           type="button"
                           className="fs-action fs-action-open"
                           onClick={openEntry}
-                          title={isRobotEntry ? `Apri il robot ${robotId}` : `Apri ${entry.name}`}
+                          title={
+                            isDeletedRobotEntry
+                              ? `Esplora i file residui di ${entry.name}`
+                              : isRobotEntry
+                              ? `Apri il robot ${robotId}`
+                              : `Apri ${entry.name}`
+                          }
                         >
                           <ChevronRight size={15} strokeWidth={2.2} aria-hidden="true" />
                           <span>Apri</span>
                         </button>
-                        {!isRobotEntry && onDeleteFolder && (
+                        {isDeletedRobotEntry && isAdmin && onDeleteDeletedRobot && (
+                          <button
+                            type="button"
+                            className="fs-action fs-action-danger"
+                            data-action="delete-deleted-robot"
+                            title="Elimina definitivamente tutti i file e la cartella dal server (solo Amministratore)"
+                            onClick={() => onDeleteDeletedRobot(entry.name)}
+                          >
+                            <Trash2 size={14} strokeWidth={2} aria-hidden="true" />
+                            <span>Elimina definitivamente</span>
+                          </button>
+                        )}
+                        {!isRobotEntry && !isDeletedRobotEntry && !readOnlyMode && onDeleteFolder && (
                           <button
                             type="button"
                             className="fs-action fs-action-danger"
@@ -285,7 +333,7 @@ export const FsTable: React.FC<FsTableProps> = ({
                           <span>Scarica</span>
                         </button>
 
-                        {onTransfer && transferActionLabel && (
+                        {!readOnlyMode && onTransfer && transferActionLabel && (
                           <button
                             type="button"
                             className="fs-action fs-action-primary"
@@ -297,15 +345,17 @@ export const FsTable: React.FC<FsTableProps> = ({
                           </button>
                         )}
 
-                        <button
-                          type="button"
-                          className="fs-action fs-action-danger"
-                          title="Elimina file"
-                          onClick={() => onDelete(entry.name)}
-                        >
-                          <Trash2 size={14} strokeWidth={2} aria-hidden="true" />
-                          <span>Elimina</span>
-                        </button>
+                        {!readOnlyMode && (
+                          <button
+                            type="button"
+                            className="fs-action fs-action-danger"
+                            title="Elimina file"
+                            onClick={() => onDelete(entry.name)}
+                          >
+                            <Trash2 size={14} strokeWidth={2} aria-hidden="true" />
+                            <span>Elimina</span>
+                          </button>
+                        )}
                       </div>
                     )}
                   </td>

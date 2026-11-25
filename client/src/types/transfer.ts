@@ -50,7 +50,7 @@ export interface TransferStartResult {
 }
 
 export interface BulkConflict {
-  targetType: "server" | "robot";
+  targetType: "server" | "robot" | "general";
   targetId: string;
   targetName: string;
   filename: string;
@@ -58,24 +58,37 @@ export interface BulkConflict {
 }
 
 export interface BulkDestinations {
+  general?: { subPath: string };
   server?: { robotId: string; subPath: string };
+  servers?: Array<{ robotId: string; subPath: string }>;
   robots?: Array<{ robotId: string; remotePath: string }>;
 }
 
 export interface BulkTargetDescriptor {
-  type: "server" | "robot";
-  robotId: string;
+  type: "server" | "robot" | "general";
+  robotId?: string;
   directory?: string;
 }
 
 /** Traduce le destinazioni UI nel contratto atomico usato dal backend bulk. */
 export function buildBulkTargets(destinations: BulkDestinations): BulkTargetDescriptor[] {
   const targets: BulkTargetDescriptor[] = [];
-  if (destinations.server) {
+  if (destinations.general) {
+    targets.push({
+      type: "general",
+      directory: destinations.general.subPath,
+    });
+  }
+  const serverTargets = destinations.servers && destinations.servers.length > 0
+    ? destinations.servers
+    : destinations.server
+    ? [destinations.server]
+    : [];
+  for (const srv of serverTargets) {
     targets.push({
       type: "server",
-      robotId: destinations.server.robotId,
-      directory: destinations.server.subPath,
+      robotId: srv.robotId,
+      directory: srv.subPath,
     });
   }
   for (const robot of destinations.robots || []) {
@@ -100,7 +113,7 @@ export function hasBulkSourceSelection(
 }
 
 export interface BulkUploadTargetResult {
-  targetType: "server" | "robot";
+  targetType: "server" | "robot" | "general";
   targetId: string;
   targetName: string;
   success: boolean;

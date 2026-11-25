@@ -18,7 +18,7 @@ import { AppPermission, type RolePermissionMapping } from "../auth/permissions.t
 import { InMemoryCredentialProvider } from "../connection/credential-provider.ts";
 import { DefaultHostKeyVerifier, computeHostKeyFingerprint } from "../connection/host-key-verifier.ts";
 import { RobotConnectionManager } from "../connection/robot-connection-manager.ts";
-import { ProvisionalDevelopmentStateFileParser } from "./state-file-parser.ts";
+import { MolirisStateFileParser } from "./state-file-parser.ts";
 import { RemoteRobotReader } from "./robot-reader.ts";
 import { MonitoringService } from "./monitoring-service.ts";
 import { createServer } from "../server.ts";
@@ -30,7 +30,7 @@ console.log("--> Esecuzione test suite Servizio di Monitoraggio (CA-MON-001..004
 
 // 1. Test Unitari del Parser Sostituibile (RF-MON-002, §11.4)
 {
-  const parser = new ProvisionalDevelopmentStateFileParser();
+  const parser = new MolirisStateFileParser();
 
   // Test Key-Value valido
   const kvContent = `
@@ -235,7 +235,7 @@ credentialProvider.registerSecret("cred_test_valid", {
 const adminUser: UserEntity = {
   id: "u_admin",
   username: "admin_user",
-  roles: ["amministratore"],
+  roles: ["admin"],
   enabled: true,
     updatedAt: new Date(),
     passwordHash: "mock_hash",
@@ -263,7 +263,7 @@ const opUserReadOnly: UserEntity = {
 };
 
 const testRoleMapping: RolePermissionMapping = {
-  amministratore: [
+  admin: [
     AppPermission.FLEET_VIEW,
     AppPermission.STATUS_VIEW,
     AppPermission.STATUS_REFRESH_MANUAL,
@@ -312,7 +312,7 @@ function createTestRobot(id: string, statePath: string, host = "127.0.0.1", port
 {
   const robotRepo = new InMemoryRobotRepository();
   const auditRepo = new InMemoryAuditRepository();
-  const parser = new ProvisionalDevelopmentStateFileParser();
+  const parser = new MolirisStateFileParser();
   const remoteReader = new RemoteRobotReader(connectionManager, testConfig.sshConnectionTimeoutMs, logger);
   const monitoringService = new MonitoringService(
     testConfig,
@@ -355,7 +355,7 @@ function createTestRobot(id: string, statePath: string, host = "127.0.0.1", port
 {
   const robotRepo = new InMemoryRobotRepository();
   const auditRepo = new InMemoryAuditRepository();
-  const parser = new ProvisionalDevelopmentStateFileParser();
+  const parser = new MolirisStateFileParser();
   const remoteReader = new RemoteRobotReader(connectionManager, testConfig.sshConnectionTimeoutMs, logger);
 
   // Caso 1: intervallo non configurato (undefined)
@@ -411,7 +411,7 @@ function createTestRobot(id: string, statePath: string, host = "127.0.0.1", port
 {
   const robotRepo = new InMemoryRobotRepository();
   const auditRepo = new InMemoryAuditRepository();
-  const parser = new ProvisionalDevelopmentStateFileParser();
+  const parser = new MolirisStateFileParser();
   const remoteReader = new RemoteRobotReader(connectionManager, testConfig.sshConnectionTimeoutMs, logger);
   const monitoringService = new MonitoringService(
     testConfig,
@@ -465,7 +465,7 @@ function createTestRobot(id: string, statePath: string, host = "127.0.0.1", port
 {
   const robotRepo = new InMemoryRobotRepository();
   const auditRepo = new InMemoryAuditRepository();
-  const parser = new ProvisionalDevelopmentStateFileParser();
+  const parser = new MolirisStateFileParser();
   const remoteReader = new RemoteRobotReader(connectionManager, testConfig.sshConnectionTimeoutMs, logger);
   const monitoringService = new MonitoringService(
     testConfig,
@@ -545,7 +545,7 @@ function createTestRobot(id: string, statePath: string, host = "127.0.0.1", port
 {
   const robotRepo = new InMemoryRobotRepository();
   const auditRepo = new InMemoryAuditRepository();
-  const parser = new ProvisionalDevelopmentStateFileParser();
+  const parser = new MolirisStateFileParser();
   const remoteReader = new RemoteRobotReader(connectionManager, testConfig.sshConnectionTimeoutMs, logger);
   const monitoringService = new MonitoringService(
     testConfig,
@@ -582,7 +582,7 @@ function createTestRobot(id: string, statePath: string, host = "127.0.0.1", port
   const auditRepo = new InMemoryAuditRepository();
   const userRepo = new InMemoryUserRepository();
   const sessionManager = new SessionManager(30);
-  const parser = new ProvisionalDevelopmentStateFileParser();
+  const parser = new MolirisStateFileParser();
   const remoteReader = new RemoteRobotReader(connectionManager, testConfig.sshConnectionTimeoutMs, logger);
   const monitoringService = new MonitoringService(
     testConfig,

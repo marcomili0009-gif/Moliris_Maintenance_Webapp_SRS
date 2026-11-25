@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from "react";
-import { Archive, FolderPlus, RefreshCw, UploadCloud } from "lucide-react";
+import { Archive, FolderPlus, RefreshCw, Trash2, UploadCloud } from "lucide-react";
 import type { DirectoryListing } from "../../types/filesystem.ts";
 import type { FormattedError } from "../../types/error.ts";
 import { FsTable } from "./FsTable.tsx";
@@ -11,12 +11,18 @@ interface GeneralFsPanelProps {
   listing: DirectoryListing | null;
   loading: boolean;
   error: FormattedError | null;
+  isAdmin?: boolean;
+  deletedRobotFolder?: string | null;
   onLoad: (path?: string) => void;
   onUp: () => void;
   onNavigateDir: (dirName: string) => void;
   onNavigatePath?: (path: string) => void;
   /** Apre il filesystem dedicato di un robot elencato nella root aggregata. */
   onOpenRobot?: (robotId: string) => void;
+  /** Apre una directory di un robot eliminato dall'anagrafica (ISS-017). */
+  onOpenDeletedRobot?: (folderName: string) => void;
+  /** Eliminazione definitiva della cartella di un robot eliminato (solo admin - ISS-017). */
+  onDeleteDeletedRobot?: (folderName: string) => void;
   onCreateFolder: (name: string) => Promise<{ success: boolean; error?: string }>;
   onUpload: (file: File) => void;
   onDownload: (fileName: string) => void;
@@ -29,11 +35,15 @@ export const GeneralFsPanel: React.FC<GeneralFsPanelProps> = ({
   listing,
   loading,
   error,
+  isAdmin = false,
+  deletedRobotFolder = null,
   onLoad,
   onUp,
   onNavigateDir,
   onNavigatePath,
   onOpenRobot,
+  onOpenDeletedRobot,
+  onDeleteDeletedRobot,
   onCreateFolder,
   onUpload,
   onDownload,
@@ -62,9 +72,13 @@ export const GeneralFsPanel: React.FC<GeneralFsPanelProps> = ({
   };
 
   const entries = listing?.entries || (listing as any)?.items || [];
-  const isRoot = !currentPath || currentPath === "/";
+  const isRoot = !deletedRobotFolder && (!currentPath || currentPath === "/");
+  const isViewingDeletedRobot = Boolean(deletedRobotFolder);
   const robotEntries = entries.filter((entry: any) => entry.scope === "robot");
-  const sharedEntries = entries.filter((entry: any) => entry.scope !== "robot");
+  const deletedRobotEntries = entries.filter((entry: any) => entry.scope === "deleted_robot" || entry.isDeletedRobot);
+  const sharedEntries = entries.filter(
+    (entry: any) => entry.scope !== "robot" && entry.scope !== "deleted_robot" && !entry.isDeletedRobot
+  );
   const sharedFiles = sharedEntries.filter((entry: any) => entry.type !== "directory").length;
   const sharedFolders = sharedEntries.filter((entry: any) => entry.type === "directory").length;
 
@@ -88,9 +102,18 @@ export const GeneralFsPanel: React.FC<GeneralFsPanelProps> = ({
             <Archive size={20} strokeWidth={1.9} />
           </span>
           <div>
-            <h3>Archivio Generale Server</h3>
+            <div className="d-flex align-items-center gap-2">
+              <h3 className="mb-0">
+                {isViewingDeletedRobot ? `Archivio Robot: ${deletedRobotFolder}` : "Archivio Generale Server"}
+              </h3>
+              {isViewingDeletedRobot && (
+                <span className="badge text-bg-danger">Eliminato</span>
+              )}
+            </div>
             <p className="fs-subtitle">
-              Vista aggregata della root server: aree dedicate dei robot e contenuti condivisi.
+              {isViewingDeletedRobot
+                ? "Cartella sul server appartenente a un robot eliminato dall'anagrafica. I file restano consultabili e scaricabili."
+                : "Vista aggregata della root server: aree dedicate dei robot (attivi ed eliminati) e contenuti condivisi."}
             </p>
           </div>
         </div>
@@ -102,6 +125,14 @@ export const GeneralFsPanel: React.FC<GeneralFsPanelProps> = ({
                 <span className="fs-stat">
                   <strong>{robotEntries.length}</strong> robot
                 </span>
+                {deletedRobotEntries.length > 0 && (
+                  <>
+                    <span className="fs-stat-divider" aria-hidden="true" />
+                    <span className="fs-stat text-danger">
+                      <strong>{deletedRobotEntries.length}</strong> eliminati
+                    </span>
+                  </>
+                )}
                 <span className="fs-stat-divider" aria-hidden="true" />
               </>
             )}
@@ -152,37 +183,55 @@ export const GeneralFsPanel: React.FC<GeneralFsPanelProps> = ({
             <RefreshCw size={15} className={loading ? "fs-spin" : undefined} aria-hidden="true" />
             {loading ? "Aggiornamento..." : "Aggiorna"}
           </button>
-          <button
-            type="button"
-            id="btn-general-mkdir"
-            className="btn btn-outline-primary btn-sm fs-toolbar-btn"
-            title="Crea una nuova cartella"
-            onClick={() => setIsNewFolderOpen(true)}
-            disabled={loading}
-          >
-            <FolderPlus size={15} aria-hidden="true" />
-            Nuova Cartella
-          </button>
-          <input
-            type="file"
-            id="fs-general-file-input"
-            name="fsGeneralFileInput"
-            ref={fileInputRef}
-            style={{ display: "none" }}
-            aria-label="Seleziona file da caricare nell'archivio generale"
-            onChange={handleFileChange}
-          />
-          <button
-            type="button"
-            id="btn-general-upload"
-            className="btn btn-primary btn-sm fs-toolbar-btn"
-            title="Carica file dal computer nell'archivio generale"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={loading}
-          >
-            <UploadCloud size={15} aria-hidden="true" />
-            Carica File
-          </button>
+          {isViewingDeletedRobot && isAdmin && deletedRobotFolder && onDeleteDeletedRobot ? (
+            <button
+              type="button"
+              id="btn-deleted-robot-purge"
+              className="btn btn-danger btn-sm fs-toolbar-btn"
+              title="Elimina definitivamente tutti i file e la cartella del robot eliminato dal server"
+              onClick={() => onDeleteDeletedRobot(deletedRobotFolder)}
+              disabled={loading}
+            >
+              <Trash2 size={15} aria-hidden="true" />
+              Elimina definitivamente
+            </button>
+          ) : (
+            !isViewingDeletedRobot && (
+              <>
+                <button
+                  type="button"
+                  id="btn-general-mkdir"
+                  className="btn btn-outline-primary btn-sm fs-toolbar-btn"
+                  title="Crea una nuova cartella"
+                  onClick={() => setIsNewFolderOpen(true)}
+                  disabled={loading}
+                >
+                  <FolderPlus size={15} aria-hidden="true" />
+                  Nuova Cartella
+                </button>
+                <input
+                  type="file"
+                  id="fs-general-file-input"
+                  name="fsGeneralFileInput"
+                  ref={fileInputRef}
+                  style={{ display: "none" }}
+                  aria-label="Seleziona file da caricare nell'archivio generale"
+                  onChange={handleFileChange}
+                />
+                <button
+                  type="button"
+                  id="btn-general-upload"
+                  className="btn btn-primary btn-sm fs-toolbar-btn"
+                  title="Carica file dal computer nell'archivio generale"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={loading}
+                >
+                  <UploadCloud size={15} aria-hidden="true" />
+                  Carica File
+                </button>
+              </>
+            )
+          )}
         </div>
       </div>
 
@@ -202,8 +251,12 @@ export const GeneralFsPanel: React.FC<GeneralFsPanelProps> = ({
         emptyMessage={emptyMessage}
         emptyHint={emptyHint}
         loading={loading}
+        isAdmin={isAdmin}
+        readOnlyMode={isViewingDeletedRobot}
         onNavigateDir={onNavigateDir}
         onOpenRobot={onOpenRobot}
+        onOpenDeletedRobot={onOpenDeletedRobot}
+        onDeleteDeletedRobot={onDeleteDeletedRobot}
         onDownload={onDownload}
         onDelete={onDelete}
         onDeleteFolder={onDeleteFolder}

@@ -13,6 +13,7 @@ export type { FsSubTab };
 
 interface FsBrowserSectionProps {
   robots?: RobotSummaryDto[];
+  isAdmin?: boolean;
   activeSubTab?: FsSubTab;
   onSubTabChange?: (tab: FsSubTab) => void;
   onOpenBulkUpload?: () => void;
@@ -40,11 +41,14 @@ interface FsBrowserSectionProps {
   generalListing?: DirectoryListing | null;
   generalLoading?: boolean;
   generalError?: FormattedError | null;
+  deletedRobotFolder?: string | null;
   onLoadGeneral?: (path?: string) => void;
   onGeneralUp?: () => void;
   onGeneralNavigateDir?: (dirName: string) => void;
   onGeneralNavigatePath?: (path: string) => void;
   onGeneralOpenRobot?: (robotId: string) => void;
+  onGeneralOpenDeletedRobot?: (folderName: string) => void;
+  onGeneralDeleteDeletedRobot?: (folderName: string) => void;
   onCreateGeneralFolder?: (name: string) => Promise<{ success: boolean; error?: string }>;
   onGeneralUpload?: (file: File) => void;
   onGeneralDownload?: (fileName: string) => void;
@@ -62,6 +66,7 @@ interface FsBrowserSectionProps {
   onRemoteUp: () => void;
   onRemoteNavigateDir: (dirName: string) => void;
   onRemoteNavigatePath?: (path: string) => void;
+  onCreateRemoteFolder?: (name: string) => Promise<{ success: boolean; error?: string }>;
   onRemoteUpload: (file: File) => void;
   onRemoteDownload: (fileName: string) => void;
   onRemoteTransferToServer: (fileName: string, entry?: FsEntry) => void;
@@ -74,12 +79,14 @@ interface FsBrowserSectionProps {
   activeTransfersCount: number;
   onRefreshTransfers: () => void;
   onCancelTransfer: (id: string) => void | Promise<unknown>;
+  onCancelBatch?: (batchId: string) => void | Promise<unknown>;
   onRetryTransfer?: (id: string) => void | Promise<unknown>;
   onRemoveTransfer?: (id: string) => void | Promise<unknown>;
 }
 
 export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
   robots = [],
+  isAdmin = false,
   activeSubTab,
   onSubTabChange,
   onOpenBulkUpload,
@@ -105,11 +112,14 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
   generalListing = null,
   generalLoading = false,
   generalError = null,
+  deletedRobotFolder = null,
   onLoadGeneral = () => {},
   onGeneralUp = () => {},
   onGeneralNavigateDir = () => {},
   onGeneralNavigatePath,
   onGeneralOpenRobot,
+  onGeneralOpenDeletedRobot,
+  onGeneralDeleteDeletedRobot,
   onCreateGeneralFolder = async () => ({ success: false, error: "Non supportato" }),
   onGeneralUpload = () => {},
   onGeneralDownload = () => {},
@@ -126,6 +136,7 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
   onRemoteUp,
   onRemoteNavigateDir,
   onRemoteNavigatePath,
+  onCreateRemoteFolder,
   onRemoteUpload,
   onRemoteDownload,
   onRemoteTransferToServer,
@@ -137,6 +148,7 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
   activeTransfersCount,
   onRefreshTransfers,
   onCancelTransfer,
+  onCancelBatch,
   onRetryTransfer,
   onRemoveTransfer,
 }) => {
@@ -215,11 +227,15 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
           listing={generalListing}
           loading={generalLoading}
           error={generalError}
+          isAdmin={isAdmin}
+          deletedRobotFolder={deletedRobotFolder}
           onLoad={onLoadGeneral}
           onUp={onGeneralUp}
           onNavigateDir={onGeneralNavigateDir}
           onNavigatePath={onGeneralNavigatePath}
           onOpenRobot={onGeneralOpenRobot}
+          onOpenDeletedRobot={onGeneralOpenDeletedRobot}
+          onDeleteDeletedRobot={onGeneralDeleteDeletedRobot}
           onCreateFolder={onCreateGeneralFolder}
           onUpload={onGeneralUpload}
           onDownload={onGeneralDownload}
@@ -245,6 +261,7 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
           onUp={onRemoteUp}
           onNavigateDir={onRemoteNavigateDir}
           onNavigatePath={onRemoteNavigatePath}
+          onCreateFolder={onCreateRemoteFolder}
           onUpload={onRemoteUpload}
           onDownload={onRemoteDownload}
           onTransferToServer={onRemoteTransferToServer}
@@ -263,6 +280,7 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
           loading={transfersLoading}
           onRefresh={onRefreshTransfers}
           onCancelTransfer={onCancelTransfer}
+          onCancelBatch={onCancelBatch}
           onRetryTransfer={onRetryTransfer}
           onRemoveTransfer={onRemoveTransfer}
         />

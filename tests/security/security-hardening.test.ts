@@ -84,7 +84,7 @@ await userRepo.create({
   id: "user_sec_admin",
   username: "sec_admin",
   passwordHash: adminHash,
-  roles: ["amministratore"],
+  roles: ["admin"],
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),

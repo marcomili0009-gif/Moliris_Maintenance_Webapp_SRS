@@ -7,7 +7,7 @@ import { apiClient } from "../../services/api-client.ts";
 export interface DeleteFolderTarget {
   folderName: string;
   folderPath: string;
-  scope: "server" | "general" | "remote";
+  scope: "server" | "general" | "remote" | "deleted_robot";
   robotId?: string;
 }
 
@@ -55,6 +55,8 @@ export const DeleteFolderModal: React.FC<DeleteFolderModalProps> = ({
           endpoint = `/api/robots/${encodeURIComponent(target.robotId)}/fs/server/folder/inspect?path=${encodeURIComponent(target.folderPath)}`;
         } else if (target.scope === "general") {
           endpoint = `/api/fs/general/folder/inspect?path=${encodeURIComponent(target.folderPath)}`;
+        } else if (target.scope === "deleted_robot") {
+          endpoint = `/api/fs/deleted-robots/${encodeURIComponent(target.folderName)}/inspect`;
         } else if (target.scope === "remote" && target.robotId) {
           endpoint = `/api/robots/${encodeURIComponent(target.robotId)}/fs/remote/folder/inspect?path=${encodeURIComponent(target.folderPath)}`;
         } else {
@@ -103,7 +105,11 @@ export const DeleteFolderModal: React.FC<DeleteFolderModalProps> = ({
       id="delete-folder-modal"
       isOpen={isOpen}
       onClose={onClose}
-      title="Conferma Eliminazione Cartella"
+      title={
+        target?.scope === "deleted_robot"
+          ? "Eliminazione Definitiva Dati Robot Eliminato"
+          : "Conferma Eliminazione Cartella"
+      }
       role="alertdialog"
       ariaLabelledBy="delete-folder-modal-title"
       footer={

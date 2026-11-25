@@ -711,7 +711,8 @@ export function registerServerFsRoutes(
           mtime: it.modifiedAt instanceof Date ? it.modifiedAt.toISOString() : (it.modifiedAt || new Date().toISOString()),
           modifiedAt: it.modifiedAt instanceof Date ? it.modifiedAt.toISOString() : (it.modifiedAt || new Date().toISOString()),
           scope: it.scope || "general",
-          isRobotFolder: it.isRobotFolder ?? (it.scope === "robot"),
+          isRobotFolder: it.isRobotFolder ?? (it.scope === "robot" || it.scope === "deleted_robot"),
+          isDeletedRobot: Boolean(it.isDeletedRobot || it.scope === "deleted_robot"),
           robotId: it.robotId,
           displayName: it.displayName,
           exists: it.exists,
@@ -724,7 +725,8 @@ export function registerServerFsRoutes(
           items: items.map((it: any) => ({
             ...it,
             scope: it.scope || "general",
-            isRobotFolder: it.isRobotFolder ?? (it.scope === "robot"),
+            isRobotFolder: it.isRobotFolder ?? (it.scope === "robot" || it.scope === "deleted_robot"),
+            isDeletedRobot: Boolean(it.isDeletedRobot || it.scope === "deleted_robot"),
             modifiedAt:
               it.modifiedAt instanceof Date
                 ? it.modifiedAt.toISOString()
@@ -1210,6 +1212,260 @@ export function registerServerFsRoutes(
               : err.userMessage?.includes("cambiato") || err.userMessage?.includes("PREFLIGHT_STALE")
                 ? 409
                 : err.userMessage?.includes("non trovato") || err.userMessage?.includes("non presente")
+                  ? 404
+                  : 400;
+          return reply.status(status).send({
+            code: err.code,
+            message: err.userMessage,
+            classification: err.classification,
+          });
+        }
+        return reply.status(500).send({
+          code: ErrorCode.SERVER_DIR_INACCESSIBLE,
+          message: ERROR_CATALOG[ErrorCode.SERVER_DIR_INACCESSIBLE].userMessage,
+          classification: "richiede_intervento_amministrativo",
+        });
+      }
+    }
+  );
+
+  // =========================================================================
+  // CARTELLE DI ROBOT ELIMINATI NELL'ARCHIVIO GENERALE SERVER (ISS-017)
+  // =========================================================================
+
+  app.get(
+    "/api/fs/deleted-robots/:folderName/list",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(AppPermission.FS_SERVER_NAVIGATE),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { folderName } = req.params as { folderName: string };
+      const query = (req.query as any) || {};
+      const rawPath = typeof query.path === "string" ? query.path.trim() : "";
+      const subPath = rawPath === "/" || rawPath === "\\" || rawPath === "." ? "" : rawPath.replace(/^[/\\]+/, "");
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        undefined,
+        roleMapping
+      );
+
+      try {
+        await authorizeOperatorPath(context, "server", undefined, rawPath || "/", undefined, { isListingRootAllowed: true });
+        const robots = await robotRepository.list();
+        const items = await serverFsService.listDeletedRobotDirectory(context, robots, folderName, subPath);
+        const mappedEntries = items.map((it: any) => ({
+          name: it.name,
+          type: it.type === "directory" ? "directory" : "file",
+          size: typeof it.size === "number" ? it.size : 0,
+          mtime: it.modifiedAt instanceof Date ? it.modifiedAt.toISOString() : (it.modifiedAt || new Date().toISOString()),
+          modifiedAt: it.modifiedAt instanceof Date ? it.modifiedAt.toISOString() : (it.modifiedAt || new Date().toISOString()),
+          scope: "deleted_robot",
+        }));
+
+        return reply.status(200).send({
+          scope: "deleted_robot",
+          folderName,
+          currentPath: rawPath || "/",
+          path: rawPath || "/",
+          items,
+          entries: mappedEntries,
+          totalCount: items.length,
+          isTruncated: false,
+        });
+      } catch (err: any) {
+        if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
+          const status =
+            err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+              ? 403
+              : err.userMessage?.includes("non trovato") || err.userMessage?.includes("non trovata")
+                ? 404
+                : 400;
+          return reply.status(status).send({
+            code: err.code,
+            message: err.userMessage,
+            classification: err.classification,
+          });
+        }
+        return reply.status(500).send({
+          code: ErrorCode.SERVER_DIR_INACCESSIBLE,
+          message: ERROR_CATALOG[ErrorCode.SERVER_DIR_INACCESSIBLE].userMessage,
+          classification: "richiede_intervento_amministrativo",
+        });
+      }
+    }
+  );
+
+  app.get(
+    "/api/fs/deleted-robots/:folderName/download",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(AppPermission.FS_SERVER_DOWNLOAD),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { folderName } = req.params as { folderName: string };
+      const query = (req.query as any) || {};
+      const rawPath = typeof query.path === "string" ? query.path.trim() : "";
+      const filePath = rawPath.replace(/^[/\\]+/, "");
+
+      if (!filePath) {
+        return reply.status(400).send({
+          code: ErrorCode.MISSING_ROBOT_PARAMS,
+          message: "Parametro 'path' obbligatorio mancante.",
+          classification: "recuperabile",
+        });
+      }
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        undefined,
+        roleMapping
+      );
+
+      try {
+        await authorizeOperatorPath(context, "server", undefined, filePath);
+        const robots = await robotRepository.list();
+        const opened = await serverFsService.openDeletedRobotFileReadStream(context, robots, folderName, filePath);
+        if (query.preflight === "1") {
+          opened.stream.destroy();
+          return reply.status(200).send({
+            ok: true,
+            filename: opened.filename,
+            totalBytes: opened.totalBytes,
+          });
+        }
+        reply.header("content-disposition", `attachment; filename="${encodeURIComponent(opened.filename)}"`);
+        reply.header("content-type", "application/octet-stream");
+        reply.header("content-length", opened.totalBytes);
+        return reply.send(opened.stream);
+      } catch (err: any) {
+        if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
+          const status =
+            err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+              ? 403
+              : err.userMessage?.includes("non trovato") || err.userMessage?.includes("non trovata")
+                ? 404
+                : 400;
+          return reply.status(status).send({
+            code: err.code,
+            message: err.userMessage,
+            classification: err.classification,
+          });
+        }
+        return reply.status(500).send({
+          code: ErrorCode.SERVER_DIR_INACCESSIBLE,
+          message: ERROR_CATALOG[ErrorCode.SERVER_DIR_INACCESSIBLE].userMessage,
+          classification: "richiede_intervento_amministrativo",
+        });
+      }
+    }
+  );
+
+  app.get(
+    "/api/fs/deleted-robots/:folderName/inspect",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(AppPermission.ROBOT_REMOVE),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { folderName } = req.params as { folderName: string };
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        undefined,
+        roleMapping
+      );
+
+      try {
+        const robots = await robotRepository.list();
+        const result = await serverFsService.inspectDeletedRobotDirectory(context, robots, folderName);
+        return reply.status(200).send({
+          success: true,
+          ...result,
+        });
+      } catch (err: any) {
+        if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
+          const status =
+            err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+              ? 403
+              : err.userMessage?.includes("non trovato") || err.userMessage?.includes("non trovata")
+                ? 404
+                : 400;
+          return reply.status(status).send({
+            code: err.code,
+            message: err.userMessage,
+            classification: err.classification,
+          });
+        }
+        return reply.status(500).send({
+          code: ErrorCode.SERVER_DIR_INACCESSIBLE,
+          message: ERROR_CATALOG[ErrorCode.SERVER_DIR_INACCESSIBLE].userMessage,
+          classification: "richiede_intervento_amministrativo",
+        });
+      }
+    }
+  );
+
+  app.delete(
+    "/api/fs/deleted-robots/:folderName",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(AppPermission.ROBOT_REMOVE),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { folderName } = req.params as { folderName: string };
+      const query = (req.query as any) || {};
+      const body = (req.body as any) || {};
+      const expectedFileCount =
+        query.expectedFileCount !== undefined
+          ? Number(query.expectedFileCount)
+          : body.expectedFileCount !== undefined
+          ? Number(body.expectedFileCount)
+          : undefined;
+      const expectedDirectoryCount =
+        query.expectedDirectoryCount !== undefined
+          ? Number(query.expectedDirectoryCount)
+          : body.expectedDirectoryCount !== undefined
+          ? Number(body.expectedDirectoryCount)
+          : undefined;
+
+      const context = sessionManager.createAuthorizedContext(
+        req.molirisSession!,
+        req.molirisUser!,
+        undefined,
+        roleMapping
+      );
+
+      try {
+        const robots = await robotRepository.list();
+        const opts: { expectedFileCount?: number; expectedDirectoryCount?: number } = {};
+        if (typeof expectedFileCount === "number" && Number.isInteger(expectedFileCount)) {
+          opts.expectedFileCount = expectedFileCount;
+        }
+        if (typeof expectedDirectoryCount === "number" && Number.isInteger(expectedDirectoryCount)) {
+          opts.expectedDirectoryCount = expectedDirectoryCount;
+        }
+        const outcome = await serverFsService.deleteDeletedRobotDirectory(context, robots, folderName, opts);
+        return reply.status(200).send({
+          success: true,
+          message: `Cartella '${folderName}' del robot eliminato rimossa definitivamente dal server (${outcome.fileCount} file eliminati).`,
+          ...outcome,
+        });
+      } catch (err: any) {
+        if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
+          const status =
+            err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+              ? 403
+              : err.userMessage?.includes("cambiato") || err.userMessage?.includes("PREFLIGHT_STALE")
+                ? 409
+                : err.userMessage?.includes("non trovato") || err.userMessage?.includes("non trovata")
                   ? 404
                   : 400;
           return reply.status(status).send({

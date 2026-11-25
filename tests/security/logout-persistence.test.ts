@@ -70,7 +70,7 @@ await userRepo.create({
   id: "user-logout-test",
   username: "test_logout_user",
   passwordHash: await hashPassword("ValidPassword123!"),
-  roles: ["amministratore"],
+  roles: ["admin"],
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),

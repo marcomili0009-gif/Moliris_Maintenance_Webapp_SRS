@@ -270,7 +270,7 @@ const adminUser: UserEntity = {
   id: "admin_user",
   username: "admin",
   passwordHash: await hashPassword("AdminPass123!"),
-  roles: ["amministratore"],
+  roles: ["admin"],
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),

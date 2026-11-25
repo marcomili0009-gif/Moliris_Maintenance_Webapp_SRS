@@ -25,7 +25,7 @@ export function registerLogRoutes(
     const roles = Array.isArray(user.roles) ? user.roles : [];
     const isAdmin = roles.some((r) => {
       const lower = (r || "").toLowerCase();
-      return lower === "amministratore" || lower === "admin";
+      return lower === "admin";
     });
 
     if (!isAdmin) {

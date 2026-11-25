@@ -212,6 +212,3 @@ export class MolirisStateFileParser implements StateFileParser {
     };
   }
 }
-
-// Alias per compatibilità con il codice esistente
-export { MolirisStateFileParser as ProvisionalDevelopmentStateFileParser };

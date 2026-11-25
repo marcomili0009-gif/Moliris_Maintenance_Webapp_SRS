@@ -64,8 +64,12 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
   const [loadingSourceFiles, setLoadingSourceFiles] = useState<boolean>(false);
   const [sourceDirCurrent, setSourceDirCurrent] = useState<string>("/");
 
-  // Passo 2: Tipo destinazione
-  const [destType, setDestType] = useState<BulkDestType>("remote_robots");
+  // Passo 2: Tipo destinazione (ISS-010: selezione multipla combinabile)
+  const [selectedDestTypes, setSelectedDestTypes] = useState<BulkDestType[]>(["remote_robots"]);
+  const hasRemoteDest = selectedDestTypes.includes("remote_robots");
+  const hasServerRobotDest = selectedDestTypes.includes("server_robots");
+  const hasGeneralDest = selectedDestTypes.includes("general");
+  const requiresRobotSelection = hasRemoteDest || hasServerRobotDest;
 
   // Passo 3: Destinatari e filtri
   const [robotSearchFilter, setRobotSearchFilter] = useState<string>("");
@@ -73,8 +77,10 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
 
   // Passo 4: Cartella di destinazione
   const [commonDirectory, setCommonDirectory] = useState<string>("/upload");
+  const [generalDirectory, setGeneralDirectory] = useState<string>("/upload");
   const [individualDirectories, setIndividualDirectories] = useState<Record<string, string>>({});
   const [isFolderPickerOpen, setIsFolderPickerOpen] = useState<boolean>(false);
+  const [folderPickerScope, setFolderPickerScope] = useState<"general" | "server" | "remote">("remote");
   const [folderPickerTargetRobotId, setFolderPickerTargetRobotId] = useState<string | undefined>(undefined);
 
   // Passo 5: Opzioni trasferimento & Esecuzione
@@ -99,10 +105,11 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
       setSourceRobotId("");
       setSelectedServerFiles([]);
       setSourceAvailableFiles([]);
-      setDestType("remote_robots");
+      setSelectedDestTypes(["remote_robots"]);
       setRobotSearchFilter("");
       setSelectedTargetRobotIds([]);
       setCommonDirectory("/upload");
+      setGeneralDirectory("/upload");
       setIndividualDirectories({});
       setIsMove(false);
       setMoveConfirmation(false);
@@ -189,15 +196,25 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
     selectedServerFiles
   );
 
+  const canProceedFromStep2 = selectedDestTypes.length > 0;
+
   const canProceedFromStep3 =
-    destType === "general"
-      ? true
-      : selectedTargetRobotIds.length > 0;
+    !requiresRobotSelection || selectedTargetRobotIds.length > 0;
+
+  const toggleDestType = (type: BulkDestType) => {
+    setSelectedDestTypes((prev) =>
+      prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type]
+    );
+  };
 
   const handleNext = () => {
     setError(null);
     if (step === 1 && !canProceedFromStep1) {
       setError("Selezionare almeno un file sorgente per continuare.");
+      return;
+    }
+    if (step === 2 && !canProceedFromStep2) {
+      setError("Selezionare almeno un tipo di destinazione per continuare.");
       return;
     }
     if (step === 3 && !canProceedFromStep3) {
@@ -236,26 +253,33 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
     setProgress(15);
 
     try {
-      // Flusso A: File dal computer
+      // Flusso A: File dal computer (ISS-010: supporta combinazione Robot + Server Robot + Archivio Generale)
       if (sourceType === "computer") {
-        const destinations = {
-          server:
-            destType === "server_robots" && selectedTargetRobotIds.length > 0
-              ? { robotId: selectedTargetRobotIds[0], subPath: commonDirectory }
-              : undefined,
-          robots:
-            destType === "remote_robots"
-              ? selectedTargetRobotIds.map((id) => ({
-                  robotId: id,
-                  remotePath: individualDirectories[id] || commonDirectory,
-                }))
-              : undefined,
+        const destinations: BulkDestinations = {
+          general: hasGeneralDest ? { subPath: generalDirectory } : undefined,
+          servers: hasServerRobotDest
+            ? selectedTargetRobotIds.map((id) => ({
+                robotId: id,
+                subPath: individualDirectories[id] || commonDirectory,
+              }))
+            : undefined,
+          robots: hasRemoteDest
+            ? selectedTargetRobotIds.map((id) => ({
+                robotId: id,
+                remotePath: individualDirectories[id] || commonDirectory,
+              }))
+            : undefined,
         };
 
         const filenames = computerFiles.map((f) => f.name);
 
         if (!overwrite) {
           const preCheck = await onPreCheck(filenames, destinations);
+          if (preCheck.error) {
+            setIsTransferring(false);
+            setError(preCheck.error.userMessage);
+            return;
+          }
           if (preCheck.hasConflicts) {
             setIsTransferring(false);
             onConflictsDetected(preCheck.conflicts, computerFiles, destinations);
@@ -272,13 +296,24 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
         }
       }
 
-      // Flusso B: File già sul server (Archivio Generale o Robot Server) (§5, §7)
+      // Flusso B: File già sul server (Archivio Generale o Robot Server) (§5, §7, ISS-010)
       else if (sourceType === "general" || sourceType === "server_robot") {
-        const targets = selectedTargetRobotIds.map((id) => ({
-          robotId: id,
-          type: (destType === "server_robots" ? "server" : "robot") as "server" | "robot",
-          directory: individualDirectories[id] || commonDirectory,
-        }));
+        const destinations: BulkDestinations = {
+          general: hasGeneralDest ? { subPath: generalDirectory } : undefined,
+          servers: hasServerRobotDest
+            ? selectedTargetRobotIds.map((id) => ({
+                robotId: id,
+                subPath: individualDirectories[id] || commonDirectory,
+              }))
+            : undefined,
+          robots: hasRemoteDest
+            ? selectedTargetRobotIds.map((id) => ({
+                robotId: id,
+                remotePath: individualDirectories[id] || commonDirectory,
+              }))
+            : undefined,
+        };
+        const targets = buildBulkTargets(destinations);
 
         const res = await apiClient.post("/api/transfers/bulk/server-source", {
           sourceScope: sourceType === "general" ? "general" : "server",
@@ -291,13 +326,29 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
         const data = await res.json();
         if (res.ok) {
           setResults(
-            (data.results || []).map((r: any) => ({
-              targetName: r.filename,
-              targetType: destType,
-              success: r.overallSuccess,
-              transferredFiles: (r.targets || []).filter((t: any) => t.success).map((t: any) => t.target.robotId),
-              failedFiles: (r.targets || []).filter((t: any) => !t.success).map((t: any) => t.target.robotId),
-            }))
+            (data.results || []).flatMap((fileResult: any) =>
+              (fileResult.targets || []).map((targetResult: any) => {
+                const targetType =
+                  targetResult.target?.type === "general"
+                    ? "general"
+                    : targetResult.target?.type === "server"
+                    ? "server"
+                    : "robot";
+                return {
+                  targetType,
+                  targetId: targetResult.target?.robotId || (targetType === "general" ? "general" : ""),
+                  targetName:
+                    targetType === "general"
+                      ? "Archivio Generale Server"
+                      : targetResult.target?.robotId || "Destinazione",
+                  success: Boolean(targetResult.success),
+                  transferredFiles: targetResult.success ? [fileResult.filename] : [],
+                  failedFiles: targetResult.success
+                    ? []
+                    : [{ filename: fileResult.filename, reason: targetResult.error || "Errore" }],
+                };
+              })
+            )
           );
           setProgress(100);
         } else {
@@ -409,6 +460,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                   className={`btn btn-sm ${sourceType === "remote_robot" ? "btn-primary" : "btn-outline-secondary"}`}
                   onClick={() => {
                     setSourceType("remote_robot");
+                    setSelectedDestTypes(["remote_robots"]);
                     setError(null);
                   }}
                 >
@@ -521,18 +573,28 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
           )}
 
           {/* ============================================================ */}
-          {/* PASSO 2: Tipo Destinazione */}
+          {/* PASSO 2: Tipo Destinazione (selezione multipla combinabile - ISS-010) */}
           {/* ============================================================ */}
           {step === 2 && (
             <div>
-              <h4 className="h6 fw-bold mb-2">2. Scegli il Tipo di Destinazione:</h4>
+              <h4 className="h6 fw-bold mb-1">2. Scegli una o più Destinazioni:</h4>
+              <p className="small text-secondary mb-2">
+                {sourceType === "remote_robot"
+                  ? "Il trasferimento Robot → Robot supporta uno o più robot destinatari."
+                  : "Puoi combinare più destinazioni (es. Robot Remoti + Server) nella stessa operazione."}
+              </p>
               <div className="list-group mb-3">
-                <label className={`list-group-item list-group-item-action d-flex align-items-center gap-3 ${destType === "remote_robots" ? "active" : ""}`}>
+                <label className={`list-group-item list-group-item-action d-flex align-items-center gap-3 ${hasRemoteDest ? "active" : ""}`}>
                   <input
-                    type="radio"
-                    name="destType"
-                    checked={destType === "remote_robots"}
-                    onChange={() => setDestType("remote_robots")}
+                    type="checkbox"
+                    checked={hasRemoteDest}
+                    onChange={() => {
+                      if (sourceType === "remote_robot") {
+                        setSelectedDestTypes(["remote_robots"]);
+                      } else {
+                        toggleDestType("remote_robots");
+                      }
+                    }}
                   />
                   <div>
                     <strong>Uno o più Robot Remoti (SFTP Diretto)</strong>
@@ -543,12 +605,11 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                 </label>
 
                 {sourceType !== "remote_robot" && (
-                  <label className={`list-group-item list-group-item-action d-flex align-items-center gap-3 ${destType === "server_robots" ? "active" : ""}`}>
+                  <label className={`list-group-item list-group-item-action d-flex align-items-center gap-3 ${hasServerRobotDest ? "active" : ""}`}>
                     <input
-                      type="radio"
-                      name="destType"
-                      checked={destType === "server_robots"}
-                      onChange={() => setDestType("server_robots")}
+                      type="checkbox"
+                      checked={hasServerRobotDest}
+                      onChange={() => toggleDestType("server_robots")}
                     />
                     <div>
                       <strong>Directory Server Associate ai Robot</strong>
@@ -559,13 +620,12 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                   </label>
                 )}
 
-                {sourceType === "computer" && (
-                  <label className={`list-group-item list-group-item-action d-flex align-items-center gap-3 ${destType === "general" ? "active" : ""}`}>
+                {sourceType !== "remote_robot" && (
+                  <label className={`list-group-item list-group-item-action d-flex align-items-center gap-3 ${hasGeneralDest ? "active" : ""}`}>
                     <input
-                      type="radio"
-                      name="destType"
-                      checked={destType === "general"}
-                      onChange={() => setDestType("general")}
+                      type="checkbox"
+                      checked={hasGeneralDest}
+                      onChange={() => toggleDestType("general")}
                     />
                     <div>
                       <strong>Archivio Generale Server (/home/robots/general)</strong>
@@ -585,7 +645,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
           {step === 3 && (
             <div>
               <h4 className="h6 fw-bold mb-2">3. Seleziona i Robot Destinatari:</h4>
-              {destType === "general" ? (
+              {!requiresRobotSelection ? (
                 <div className="alert alert-info small mb-3">
                   Destinazione selezionata: <strong>Archivio Generale Server</strong> (non richiede selezione robot).
                 </div>
@@ -654,64 +714,97 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
             <div>
               <h4 className="h6 fw-bold mb-2">4. Scegli le Cartelle di Destinazione:</h4>
               <div className="p-3 bg-light border rounded mb-3">
-                <div className="mb-3">
-                  <label className="form-label small fw-semibold">Cartella comune per tutti i destinatari:</label>
-                  <div className="d-flex gap-2">
-                    <input
-                      type="text"
-                      className="form-control form-control-sm font-monospace"
-                      value={commonDirectory}
-                      onChange={(e) => setCommonDirectory(e.target.value)}
-                    />
-                    <button
-                      type="button"
-                      id="btn-open-folder-picker"
-                      className="btn btn-outline-primary btn-sm"
-                      onClick={() => {
-                        setFolderPickerTargetRobotId(selectedTargetRobotIds[0]);
-                        setIsFolderPickerOpen(true);
-                      }}
-                    >
-                      Scegli Cartella...
-                    </button>
-                  </div>
-                </div>
-
-                {selectedTargetRobotIds.length > 1 && (
-                  <div className="mt-3">
-                    <div className="small fw-semibold mb-2">Oppure personalizza per singolo robot:</div>
-                    <div style={{ maxHeight: "140px", overflowY: "auto" }}>
-                      {selectedTargetRobotIds.map((rId) => {
-                        const robot = robots.find((r) => r.id === rId);
-                        return (
-                          <div key={rId} className="d-flex align-items-center gap-2 mb-1 small">
-                            <span style={{ width: "160px" }} className="text-truncate">
-                              {robot?.displayName || rId}:
-                            </span>
-                            <input
-                              type="text"
-                              className="form-control form-control-sm font-monospace py-0"
-                              value={individualDirectories[rId] || commonDirectory}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setIndividualDirectories((prev) => ({ ...prev, [rId]: val }));
-                              }}
-                            />
-                            <button
-                              type="button"
-                              className="btn btn-outline-secondary btn-sm py-0"
-                              onClick={() => {
-                                setFolderPickerTargetRobotId(rId);
-                                setIsFolderPickerOpen(true);
-                              }}
-                            >
-                              Sfoglia
-                            </button>
-                          </div>
-                        );
-                      })}
+                {hasGeneralDest && (
+                  <div className="mb-3">
+                    <label className="form-label small fw-semibold">
+                      Cartella in Archivio Generale Server:
+                    </label>
+                    <div className="d-flex gap-2">
+                      <input
+                        type="text"
+                        className="form-control form-control-sm font-monospace"
+                        value={generalDirectory}
+                        onChange={(e) => setGeneralDirectory(e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-outline-primary btn-sm"
+                        onClick={() => {
+                          setFolderPickerScope("general");
+                          setFolderPickerTargetRobotId(undefined);
+                          setIsFolderPickerOpen(true);
+                        }}
+                      >
+                        Scegli Cartella...
+                      </button>
                     </div>
                   </div>
+                )}
+
+                {requiresRobotSelection && (
+                  <>
+                    <div className="mb-3">
+                      <label className="form-label small fw-semibold">Cartella comune per tutti i robot destinatari:</label>
+                      <div className="d-flex gap-2">
+                        <input
+                          type="text"
+                          className="form-control form-control-sm font-monospace"
+                          value={commonDirectory}
+                          onChange={(e) => setCommonDirectory(e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          id="btn-open-folder-picker"
+                          className="btn btn-outline-primary btn-sm"
+                          onClick={() => {
+                            setFolderPickerScope(hasRemoteDest ? "remote" : "server");
+                            setFolderPickerTargetRobotId(selectedTargetRobotIds[0]);
+                            setIsFolderPickerOpen(true);
+                          }}
+                        >
+                          Scegli Cartella...
+                        </button>
+                      </div>
+                    </div>
+
+                    {selectedTargetRobotIds.length > 1 && (
+                      <div className="mt-3">
+                        <div className="small fw-semibold mb-2">Oppure personalizza per singolo robot:</div>
+                        <div style={{ maxHeight: "140px", overflowY: "auto" }}>
+                          {selectedTargetRobotIds.map((rId) => {
+                            const robot = robots.find((r) => r.id === rId);
+                            return (
+                              <div key={rId} className="d-flex align-items-center gap-2 mb-1 small">
+                                <span style={{ width: "160px" }} className="text-truncate">
+                                  {robot?.displayName || rId}:
+                                </span>
+                                <input
+                                  type="text"
+                                  className="form-control form-control-sm font-monospace py-0"
+                                  value={individualDirectories[rId] || commonDirectory}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setIndividualDirectories((prev) => ({ ...prev, [rId]: val }));
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  className="btn btn-outline-secondary btn-sm py-0"
+                                  onClick={() => {
+                                    setFolderPickerScope(hasRemoteDest ? "remote" : "server");
+                                    setFolderPickerTargetRobotId(rId);
+                                    setIsFolderPickerOpen(true);
+                                  }}
+                                >
+                                  Sfoglia
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -744,15 +837,21 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                 <div className="row mb-2">
                   <div className="col-4 text-secondary">Destinatari:</div>
                   <div className="col-8">
-                    {destType === "general"
-                      ? "Archivio Generale Server"
-                      : `${selectedTargetRobotIds.length} robot selezionati`}
+                    {[
+                      hasGeneralDest ? `Archivio Generale Server (${generalDirectory})` : null,
+                      hasServerRobotDest ? `Directory Server di ${selectedTargetRobotIds.length} robot` : null,
+                      hasRemoteDest ? `${selectedTargetRobotIds.length} robot remoti (SFTP)` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" + ")}
                   </div>
                 </div>
-                <div className="row mb-2">
-                  <div className="col-4 text-secondary">Cartella comune:</div>
-                  <div className="col-8 font-monospace">{commonDirectory}</div>
-                </div>
+                {requiresRobotSelection && (
+                  <div className="row mb-2">
+                    <div className="col-4 text-secondary">Cartella comune robot:</div>
+                    <div className="col-8 font-monospace">{commonDirectory}</div>
+                  </div>
+                )}
 
                 {/* Opzioni avanzate */}
                 <hr className="my-2" />
@@ -916,6 +1015,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                 onClick={handleNext}
                 disabled={
                   (step === 1 && !canProceedFromStep1) ||
+                  (step === 2 && !canProceedFromStep2) ||
                   (step === 3 && !canProceedFromStep3) ||
                   isTransferring
                 }
@@ -941,11 +1041,15 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
       {/* Finestrella Selettore Cartelle (§8) */}
       <FolderPickerModal
         isOpen={isFolderPickerOpen}
-        scope={destType === "general" ? "general" : destType === "server_robots" ? "server" : "remote"}
+        scope={folderPickerScope}
         robotId={folderPickerTargetRobotId}
-        initialPath={commonDirectory}
+        initialPath={folderPickerScope === "general" ? generalDirectory : commonDirectory}
         onClose={() => setIsFolderPickerOpen(false)}
         onSelectFolder={(selectedPath) => {
+          if (folderPickerScope === "general") {
+            setGeneralDirectory(selectedPath);
+            return;
+          }
           if (folderPickerTargetRobotId) {
             setIndividualDirectories((prev) => ({
               ...prev,

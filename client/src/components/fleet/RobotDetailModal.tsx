@@ -49,6 +49,8 @@ export const RobotDetailModal: React.FC<RobotDetailModalProps> = ({
               <h4>Anagrafica e Connessione</h4>
               <p><strong>Identificativo (ID):</strong> <code>{robot.id}</code></p>
               <p><strong>Nome Visualizzato:</strong> {robot.displayName}</p>
+              <p><strong>Nome Cliente:</strong> {robot.customerName || "—"}</p>
+              <p><strong>Nome Impianto:</strong> {robot.plantName || "—"}</p>
               <p><strong>Host / IP:</strong> {robot.host}</p>
               <p><strong>Porta SSH:</strong> {robot.sshPort}</p>
               <p><strong>Username Remoto:</strong> {robot.remoteUsername}</p>

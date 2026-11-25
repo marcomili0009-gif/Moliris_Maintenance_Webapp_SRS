@@ -321,6 +321,7 @@ const userAuthA = await userRepo.create({
   passwordHash: "dummy",
   roles: [],
   permissions: [],
+  allowedPaths: ["/"],
   robotPermissions: {
     robot_A: [AppPermission.FS_SERVER_NAVIGATE],
   },

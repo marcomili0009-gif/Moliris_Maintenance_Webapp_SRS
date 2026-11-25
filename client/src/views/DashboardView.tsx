@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import type { User } from "../types/auth.ts";
 import type { RobotSummaryDto, RegistrationOutcome } from "../types/fleet.ts";
-import type { BulkConflict } from "../types/transfer.ts";
+import type { BulkConflict, BulkDestinations } from "../types/transfer.ts";
 import { FleetTable } from "../components/fleet/FleetTable.tsx";
 import { RobotDetailModal } from "../components/fleet/RobotDetailModal.tsx";
 import { RobotRegisterModal } from "../components/fleet/RobotRegisterModal.tsx";
@@ -48,7 +48,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   activeMainView,
   onActiveMainViewChange,
 }) => {
-  const isAdmin = user.roles.includes("amministratore");
+  const isAdmin = user.roles.includes("admin");
 
   // Navigazione principale ("fleet" o "files")
   const [internalActiveView, setInternalActiveView] = useState<"fleet" | "files">("fleet");
@@ -226,11 +226,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [removingRobot, setRemovingRobot] = useState<RobotSummaryDto | null>(null);
   const [isBulkUploadOpen, setIsBulkUploadOpen] = useState<boolean>(false);
 
-  // Overwrite confirm modal state
+  // Overwrite confirm modal state (ISS-008)
   const [overwriteTarget, setOverwriteTarget] = useState<{
     file: File;
     targetPath: string;
-    isServer: boolean;
+    scope: "server" | "general" | "remote";
   } | null>(null);
 
   // Delete confirm modal state
@@ -257,10 +257,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [bulkConflicts, setBulkConflicts] = useState<{
     conflicts: BulkConflict[];
     files: File[];
-    destinations: {
-      server?: { robotId: string; subPath: string };
-      robots?: Array<{ robotId: string; remotePath: string }>;
-    };
+    destinations: BulkDestinations;
   } | null>(null);
 
   // Global banner notification message
@@ -293,8 +290,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const handleConfirmOverwrite = async () => {
     if (overwriteTarget) {
-      if (overwriteTarget.isServer) {
+      if (overwriteTarget.scope === "server") {
         await fs.uploadToServer(overwriteTarget.file, overwriteTarget.targetPath, true);
+      } else if (overwriteTarget.scope === "general") {
+        await fs.uploadToGeneral(overwriteTarget.file, overwriteTarget.targetPath, true);
       } else {
         await fs.uploadToRemote(overwriteTarget.file, overwriteTarget.targetPath, true);
       }
@@ -315,13 +314,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
   };
 
-  const handleConfirmDeleteFolder = async (target: DeleteFolderTarget, recursive: boolean) => {
+  const handleConfirmDeleteFolder = async (
+    target: DeleteFolderTarget,
+    recursive: boolean,
+    expectedFileCount: number,
+    expectedDirectoryCount: number
+  ) => {
+    let ok = false;
     if (target.scope === "server" && target.robotId) {
-      await fs.deleteServerFolder(target.robotId, target.folderPath, recursive);
+      ok = await fs.deleteServerFolder(target.robotId, target.folderPath, recursive, expectedFileCount, expectedDirectoryCount);
     } else if (target.scope === "general") {
-      await fs.deleteGeneralFolder(target.folderPath, recursive);
+      ok = await fs.deleteGeneralFolder(target.folderPath, recursive, expectedFileCount, expectedDirectoryCount);
+    } else if (target.scope === "remote" && target.robotId) {
+      ok = await fs.deleteRemoteFolder(target.robotId, target.folderPath, recursive, expectedFileCount, expectedDirectoryCount);
+    } else if (target.scope === "deleted_robot") {
+      ok = await fs.deleteDeletedRobotFolder(target.folderName, expectedFileCount, expectedDirectoryCount);
+      if (ok) {
+        pushToast("success", `Cartella '${target.folderName}' del robot eliminato rimossa definitivamente dal server.`);
+      }
     }
     setDeleteFolderTarget(null);
+    return ok;
   };
 
   const handleConfirmBulkOverwrite = async () => {
@@ -435,6 +448,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div id="files-view-container" style={{ display: effectiveView === "files" ? "block" : "none" }}>
           <FsBrowserSection
             robots={fleet.robots}
+            isAdmin={isAdmin}
             activeSubTab={activeSubTab}
             onSubTabChange={handleSubTabChange}
             onOpenBulkUpload={() => setIsBulkUploadOpen(true)}
@@ -452,8 +466,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             }}
             onServerNavigatePath={(path) => fs.loadServerDirectory(fs.serverRobotId, path)}
             onCreateServerFolder={(name) => fs.createRobotServerFolder(fs.serverRobotId, name, fs.serverPath)}
-            onServerUpload={(file) => {
-              fs.uploadToServer(file, fs.serverPath);
+            onServerUpload={async (file) => {
+              const existsInView = fs.serverListing?.entries.some(
+                (entry) => entry.type === "file" && entry.name === file.name
+              );
+              if (existsInView) {
+                setOverwriteTarget({ file, targetPath: fs.serverPath, scope: "server" });
+                return;
+              }
+              const outcome = await fs.uploadToServer(file, fs.serverPath);
+              if (outcome === "conflict") {
+                setOverwriteTarget({ file, targetPath: fs.serverPath, scope: "server" });
+              }
             }}
             onServerDownload={fs.downloadFromServer}
             onServerTransferToRemote={(fileName, entry) => {
@@ -481,16 +505,43 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             generalListing={fs.generalListing}
             generalLoading={fs.generalLoading}
             generalError={fs.generalError}
-            onLoadGeneral={(p) => fs.loadGeneralDirectory(p || fs.generalPath)}
-            onGeneralUp={fs.navigateGeneralUp}
-            onGeneralNavigateDir={(d) => {
-              const newPath = fs.generalPath.endsWith("/") ? `${fs.generalPath}${d}` : `${fs.generalPath}/${d}`;
-              fs.loadGeneralDirectory(newPath);
+            deletedRobotFolder={fs.deletedRobotFolder}
+            onLoadGeneral={(p) => {
+              if (fs.deletedRobotFolder && (!p || p === fs.generalPath)) {
+                void fs.loadDeletedRobotDirectory(fs.deletedRobotFolder, "/");
+              } else {
+                void fs.loadGeneralDirectory(p || "/");
+              }
             }}
-            onGeneralNavigatePath={(path) => fs.loadGeneralDirectory(path)}
+            onGeneralUp={fs.navigateGeneralUp}
+            onGeneralNavigateDir={fs.navigateGeneralDir}
+            onGeneralNavigatePath={fs.navigateGeneralPath}
             onGeneralOpenRobot={handleOpenRobotFromGeneral}
+            onGeneralOpenDeletedRobot={(folderName) => void fs.loadDeletedRobotDirectory(folderName, "/")}
+            onGeneralDeleteDeletedRobot={
+              isAdmin
+                ? (folderName) =>
+                    setDeleteFolderTarget({
+                      folderName,
+                      folderPath: `/${folderName}`,
+                      scope: "deleted_robot",
+                    })
+                : undefined
+            }
             onCreateGeneralFolder={(name) => fs.createGeneralFolder(name, fs.generalPath)}
-            onGeneralUpload={(file) => fs.uploadToGeneral(file, fs.generalPath)}
+            onGeneralUpload={async (file) => {
+              const existsInView = fs.generalListing?.entries.some(
+                (entry) => entry.type === "file" && entry.name === file.name
+              );
+              if (existsInView) {
+                setOverwriteTarget({ file, targetPath: fs.generalPath, scope: "general" });
+                return;
+              }
+              const outcome = await fs.uploadToGeneral(file, fs.generalPath);
+              if (outcome === "conflict") {
+                setOverwriteTarget({ file, targetPath: fs.generalPath, scope: "general" });
+              }
+            }}
             onGeneralDownload={fs.downloadFromGeneral}
             onGeneralDelete={(fileName) => setDeleteTarget({ fileName, targetType: "general" })}
             onGeneralDeleteFolder={(folderName) =>
@@ -514,8 +565,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               fs.loadRemoteDirectory(fs.remoteRobotId, newPath);
             }}
             onRemoteNavigatePath={(path) => fs.loadRemoteDirectory(fs.remoteRobotId, path)}
-            onRemoteUpload={(file) => {
-              fs.uploadToRemote(file, fs.remotePath);
+            onCreateRemoteFolder={(name) => fs.createRemoteFolder(fs.remoteRobotId, name, fs.remotePath)}
+            onRemoteUpload={async (file) => {
+              const existsInView = fs.remoteListing?.entries.some(
+                (entry) => entry.type === "file" && entry.name === file.name
+              );
+              if (existsInView) {
+                setOverwriteTarget({ file, targetPath: fs.remotePath, scope: "remote" });
+                return;
+              }
+              const outcome = await fs.uploadToRemote(file, fs.remotePath);
+              if (outcome === "conflict") {
+                setOverwriteTarget({ file, targetPath: fs.remotePath, scope: "remote" });
+              }
             }}
             onRemoteDownload={fs.downloadFromRemote}
             onRemoteTransferToServer={(fileName, entry) => {
@@ -530,12 +592,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               });
             }}
             onRemoteDelete={(fileName) => setDeleteTarget({ fileName, targetType: "remote" })}
+            onRemoteDeleteFolder={(folderName) =>
+              setDeleteFolderTarget({
+                folderName,
+                folderPath: fs.remotePath
+                  ? fs.remotePath.endsWith("/")
+                    ? `${fs.remotePath}${folderName}`
+                    : `${fs.remotePath}/${folderName}`
+                  : folderName,
+                scope: "remote",
+                robotId: fs.remoteRobotId,
+              })
+            }
 
             transfers={transfers.transfers}
             transfersLoading={transfers.loading}
             activeTransfersCount={transfers.activeCount}
             onRefreshTransfers={() => transfers.loadTransfers()}
             onCancelTransfer={transfers.cancelTransfer}
+            onCancelBatch={transfers.cancelBatch}
             onRetryTransfer={transfers.retryTransfer}
             onRemoveTransfer={transfers.removeTransfer}
           />
@@ -579,7 +654,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         onConfirm={handleConfirmRemove}
         title="Conferma Rimozione Robot"
         targetDescription={removingRobot ? `Robot: ${removingRobot.displayName} (${removingRobot.id})` : ""}
-        warningNote="La rimozione esclude il robot dalle operazioni attive ma non cancella i file e le cartelle archiviati sul filesystem del server né l'anagrafica storica."
+        warningNote="Il robot verrà rimosso definitivamente dalla flotta attiva (potrai registrare nuovamente un robot con lo stesso nome o ID). La sua cartella e tutti i file sul server resteranno intatti e consultabili nell'Archivio Generale Server con l'etichetta «Eliminato»."
         confirmText="Conferma Rimozione"
         confirmBtnId="btn-confirm-remove"
         cancelBtnId="btn-cancel-remove"

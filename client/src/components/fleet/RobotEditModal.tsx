@@ -39,6 +39,7 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
       setDisplayName(robot.displayName);
       setHost(robot.host);
       setSshPort(robot.sshPort);
+      setSshAuthMethod(robot.sshAuthMethod || "password");
       setPassword("");
       setPrivateKey("");
       setFingerprint("");
@@ -60,13 +61,19 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
     e.preventDefault();
     setError(null);
 
+    const trimmedCustomer = customerName.trim();
+    if (!trimmedCustomer) {
+      setError("Il Nome Cliente è obbligatorio.");
+      return;
+    }
+
     const payload: EditRobotPayload = {
       displayName: displayName.trim(),
       host: host.trim(),
       sshPort: Number(sshPort),
       sshAuthMethod,
-      customerName: customerName.trim() || undefined,
-      plantName: plantName.trim() || undefined,
+      customerName: trimmedCustomer,
+      plantName: plantName.trim(),
       password: password ? password : undefined,
       privateKey: privateKey.trim() ? privateKey.trim() : undefined,
       hostKeyVerification: fingerprint.trim()
@@ -135,11 +142,14 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
               </div>
 
               <div className="form-group">
-                <label htmlFor="edit-customerName">Nome Cliente (opzionale):</label>
+                <label htmlFor="edit-customerName">
+                  Nome Cliente <span className="required">*</span>:
+                </label>
                 <input
                   type="text"
                   id="edit-customerName"
                   name="customerName"
+                  required
                   placeholder="es. Acme Industries"
                   value={customerName}
                   onChange={(e) => setCustomerName(e.target.value)}

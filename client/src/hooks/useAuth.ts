@@ -42,6 +42,8 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
   const lastActivityRef = useRef<number>(Date.now());
   const idleCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const hasReportedWarningRef = useRef<boolean>(false);
+  const isIdleWarningOpenRef = useRef<boolean>(false);
+  isIdleWarningOpenRef.current = isIdleWarningOpen;
   const logoutInProgressRef = useRef(false);
   const inMemoryLogoutRef = useRef<LogoutContext | null>(null);
   const effectiveActiveTransfers = Math.max(initialTransfersCount, internalActiveTransfers);
@@ -504,7 +506,7 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
           }).catch(() => undefined);
         }
       } else {
-        if (idleWarningInfo || isIdleWarningOpen) {
+        if (isIdleWarningOpenRef.current || hasReportedWarningRef.current) {
           setIdleWarning(null);
           setIdleWarningInfo(null);
           setIsIdleWarningOpen(false);
@@ -513,7 +515,10 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
       }
     };
 
-    if (typeof window !== "undefined") {
+    if (
+      typeof window !== "undefined" &&
+      ((import.meta as any).env?.DEV || (window as any).__ENABLE_INACTIVITY_TEST_HOOKS__ === true)
+    ) {
       (window as any)._molirisSimulateInactivity = (inactiveMinutes: number) => {
         lastActivityRef.current = Date.now() - inactiveMinutes * 60 * 1000;
         runIdleCheck();
@@ -530,9 +535,9 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
     return () => {
       if (idleCheckIntervalRef.current) clearInterval(idleCheckIntervalRef.current);
     };
-  }, [getPendingLogout, isAuthenticated, sessionTimeoutMinutes, sessionWarningMinutes, idleWarningInfo, isIdleWarningOpen]);
+  }, [getPendingLogout, isAuthenticated, sessionTimeoutMinutes, sessionWarningMinutes]);
 
-  const isAdmin = currentUser?.roles.includes("amministratore") ?? false;
+  const isAdmin = currentUser?.roles.includes("admin") ?? false;
   const isOperator = currentUser?.roles.includes("operatore") ?? false;
 
   return {

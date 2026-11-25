@@ -39,6 +39,7 @@ interface TransfersPanelProps {
   loading: boolean;
   onRefresh: () => void;
   onCancelTransfer: (transferId: string) => void | Promise<unknown>;
+  onCancelBatch?: (batchId: string) => void | Promise<unknown>;
   onRetryTransfer?: (transferId: string) => void | Promise<unknown>;
   onRemoveTransfer?: (transferId: string) => void | Promise<unknown>;
 }
@@ -48,6 +49,7 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
   loading,
   onRefresh,
   onCancelTransfer,
+  onCancelBatch,
   onRetryTransfer,
   onRemoveTransfer,
 }) => {
@@ -199,7 +201,7 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                 ? "badge-nodata"
                 : "badge-avviso";
 
-              const isBatchBusy = items.some((trf) => pending.has(trf.transferId));
+              const isBatchBusy = pending.has(batchId) || items.some((trf) => pending.has(trf.transferId));
 
               return (
                 <div
@@ -221,6 +223,9 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                           id={`btn-cancel-batch-${batchId}`}
                           className="btn btn-outline-danger btn-sm"
                           onClick={() => {
+                            if (onCancelBatch) {
+                              return runAction(batchId, onCancelBatch);
+                            }
                             const activeItems = items.filter((trf) => isActiveStatus(trf.status));
                             return Promise.all(
                               activeItems.map((trf) => runAction(trf.transferId, onCancelTransfer))

@@ -93,7 +93,7 @@ try {
     id: "usr_admin",
     username: "admin_test",
     passwordHash: "hash",
-    roles: ["amministratore"],
+    roles: ["admin"],
     permissions: Object.values(AppPermission),
     enabled: true,
     createdAt: new Date(),

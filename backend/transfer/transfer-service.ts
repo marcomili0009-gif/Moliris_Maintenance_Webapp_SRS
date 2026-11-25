@@ -37,6 +37,7 @@ import { resolveChecksumAlgorithm, ChecksumTransformStream } from "./checksum-se
 import { ProgressTrackerStream } from "./transfer-progress.ts";
 import { PipelinedSftpReadStream, PipelinedSftpWriteStream } from "../remote-fs/remote-fs-service.ts";
 import { type PhysicalFileLogger } from "../logging/physical-file-logger.ts";
+import { type BatchTransferManager } from "./batch-transfer-manager.ts";
 import {
   type BulkTarget,
   type BulkFileConflict,
@@ -95,9 +96,14 @@ export class TransferService {
   ]);
 
   private physicalFileLogger?: PhysicalFileLogger;
+  private batchTransferManager?: BatchTransferManager;
 
   public setPhysicalFileLogger(logger: PhysicalFileLogger): void {
     this.physicalFileLogger = logger;
+  }
+
+  public setBatchTransferManager(manager: BatchTransferManager): void {
+    this.batchTransferManager = manager;
   }
 
   constructor(
@@ -2502,7 +2508,7 @@ export class TransferService {
 
   public listTransfers(context: AuthorizedContext, robotId?: string): TransferDto[] {
     const list: TransferDto[] = [];
-    const isAdmin = Array.isArray(context.roles) && context.roles.some((r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore");
+    const isAdmin = Array.isArray(context.roles) && context.roles.some((r) => r.toLowerCase() === "admin");
     for (const record of Array.from(this.transfers.values())) {
       if (robotId && record.robotId !== robotId) continue;
       if (isAdmin || record.userId === context.userId || context.targetRobotId === record.robotId || !context.targetRobotId) {
@@ -2521,6 +2527,7 @@ export class TransferService {
 
     return {
       transferId: record.transferId,
+      batchId: record.batchId,
       userId: record.userId,
       robotId: record.robotId,
       direction: record.direction,
@@ -3164,11 +3171,53 @@ export class TransferService {
     let totalChecks = 0;
 
     for (const target of targets) {
-      const robot = await this.robotRepository.findById(target.robotId);
+      if (target.type === "general") {
+        if (!context.permissions.has(AppPermission.FS_SERVER_UPLOAD)) {
+          this.recordSecurityViolation(context.username, TransferService.GENERAL_SERVER_ID, `PERMISSION_DENIED_${AppPermission.FS_SERVER_UPLOAD}`);
+          throw new MolirisAppError(
+            ErrorCode.INSUFFICIENT_PERMISSIONS,
+            `Permesso '${AppPermission.FS_SERVER_UPLOAD}' mancante per archivio generale`,
+            "Operazione non consentita: autorizzazioni insufficienti per il caricamento nell'archivio generale."
+          );
+        }
+        this.serverFsService.assertOperatorAccess(context, target.directory, "UPLOAD");
+
+        for (const fname of filenames) {
+          totalChecks++;
+          const safeFilename = this.sanitizeFilename(fname);
+          const relPath = target.directory && target.directory !== "/"
+            ? path.posix.join(path.posix.normalize(target.directory).replace(/^\/+/, ""), safeFilename)
+            : safeFilename;
+          const fullPath = await this.serverFsService.resolveGeneralPath(relPath);
+
+          if (fs.existsSync(fullPath)) {
+            try {
+              const st = await fs.promises.stat(fullPath);
+              conflicts.push({
+                filename: fname,
+                target,
+                destinationPath: fullPath,
+                existingSizeBytes: st.size,
+                existingModifiedAt: st.mtime,
+              });
+            } catch {
+              conflicts.push({
+                filename: fname,
+                target,
+                destinationPath: fullPath,
+              });
+            }
+          }
+        }
+        continue;
+      }
+
+      const robotId = target.robotId || "";
+      const robot = await this.robotRepository.findById(robotId);
       if (!robot) {
         throw new MolirisAppError(
           ErrorCode.MISSING_ROBOT_PARAMS,
-          `Robot target '${target.robotId}' non trovato nell'anagrafica.`
+          `Robot target '${robotId}' non trovato nell'anagrafica.`
         );
       }
 
@@ -3260,6 +3309,7 @@ export class TransferService {
     options: {
       targets: BulkTarget[];
       overwrite: boolean;
+      batchId?: string;
       stagedFiles: Array<{
         filename: string;
         stagingPath: string;
@@ -3274,18 +3324,247 @@ export class TransferService {
     let failed = 0;
     let skipped = 0;
 
-    for (const staged of stagedFiles) {
+    // Integrazione BatchTransferManager (ISS-009, Requisito #9)
+    const batchId = options.batchId || crypto.randomUUID();
+    const batchItemsSpec: Array<{ id: string; filename: string; sizeBytes: number; target: BulkTarget }> = [];
+    stagedFiles.forEach((staged, sIdx) => {
+      targets.forEach((target, tIdx) => {
+        batchItemsSpec.push({
+          id: `${batchId}_${sIdx}_${tIdx}`,
+          filename: staged.filename,
+          sizeBytes: staged.sizeBytes,
+          target,
+        });
+      });
+    });
+    const batchRecord = this.batchTransferManager?.createBatch({
+      batchId,
+      userId: context.userId,
+      username: context.username,
+      files: batchItemsSpec,
+    });
+
+    const isItemCancelledByBatch = (itemId: string): boolean => {
+      if (!batchRecord) return false;
+      const item = batchRecord.items.find((i) => i.id === itemId);
+      return batchRecord.status === "CANCELLED" || item?.status === "CANCELLED";
+    };
+
+    for (let sIdx = 0; sIdx < stagedFiles.length; sIdx++) {
+      const staged = stagedFiles[sIdx];
       const fileTargetResults: BulkUploadTargetResult[] = [];
       let allTargetsSuccess = true;
 
-      for (const target of targets) {
-        const robot = await this.robotRepository.findById(target.robotId);
-        if (!robot) {
+      for (let tIdx = 0; tIdx < targets.length; tIdx++) {
+        const target = targets[tIdx];
+        const batchItemId = `${batchId}_${sIdx}_${tIdx}`;
+
+        if (isItemCancelledByBatch(batchItemId)) {
           fileTargetResults.push({
             target,
             success: false,
             destinationPath: "",
-            error: `Robot '${target.robotId}' non trovato.`,
+            error: "Annullato con il blocco massivo.",
+          });
+          allTargetsSuccess = false;
+          skipped++;
+          continue;
+        }
+
+        if (target.type === "general") {
+          let tempPartPath = "";
+          let record: TransferRecord | null = null;
+          try {
+            if (!context.permissions.has(AppPermission.FS_SERVER_UPLOAD)) {
+              this.recordSecurityViolation(context.username, TransferService.GENERAL_SERVER_ID, `PERMISSION_DENIED_${AppPermission.FS_SERVER_UPLOAD}`);
+              throw new MolirisAppError(
+                ErrorCode.INSUFFICIENT_PERMISSIONS,
+                `Permesso '${AppPermission.FS_SERVER_UPLOAD}' mancante per archivio generale`,
+                "Operazione non consentita: autorizzazioni insufficienti per il caricamento nell'archivio generale."
+              );
+            }
+            this.serverFsService.assertOperatorAccess(context, target.directory, "UPLOAD");
+
+            const safeFilename = this.sanitizeFilename(staged.filename);
+            const relPath = target.directory && target.directory !== "/"
+              ? path.posix.join(path.posix.normalize(target.directory).replace(/^\/+/, ""), safeFilename)
+              : safeFilename;
+            const finalPath = await this.serverFsService.resolveGeneralPath(relPath);
+
+            if (fs.existsSync(finalPath) && !overwrite) {
+              this.batchTransferManager?.setItemFailed(batchId, batchItemId, "File già esistente nell'archivio generale.");
+              fileTargetResults.push({
+                target,
+                success: false,
+                destinationPath: finalPath,
+                error: "File già esistente. Sovrascrittura non autorizzata.",
+              });
+              allTargetsSuccess = false;
+              skipped++;
+              continue;
+            }
+
+            const tempDir = path.join(this.config.serverFilesystemRoot, ".tmp_bulk");
+            if (!fs.existsSync(tempDir)) {
+              await fs.promises.mkdir(tempDir, { recursive: true, mode: 0o700 });
+            }
+            const transferId = crypto.randomUUID();
+            tempPartPath = path.join(tempDir, `bulk_general_${transferId}.part`);
+
+            const startTime = Date.now();
+            const genRecord: TransferRecord = {
+              transferId,
+              batchId,
+              userId: context.userId,
+              userSessionId: context.sessionId || "session-system",
+              robotId: TransferService.GENERAL_SERVER_ID,
+              direction: TransferDirection.CLIENT_TO_SERVER,
+              sourcePath: staged.stagingPath,
+              destinationPath: finalPath,
+              tempDestinationPath: tempPartPath,
+              filename: safeFilename,
+              totalBytes: staged.sizeBytes,
+              transferredBytes: 0,
+              status: TransferStatus.IN_PROGRESS,
+              speedBytesPerSec: 0,
+              etaSeconds: null,
+              startedAt: new Date(),
+              completedAt: undefined,
+              error: null,
+              checksumAlgorithm: this.checksumAlgorithm.name,
+              lastProgressUpdateAt: startTime,
+              lastBytesAtUpdate: 0,
+              abortController: new AbortController(),
+              cleanupHandlers: [
+                async () => {
+                  try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
+                },
+              ],
+            };
+            record = genRecord;
+            this.transfers.set(transferId, genRecord);
+            await this.recordAuditStart(genRecord);
+
+            this.batchTransferManager?.setItemInProgress(batchId, batchItemId, {
+              abortController: genRecord.abortController,
+              tempPartPath,
+              onCancelCleanup: async () => {
+                genRecord.status = TransferStatus.CANCELLED;
+                genRecord.completedAt = new Date();
+                genRecord.error = "Trasferimento annullato con il blocco massivo.";
+                for (const c of genRecord.cleanupHandlers) {
+                  try { await c(); } catch {}
+                }
+              },
+            });
+
+            const hash = crypto.createHash("sha256");
+            let writtenBytes = 0;
+            const readStream = fs.createReadStream(staged.stagingPath);
+            const writeStream = fs.createWriteStream(tempPartPath, { mode: 0o600 });
+
+            await new Promise<void>((resolve, reject) => {
+              const onAbort = () => {
+                const abortErr = new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Trasferimento annullato con il blocco massivo.");
+                readStream.destroy(abortErr);
+                writeStream.destroy(abortErr);
+                reject(abortErr);
+              };
+              genRecord.abortController.signal.addEventListener("abort", onAbort, { once: true });
+              readStream.on("data", (chunk: Buffer | string) => {
+                const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                hash.update(buf);
+                writtenBytes += buf.length;
+                genRecord.transferredBytes = writtenBytes;
+                const elapsedSec = Math.max(0.001, (Date.now() - startTime) / 1000);
+                genRecord.speedBytesPerSec = Math.round(writtenBytes / elapsedSec);
+                if (genRecord.totalBytes && genRecord.speedBytesPerSec > 0) {
+                  const remaining = Math.max(0, genRecord.totalBytes - writtenBytes);
+                  genRecord.etaSeconds = Math.ceil(remaining / genRecord.speedBytesPerSec);
+                }
+                genRecord.lastProgressUpdateAt = Date.now();
+                this.batchTransferManager?.updateItemProgress(batchId, batchItemId, writtenBytes);
+              });
+              pipeline(readStream, writeStream, (err) => {
+                genRecord.abortController.signal.removeEventListener("abort", onAbort);
+                if (err) reject(err);
+                else resolve();
+              });
+            }).catch(async (err) => {
+              if (genRecord.status !== TransferStatus.CANCELLED) {
+                genRecord.status = TransferStatus.FAILED;
+                genRecord.error = err.message;
+                genRecord.completedAt = new Date();
+                await this.recordAuditFailure(genRecord, err);
+              }
+              try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
+              throw err;
+            });
+
+            const computedHash = hash.digest("hex");
+            if (computedHash !== staged.sha256) {
+              genRecord.status = TransferStatus.INTEGRITY_FAILED;
+              genRecord.error = "Checksum non corrispondente durante il salvataggio nell'archivio generale.";
+              genRecord.completedAt = new Date();
+              await this.recordAuditFailure(genRecord, new Error(genRecord.error));
+              try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
+              throw new MolirisAppError(ErrorCode.INTEGRITY_CHECK_FAILED, genRecord.error);
+            }
+
+            const tempStat = await fs.promises.stat(tempPartPath);
+            if (tempStat.size !== writtenBytes) {
+              genRecord.status = TransferStatus.INTEGRITY_FAILED;
+              genRecord.error = "Dimensione del file temporaneo non corrispondente ai byte ricevuti.";
+              genRecord.completedAt = new Date();
+              await this.recordAuditFailure(genRecord, new Error(genRecord.error));
+              try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
+              throw new MolirisAppError(ErrorCode.INTEGRITY_CHECK_FAILED, genRecord.error);
+            }
+
+            await fs.promises.mkdir(path.dirname(finalPath), { recursive: true, mode: 0o750 });
+            await fs.promises.rename(tempPartPath, finalPath);
+
+            genRecord.status = TransferStatus.COMPLETED;
+            genRecord.completedAt = new Date();
+            genRecord.transferredBytes = writtenBytes;
+            genRecord.computedChecksum = computedHash;
+            await this.recordAuditComplete(genRecord);
+            this.batchTransferManager?.setItemCompleted(batchId, batchItemId);
+
+            fileTargetResults.push({
+              target,
+              success: true,
+              destinationPath: finalPath,
+              bytesTransferred: writtenBytes,
+              checksum: computedHash,
+            });
+            completed++;
+          } catch (err: any) {
+            const errMsg = err?.userMessage || err?.message || "Errore durante scrittura nell'archivio generale";
+            if (!record || record.status !== TransferStatus.CANCELLED) {
+              this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
+            }
+            fileTargetResults.push({
+              target,
+              success: false,
+              destinationPath: "",
+              error: errMsg,
+            });
+            allTargetsSuccess = false;
+            failed++;
+          }
+          continue;
+        }
+
+        const targetRobotId = target.robotId || "";
+        const robot = await this.robotRepository.findById(targetRobotId);
+        if (!robot) {
+          this.batchTransferManager?.setItemFailed(batchId, batchItemId, `Robot '${targetRobotId}' non trovato.`);
+          fileTargetResults.push({
+            target,
+            success: false,
+            destinationPath: "",
+            error: `Robot '${targetRobotId}' non trovato.`,
           });
           allTargetsSuccess = false;
           failed++;
@@ -3293,6 +3572,7 @@ export class TransferService {
         }
 
         if (target.type === "server") {
+          let record: TransferRecord | null = null;
           try {
             this.assertAuthorized(context, robot, [AppPermission.FS_SERVER_UPLOAD]);
             this.serverFsService.assertOperatorAccess(context, target.directory, "UPLOAD");
@@ -3305,6 +3585,7 @@ export class TransferService {
 
             // Verifica esistenza e politica sovrascrittura
             if (fs.existsSync(finalPath) && !overwrite) {
+              this.batchTransferManager?.setItemFailed(batchId, batchItemId, "File già esistente. Sovrascrittura non autorizzata.");
               fileTargetResults.push({
                 target,
                 success: false,
@@ -3322,8 +3603,9 @@ export class TransferService {
             const tempPartPath = path.join(tempDir, `bulk_${transferId}.part`);
 
             const startTime = Date.now();
-            const record: TransferRecord = {
+            const serverRecord: TransferRecord = {
               transferId,
+              batchId,
               userId: context.userId,
               userSessionId: context.sessionId || "session-system",
               robotId: robot.id,
@@ -3350,8 +3632,22 @@ export class TransferService {
                 },
               ],
             };
-            this.transfers.set(transferId, record);
-            await this.recordAuditStart(record);
+            record = serverRecord;
+            this.transfers.set(transferId, serverRecord);
+            await this.recordAuditStart(serverRecord);
+
+            this.batchTransferManager?.setItemInProgress(batchId, batchItemId, {
+              abortController: serverRecord.abortController,
+              tempPartPath,
+              onCancelCleanup: async () => {
+                serverRecord.status = TransferStatus.CANCELLED;
+                serverRecord.completedAt = new Date();
+                serverRecord.error = "Trasferimento annullato con il blocco massivo.";
+                for (const c of serverRecord.cleanupHandlers) {
+                  try { await c(); } catch {}
+                }
+              },
+            });
 
             // Stream da staging a tempPartPath con calcolo sha256 e tracciamento in tempo reale
             const hash = crypto.createHash("sha256");
@@ -3360,46 +3656,49 @@ export class TransferService {
             const writeStream = fs.createWriteStream(tempPartPath, { mode: 0o600 });
 
             await new Promise<void>((resolve, reject) => {
+              const onAbort = () => {
+                const abortErr = new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Trasferimento annullato con il blocco massivo.");
+                readStream.destroy(abortErr);
+                writeStream.destroy(abortErr);
+                reject(abortErr);
+              };
+              serverRecord.abortController.signal.addEventListener("abort", onAbort, { once: true });
               readStream.on("data", (chunk: Buffer | string) => {
                 const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
                 hash.update(buf);
                 writtenBytes += buf.length;
-                record.transferredBytes = writtenBytes;
+                serverRecord.transferredBytes = writtenBytes;
                 const elapsedSec = Math.max(0.001, (Date.now() - startTime) / 1000);
-                record.speedBytesPerSec = Math.round(writtenBytes / elapsedSec);
-                if (record.totalBytes && record.speedBytesPerSec > 0) {
-                  const remaining = Math.max(0, record.totalBytes - writtenBytes);
-                  record.etaSeconds = Math.ceil(remaining / record.speedBytesPerSec);
+                serverRecord.speedBytesPerSec = Math.round(writtenBytes / elapsedSec);
+                if (serverRecord.totalBytes && serverRecord.speedBytesPerSec > 0) {
+                  const remaining = Math.max(0, serverRecord.totalBytes - writtenBytes);
+                  serverRecord.etaSeconds = Math.ceil(remaining / serverRecord.speedBytesPerSec);
                 }
-                record.lastProgressUpdateAt = Date.now();
+                serverRecord.lastProgressUpdateAt = Date.now();
+                this.batchTransferManager?.updateItemProgress(batchId, batchItemId, writtenBytes);
               });
-              readStream.on("error", (err) => {
-                record.status = TransferStatus.FAILED;
-                record.error = err.message;
-                reject(err);
+              pipeline(readStream, writeStream, (err) => {
+                serverRecord.abortController.signal.removeEventListener("abort", onAbort);
+                if (err) reject(err);
+                else resolve();
               });
-              writeStream.on("error", (err) => {
-                record.status = TransferStatus.FAILED;
-                record.error = err.message;
-                reject(err);
-              });
-              writeStream.on("finish", () => resolve());
-              pipeline(readStream, writeStream, (err) => { if (err) reject(err); });
             }).catch(async (err) => {
-              record.status = TransferStatus.FAILED;
-              record.error = err.message;
-              record.completedAt = new Date();
-              await this.recordAuditFailure(record, err);
+              if (serverRecord.status !== TransferStatus.CANCELLED) {
+                serverRecord.status = TransferStatus.FAILED;
+                serverRecord.error = err.message;
+                serverRecord.completedAt = new Date();
+                await this.recordAuditFailure(serverRecord, err);
+              }
               try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
               throw err;
             });
 
             const computedHash = hash.digest("hex");
             if (computedHash !== staged.sha256) {
-              record.status = TransferStatus.INTEGRITY_FAILED;
-              record.error = "Checksum non corrispondente durante il salvataggio sul server.";
-              record.completedAt = new Date();
-              await this.recordAuditFailure(record, new Error(record.error));
+              serverRecord.status = TransferStatus.INTEGRITY_FAILED;
+              serverRecord.error = "Checksum non corrispondente durante il salvataggio sul server.";
+              serverRecord.completedAt = new Date();
+              await this.recordAuditFailure(serverRecord, new Error(serverRecord.error));
               try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
               throw new MolirisAppError(
                 ErrorCode.INTEGRITY_CHECK_FAILED,
@@ -3410,10 +3709,10 @@ export class TransferService {
             // Verifica dimensione su disco prima della promozione (CA-TRF-004)
             const tempStat = await fs.promises.stat(tempPartPath);
             if (tempStat.size !== writtenBytes) {
-              record.status = TransferStatus.INTEGRITY_FAILED;
-              record.error = "Dimensione del file temporaneo non corrispondente ai byte ricevuti.";
-              record.completedAt = new Date();
-              await this.recordAuditFailure(record, new Error(record.error));
+              serverRecord.status = TransferStatus.INTEGRITY_FAILED;
+              serverRecord.error = "Dimensione del file temporaneo non corrispondente ai byte ricevuti.";
+              serverRecord.completedAt = new Date();
+              await this.recordAuditFailure(serverRecord, new Error(serverRecord.error));
               try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
               throw new MolirisAppError(
                 ErrorCode.INTEGRITY_CHECK_FAILED,
@@ -3427,11 +3726,12 @@ export class TransferService {
             // Sostituzione atomica via rename
             await fs.promises.rename(tempPartPath, finalPath);
 
-            record.status = TransferStatus.COMPLETED;
-            record.completedAt = new Date();
-            record.transferredBytes = writtenBytes;
-            record.computedChecksum = computedHash;
-            await this.recordAuditComplete(record);
+            serverRecord.status = TransferStatus.COMPLETED;
+            serverRecord.completedAt = new Date();
+            serverRecord.transferredBytes = writtenBytes;
+            serverRecord.computedChecksum = computedHash;
+            await this.recordAuditComplete(serverRecord);
+            this.batchTransferManager?.setItemCompleted(batchId, batchItemId);
 
             fileTargetResults.push({
               target,
@@ -3442,11 +3742,15 @@ export class TransferService {
             });
             completed++;
           } catch (err: any) {
+            const errMsg = err.userMessage || err.message || "Errore durante scrittura su server";
+            if (!record || record.status !== TransferStatus.CANCELLED) {
+              this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
+            }
             fileTargetResults.push({
               target,
               success: false,
               destinationPath: "",
-              error: err.userMessage || err.message || "Errore durante scrittura su server",
+              error: errMsg,
             });
             allTargetsSuccess = false;
             failed++;
@@ -3476,6 +3780,7 @@ export class TransferService {
               sftp.stat(finalRemotePath, (err) => resolve(!err));
             });
             if (exists && !overwrite) {
+              this.batchTransferManager?.setItemFailed(batchId, batchItemId, "File già esistente sul robot.");
               fileTargetResults.push({
                 target,
                 success: false,
@@ -3497,6 +3802,7 @@ export class TransferService {
             const startTime = Date.now();
             const targetRecord: TransferRecord = {
               transferId,
+              batchId,
               userId: context.userId,
               userSessionId: context.sessionId || "session-system",
               robotId: robot.id,
@@ -3517,11 +3823,29 @@ export class TransferService {
               lastProgressUpdateAt: startTime,
               lastBytesAtUpdate: 0,
               abortController: new AbortController(),
-              cleanupHandlers: [],
+              cleanupHandlers: [
+                async () => {
+                  try {
+                    await new Promise<void>((res) => sftp.unlink(tempRemotePartPath, () => res()));
+                  } catch {}
+                },
+              ],
             };
             record = targetRecord;
             this.transfers.set(transferId, targetRecord);
             await this.recordAuditStart(targetRecord);
+
+            this.batchTransferManager?.setItemInProgress(batchId, batchItemId, {
+              abortController: targetRecord.abortController,
+              onCancelCleanup: async () => {
+                targetRecord.status = TransferStatus.CANCELLED;
+                targetRecord.completedAt = new Date();
+                targetRecord.error = "Trasferimento annullato con il blocco massivo.";
+                for (const c of targetRecord.cleanupHandlers) {
+                  try { await c(); } catch {}
+                }
+              },
+            });
 
             const hash = crypto.createHash("sha256");
             let writtenBytes = 0;
@@ -3532,6 +3856,13 @@ export class TransferService {
             });
 
             await new Promise<void>((resolve, reject) => {
+              const onAbort = () => {
+                const abortErr = new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Trasferimento annullato con il blocco massivo.");
+                readStream.destroy(abortErr);
+                remoteWriteStream.destroy(abortErr);
+                reject(abortErr);
+              };
+              targetRecord.abortController.signal.addEventListener("abort", onAbort, { once: true });
               readStream.on("data", (chunk: Buffer | string) => {
                 const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
                 hash.update(buf);
@@ -3545,26 +3876,16 @@ export class TransferService {
                     record.etaSeconds = Math.ceil(remaining / record.speedBytesPerSec);
                   }
                   record.lastProgressUpdateAt = Date.now();
+                  this.batchTransferManager?.updateItemProgress(batchId, batchItemId, writtenBytes);
                 }
               });
-              readStream.on("error", (err) => {
-                if (record) {
-                  record.status = TransferStatus.FAILED;
-                  record.error = err.message;
-                }
-                reject(err);
+              pipeline(readStream, remoteWriteStream, (err) => {
+                targetRecord.abortController.signal.removeEventListener("abort", onAbort);
+                if (err) reject(err);
+                else resolve();
               });
-              remoteWriteStream.on("error", (err) => {
-                if (record) {
-                  record.status = TransferStatus.FAILED;
-                  record.error = err.message;
-                }
-                reject(err);
-              });
-              remoteWriteStream.on("finish", () => resolve());
-              pipeline(readStream, remoteWriteStream, (err) => { if (err) reject(err); });
             }).catch(async (err) => {
-              if (record) {
+              if (record && record.status !== TransferStatus.CANCELLED) {
                 record.status = TransferStatus.FAILED;
                 record.error = err.message;
                 record.completedAt = new Date();
@@ -3634,6 +3955,7 @@ export class TransferService {
               record.computedChecksum = computedHash;
               await this.recordAuditComplete(record);
             }
+            this.batchTransferManager?.setItemCompleted(batchId, batchItemId);
 
             fileTargetResults.push({
               target,
@@ -3644,11 +3966,15 @@ export class TransferService {
             });
             completed++;
           } catch (err: any) {
-            if (record) {
+            const errMsg = err.userMessage || err.message || "Errore durante trasferimento al robot";
+            if (record && record.status !== TransferStatus.CANCELLED) {
               record.status = TransferStatus.FAILED;
-              record.error = err.userMessage || err.message;
+              record.error = errMsg;
               record.completedAt = new Date();
               await this.recordAuditFailure(record, err).catch(() => {});
+              this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
+            } else if (!record) {
+              this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
             }
             if (tempRemotePartPath && managedConn) {
               try {
@@ -3660,7 +3986,7 @@ export class TransferService {
               target,
               success: false,
               destinationPath: "",
-              error: err.userMessage || err.message || "Errore durante trasferimento al robot",
+              error: errMsg,
             });
             allTargetsSuccess = false;
             failed++;
@@ -3679,9 +4005,10 @@ export class TransferService {
     }
 
     return {
-      // Un file saltato (conflitto sopraggiunto) non è un successo: il client
+      // Un file saltato (conflitto sopraggiunto o annullato) non è un successo: il client
       // non deve presentare l'operazione come completata (CA-TRF-003/005).
       success: failed === 0 && skipped === 0,
+      batchId,
       totalFiles: stagedFiles.length,
       results,
       summary: {
