@@ -701,6 +701,12 @@ export class TerminalService {
       return;
     }
 
+    const userSessionId = session.authorizedContext.sessionId;
+    if (!this.sessionManager.isSessionActive(userSessionId)) {
+      socket.close(4401, "Session Expired");
+      return;
+    }
+
     // 1c. Verifica ruolo Admin (RF-04: terminale riservato esclusivamente agli admin)
     const isAdmin = Array.isArray(requestingUser.roles) && requestingUser.roles.some((r) => r.toLowerCase() === "admin" || r.toLowerCase() === "amministratore");
     if (!isAdmin) {
@@ -764,7 +770,8 @@ export class TerminalService {
     // STEP 2 – Streaming PROGRESSIVO dell'output dal PTY verso il WebSocket (CA-SSH-003, RNF-PERF-002)
     const onPtyData = (chunk: Buffer | string) => {
       // RF-01: L'output dal robot (PTY) NON rinnova il timer di inattività dell'utente
-      if (socket.readyState === 1 /* OPEN */) {
+      if (session.state === "active" && socket.readyState === 1 /* OPEN */
+        && this.sessionManager.isSessionActive(userSessionId)) {
         // Controllo del traffico e buffer limitato (RNF-PERF-002)
         if (socket.bufferedAmount > this.limits.maxBufferedBytes) {
           try {
@@ -792,6 +799,7 @@ export class TerminalService {
 
     // STEP 2 – Input dal WebSocket verso il PTY (comandi, caratteri di controllo, resize)
     socket.on("message", (rawMsg: any) => {
+      if (session.state !== "active" || !this.sessionManager.touchSession(userSessionId)) return;
       session.lastActivityAt = new Date();
       // RF-01: Resetta lo stato di warning all'arrivo di attività utente qualificata
       if ((session as any).lastWarningMinute !== undefined) {
@@ -801,10 +809,6 @@ export class TerminalService {
             socket.send(JSON.stringify({ type: "terminal_idle_reset" }));
           } catch {}
         }
-      }
-      // Attività qualificata: input utente o resize dal WebSocket rinnova la sessione applicativa
-      if (session.authorizedContext?.sessionId) {
-        this.sessionManager.touchSession(session.authorizedContext.sessionId);
       }
       const text = typeof rawMsg === "string" ? rawMsg : rawMsg.toString("utf-8");
 
@@ -820,9 +824,6 @@ export class TerminalService {
               try {
                 socket.send(JSON.stringify({ type: "terminal_idle_reset" }));
               } catch {}
-            }
-            if (session.authorizedContext?.sessionId) {
-              this.sessionManager.touchSession(session.authorizedContext.sessionId);
             }
             this.auditRepository.record({
               userId: session.username,

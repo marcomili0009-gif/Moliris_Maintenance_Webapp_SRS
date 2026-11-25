@@ -1,9 +1,9 @@
 // Requisiti soddisfatti: RNF-SEC-002, RNF-SEC-009, §10.4, §11.1, RNF-MNT-002
 
-import { type Db, type Collection } from "mongodb";
+import { ObjectId, type Db, type Collection, type WriteConcernSettings } from "mongodb";
 import {
   type AuditEventDocument,
-  type AuditOperation,
+  AuditOperation,
   sanitizeAuditEvent,
 } from "./audit-models.ts";
 import { MolirisAppError, ErrorCode } from "../errors/app-errors.ts";
@@ -17,15 +17,46 @@ export interface AuditQueryFilter {
   to?: Date;
 }
 
+export interface RobotRemovalAudit {
+  eventId: string;
+  robotId: string;
+  robotCreatedAt: Date;
+  userId: string;
+  serverDirectoryPath: string;
+}
+
+type RobotRemovalIntent = Omit<RobotRemovalAudit, "eventId">;
+
+function removalEvent(removal: RobotRemovalAudit): AuditEventDocument {
+  return sanitizeAuditEvent({
+    id: `audit_${removal.eventId}`,
+    userId: removal.userId,
+    robotId: removal.robotId,
+    operation: AuditOperation.ROBOT_REMOVAL,
+    outcome: "SUCCESS",
+    timestamp: new Date(),
+    details: {
+      deletedFromDatabase: true,
+      serverDirectoryPreserved: removal.serverDirectoryPath,
+    },
+  });
+}
+
 export interface AuditRepository {
   record(event: Omit<AuditEventDocument, "id">): Promise<AuditEventDocument>;
   query(filter?: AuditQueryFilter): Promise<AuditEventDocument[]>;
   purgeOlderThanDays(retentionDays: number): Promise<number>;
+  findRobotRemoval(robotId: string): Promise<RobotRemovalAudit | null>;
+  listPendingRobotRemovalIds(signal?: AbortSignal): AsyncIterable<string>;
+  beginRobotRemoval(intent: RobotRemovalIntent): Promise<RobotRemovalAudit>;
+  recordRobotRemoval(removal: RobotRemovalAudit): Promise<void>;
+  clearRobotRemoval(removal: RobotRemovalAudit): Promise<void>;
 }
 
 export class InMemoryAuditRepository implements AuditRepository {
   private events: AuditEventDocument[] = [];
   private counter: number = 0;
+  private pendingRemovals = new Map<string, RobotRemovalAudit>();
 
   async record(event: Omit<AuditEventDocument, "id">): Promise<AuditEventDocument> {
     try {
@@ -37,6 +68,36 @@ export class InMemoryAuditRepository implements AuditRepository {
       return structuredClone(sanitized);
     } catch (err: any) {
       throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore salvataggio audit in-memory: ${err.message}`);
+    }
+  }
+
+  async findRobotRemoval(robotId: string): Promise<RobotRemovalAudit | null> {
+    return structuredClone(this.pendingRemovals.get(robotId) ?? null);
+  }
+
+  async *listPendingRobotRemovalIds(): AsyncIterable<string> {
+    yield* this.pendingRemovals.keys();
+  }
+
+  async beginRobotRemoval(intent: RobotRemovalIntent): Promise<RobotRemovalAudit> {
+    const pending = this.pendingRemovals.get(intent.robotId) ?? {
+      ...structuredClone(intent),
+      eventId: new ObjectId().toHexString(),
+    };
+    this.pendingRemovals.set(intent.robotId, pending);
+    return structuredClone(pending);
+  }
+
+  async recordRobotRemoval(removal: RobotRemovalAudit): Promise<void> {
+    const event = removalEvent(removal);
+    if (!this.events.some((existing) => existing.id === event.id)) {
+      this.events.push(event);
+    }
+  }
+
+  async clearRobotRemoval(removal: RobotRemovalAudit): Promise<void> {
+    if (this.pendingRemovals.get(removal.robotId)?.eventId === removal.eventId) {
+      this.pendingRemovals.delete(removal.robotId);
     }
   }
 
@@ -77,11 +138,19 @@ export class InMemoryAuditRepository implements AuditRepository {
 
 export class MongoAuditRepository implements AuditRepository {
   private collection: Collection<AuditEventDocument>;
+  private pendingRemovals: Collection<{ _id: string; removal: RobotRemovalAudit }>;
+  private removalWriteConcern: WriteConcernSettings;
   private db: Db;
 
   constructor(db: Db) {
     this.db = db;
     this.collection = db.collection<AuditEventDocument>("audit_events");
+    this.pendingRemovals = db.collection("pending_robot_removals");
+    this.removalWriteConcern = {
+      w: db.writeConcern?.w || "majority",
+      journal: true,
+      wtimeoutMS: db.writeConcern?.wtimeoutMS || 10_000,
+    };
   }
 
   /**
@@ -152,6 +221,45 @@ export class MongoAuditRepository implements AuditRepository {
     } catch (err: any) {
       throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore registrazione evento audit su MongoDB: ${err.message}`);
     }
+  }
+
+  async findRobotRemoval(robotId: string): Promise<RobotRemovalAudit | null> {
+    return (await this.pendingRemovals.findOne({ _id: robotId }))?.removal ?? null;
+  }
+
+  async *listPendingRobotRemovalIds(signal?: AbortSignal): AsyncIterable<string> {
+    const pending = this.pendingRemovals.find({}, {
+      projection: { _id: 1 }, batchSize: 50, maxTimeMS: 5_000, signal,
+    });
+    for await (const { _id } of pending) yield _id;
+  }
+
+  async beginRobotRemoval(intent: RobotRemovalIntent): Promise<RobotRemovalAudit> {
+    const pending = await this.pendingRemovals.findOneAndUpdate(
+      { _id: intent.robotId },
+      { $setOnInsert: { removal: { ...intent, eventId: new ObjectId().toHexString() } } },
+      { upsert: true, returnDocument: "after", writeConcern: this.removalWriteConcern }
+    );
+    if (!pending) {
+      throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, "Rimozione robot non registrata.");
+    }
+    return pending.removal;
+  }
+
+  async recordRobotRemoval(removal: RobotRemovalAudit): Promise<void> {
+    // L'identità Mongo è già univoca, anche se il primo upsert è riuscito senza risposta.
+    await this.collection.updateOne(
+      { _id: new ObjectId(removal.eventId) },
+      { $setOnInsert: removalEvent(removal) },
+      { upsert: true, writeConcern: this.removalWriteConcern }
+    );
+  }
+
+  async clearRobotRemoval(removal: RobotRemovalAudit): Promise<void> {
+    await this.pendingRemovals.deleteOne(
+      { _id: removal.robotId, "removal.eventId": removal.eventId },
+      { writeConcern: this.removalWriteConcern }
+    );
   }
 
   async query(filter?: AuditQueryFilter): Promise<AuditEventDocument[]> {

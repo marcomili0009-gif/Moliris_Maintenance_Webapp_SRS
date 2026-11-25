@@ -1,8 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { TerminalState } from "../../hooks/useTerminal.ts";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import "@xterm/xterm/css/xterm.css";
+import type { Terminal } from "@xterm/xterm";
+import type { FitAddon } from "@xterm/addon-fit";
 
 interface TerminalModalProps {
   terminalState: TerminalState;
@@ -29,6 +28,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const fitRef = useRef<() => void>(() => {});
   const lastSentSizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  const [failedSession, setFailedSession] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
 
   const { isOpen, robotId, robotName, sessionId, status, error, cols, rows } = terminalState;
@@ -47,97 +47,117 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
   useEffect(() => {
     if (!isOpen || !sessionId || !containerRef.current) return;
 
-    const term = new Terminal({
-      cursorBlink: true,
-      // Il bridge PTY locale (pipe senza ONLCR) emette solo "\n": senza questa
-      // opzione xterm interpreterebbe il newline senza ritorno a capo,
-      // producendo l'effetto "staircase".
-      convertEol: true,
-      cols: cols || 80,
-      rows: rows || 24,
-      fontFamily: '"DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", Menlo, Monaco, Consolas, "Courier New", monospace',
-      fontSize: 12,
-      theme: {
-        background: "#1e1e1e",
-        foreground: "#f0f0f0",
-        cursor: "#ffffff",
-      },
-    });
-
-    const fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
-    fitAddonRef.current = fitAddon;
-    termInstanceRef.current = term;
-    lastSentSizeRef.current = null;
-
-    containerRef.current.replaceChildren();
-    term.open(containerRef.current);
-
-    // Adatta il PTY alle dimensioni reali del contenitore. Invia il resize
-    // solo quando righe/colonne cambiano davvero, per evitare raffiche inutili.
-    const performFit = () => {
-      if (!fitAddonRef.current || !termInstanceRef.current) return;
-      try {
-        fitAddonRef.current.fit();
-        const newCols = termInstanceRef.current.cols;
-        const newRows = termInstanceRef.current.rows;
-        const previous = lastSentSizeRef.current;
-        if (newCols && newRows && (previous?.cols !== newCols || previous?.rows !== newRows)) {
-          lastSentSizeRef.current = { cols: newCols, rows: newRows };
-          callbacksRef.current.onResize(newCols, newRows);
-        }
-      } catch {}
-    };
-    fitRef.current = performFit;
-
-    const scheduleFit = () => {
-      requestAnimationFrame(() => {
-        performFit();
+    const container = containerRef.current;
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void Promise.all([
+      import("@xterm/xterm"),
+      import("@xterm/addon-fit"),
+      import("@xterm/xterm/css/xterm.css"),
+    ]).then(([{ Terminal }, { FitAddon }]) => {
+      if (cancelled) return;
+      const term = new Terminal({
+        cursorBlink: true,
+        // Il bridge PTY locale (pipe senza ONLCR) emette solo "\n": senza questa
+        // opzione xterm interpreterebbe il newline senza ritorno a capo,
+        // producendo l'effetto "staircase".
+        convertEol: true,
+        cols: cols || 80,
+        rows: rows || 24,
+        fontFamily: '"DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", Menlo, Monaco, Consolas, "Courier New", monospace',
+        fontSize: 12,
+        theme: {
+          background: "#1e1e1e",
+          foreground: "#f0f0f0",
+          cursor: "#ffffff",
+        },
       });
-    };
 
-    // Aggancia il WebSocket una sola volta per sessione, prima del primo fit:
-    // le dimensioni iniziali vengono accodate dal hook se la socket non è
-    // ancora aperta, e inviate appena possibile.
-    callbacksRef.current.onAttachWebSocket(
-      sessionId,
-      (data: string | Uint8Array) => {
-        term.write(data);
-      },
-      () => {
-        term.write("\r\n\x1b[31m[Sessione terminale terminata dal server]\x1b[0m\r\n");
-      },
-      () => {
-        term.write("\r\n\x1b[31m[Errore canale WebSocket]\x1b[0m\r\n");
-      }
-    );
-
-    scheduleFit();
-
-    const resizeObserver = new ResizeObserver(() => {
-      scheduleFit();
-    });
-    resizeObserver.observe(containerRef.current);
-
-    term.onData((data: string) => {
-      callbacksRef.current.onSendInput(data);
-    });
-
-    const handleWindowResize = () => {
-      scheduleFit();
-    };
-    window.addEventListener("resize", handleWindowResize);
-
-    return () => {
-      window.removeEventListener("resize", handleWindowResize);
-      resizeObserver.disconnect();
-      fitRef.current = () => {};
-      try {
-        term.dispose();
-      } catch {}
-      termInstanceRef.current = null;
-      fitAddonRef.current = null;
+      const fitAddon = new FitAddon();
+      term.loadAddon(fitAddon);
+      fitAddonRef.current = fitAddon;
+      termInstanceRef.current = term;
       lastSentSizeRef.current = null;
+
+      container.replaceChildren();
+      term.open(container);
+
+      // Adatta il PTY alle dimensioni reali del contenitore. Invia il resize
+      // solo quando righe/colonne cambiano davvero, per evitare raffiche inutili.
+      const performFit = () => {
+        if (!fitAddonRef.current || !termInstanceRef.current) return;
+        try {
+          fitAddonRef.current.fit();
+          const newCols = termInstanceRef.current.cols;
+          const newRows = termInstanceRef.current.rows;
+          const previous = lastSentSizeRef.current;
+          if (newCols && newRows && (previous?.cols !== newCols || previous?.rows !== newRows)) {
+            lastSentSizeRef.current = { cols: newCols, rows: newRows };
+            callbacksRef.current.onResize(newCols, newRows);
+          }
+        } catch {}
+      };
+      fitRef.current = performFit;
+
+      let fitFrame = 0;
+      const scheduleFit = () => {
+        if (fitFrame) return;
+        fitFrame = requestAnimationFrame(() => {
+          fitFrame = 0;
+          performFit();
+        });
+      };
+
+      // Aggancia il WebSocket una sola volta per sessione, prima del primo fit:
+      // le dimensioni iniziali vengono accodate dal hook se la socket non è
+      // ancora aperta, e inviate appena possibile.
+      callbacksRef.current.onAttachWebSocket(
+        sessionId,
+        (data: string | Uint8Array) => {
+          term.write(data);
+        },
+        () => {
+          term.write("\r\n\x1b[31m[Sessione terminale terminata dal server]\x1b[0m\r\n");
+        },
+        () => {
+          term.write("\r\n\x1b[31m[Errore canale WebSocket]\x1b[0m\r\n");
+        }
+      );
+
+      scheduleFit();
+
+      const resizeObserver = new ResizeObserver(() => {
+        scheduleFit();
+      });
+      resizeObserver.observe(container);
+
+      term.onData((data: string) => {
+        callbacksRef.current.onSendInput(data);
+      });
+
+      const handleWindowResize = () => {
+        scheduleFit();
+      };
+      window.addEventListener("resize", handleWindowResize);
+
+      dispose = () => {
+        cancelAnimationFrame(fitFrame);
+        window.removeEventListener("resize", handleWindowResize);
+        resizeObserver.disconnect();
+        fitRef.current = () => {};
+        try {
+          term.dispose();
+        } catch {}
+        termInstanceRef.current = null;
+        fitAddonRef.current = null;
+        lastSentSizeRef.current = null;
+      };
+    }).catch(() => {
+      if (!cancelled) setFailedSession(sessionId);
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
     };
     // Volutamente NON dipendente da cols/rows né dai callback del parent:
     // questo effetto governa il ciclo di vita della sessione terminale.
@@ -159,7 +179,11 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
 
   let statusBadgeClass = "badge-non_verificato";
   let statusText = "Connessione in corso...";
-  if (status === "connected") {
+  const emulatorFailed = sessionId !== null && failedSession === sessionId;
+  if (emulatorFailed) {
+    statusBadgeClass = "badge-errore";
+    statusText = "Errore caricamento";
+  } else if (status === "connected") {
     statusBadgeClass = "badge-attivo";
     statusText = "Connesso";
   } else if (status === "disconnected") {
@@ -214,6 +238,12 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
         {error && (
           <div className="error-message m-2" role="alert">
             {error.userMessage}
+          </div>
+        )}
+
+        {emulatorFailed && (
+          <div className="error-message m-2" role="alert">
+            Impossibile caricare il terminale. Chiudi la finestra e riprova.
           </div>
         )}
 

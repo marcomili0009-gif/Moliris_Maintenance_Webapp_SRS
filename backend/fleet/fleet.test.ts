@@ -630,14 +630,15 @@ try {
   // =========================================================================
   // MOL-P1-002: guasti prima e dopo il passaggio persistente a "rimosso".
   {
-    const { service, repo, creds } = createService();
+    const { service, repo, creds, audit } = createService();
     const id = "removal-recovery";
-    const registered = await service.registerRobot(adminUser, {
+    const registration = {
       id, displayName: "Removal fixture", customerName: "Cliente",
       remoteUsername: "removal_fixture", host: "127.0.0.1", sshPort: testServerPort,
-      sshAuthMethod: "password", password: "ValidPass123!",
+      sshAuthMethod: "password" as const, password: "ValidPass123!",
       hostKeyVerification: { fingerprint: serverFingerprintInfo.sha256Hex },
-    });
+    };
+    const registered = await service.registerRobot(adminUser, registration);
     assert.equal(registered.outcome, "registrazione_completata");
     const robot = (await repo.findById(id))!;
     const archiveFile = path.join(robot.serverDirectoryPath, "logs", "keep.txt");
@@ -647,6 +648,15 @@ try {
     const deleteRobot = repo.deleteById.bind(repo);
     const markCredentials = creds.markForRemoval.bind(creds);
     const purgeCredentials = creds.purgeMarked.bind(creds);
+    const beginRemoval = audit.beginRobotRemoval.bind(audit);
+    const recordRemoval = audit.recordRobotRemoval.bind(audit);
+    const removalEvents = () => audit.query({ robotId: id, operation: AuditOperation.ROBOT_REMOVAL, outcome: "SUCCESS" });
+
+    audit.beginRobotRemoval = async () => { throw new Error("journal non disponibile"); };
+    await assert.rejects(remove(), /journal non disponibile/);
+    assert.equal((await repo.findById(id))?.anagraphicState, "attivo");
+    await creds.getCredentials(robot.credentialReference, "password");
+    audit.beginRobotRemoval = beginRemoval;
 
     repo.updateAnagraphicState = async () => { throw new Error("stato non scritto"); };
     await assert.rejects(remove(), /stato non scritto/);
@@ -676,9 +686,33 @@ try {
     await assert.rejects(remove(), /rimozione vault non disponibile/);
     assert.equal(await repo.findById(id), null);
     await creds.getCredentials(robot.credentialReference, "password");
+    assert.deepEqual(await removalEvents(), []);
+    const registrationWhilePending = await service.registerRobot(adminUser, registration);
+    assert.equal(registrationWhilePending.outcome, "registrazione_rifiutata");
+    assert.match(registrationWhilePending.message ?? "", /ancora in corso/);
     creds.purgeMarked = purgeCredentials;
+
+    audit.recordRobotRemoval = async () => { throw new Error("audit non disponibile"); };
+    const retryUser = { ...adminUser, id: "removal-retry-admin", username: "removal_retry_admin" };
+    await assert.rejects(service.removeRobot(retryUser, id, true), /audit non disponibile/);
+    await assert.rejects(creds.getCredentials(robot.credentialReference, "password"));
+    assert.deepEqual(await removalEvents(), []);
+    assert.equal((await audit.findRobotRemoval(id))?.userId, adminUser.username);
+
+    audit.recordRobotRemoval = async (removal) => {
+      await recordRemoval(removal);
+      throw new Error("risposta audit persa");
+    };
+    await assert.rejects(remove(), /risposta audit persa/);
+    assert.equal((await removalEvents()).length, 1);
+    audit.recordRobotRemoval = recordRemoval;
     await Promise.all([remove(), remove()]);
     await remove();
+    const events = await removalEvents();
+    assert.equal(events.length, 1);
+    assert.equal(events[0].userId, adminUser.username);
+    assert.equal(events[0].details?.serverDirectoryPreserved, robot.serverDirectoryPath);
+    assert.equal(await audit.findRobotRemoval(id), null);
     assert.equal(await repo.findById(id), null);
     await assert.rejects(creds.getCredentials(robot.credentialReference, "password"));
     await creds.store(id, { method: "password", password: "new-generation" });
@@ -687,7 +721,7 @@ try {
       method: "password", password: "new-generation",
     });
     assert.equal(fs.readFileSync(archiveFile, "utf8"), "contenuto da preservare");
-    console.log("  PASS: MOL-P1-002 - Rimozione ripetibile con guasti parziali e archivio intatto.");
+    console.log("  PASS: MOL-P1-002 - Rimozione ripetibile con guasti parziali, audit univoco e archivio intatto.");
   }
 
   // CA-ROB-012: Robot irraggiungibile resta in lista con stato appropriato

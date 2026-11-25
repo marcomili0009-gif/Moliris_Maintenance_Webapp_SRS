@@ -389,6 +389,10 @@ export function createServer(
     clientRepository,
     plantRepository
   );
+  const removalRecovery = new AbortController();
+  app.addHook("onReady", async () => {
+    void fleetService.recoverPendingRobotRemovals(removalRecovery.signal);
+  });
 
   // Servizio di monitoraggio remoto (Prompt 7, RF-MON-001..006, §5.3, §11.4)
   const telemetryRepository =
@@ -545,6 +549,7 @@ export function createServer(
   app.decorate("physicalFileLogger", physicalFileLogger);
   app.decorate("batchTransferManager", batchTransferManager);
   app.addHook("onClose", async () => {
+    removalRecovery.abort();
     monitoringService.stopPolling();
     transferService.stopCleanupTask();
     await terminalService.closeAll("SERVICE_SHUTDOWN");

@@ -14,6 +14,8 @@ export interface SessionData {
   lastActivityAt: Date;
 }
 
+type SessionExpiryReason = "IDLE_TIMEOUT" | "ABSOLUTE_TIMEOUT";
+
 export type SessionTerminationReason = "LOGOUT" | "EXPIRED" | "PASSWORD_RESET" | "LOGIN_FAILED";
 
 export type ActiveTransferChecker = (sessionId: string, userId: string) => number;
@@ -26,7 +28,7 @@ export type SessionTerminationListener = (
 
 export type SessionExpirationListener = (
   session: SessionData,
-  reason: "IDLE_TIMEOUT" | "ABSOLUTE_TIMEOUT"
+  reason: SessionExpiryReason
 ) => void;
 
 export type SessionSuspensionListener = (
@@ -80,6 +82,7 @@ export class SessionManager {
   private readonly timeoutMs: number;
   private readonly absoluteTimeoutMs?: number;
   private expiryTimer: NodeJS.Timeout | null = null;
+  private readonly absoluteExpiryTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(inactiveMinutes?: number, absoluteMinutes?: number);
   constructor(userRepo: unknown, auditRepo: unknown, inactiveMinutes: number, logger?: unknown);
@@ -133,7 +136,7 @@ export class SessionManager {
   }
 
   /**
-   * Registra il verificatore dei trasferimenti attivi per impedire la scadenza durante operazioni SFTP in corso (Prompt #4).
+   * Registra il verificatore dei trasferimenti attivi per sospendere la sola scadenza per inattività (Prompt #4).
    */
   public setActiveTransferChecker(checker: ActiveTransferChecker): void {
     this.activeTransferChecker = checker;
@@ -161,48 +164,78 @@ export class SessionManager {
     this.suspensionListeners.push(listener);
   }
 
+  private activeTransferCount(session: SessionData): number {
+    const fromProvider = this.activeTransfersProvider?.(session.userId) ?? 0;
+    const fromChecker = this.activeTransferChecker?.(session.sessionId, session.userId) ?? 0;
+    return Math.max(fromProvider, fromChecker);
+  }
+
+  private expireSession(session: SessionData, reason: SessionExpiryReason): void {
+    if (!this.removeSession(session.sessionId)) return;
+    for (const listener of this.expirationListeners) {
+      try {
+        listener(session, reason);
+      } catch {}
+    }
+    this.notifyTermination(session.sessionId, session.userId, "EXPIRED");
+  }
+
+  private absoluteDeadline(session: SessionData): number {
+    return this.absoluteTimeoutMs === undefined
+      ? Number.POSITIVE_INFINITY
+      : session.createdAt.getTime() + this.absoluteTimeoutMs;
+  }
+
+  private expireAtAbsoluteDeadline(session: SessionData, now: number): boolean {
+    if (now < this.absoluteDeadline(session)) return false;
+    this.expireSession(session, "ABSOLUTE_TIMEOUT");
+    return true;
+  }
+
+  private scheduleAbsoluteExpiry(session: SessionData, now: number): void {
+    if (this.absoluteTimeoutMs === undefined) return;
+    // Run even for an idle socket with no requests or transfer progress.
+    const delay = Math.min(Math.max(1, this.absoluteDeadline(session) - now), 2 ** 31 - 1);
+    const timer = setTimeout(() => {
+      const currentTime = Date.now();
+      if (this.sessions.get(session.sessionId) !== session) return;
+      if (!this.expireAtAbsoluteDeadline(session, currentTime)) {
+        this.scheduleAbsoluteExpiry(session, currentTime);
+      }
+    }, delay);
+    timer.unref?.();
+    this.absoluteExpiryTimers.set(session.sessionId, timer);
+  }
+
   /**
-   * Scorre ed elimina tutte le sessioni scadute per inattività o per tetto assoluto.
-   * Se vi sono trasferimenti attivi, l'inattività viene sospesa e la sessione non scade (Prompt #4).
+   * Verifica prima il limite assoluto. I trasferimenti sospendono soltanto l'inattività.
    */
+  private checkLifetime(session: SessionData, now: number): number | null {
+    if (this.expireAtAbsoluteDeadline(session, now)) return null;
+    const activeTransfers = this.activeTransferCount(session);
+    if (activeTransfers > 0) {
+      session.lastActivityAt = new Date(now);
+    } else if (now - session.lastActivityAt.getTime() > this.timeoutMs) {
+      this.expireSession(session, "IDLE_TIMEOUT");
+      return null;
+    }
+    return activeTransfers;
+  }
+
   public purgeExpiredSessions(): void {
     const now = Date.now();
     for (const [sessionId, session] of Array.from(this.sessions.entries())) {
-      const fromProvider = this.activeTransfersProvider ? this.activeTransfersProvider(session.userId) : 0;
-      const fromChecker = this.activeTransferChecker ? this.activeTransferChecker(sessionId, session.userId) : 0;
-      const activeTransfers = Math.max(fromProvider, fromChecker);
-
-      if (activeTransfers > 0) {
-        // Sospensione inattività: trasferimenti attivi in corso
-        session.lastActivityAt = new Date(now);
-        if (!this.transferSuspendedSessions.has(sessionId)) {
-          this.transferSuspendedSessions.add(sessionId);
-          for (const listener of this.suspensionListeners) {
-            try {
-              listener(sessionId, session.userId, activeTransfers, "sessione");
-            } catch {}
-          }
-        }
-        continue;
-      } else {
+      if (this.sessions.get(sessionId) !== session) continue;
+      const activeTransfers = this.checkLifetime(session, now);
+      if (!activeTransfers) {
         this.transferSuspendedSessions.delete(sessionId);
-      }
-
-      const inactiveElapsed = now - session.lastActivityAt.getTime();
-      const absoluteElapsed = now - session.createdAt.getTime();
-
-      const isInactiveExpired = inactiveElapsed > this.timeoutMs;
-      const isAbsoluteExpired = this.absoluteTimeoutMs ? absoluteElapsed > this.absoluteTimeoutMs : false;
-
-      if (isInactiveExpired || isAbsoluteExpired) {
-        this.sessions.delete(sessionId);
-        const reasonDetail = isAbsoluteExpired ? "ABSOLUTE_TIMEOUT" : "IDLE_TIMEOUT";
-        for (const listener of this.expirationListeners) {
+      } else if (!this.transferSuspendedSessions.has(sessionId)) {
+        this.transferSuspendedSessions.add(sessionId);
+        for (const listener of this.suspensionListeners) {
           try {
-            listener(session, reasonDetail);
+            listener(sessionId, session.userId, activeTransfers, "sessione");
           } catch {}
         }
-        this.notifyTermination(sessionId, session.userId, "EXPIRED");
       }
     }
   }
@@ -282,6 +315,7 @@ export class SessionManager {
       lastActivityAt: now,
     };
     this.sessions.set(sessionId, session);
+    this.scheduleAbsoluteExpiry(session, now.getTime());
     return structuredClone(session);
   }
 
@@ -291,37 +325,14 @@ export class SessionManager {
    * Se vi sono trasferimenti attivi, l'inattività è sospesa (Prompt #4).
    */
   public validate(sessionId: string): SessionData | null {
-    if (!sessionId) return null;
-
     const session = this.sessions.get(sessionId);
-    if (!session) return null;
-
-    const now = Date.now();
-    const fromProvider = this.activeTransfersProvider ? this.activeTransfersProvider(session.userId) : 0;
-    const fromChecker = this.activeTransferChecker ? this.activeTransferChecker(sessionId, session.userId) : 0;
-    const activeTransfers = Math.max(fromProvider, fromChecker);
-
-    if (activeTransfers > 0) {
-      session.lastActivityAt = new Date(now);
-      return structuredClone(session);
-    }
-
-    const inactiveElapsed = now - session.lastActivityAt.getTime();
-    const absoluteElapsed = now - session.createdAt.getTime();
-
-    if (inactiveElapsed > this.timeoutMs || (this.absoluteTimeoutMs && absoluteElapsed > this.absoluteTimeoutMs)) {
-      this.sessions.delete(sessionId);
-      const reasonDetail = this.absoluteTimeoutMs && absoluteElapsed > this.absoluteTimeoutMs ? "ABSOLUTE_TIMEOUT" : "IDLE_TIMEOUT";
-      for (const listener of this.expirationListeners) {
-        try {
-          listener(session, reasonDetail);
-        } catch {}
-      }
-      this.notifyTermination(sessionId, session.userId, "EXPIRED");
-      return null;
-    }
-
+    if (!session || this.checkLifetime(session, Date.now()) === null) return null;
     return structuredClone(session);
+  }
+
+  public isSessionActive(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    return Boolean(session && this.checkLifetime(session, Date.now()) !== null);
   }
 
   /**
@@ -334,36 +345,9 @@ export class SessionManager {
    * NON contano: output del robot, polling di monitoraggio, heartbeat tecnici.
    */
   public touchSession(sessionId: string): boolean {
-    if (!sessionId) return false;
-
     const session = this.sessions.get(sessionId);
-    if (!session) return false;
-
     const now = Date.now();
-    const fromProvider = this.activeTransfersProvider ? this.activeTransfersProvider(session.userId) : 0;
-    const fromChecker = this.activeTransferChecker ? this.activeTransferChecker(sessionId, session.userId) : 0;
-    const activeTransfers = Math.max(fromProvider, fromChecker);
-
-    if (activeTransfers > 0) {
-      session.lastActivityAt = new Date(now);
-      return true;
-    }
-
-    const inactiveElapsed = now - session.lastActivityAt.getTime();
-    const absoluteElapsed = now - session.createdAt.getTime();
-
-    if (inactiveElapsed > this.timeoutMs || (this.absoluteTimeoutMs && absoluteElapsed > this.absoluteTimeoutMs)) {
-      this.sessions.delete(sessionId);
-      const reasonDetail = this.absoluteTimeoutMs && absoluteElapsed > this.absoluteTimeoutMs ? "ABSOLUTE_TIMEOUT" : "IDLE_TIMEOUT";
-      for (const listener of this.expirationListeners) {
-        try {
-          listener(session, reasonDetail);
-        } catch {}
-      }
-      this.notifyTermination(sessionId, session.userId, "EXPIRED");
-      return false;
-    }
-
+    if (!session || this.checkLifetime(session, now) === null) return false;
     session.lastActivityAt = new Date(now);
     return true;
   }
@@ -377,17 +361,17 @@ export class SessionManager {
     if (!session) return null;
 
     const now = Date.now();
-    const fromProvider = this.activeTransfersProvider ? this.activeTransfersProvider(session.userId) : 0;
-    const fromChecker = this.activeTransferChecker ? this.activeTransferChecker(sessionId, session.userId) : 0;
-    const activeTransfers = Math.max(fromProvider, fromChecker);
-
-    if (activeTransfers > 0) {
-      return { remainingMs: this.timeoutMs, isSuspended: true, activeTransfers };
-    }
-
-    const elapsed = now - session.lastActivityAt.getTime();
-    const remainingMs = Math.max(0, this.timeoutMs - elapsed);
-    return { remainingMs, isSuspended: false, activeTransfers: 0 };
+    if (this.expireAtAbsoluteDeadline(session, now)) return null;
+    const remainingAbsoluteMs = this.absoluteDeadline(session) - now;
+    const activeTransfers = this.activeTransferCount(session);
+    const remainingIdleMs = activeTransfers > 0
+      ? this.timeoutMs
+      : Math.max(0, this.timeoutMs - (now - session.lastActivityAt.getTime()));
+    return {
+      remainingMs: Math.min(remainingAbsoluteMs, remainingIdleMs),
+      isSuspended: activeTransfers > 0,
+      activeTransfers,
+    };
   }
 
   /**
@@ -395,6 +379,15 @@ export class SessionManager {
    */
   public getSession(sessionId: string): SessionData | null {
     return this.validate(sessionId);
+  }
+
+  private removeSession(sessionId: string): boolean {
+    if (!this.sessions.delete(sessionId)) return false;
+    const timer = this.absoluteExpiryTimers.get(sessionId);
+    clearTimeout(timer);
+    this.absoluteExpiryTimers.delete(sessionId);
+    this.transferSuspendedSessions.delete(sessionId);
+    return true;
   }
 
   /**
@@ -406,7 +399,7 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
 
-    this.sessions.delete(sessionId);
+    if (!this.removeSession(sessionId)) return false;
     this.notifyTermination(sessionId, session.userId, reason);
     return true;
   }
@@ -420,8 +413,7 @@ export class SessionManager {
     if (!userId) return 0;
     let count = 0;
     for (const [sessionId, session] of Array.from(this.sessions.entries())) {
-      if (session.userId === userId) {
-        this.sessions.delete(sessionId);
+      if (session.userId === userId && this.removeSession(sessionId)) {
         this.notifyTermination(sessionId, session.userId, reason);
         count++;
       }
@@ -485,5 +477,7 @@ export class SessionManager {
       clearInterval(this.expiryTimer);
       this.expiryTimer = null;
     }
+    for (const timer of this.absoluteExpiryTimers.values()) clearTimeout(timer);
+    this.absoluteExpiryTimers.clear();
   }
 }

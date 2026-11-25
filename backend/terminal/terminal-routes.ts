@@ -215,6 +215,11 @@ export function registerTerminalRoutes(
       }
 
       const user = await userRepository.findById(userSession.userId);
+      if (!sessionManager.isSessionActive(userSessionId)) {
+        socket.send(JSON.stringify({ type: "error", message: "Sessione utente non valida o scaduta." }));
+        socket.close(4401, "Session Expired");
+        return;
+      }
       if (!user || !user.enabled) {
         socket.send(JSON.stringify({ type: "error", message: "Account utente disabilitato o non trovato." }));
         socket.close(4401, "User Disabled");
@@ -226,7 +231,7 @@ export function registerTerminalRoutes(
         const resetTime = new Date(user.passwordChangedAt).getTime();
         const sessionTime = new Date(userSession.createdAt).getTime();
         if (sessionTime <= resetTime) {
-          sessionManager.destroySession(sessionId, "PASSWORD_RESET");
+          sessionManager.destroySession(userSessionId, "PASSWORD_RESET");
           socket.send(JSON.stringify({ type: "error", message: "Sessione utente revocata a seguito del cambio password." }));
           socket.close(4401, "Session Revoked");
           return;
