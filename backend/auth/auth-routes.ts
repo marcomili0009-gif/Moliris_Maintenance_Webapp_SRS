@@ -248,13 +248,18 @@ export function registerAuthRoutes(
       }
     }
 
-    await auditRepository.record({
-      userId: user.username,
-      operation: AuditOperation.AUTH_LOGIN,
-      outcome: "SUCCESS",
-      timestamp: new Date(),
-      details: { roles: user.roles },
-    });
+    try {
+      await auditRepository.record({
+        userId: user.username,
+        operation: AuditOperation.AUTH_LOGIN,
+        outcome: "SUCCESS",
+        timestamp: new Date(),
+        details: { roles: user.roles },
+      });
+    } catch (error) {
+      sessionManager.destroySession(session.sessionId, "LOGIN_FAILED");
+      throw error;
+    }
 
     if (fileLogger) {
       fileLogger.logAccess({

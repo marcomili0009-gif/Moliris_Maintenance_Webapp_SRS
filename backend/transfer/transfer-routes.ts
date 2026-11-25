@@ -598,14 +598,34 @@ export function registerTransferRoutes(
       reply.hijack();
       reply.raw.writeHead(200, {
         "Content-Type": "text/event-stream; charset=utf-8",
-        "Cache-Control": "no-cache, no-transform",
+        "Cache-Control": "no-store, no-transform",
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
       });
 
       let closed = false;
+      let interval: ReturnType<typeof setInterval> | undefined;
+      const stop = () => {
+        if (closed) return;
+        closed = true;
+        clearInterval(interval);
+        unsubscribe();
+      };
+      const end = () => {
+        if (closed) return;
+        stop();
+        if (!reply.raw.destroyed) reply.raw.end();
+      };
+      const unsubscribe = sessionManager.onSessionTerminated((sessionId) => {
+        if (sessionId === context.sessionId) end();
+      });
+      reply.raw.once("close", stop);
       const sendSnapshot = () => {
         if (closed || reply.raw.destroyed) return;
+        if (!sessionManager.validate(context.sessionId)) {
+          end();
+          return;
+        }
         const list = transferService.listTransfers(context);
         const payload = {
           transfers: list,
@@ -617,19 +637,13 @@ export function registerTransferRoutes(
       };
 
       sendSnapshot();
+      if (closed) return reply;
       if (query.once === "1") {
-        reply.raw.end();
+        end();
         return reply;
       }
 
-      const interval = setInterval(sendSnapshot, 1000);
-      const close = () => {
-        if (closed) return;
-        closed = true;
-        clearInterval(interval);
-      };
-      req.raw.on("close", close);
-      reply.raw.on("close", close);
+      interval = setInterval(sendSnapshot, 1000);
       return reply;
     }
   );

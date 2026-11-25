@@ -14,7 +14,7 @@ export interface SessionData {
   lastActivityAt: Date;
 }
 
-export type SessionTerminationReason = "LOGOUT" | "EXPIRED" | "PASSWORD_RESET";
+export type SessionTerminationReason = "LOGOUT" | "EXPIRED" | "PASSWORD_RESET" | "LOGIN_FAILED";
 
 export type ActiveTransferChecker = (sessionId: string, userId: string) => number;
 
@@ -71,7 +71,7 @@ export interface AuthorizedContext {
 
 export class SessionManager {
   private sessions: Map<string, SessionData> = new Map();
-  private terminationListeners: SessionTerminationListener[] = [];
+  private terminationListeners = new Set<SessionTerminationListener>();
   private expirationListeners: SessionExpirationListener[] = [];
   private suspensionListeners: SessionSuspensionListener[] = [];
   private activeTransferChecker: ActiveTransferChecker | null = null;
@@ -211,8 +211,9 @@ export class SessionManager {
    * Registra un listener per gli eventi di chiusura o scadenza sessione (RF-SSH-005, RNF-REL-005).
    * Notifica i servizi di terminale e trasferimento per la deallocazione tempestiva delle risorse.
    */
-  public onSessionTerminated(listener: SessionTerminationListener): void {
-    this.terminationListeners.push(listener);
+  public onSessionTerminated(listener: SessionTerminationListener): () => void {
+    this.terminationListeners.add(listener);
+    return () => { this.terminationListeners.delete(listener); };
   }
 
   /**

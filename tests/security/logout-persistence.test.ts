@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { execSync } from "node:child_process";
 import Fastify from "fastify";
+import https from "node:https";
 import { createServer } from "../../backend/server.ts";
 import { SessionManager } from "../../backend/auth/session-manager.ts";
 import { InMemoryUserRepository } from "../../backend/auth/user-repository.ts";
@@ -110,6 +111,36 @@ const sessionCookieMatch = setCookieHeader.match(/__Host-moliris_session=([^;]+)
 assert(sessionCookieMatch, "Cookie __Host-moliris_session deve essere estratto");
 const sessionCookie = `__Host-moliris_session=${sessionCookieMatch[1]}`;
 
+// Apri uno stream con una sessione valida e verifica che il logout lo chiuda.
+const address = await app.listen({ host: "127.0.0.1", port: 0 });
+async function openTestStream(cookie: string) {
+  let streamEnded!: (status: string) => void;
+  const streamEnd = new Promise<string>((resolve) => { streamEnded = resolve; });
+  await new Promise<void>((resolve, reject) => {
+    const request = https.get(`${address}/api/transfers/stream`, {
+      headers: { cookie },
+      rejectUnauthorized: false,
+      signal: AbortSignal.timeout(6000),
+    }, (response) => {
+      if (response.statusCode !== 200) {
+        response.resume();
+        reject(new Error(`Stream SSE HTTP ${response.statusCode}`));
+        return;
+      }
+      response.once("data", () => resolve());
+      response.once("end", () => streamEnded("end"));
+      response.once("error", () => streamEnded("error"));
+      response.resume();
+    });
+    request.once("error", (error) => {
+      reject(error);
+      streamEnded("error");
+    });
+  });
+  return { ended: streamEnd };
+}
+const { ended: streamEnd } = await openTestStream(sessionCookie);
+
 // 2. Chiamata a /api/auth/me prima del logout -> deve restituire 200 OK
 const meBeforeRes = await app.inject({
   method: "GET",
@@ -181,6 +212,7 @@ assert.strictEqual((await pendingMe).statusCode, 401, "Anche un controllo avviat
 await auditWritten;
 
 assert.strictEqual(logoutRes.statusCode, 200, "Logout deve restituire status 200 OK");
+assert.equal(await streamEnd, "end", "Il logout deve terminare lo stream SSE");
 const logoutSetCookie = String(logoutRes.headers["set-cookie"]);
 assert(logoutSetCookie.includes("Max-Age=0"), "Set-Cookie di logout deve contenere Max-Age=0 per cancellare il cookie");
 assert(logoutSetCookie.includes("Expires=Thu, 01 Jan 1970"), "Set-Cookie deve contenere data nel passato");
@@ -219,6 +251,18 @@ const logoutAudit = auditEvents.find((e) => e.operation === "AUTH_LOGOUT" && e.o
 assert(logoutAudit, "L'evento di logout deve essere registrato nell'audit log con outcome SUCCESS");
 assert.strictEqual(logoutAudit.details?.context, "sessione");
 assert.strictEqual(logoutAudit.details?.reason, "MANUAL_LOGOUT");
+
+const loginForExpiry = await app.inject({
+  method: "POST", url: "/api/auth/login",
+  payload: { username: "test_logout_user", password: "ValidPassword123!" },
+});
+assert.equal(loginForExpiry.statusCode, 200);
+const expiryId = String(loginForExpiry.headers["set-cookie"]).match(/__Host-moliris_session=([^;]+)/)?.[1];
+assert.ok(expiryId);
+const expiredStream = await openTestStream(`__Host-moliris_session=${expiryId}`);
+sessionMgr._simulateInactivity(expiryId, config.inactiveSessionTimeoutMinutes + 1);
+assert.equal(await expiredStream.ended, "end", "Lo stream deve chiudersi quando la sessione scade");
+console.log("PASS: Stream SSE chiuso al logout e alla scadenza della sessione.");
 
 await app.close();
 try {

@@ -52,9 +52,9 @@ export const AppNavbar: React.FC<AppNavbarProps> = ({
       className="navbar navbar-expand navbar-dark bg-dark sticky-top px-3 py-2"
       aria-label="Barra principale Moliris"
     >
-      <div className="container-fluid d-flex align-items-center justify-content-between p-0">
+      <div className="moliris-navbar-inner container-fluid d-flex align-items-center justify-content-between p-0">
         {/* Sinistra: Logo e Navigazione Principale */}
-        <div className="d-flex align-items-center gap-3">
+        <div className="moliris-navbar-start d-flex align-items-center gap-3">
           <a
             className="navbar-brand me-3 p-0 d-flex align-items-center"
             href="/"
@@ -76,7 +76,7 @@ export const AppNavbar: React.FC<AppNavbarProps> = ({
           </a>
 
           {user && (
-            <ul className="navbar-nav d-flex flex-row gap-2" role="menubar">
+            <ul className="moliris-navbar-menu navbar-nav d-flex flex-row gap-2">
               <li className="nav-item">
                 <button
                   type="button"
