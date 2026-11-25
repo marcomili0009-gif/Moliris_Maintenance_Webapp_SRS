@@ -307,6 +307,8 @@ const sessionConflictOnly = process.env["SESSION_CONFLICT_ONLY"] === "1";
 const sessionConflictOnlyComplete = new Error("Session-conflict-only frontend test complete.");
 const logoutOnly = process.env["LOGOUT_ONLY"] === "1";
 const logoutOnlyComplete = new Error("Logout-only frontend test complete.");
+const logoutCyclesOnly = process.env["LOGOUT_CYCLES_ONLY"] === "1";
+const logoutCyclesOnlyComplete = new Error("Logout cycles frontend test complete.");
 
 try {
   Object.defineProperty(globalThis, "window", {
@@ -359,6 +361,39 @@ const server = createServer(testConfig, logger, {
   }),
 });
 
+let holdNextLogoutResponse = false;
+let releaseLogoutResponse: (() => void) | undefined;
+let holdNextTransferPoll = false;
+let releaseTransferPoll: (() => void) | undefined;
+let transferPollAborted = false;
+server.addHook("onSend", async (request, reply, payload) => {
+  if (holdNextLogoutResponse && request.method === "POST" && request.url === "/api/auth/logout") {
+    holdNextLogoutResponse = false;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 9_000);
+      releaseLogoutResponse = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+    });
+  }
+  if (holdNextTransferPoll && request.method === "GET" && request.url === "/api/transfers/recent") {
+    holdNextTransferPoll = false;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 9_000);
+      releaseTransferPoll = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      reply.raw.once("close", () => {
+        transferPollAborted = !reply.raw.writableFinished;
+        releaseTransferPoll?.();
+      });
+    });
+  }
+  return payload;
+});
+
 const address = await server.listen({ port: 0, host: "127.0.0.1" });
 const serverPort = (server.server.address() as any).port;
 const serverBaseUrl = `https://127.0.0.1:${serverPort}`;
@@ -383,7 +418,7 @@ const chromeProcess: ChildProcess = spawn(
 let wsDebuggerUrl = "";
 for (let attempt = 0; attempt < 30; attempt++) {
   try {
-    const res = await fetch(`http://127.0.0.1:${cdpPort}/json/list`);
+    const res = await fetch(`http://127.0.0.1:${cdpPort}/json/list`, { signal: AbortSignal.timeout(1000) });
     if (res.ok) {
       const pages = await res.json();
       const pageTarget = pages.find((p: any) => p.type === "page") || pages[0];
@@ -400,12 +435,13 @@ assert.ok(wsDebuggerUrl, "Chrome Headless deve essere raggiungibile tramite port
 
 const cdpWs = new WebSocket(wsDebuggerUrl);
 await new Promise<void>((resolve, reject) => {
-  cdpWs.onopen = () => resolve();
-  cdpWs.onerror = (e) => reject(e);
+  const timer = setTimeout(() => reject(new Error("Timeout connessione CDP")), 4_000);
+  cdpWs.onopen = () => { clearTimeout(timer); resolve(); };
+  cdpWs.onerror = (e) => { clearTimeout(timer); reject(e); };
 });
 
 let cdpMsgId = 1;
-const pendingCdpReplies = new Map<number, (res: any) => void>();
+const pendingCdpReplies = new Map<number, (reply: any) => void>();
 const networkRequestsMade: string[] = [];
 const networkRequestsWithMethod: Array<{ method: string; url: string }> = [];
 
@@ -425,15 +461,23 @@ cdpWs.onmessage = (event) => {
     if (data.id && pendingCdpReplies.has(data.id)) {
       const cb = pendingCdpReplies.get(data.id)!;
       pendingCdpReplies.delete(data.id);
-      cb(data.result);
+      cb(data);
     }
   } catch {}
 };
 
 async function sendCdpCommand(method: string, params: any = {}): Promise<any> {
   const id = cdpMsgId++;
-  return new Promise((resolve) => {
-    pendingCdpReplies.set(id, resolve);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingCdpReplies.delete(id);
+      reject(new Error(`Timeout CDP: ${method}`));
+    }, 10_000);
+    pendingCdpReplies.set(id, (reply) => {
+      clearTimeout(timer);
+      if (reply.error) reject(new Error(`${method}: ${reply.error.message}`));
+      else resolve(reply.result);
+    });
     cdpWs.send(JSON.stringify({ id, method, params }));
   });
 }
@@ -454,11 +498,12 @@ async function evaluateInBrowser<T>(expression: string): Promise<T> {
   return res.result?.value as T;
 }
 
-async function waitForBrowser(expression: string): Promise<void> {
-  for (let attempt = 0; attempt < 80; attempt++) {
+async function waitForBrowser(expression: string, timeoutMs = 4_000): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
+  do {
     if (await evaluateInBrowser<boolean>(expression)) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  } while (performance.now() < deadline);
   assert.fail(`Condizione browser non soddisfatta: ${expression}`);
 }
 
@@ -532,6 +577,97 @@ async function testLogout(): Promise<void> {
   await waitForBrowser("Boolean(document.querySelector('#login-section'))");
   assert.equal(await evaluateInBrowser("Boolean(document.querySelector('#dashboard-section, #current-username'))"), false);
   console.log("  PASS: Logout Chrome con clic ripetuti, Indietro, rete assente, nuovo tentativo, riconnessione e ricarica.");
+}
+
+async function loginAgain(): Promise<void> {
+  await evaluateInBrowser<void>(`{
+    document.getElementById('username').value = 'admin';
+    document.getElementById('password').value = 'AdminPassword123!';
+    document.getElementById('btn-login').click();
+  }`);
+  await waitForBrowser("Boolean(document.querySelector('#btn-logout'))");
+  assert.equal(sessionManager.getActiveSessionsCount("user_admin"), 1);
+}
+
+async function testLogoutCycles(): Promise<void> {
+  const pageTimeOrigin = await evaluateInBrowser<number>("performance.timeOrigin");
+  const countLogoutRequests = () => networkRequestsWithMethod.filter(
+    ({ method, url }) => method === "POST" && url.endsWith("/api/auth/logout")
+  ).length;
+  for (let cycle = 1; cycle <= 20; cycle++) {
+    if (cycle > 1) await loginAgain();
+    const beforeLogout = countLogoutRequests();
+    const { feedbackMs, confirmedMs } = await evaluateInBrowser<{ feedbackMs: number; confirmedMs: number }>(
+      `new Promise((resolve, reject) => {
+        const start = performance.now();
+        let feedbackMs;
+        const observer = new MutationObserver(() => {
+          if (!document.querySelector('#login-section') || document.querySelector('#current-username')) return;
+          feedbackMs ??= performance.now() - start;
+          if (document.querySelector('#btn-login:not(:disabled)') && !document.querySelector('#logout-status')) {
+            clearTimeout(timer);
+            observer.disconnect();
+            resolve({ feedbackMs, confirmedMs: performance.now() - start });
+          }
+        });
+        const timer = setTimeout(() => {
+          observer.disconnect();
+          reject(new Error('Logout ciclo ${cycle} senza conferma entro 4 s'));
+        }, 4000);
+        observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+        const button = document.getElementById('btn-logout');
+        button.click();
+        button.click();
+      })`
+    );
+    console.log(`LOGOUT_CYCLE ${cycle} ${feedbackMs.toFixed(1)} ${confirmedMs.toFixed(1)}`);
+    assert.ok(feedbackMs < 100, `Ciclo ${cycle}: feedback entro 100 ms`);
+    assert.ok(confirmedMs < 1_000, `Ciclo ${cycle}: conferma entro 1 secondo`);
+    assert.equal(countLogoutRequests() - beforeLogout, 1, `Ciclo ${cycle}: un solo POST`);
+    assert.equal(sessionManager.getActiveSessionsCount("user_admin"), 0, `Ciclo ${cycle}: sessione revocata`);
+    const { cookies } = await sendCdpCommand("Network.getCookies", { urls: [serverBaseUrl] });
+    assert.ok(!cookies.some(({ name }: { name: string }) => name === "__Host-moliris_session"),
+      `Ciclo ${cycle}: cookie di sessione rimosso`);
+    assert.equal(await evaluateInBrowser<number>(
+      "fetch('/api/auth/me', {cache:'no-store', signal:AbortSignal.timeout(2000)}).then(response => response.status)"
+    ), 401, `Ciclo ${cycle}: sessione precedente inutilizzabile`);
+  }
+  assert.equal(await evaluateInBrowser<number>("performance.timeOrigin"), pageTimeOrigin, "Nessun reload tra i cicli");
+  console.log("  PASS: 20 cicli consecutivi di login/logout nello stesso documento Chrome.");
+}
+
+async function testStalledLogout(): Promise<void> {
+  holdNextTransferPoll = true;
+  try {
+    await loginAgain();
+    const pollDeadline = performance.now() + 2_000;
+    while (holdNextTransferPoll && performance.now() < pollDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(holdNextTransferPoll, false, "La dashboard deve avere un polling in corso al logout");
+    holdNextLogoutResponse = true;
+    const start = performance.now();
+    await evaluateInBrowser<void>("document.getElementById('btn-logout').click()");
+    await waitForBrowser("Boolean(document.querySelector('#login-section'))");
+    await waitForBrowser("Boolean(document.querySelector('#btn-retry-logout'))", 7_000);
+    console.log(`LOGOUT_STALL_RETRY_MS ${(performance.now() - start).toFixed(1)}`);
+    assert.equal(holdNextLogoutResponse, false, "Il POST sospeso deve aver raggiunto il server");
+    assert.equal(transferPollAborted, true, "Il logout deve chiudere il polling della sessione precedente");
+    assert.equal(sessionManager.getActiveSessionsCount("user_admin"), 0, "Revoca avvenuta a risposta sospesa");
+    assert.equal(await evaluateInBrowser("document.querySelector('#btn-login').disabled"), true);
+    await evaluateInBrowser<void>("document.getElementById('btn-retry-logout').click()");
+    await waitForBrowser("Boolean(document.querySelector('#btn-login:not(:disabled)'))");
+    // La risposta vecchia viene rilasciata dopo che il cookie nuovo è in uso.
+    await loginAgain();
+    releaseLogoutResponse?.();
+    assert.equal(await evaluateInBrowser<number>(
+      "fetch('/api/auth/me', {cache:'no-store', signal:AbortSignal.timeout(2000)}).then(response => response.status)"
+    ), 200);
+    console.log("  PASS: Risposta logout sospesa, retry e protezione del cookie della nuova sessione.");
+  } finally {
+    releaseLogoutResponse?.();
+    releaseTransferPoll?.();
+  }
 }
 
 try {
@@ -639,6 +775,11 @@ try {
   );
   assert.strictEqual(usernameText, "admin", "L'username visualizzato deve essere admin");
 
+  if (logoutCyclesOnly) {
+    await testLogoutCycles();
+    await testStalledLogout();
+    throw logoutCyclesOnlyComplete;
+  }
   if (logoutOnly) {
     await testLogout();
     throw logoutOnlyComplete;
@@ -1472,10 +1613,12 @@ try {
   }
   console.log("  PASS: Il browser non ha inviato alcuna richiesta verso host di robot; tutte le chiamate passano da Fastify.");
 
+  await testLogoutCycles();
+  await testStalledLogout();
   await testLogout();
   console.log("  PASS: Test E2E React completato con successo su Google Chrome!");
 } catch (error) {
-  if (error !== sessionConflictOnlyComplete && error !== logoutOnlyComplete) {
+  if (error !== sessionConflictOnlyComplete && error !== logoutOnlyComplete && error !== logoutCyclesOnlyComplete) {
     throw error;
   }
 } finally {

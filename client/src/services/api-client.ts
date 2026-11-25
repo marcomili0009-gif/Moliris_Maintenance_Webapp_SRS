@@ -4,6 +4,7 @@ export class ApiClient {
   private sessionExpiredListeners = new Set<() => void>();
   private activityListeners = new Set<() => void>();
   private sessionVersion = 0;
+  private sessionRequests = new AbortController();
 
   public get sessionGeneration(): number {
     return this.sessionVersion;
@@ -11,6 +12,8 @@ export class ApiClient {
 
   public invalidateSession(): void {
     this.sessionVersion++;
+    this.sessionRequests.abort();
+    this.sessionRequests = new AbortController();
   }
 
   public onSessionExpired(listener: () => void): () => void {
@@ -68,6 +71,13 @@ export class ApiClient {
   public async request(endpoint: string, options: RequestInit = {}): Promise<Response> {
     this.assertLocalBackendEndpoint(endpoint);
     const sessionGeneration = this.sessionGeneration;
+    const pathname = new URL(endpoint, window.location.origin).pathname;
+    const usesSession = pathname !== "/api/auth/logout" && pathname !== "/api/config/public";
+    const signal = usesSession
+      ? options.signal
+        ? AbortSignal.any([options.signal, this.sessionRequests.signal])
+        : this.sessionRequests.signal
+      : options.signal;
 
     const headers: Record<string, string> = {
       ...((options.headers as Record<string, string>) || {}),
@@ -85,6 +95,7 @@ export class ApiClient {
     try {
       const response = await fetch(endpoint, {
         ...options,
+        signal,
         credentials: "same-origin",
         headers,
       });

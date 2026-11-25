@@ -7,10 +7,13 @@ import type { User, IdleWarningInfo } from "../types/auth.ts";
 type LogoutContext = "sessione" | "terminale";
 type LogoutStatus = "pending" | "failed" | null;
 const pendingLogoutKey = "moliris_pending_logout";
+const logoutTimeoutMs = 5_000;
 
-async function withAuthCookieLock<T>(operation: () => Promise<T>): Promise<T> {
+async function withAuthCookieLock<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   // Login e logout scrivono lo stesso cookie, condiviso tra le schede.
-  return navigator.locks ? navigator.locks.request("moliris-auth-cookie", operation) : operation();
+  return navigator.locks
+    ? navigator.locks.request("moliris-auth-cookie", { signal }, operation)
+    : operation();
 }
 
 export function useAuth(activeTransfersOrOptions: number | { activeTransfersCount?: number } = 0) {
@@ -74,6 +77,8 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
     if (logoutInProgressRef.current || !getPendingLogout()) return;
     logoutInProgressRef.current = true;
     setLogoutStatus("pending");
+    // Un unico limite per l'attesa del lock, gli header e la lettura della risposta.
+    const signal = AbortSignal.timeout(logoutTimeoutMs);
     try {
       await withAuthCookieLock(async () => {
         const context = getPendingLogout();
@@ -81,7 +86,7 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
           const response = await apiClient.post("/api/auth/logout", {
             context,
             reason: "MANUAL_LOGOUT",
-          }, { cache: "no-store", redirect: "error" });
+          }, { cache: "no-store", redirect: "error", signal });
           if (!response.ok || (await response.json()).status !== "LOGGED_OUT") {
             throw new Error("Logout non confermato dal server");
           }
@@ -90,7 +95,7 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
           inMemoryLogoutRef.current = null;
         }
         setLogoutStatus(null);
-      });
+      }, signal);
     } catch {
       setLogoutStatus("failed");
     } finally {
