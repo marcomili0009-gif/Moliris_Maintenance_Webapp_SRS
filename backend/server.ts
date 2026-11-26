@@ -233,9 +233,12 @@ export function createServer(
     reply.header("X-Frame-Options", "DENY");
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    // Nota: style-src 'unsafe-inline' (senza style-src-elem 'self') è richiesto dal DOM renderer di
+    // @xterm/xterm che inietta <style> dinamici per i colori ANSI (.xterm-fg-*) e il cursore (.xterm-cursor).
+    // script-src 'self' continua a bloccare rigorosamente qualunque script inline XSS.
     reply.header(
       "Content-Security-Policy",
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-elem 'self'; img-src 'self' data:; connect-src 'self' wss:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' wss:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
     );
     const socketEncrypted = Boolean((request.raw?.socket as any)?.encrypted);
     const forwardedHttps = request.headers["x-forwarded-proto"] === "https";
