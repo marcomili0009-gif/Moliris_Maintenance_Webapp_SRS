@@ -617,7 +617,11 @@ export function registerServerFsRoutes(
       const { robotId } = req.params as { robotId: string };
       const body = (req.body as any) || {};
       const folderName = typeof body.folderName === "string" ? body.folderName : body.name;
-      const parentPath = typeof body.path === "string" ? body.path : (body.parentPath || "");
+      const rawParentPath = typeof body.path === "string" ? body.path.trim() : (typeof body.parentPath === "string" ? body.parentPath.trim() : "");
+      const parentPath =
+        rawParentPath === "/" || rawParentPath === "\\" || rawParentPath === "."
+          ? ""
+          : rawParentPath.replace(/^[/\\]+/, "");
 
       if (!folderName || !folderName.trim()) {
         return reply.status(400).send({
@@ -776,7 +780,11 @@ export function registerServerFsRoutes(
     async (req: FastifyRequest, reply: FastifyReply) => {
       const body = (req.body as any) || {};
       const folderName = typeof body.folderName === "string" ? body.folderName : body.name;
-      const parentPath = typeof body.path === "string" ? body.path : (body.parentPath || "");
+      const rawParentPath = typeof body.path === "string" ? body.path.trim() : (typeof body.parentPath === "string" ? body.parentPath.trim() : "");
+      const parentPath =
+        rawParentPath === "/" || rawParentPath === "\\" || rawParentPath === "."
+          ? ""
+          : rawParentPath.replace(/^[/\\]+/, "");
 
       if (!folderName || !folderName.trim()) {
         return reply.status(400).send({

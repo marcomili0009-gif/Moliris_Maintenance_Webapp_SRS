@@ -1,6 +1,17 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { apiClient } from "../services/api-client.ts";
+import { StateFormatter } from "../services/state-formatter.ts";
 import type { User } from "../types/auth.ts";
+import type { TransferLogRecord } from "../types/transfer.ts";
+import {
+  DIRECTION_LABELS,
+  STATUS_LABELS,
+  formatDurationMs,
+  formatSpeed,
+  formatSpeedWithArrow,
+  formatTransferEndpoints,
+  isGeneralArchiveTransfer,
+} from "../utils/transfer-format.ts";
 
 export interface LogsViewProps {
   user: User;
@@ -67,6 +78,97 @@ function formatLogTime(timestamp: string): string {
   return Number.isNaN(instant.getTime()) ? value : romeLogFormatter.format(instant);
 }
 
+function compactErrorMessage(rawMessage: string): string {
+  const cleaned = rawMessage
+    .replace(/^(?:Fallito|Annullato)\s*\([^)]*\)\s*:\s*/i, "")
+    .trim();
+  const mkdirMatch = cleaned.match(
+    /^Impossibile creare la directory remota '([^']+)' sul robot '([^']+)':\s*(.+)$/i
+  );
+  if (mkdirMatch) {
+    return `Impossibile creare '${mkdirMatch[1]}' su ${mkdirMatch[2]} (permessi o percorso non valido)`;
+  }
+  return cleaned || rawMessage;
+}
+
+interface FormattedLogDetails {
+  summary: string;
+  technical?: string;
+}
+
+function formatCompactTransferLogDetails(
+  rawDetails: string | undefined,
+  outcome: string | undefined,
+  recordByTransferId: Map<string, TransferLogRecord>
+): FormattedLogDetails {
+  const text = (rawDetails || "").trim();
+  if (!text) return { summary: "—" };
+
+  const transferIdMatch = text.match(/transferId:\s*([0-9a-f-]{8,})/i);
+  const batchIdMatch = text.match(/batchId:\s*([0-9a-f-]{8,})/i);
+  const checksumMatch = text.match(/checksum:\s*([0-9a-f]{16,128})/i);
+  const speedMatch = text.match(/media:\s*(\d+(?:\.\d+)?)\s*B\/s/i);
+  const bytesMatch = text.match(/(\d+)(?:\/(\d+))?\s*byte/i);
+
+  const transferId = transferIdMatch?.[1];
+  const batchId = batchIdMatch?.[1];
+  const checksum = checksumMatch?.[1];
+  const matchedRec = transferId ? recordByTransferId.get(transferId) : undefined;
+
+  const techParts: string[] = [];
+  if (transferId) techParts.push(`Transfer ID: ${transferId}`);
+  if (batchId) techParts.push(`Batch ID: ${batchId}`);
+  if (checksum) techParts.push(`SHA-256: ${checksum}`);
+  const technical = techParts.length > 0 ? techParts.join(" | ") : undefined;
+
+  const upperOutcome = (outcome || "").toUpperCase();
+  const isSuccess =
+    upperOutcome === "SUCCESSO" ||
+    upperOutcome === "COMPLETED" ||
+    upperOutcome === "OK" ||
+    /^Completato\b/i.test(text);
+
+  if (isSuccess && (bytesMatch || speedMatch || checksumMatch)) {
+    const parts: string[] = [];
+    if (bytesMatch) {
+      const byteCount = Number(bytesMatch[2] || bytesMatch[1]);
+      if (Number.isFinite(byteCount) && byteCount >= 0) {
+        parts.push(StateFormatter.formatBytes(byteCount));
+      }
+    }
+    if (speedMatch) {
+      const bps = Number(speedMatch[1]);
+      if (Number.isFinite(bps) && bps > 0) {
+        parts.push(formatSpeed(bps));
+      }
+    }
+    if (checksum) {
+      parts.push("Checksum verificato");
+    }
+    if (matchedRec) {
+      const isGeneral = isGeneralArchiveTransfer(matchedRec);
+      if (matchedRec.direction === "CLIENT_TO_ROBOT" || matchedRec.direction === "SERVER_TO_ROBOT" || matchedRec.direction === "ROBOT_TO_ROBOT") {
+        parts.push(`→ ${matchedRec.robotId}`);
+      } else if (matchedRec.direction === "CLIENT_TO_SERVER") {
+        parts.push(isGeneral ? "→ Archivio Generale" : `→ Server (${matchedRec.robotId})`);
+      }
+    }
+    return {
+      summary: parts.length > 0 ? parts.join(" · ") : "Completato",
+      technical,
+    };
+  }
+
+  if (!isSuccess || /^(?:Fallito|Annullato)\b/i.test(text)) {
+    return {
+      summary: compactErrorMessage(text),
+      technical,
+    };
+  }
+
+  return { summary: text, technical };
+}
+
 export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
   const isAdmin = user.roles.some(
     (r) => r.toLowerCase() === "admin"
@@ -84,11 +186,31 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
 
   // Transfer Logs State
   const [rawTransferLogs, setRawTransferLogs] = useState<string[]>([]);
+  const [transferRecords, setTransferRecords] = useState<TransferLogRecord[]>([]);
   const [transferLoading, setTransferLoading] = useState<boolean>(false);
   const [transferError, setTransferError] = useState<string | null>(null);
   const [transferUserFilter, setTransferUserFilter] = useState<string>("");
   const [transferOutcomeFilter, setTransferOutcomeFilter] = useState<string>("ALL");
   const [transferFileFilter, setTransferFileFilter] = useState<string>("");
+  const [transferBatchFilter, setTransferBatchFilter] = useState<string>("");
+  const [expandedLogRows, setExpandedLogRows] = useState<Set<number>>(() => new Set());
+
+  const toggleLogRowTech = useCallback((idx: number) => {
+    setExpandedLogRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  }, []);
+
+  const recordByTransferId = useMemo(() => {
+    const map = new Map<string, TransferLogRecord>();
+    for (const rec of transferRecords) {
+      map.set(rec.transferId, rec);
+    }
+    return map;
+  }, [transferRecords]);
 
   const loadAccessLogs = useCallback(async () => {
     setAccessLoading(true);
@@ -137,26 +259,33 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
       }
       const textOrJson = await res.text();
       let lines: string[] = [];
+      let records: TransferLogRecord[] = [];
       try {
         const parsed = JSON.parse(textOrJson);
         if (Array.isArray(parsed)) {
           lines = parsed.map((item) => (typeof item === "string" ? item : JSON.stringify(item)));
-        } else if (parsed && Array.isArray(parsed.logs)) {
-          lines = parsed.logs;
-        } else if (parsed && Array.isArray(parsed.lines)) {
-          lines = parsed.lines;
-        } else if (parsed && Array.isArray(parsed.entries)) {
-          lines = parsed.entries.map((item: any) =>
-            typeof item === "string" ? item : `[${item.timestamp || ""}] File: ${item.filename || ""} | Utente: ${item.user || item.username || ""} | Direzione: ${item.direction || ""} | Esito: ${item.outcome || ""} | Dettagli: ${item.details || ""}`
-          );
         } else {
-          lines = textOrJson.split("\n").filter((l) => l.trim().length > 0);
+          if (parsed && Array.isArray(parsed.records)) {
+            records = parsed.records;
+          }
+          if (parsed && Array.isArray(parsed.logs)) {
+            lines = parsed.logs;
+          } else if (parsed && Array.isArray(parsed.lines)) {
+            lines = parsed.lines;
+          } else if (parsed && Array.isArray(parsed.entries)) {
+            lines = parsed.entries.map((item: any) =>
+              typeof item === "string" ? item : `[${item.timestamp || ""}] File: ${item.filename || ""} | Utente: ${item.user || item.username || ""} | Direzione: ${item.direction || ""} | Esito: ${item.outcome || ""} | Dettagli: ${item.details || ""}`
+            );
+          } else if (!Array.isArray(parsed?.records)) {
+            lines = textOrJson.split("\n").filter((l) => l.trim().length > 0);
+          }
         }
       } catch {
         lines = textOrJson.split("\n").filter((l) => l.trim().length > 0);
       }
       // Ordine cronologico decrescente (i più recenti in cima)
       setRawTransferLogs([...lines].reverse());
+      setTransferRecords(records);
     } catch (err: any) {
       setTransferError(err.message || "Impossibile recuperare i log dei trasferimenti.");
     } finally {
@@ -223,12 +352,19 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
       }
       const bulkFooterMatch = line.match(BULK_FOOTER_REGEX);
       if (bulkFooterMatch) {
+        const doneCount = bulkFooterMatch[3]?.trim() || "0";
+        const totalCount = bulkFooterMatch[4]?.trim() || "0";
+        const cancelledCount = Number(bulkFooterMatch[5]?.trim() || "0");
+        const failedCount = Number(bulkFooterMatch[6]?.trim() || "0");
+        const summaryParts = [`Completati: ${doneCount}/${totalCount}`];
+        if (cancelledCount > 0) summaryParts.push(`Annullati: ${cancelledCount}`);
+        if (failedCount > 0) summaryParts.push(`Falliti: ${failedCount}`);
         return {
           raw: line,
           isBulkFooter: true,
           batchId: bulkFooterMatch[1]?.trim(),
           outcome: bulkFooterMatch[2]?.trim().toUpperCase(),
-          details: `Completati: ${bulkFooterMatch[3]?.trim()}/${bulkFooterMatch[4]?.trim()} (Annullati: ${bulkFooterMatch[5]?.trim()}, Falliti: ${bulkFooterMatch[6]?.trim()})`,
+          details: summaryParts.join(" · "),
           timestamp: formatLogTime(`${bulkFooterMatch[7].trim()} ${bulkFooterMatch[8].trim()}`),
         };
       }
@@ -264,24 +400,77 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
     });
   }, [rawTransferLogs]);
 
-  const filteredTransferLogs = useMemo(() => {
-    return parsedTransferLogs.filter((entry) => {
-      if (transferUserFilter.trim() && entry.username) {
-        if (!entry.username.toLowerCase().includes(transferUserFilter.toLowerCase().trim())) {
+  const filteredTransferRecords = useMemo(() => {
+    const userNeedle = transferUserFilter.trim().toLowerCase();
+    const fileNeedle = transferFileFilter.trim().toLowerCase();
+    const batchNeedle = transferBatchFilter.trim().toLowerCase();
+    return transferRecords.filter((rec) => {
+      if (userNeedle) {
+        const u = `${rec.username || ""} ${rec.userId || ""}`.toLowerCase();
+        if (!u.includes(userNeedle)) return false;
+      }
+      if (fileNeedle && !(rec.filename || "").toLowerCase().includes(fileNeedle)) {
+        return false;
+      }
+      if (batchNeedle && !(rec.batchId || "").toLowerCase().includes(batchNeedle)) {
+        return false;
+      }
+      if (transferOutcomeFilter !== "ALL") {
+        if (transferOutcomeFilter === "SUCCESSO") {
+          if (rec.status !== "COMPLETED") return false;
+        } else if (transferOutcomeFilter === "FALLIMENTO") {
+          if (rec.status !== "FAILED" && rec.status !== "INTEGRITY_FAILED") return false;
+        } else if (rec.status !== transferOutcomeFilter) {
           return false;
         }
       }
-      if (transferFileFilter.trim() && entry.filename) {
-        if (!entry.filename.toLowerCase().includes(transferFileFilter.toLowerCase().trim())) {
+      return true;
+    });
+  }, [transferRecords, transferUserFilter, transferFileFilter, transferBatchFilter, transferOutcomeFilter]);
+
+  const filteredTransferLogs = useMemo(() => {
+    const userNeedle = transferUserFilter.trim().toLowerCase();
+    const fileNeedle = transferFileFilter.trim().toLowerCase();
+    const batchNeedle = transferBatchFilter.trim().toLowerCase();
+    return parsedTransferLogs.filter((entry) => {
+      if (userNeedle && entry.username) {
+        if (!entry.username.toLowerCase().includes(userNeedle)) {
+          return false;
+        }
+      }
+      if (fileNeedle && entry.filename) {
+        if (!entry.filename.toLowerCase().includes(fileNeedle)) {
+          return false;
+        }
+      }
+      if (batchNeedle) {
+        if (!(entry.batchId || "").toLowerCase().includes(batchNeedle) && !entry.raw.toLowerCase().includes(batchNeedle)) {
           return false;
         }
       }
       if (transferOutcomeFilter !== "ALL" && entry.outcome) {
-        if (!entry.outcome.includes(transferOutcomeFilter)) return false;
+        const up = entry.outcome.toUpperCase();
+        if (transferOutcomeFilter === "SUCCESSO" || transferOutcomeFilter === "COMPLETED") {
+          if (!up.includes("SUCCESSO") && !up.includes("COMPLETED") && up !== "OK") return false;
+        } else if (transferOutcomeFilter === "FALLIMENTO" || transferOutcomeFilter === "FAILED") {
+          if (
+            !up.includes("FALLIMENT") &&
+            !up.includes("FALLIT") &&
+            !up.includes("FAIL") &&
+            !up.includes("PARZIAL") &&
+            !up.includes("ERRORE")
+          ) {
+            return false;
+          }
+        } else if (transferOutcomeFilter === "CANCELLED") {
+          if (!up.includes("ANNULLAT") && !up.includes("CANCEL")) return false;
+        } else if (!up.includes(transferOutcomeFilter)) {
+          return false;
+        }
       }
       return true;
     });
-  }, [parsedTransferLogs, transferUserFilter, transferFileFilter, transferOutcomeFilter]);
+  }, [parsedTransferLogs, transferUserFilter, transferFileFilter, transferBatchFilter, transferOutcomeFilter]);
 
   if (!isAdmin) {
     return (
@@ -373,7 +562,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
             role="tab"
             aria-selected={activeTab === "transfers"}
           >
-            Log Trasferimenti File ({filteredTransferLogs.length})
+            Log Trasferimenti File ({filteredTransferRecords.length > 0 ? filteredTransferRecords.length : filteredTransferLogs.length})
           </button>
         </li>
       </ul>
@@ -517,7 +706,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
           <div className="card shadow-sm mb-3 border-0 bg-light">
             <div className="card-body py-2">
               <div className="row g-2 align-items-center">
-                <div className="col-12 col-md-4">
+                <div className="col-12 col-md-2">
                   <input
                     type="text"
                     id="filter-transfer-user"
@@ -537,16 +726,31 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                     onChange={(e) => setTransferFileFilter(e.target.value)}
                   />
                 </div>
-                <div className="col-6 col-md-3">
+                <div className="col-12 col-md-3">
+                  <input
+                    type="text"
+                    id="filter-transfer-batch"
+                    className="form-control form-control-sm"
+                    placeholder="Filtra per Batch ID..."
+                    value={transferBatchFilter}
+                    onChange={(e) => setTransferBatchFilter(e.target.value)}
+                  />
+                </div>
+                <div className="col-6 col-md-2">
                   <select
                     id="filter-transfer-outcome"
                     className="form-select form-select-sm"
                     value={transferOutcomeFilter}
                     onChange={(e) => setTransferOutcomeFilter(e.target.value)}
                   >
-                    <option value="ALL">Tutti gli esiti</option>
-                    <option value="SUCCESSO">SUCCESSO</option>
-                    <option value="FALLIMENTO">FALLIMENTO</option>
+                    <option value="ALL">Tutti gli stati / esiti</option>
+                    <option value="SUCCESSO">Completati (SUCCESSO)</option>
+                    <option value="FALLIMENTO">Falliti / Errori</option>
+                    <option value="CANCELLED">Annullati</option>
+                    <option value="IN_PROGRESS">In corso</option>
+                    <option value="PAUSED">In pausa</option>
+                    <option value="QUEUED">In coda</option>
+                    <option value="INTEGRITY_FAILED">Integrità fallita</option>
                   </select>
                 </div>
                 <div className="col-6 col-md-2 text-md-end">
@@ -556,6 +760,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                     onClick={() => {
                       setTransferUserFilter("");
                       setTransferFileFilter("");
+                      setTransferBatchFilter("");
                       setTransferOutcomeFilter("ALL");
                     }}
                   >
@@ -572,7 +777,149 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
             </div>
           )}
 
+          {/* TABELLA STORICO COMPLETO TRASFERIMENTI (tutti gli esiti: Completati, Falliti, Annullati, In corso, In coda, In pausa) */}
+          <div className="card shadow-sm border-0 mb-4">
+            <div className="card-header bg-white d-flex justify-content-between align-items-center py-2">
+              <span className="fw-semibold small">
+                Storico Completo Trasferimenti ({filteredTransferRecords.length}) — include completati, falliti, annullati, in corso e in coda
+              </span>
+            </div>
+            <div className="table-responsive">
+              <table className="table table-hover align-middle mb-0" id="table-transfer-history-records">
+                <thead className="table-light small">
+                  <tr>
+                    <th scope="col" style={{ minWidth: "200px" }}>File / ID</th>
+                    <th scope="col" style={{ minWidth: "220px" }}>Origine → Destinazione</th>
+                    <th scope="col" style={{ minWidth: "155px" }}>Inizio / Fine</th>
+                    <th scope="col" style={{ minWidth: "140px" }}>Dimensione / %</th>
+                    <th scope="col" style={{ minWidth: "115px" }}>Velocità</th>
+                    <th scope="col" style={{ minWidth: "115px" }}>Stato</th>
+                    <th scope="col" style={{ minWidth: "200px" }}>Errore / Dettagli</th>
+                  </tr>
+                </thead>
+                <tbody className="small">
+                  {filteredTransferRecords.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="text-center py-3 text-muted">
+                        {transferLoading
+                          ? "Caricamento storico trasferimenti..."
+                          : "Nessun trasferimento strutturato corrisponde ai filtri selezionati."}
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredTransferRecords.map((rec) => {
+                      const endpoint = formatTransferEndpoints({
+                        direction: rec.direction,
+                        robotId: rec.robotId,
+                        sourcePath: rec.sourcePath,
+                        destinationPath: rec.destinationPath,
+                      });
+                      const totalBytes = Number(rec.totalBytes ?? 0);
+                      const transferredBytes = Number(rec.transferredBytes ?? 0);
+                      const pct =
+                        rec.percent !== null && rec.percent !== undefined
+                          ? Number(rec.percent)
+                          : totalBytes > 0
+                          ? Math.min(100, Math.round((transferredBytes / totalBytes) * 10000) / 100)
+                          : rec.status === "COMPLETED" && totalBytes === 0 && transferredBytes === 0
+                          ? 100
+                          : 0;
+                      const speedVal =
+                        rec.status === "IN_PROGRESS"
+                          ? rec.currentSpeedBytesPerSec
+                          : rec.averageSpeedBytesPerSec;
+                      const speedText = formatSpeedWithArrow(rec.direction, speedVal);
+                      const badgeClass =
+                        rec.status === "COMPLETED"
+                          ? "text-bg-success"
+                          : rec.status === "FAILED" || rec.status === "INTEGRITY_FAILED"
+                          ? "text-bg-danger"
+                          : rec.status === "CANCELLED"
+                          ? "text-bg-secondary"
+                          : rec.status === "PAUSED"
+                          ? "text-bg-warning text-dark"
+                          : "text-bg-primary";
+                      const isFailedRow = rec.status === "FAILED" || rec.status === "INTEGRITY_FAILED";
+
+                      return (
+                        <tr
+                          key={rec.transferId}
+                          data-log-transfer-id={rec.transferId}
+                          data-log-batch-id={rec.batchId || ""}
+                          data-log-status={rec.status}
+                          className={isFailedRow ? "table-danger-subtle" : ""}
+                        >
+                          <td className="text-break">
+                            <div className="fw-semibold">{rec.filename}</div>
+                            <div className="text-muted" style={{ fontSize: "11px" }}>
+                              ID: <code>{rec.transferId.slice(0, 8)}</code>
+                              {rec.username ? ` · Utente: ${rec.username}` : ""}
+                            </div>
+                            {rec.batchId && (
+                              <div className="text-muted" style={{ fontSize: "11px" }}>
+                                Batch: <code>{rec.batchId}</code>
+                              </div>
+                            )}
+                          </td>
+                          <td className="text-break">
+                            <span className="badge text-bg-light text-dark border mb-1">
+                              {DIRECTION_LABELS[rec.direction] || rec.direction}
+                            </span>
+                            <div className="text-muted" style={{ fontSize: "11px" }}>
+                              {endpoint.label}
+                            </div>
+                          </td>
+                          <td className="text-monospace text-secondary" style={{ fontSize: "11px" }}>
+                            <div>Inizio: {formatLogTime(rec.startedAt)}</div>
+                            <div>Fine: {rec.completedAt ? formatLogTime(rec.completedAt) : "—"}</div>
+                            {rec.durationMs !== null && rec.durationMs !== undefined && (
+                              <div>Durata: {formatDurationMs(rec.durationMs)}</div>
+                            )}
+                          </td>
+                          <td>
+                            <div>
+                              {StateFormatter.formatBytes(transferredBytes)} /{" "}
+                              {rec.totalBytes !== null && rec.totalBytes !== undefined
+                                ? StateFormatter.formatBytes(totalBytes)
+                                : "—"}
+                            </div>
+                            <div className="fw-semibold text-secondary">{pct.toFixed(pct % 1 === 0 ? 0 : 1)}%</div>
+                          </td>
+                          <td className="fw-semibold text-nowrap">{speedText}</td>
+                          <td>
+                            <span className={`badge ${badgeClass}`}>
+                              {STATUS_LABELS[rec.status] || rec.status}
+                            </span>
+                          </td>
+                          <td className="text-break">
+                            {rec.error ? (
+                              <span className="text-danger fw-semibold">{compactErrorMessage(rec.error)}</span>
+                            ) : rec.status === "COMPLETED" ? (
+                              <span
+                                className="text-muted"
+                                title={rec.checksum ? `SHA-256: ${rec.checksum}` : rec.integrityLabel || undefined}
+                              >
+                                {rec.checksum ? "Checksum verificato" : "Completato"}
+                              </span>
+                            ) : (
+                              <span className="text-muted">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           <div className="card shadow-sm border-0">
+            <div className="card-header bg-white py-2">
+              <span className="fw-semibold small">
+                Registro Fisico Su Disco (<code>transfers.log</code> — {filteredTransferLogs.length} righe)
+              </span>
+            </div>
             <div className="table-responsive">
               <table className="table table-hover align-middle mb-0" id="table-transfer-logs">
                 <thead className="table-light small">
@@ -610,24 +957,56 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                         );
                       }
                       if (item.isBulkFooter) {
+                        const footerOutcome = (item.outcome || "").toUpperCase();
+                        const footerSuccess = footerOutcome === "SUCCESSO" || footerOutcome === "COMPLETED";
+                        const footerPartial = footerOutcome.includes("PARZIAL");
+                        const footerCancelled = footerOutcome.includes("ANNULLAT") || footerOutcome.includes("CANCEL");
+                        const footerBadgeClass = footerSuccess
+                          ? "text-bg-success"
+                          : footerPartial
+                          ? "text-bg-warning text-dark"
+                          : footerCancelled
+                          ? "text-bg-secondary"
+                          : "text-bg-danger";
+                        const footerLabel = footerSuccess
+                          ? "Completato"
+                          : footerPartial
+                          ? "Parziale"
+                          : footerCancelled
+                          ? "Annullato"
+                          : "Fallito";
                         return (
-                          <tr key={idx} className="table-secondary fw-semibold">
+                          <tr key={idx} className={footerSuccess ? "table-secondary fw-semibold" : "table-danger fw-semibold"}>
                             <td className="text-monospace">{item.timestamp || "—"}</td>
                             <td colSpan={3}>
                               <span className="badge text-bg-dark me-2">Fine Caricamento Massivo</span>
                               Batch ID: <code>{item.batchId}</code>
                             </td>
                             <td>
-                              <span className="badge text-bg-success">Concluso</span>
+                              <span className={`badge ${footerBadgeClass}`}>{footerLabel}</span>
                             </td>
                             <td>{item.details}</td>
                           </tr>
                         );
                       }
+                      const entryOutcome = (item.outcome || "").toUpperCase();
+                      const isSuccessEntry = entryOutcome === "SUCCESSO" || entryOutcome === "COMPLETED" || entryOutcome === "OK";
+                      const formattedDetails = formatCompactTransferLogDetails(
+                        item.details || item.raw,
+                        item.outcome,
+                        recordByTransferId
+                      );
+                      const isTechExpanded = expandedLogRows.has(idx);
                       return (
                         <tr
                           key={idx}
-                          className={item.isBulkItem ? "border-start border-3 border-primary ps-2 bg-light-subtle" : ""}
+                          className={
+                            !isSuccessEntry && entryOutcome
+                              ? "table-danger-subtle"
+                              : item.isBulkItem
+                              ? "border-start border-3 border-primary ps-2 bg-light-subtle"
+                              : ""
+                          }
                         >
                           <td className="text-monospace text-secondary">{item.timestamp || "—"}</td>
                           <td className="fw-semibold text-break">
@@ -643,14 +1022,14 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                             {item.direction ? (
                               <span className="badge text-bg-secondary">{item.direction}</span>
                             ) : (
-                              item.details || "—"
+                              "—"
                             )}
                           </td>
                           <td>
                             {item.outcome ? (
                               <span
                                 className={`badge ${
-                                  item.outcome === "SUCCESSO" ? "text-bg-success" : "text-bg-danger"
+                                  isSuccessEntry ? "text-bg-success" : "text-bg-danger"
                                 }`}
                               >
                                 {item.outcome}
@@ -659,7 +1038,30 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                               "—"
                             )}
                           </td>
-                          <td className="text-break">{item.details || item.raw}</td>
+                          <td className="text-break" title={formattedDetails.technical}>
+                            <span className={!isSuccessEntry && entryOutcome ? "text-danger fw-semibold" : ""}>
+                              {formattedDetails.summary}
+                            </span>
+                            {formattedDetails.technical && (
+                              <>
+                                {" "}
+                                <button
+                                  type="button"
+                                  className="btn btn-link btn-sm p-0 align-baseline text-secondary text-decoration-none"
+                                  style={{ fontSize: "11px" }}
+                                  onClick={() => toggleLogRowTech(idx)}
+                                  aria-expanded={isTechExpanded}
+                                >
+                                  {isTechExpanded ? "[nascondi]" : "[dettagli]"}
+                                </button>
+                                {isTechExpanded && (
+                                  <div className="text-muted font-monospace mt-1" style={{ fontSize: "11px" }}>
+                                    {formattedDetails.technical}
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </td>
                         </tr>
                       );
                     })

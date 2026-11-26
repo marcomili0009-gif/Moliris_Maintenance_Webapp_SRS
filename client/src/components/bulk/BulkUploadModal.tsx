@@ -59,10 +59,12 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
   const [sourceType, setSourceType] = useState<BulkSourceType>("computer");
   const [computerFiles, setComputerFiles] = useState<File[]>([]);
   const [sourceRobotId, setSourceRobotId] = useState<string>("");
+  const [sourceAvailableDirs, setSourceAvailableDirs] = useState<ServerSourceFile[]>([]);
   const [sourceAvailableFiles, setSourceAvailableFiles] = useState<ServerSourceFile[]>([]);
   const [selectedServerFiles, setSelectedServerFiles] = useState<string[]>([]);
   const [loadingSourceFiles, setLoadingSourceFiles] = useState<boolean>(false);
   const [sourceDirCurrent, setSourceDirCurrent] = useState<string>("/");
+  const [sourceDirDisplay, setSourceDirDisplay] = useState<string>("/");
 
   // Passo 2: Tipo destinazione (ISS-010: selezione multipla combinabile)
   const [selectedDestTypes, setSelectedDestTypes] = useState<BulkDestType[]>(["remote_robots"]);
@@ -77,7 +79,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
 
   // Passo 4: Cartella di destinazione
   const [commonDirectory, setCommonDirectory] = useState<string>("/upload");
-  const [generalDirectory, setGeneralDirectory] = useState<string>("/upload");
+  const [generalDirectory, setGeneralDirectory] = useState<string>("/");
   const [individualDirectories, setIndividualDirectories] = useState<Record<string, string>>({});
   const [isFolderPickerOpen, setIsFolderPickerOpen] = useState<boolean>(false);
   const [folderPickerScope, setFolderPickerScope] = useState<"general" | "server" | "remote">("remote");
@@ -104,12 +106,15 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
       setComputerFiles([]);
       setSourceRobotId("");
       setSelectedServerFiles([]);
+      setSourceAvailableDirs([]);
       setSourceAvailableFiles([]);
+      setSourceDirCurrent("/");
+      setSourceDirDisplay("/");
       setSelectedDestTypes(["remote_robots"]);
       setRobotSearchFilter("");
       setSelectedTargetRobotIds([]);
       setCommonDirectory("/upload");
-      setGeneralDirectory("/upload");
+      setGeneralDirectory("/");
       setIndividualDirectories({});
       setIsMove(false);
       setMoveConfirmation(false);
@@ -130,50 +135,79 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
     }
   }, [isOpen, robots, sourceRobotId]);
 
-  // Caricamento file per sorgenti server o robot
+  // Caricamento file e sottocartelle per sorgenti server o robot
   useEffect(() => {
     if (!isOpen || sourceType === "computer") return;
 
+    let cancelled = false;
     const loadFiles = async () => {
       setLoadingSourceFiles(true);
       setError(null);
       try {
         let endpoint = "";
         if (sourceType === "general") {
-          endpoint = `/api/fs/general/list?path=${encodeURIComponent(sourceDirCurrent)}`;
+          endpoint = `/api/fs/general/list?path=${encodeURIComponent(sourceDirCurrent || "/")}`;
         } else if (sourceType === "server_robot") {
-          if (!sourceRobotId) return;
-          endpoint = `/api/robots/${encodeURIComponent(sourceRobotId)}/fs/server/list?path=${encodeURIComponent(sourceDirCurrent)}`;
+          if (!sourceRobotId) {
+            setLoadingSourceFiles(false);
+            return;
+          }
+          endpoint = `/api/robots/${encodeURIComponent(sourceRobotId)}/fs/server/list?path=${encodeURIComponent(sourceDirCurrent || "/")}`;
         } else if (sourceType === "remote_robot") {
-          if (!sourceRobotId) return;
-          endpoint = `/api/robots/${encodeURIComponent(sourceRobotId)}/fs/remote/list?path=${encodeURIComponent(sourceDirCurrent)}`;
+          if (!sourceRobotId) {
+            setLoadingSourceFiles(false);
+            return;
+          }
+          endpoint = sourceDirCurrent
+            ? `/api/robots/${encodeURIComponent(sourceRobotId)}/fs/remote/list?path=${encodeURIComponent(sourceDirCurrent)}`
+            : `/api/robots/${encodeURIComponent(sourceRobotId)}/fs/remote/list`;
         }
 
         const res = await apiClient.get(endpoint);
         const data = await res.json();
+        if (cancelled) return;
         if (res.ok) {
+          const resolvedDir: string = data.path || data.currentPath || sourceDirCurrent || "/";
+          setSourceDirDisplay(resolvedDir);
           const rawEntries: any[] = Array.isArray(data.entries) ? data.entries : (data.items || []);
+          const joinDirPath = (name: string) =>
+            resolvedDir.endsWith("/") ? `${resolvedDir}${name}` : `${resolvedDir}/${name}`;
+
+          const dirs: ServerSourceFile[] = rawEntries
+            .filter((e) => e.type === "directory")
+            .filter((e) => sourceType !== "general" || (e.scope !== "robot" && e.scope !== "deleted_robot"))
+            .map((e) => ({
+              name: e.name,
+              path: joinDirPath(e.name),
+            }));
           const files: ServerSourceFile[] = rawEntries
             .filter((e) => e.type === "file")
             .map((e) => ({
               name: e.name,
-              path: sourceDirCurrent.endsWith("/") ? `${sourceDirCurrent}${e.name}` : `${sourceDirCurrent}/${e.name}`,
+              path: joinDirPath(e.name),
               size: e.size,
             }));
+          setSourceAvailableDirs(dirs);
           setSourceAvailableFiles(files);
         } else {
+          setSourceAvailableDirs([]);
           setSourceAvailableFiles([]);
           setError(data.message || "Impossibile caricare i file della sorgente.");
         }
       } catch (err: any) {
+        if (cancelled) return;
+        setSourceAvailableDirs([]);
         setSourceAvailableFiles([]);
         setError(err?.message || "Errore durante il caricamento dei file della sorgente.");
       } finally {
-        setLoadingSourceFiles(false);
+        if (!cancelled) setLoadingSourceFiles(false);
       }
     };
 
-    loadFiles();
+    void loadFiles();
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, sourceType, sourceRobotId, sourceDirCurrent]);
 
   if (!isOpen) return null;
@@ -288,11 +322,18 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
         }
 
         const res = await onExecuteUpload(computerFiles, destinations, overwrite, (p) => setProgress(p));
-        if (res.success && res.results) {
+        if (res.results && res.results.length > 0) {
           setResults(res.results);
           setProgress(100);
-        } else {
-          setError(res.error?.userMessage || "Errore durante il caricamento massivo.");
+        }
+        if (!res.success) {
+          const firstFailed = res.results?.flatMap((r) => r.failedFiles)[0];
+          setError(
+            res.error?.userMessage ||
+              (firstFailed
+                ? `Trasferimento non riuscito (${firstFailed.filename}): ${firstFailed.reason}`
+                : "Errore durante il caricamento massivo.")
+          );
         }
       }
 
@@ -325,32 +366,39 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
 
         const data = await res.json();
         if (res.ok) {
-          setResults(
-            (data.results || []).flatMap((fileResult: any) =>
-              (fileResult.targets || []).map((targetResult: any) => {
-                const targetType =
-                  targetResult.target?.type === "general"
-                    ? "general"
-                    : targetResult.target?.type === "server"
-                    ? "server"
-                    : "robot";
-                return {
-                  targetType,
-                  targetId: targetResult.target?.robotId || (targetType === "general" ? "general" : ""),
-                  targetName:
-                    targetType === "general"
-                      ? "Archivio Generale Server"
-                      : targetResult.target?.robotId || "Destinazione",
-                  success: Boolean(targetResult.success),
-                  transferredFiles: targetResult.success ? [fileResult.filename] : [],
-                  failedFiles: targetResult.success
-                    ? []
-                    : [{ filename: fileResult.filename, reason: targetResult.error || "Errore" }],
-                };
-              })
-            )
+          const mappedResults: BulkUploadTargetResult[] = (data.results || []).flatMap((fileResult: any) =>
+            (fileResult.targets || []).map((targetResult: any) => {
+              const targetType =
+                targetResult.target?.type === "general"
+                  ? "general"
+                  : targetResult.target?.type === "server"
+                  ? "server"
+                  : "robot";
+              return {
+                targetType,
+                targetId: targetResult.target?.robotId || (targetType === "general" ? "general" : ""),
+                targetName:
+                  targetType === "general"
+                    ? "Archivio Generale Server"
+                    : targetResult.target?.robotId || "Destinazione",
+                success: Boolean(targetResult.success),
+                transferredFiles: targetResult.success ? [fileResult.filename] : [],
+                failedFiles: targetResult.success
+                  ? []
+                  : [{ filename: fileResult.filename, reason: targetResult.error || "Errore" }],
+              };
+            })
           );
+          setResults(mappedResults);
           setProgress(100);
+          const firstFailed = mappedResults.flatMap((r) => r.failedFiles)[0];
+          if (data.success === false || firstFailed) {
+            setError(
+              firstFailed
+                ? `Trasferimento non riuscito (${firstFailed.filename}): ${firstFailed.reason}`
+                : "Uno o più trasferimenti dal server non sono riusciti."
+            );
+          }
         } else {
           setError(data.message || "Errore durante il trasferimento dei file dal server.");
         }
@@ -440,6 +488,9 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                   className={`btn btn-sm ${sourceType === "general" ? "btn-primary" : "btn-outline-secondary"}`}
                   onClick={() => {
                     setSourceType("general");
+                    setSourceDirCurrent("/");
+                    setSourceDirDisplay("/");
+                    setSelectedServerFiles([]);
                     setError(null);
                   }}
                 >
@@ -450,6 +501,9 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                   className={`btn btn-sm ${sourceType === "server_robot" ? "btn-primary" : "btn-outline-secondary"}`}
                   onClick={() => {
                     setSourceType("server_robot");
+                    setSourceDirCurrent("/");
+                    setSourceDirDisplay("/");
+                    setSelectedServerFiles([]);
                     setError(null);
                   }}
                 >
@@ -460,6 +514,9 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                   className={`btn btn-sm ${sourceType === "remote_robot" ? "btn-primary" : "btn-outline-secondary"}`}
                   onClick={() => {
                     setSourceType("remote_robot");
+                    setSourceDirCurrent("");
+                    setSourceDirDisplay("/");
+                    setSelectedServerFiles([]);
                     setSelectedDestTypes(["remote_robots"]);
                     setError(null);
                   }}
@@ -530,7 +587,12 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                       <select
                         className="form-select form-select-sm"
                         value={sourceRobotId}
-                        onChange={(e) => setSourceRobotId(e.target.value)}
+                        onChange={(e) => {
+                          setSourceRobotId(e.target.value);
+                          setSourceDirCurrent(sourceType === "remote_robot" ? "" : "/");
+                          setSourceDirDisplay("/");
+                          setSelectedServerFiles([]);
+                        }}
                       >
                         {robots.map((r) => (
                           <option key={r.id} value={r.id}>
@@ -541,15 +603,42 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                     </div>
                   )}
 
-                  <div className="fw-semibold small mb-1">
-                    File disponibili nella sorgente ({sourceDirCurrent}):
+                  <div className="d-flex justify-content-between align-items-center mb-1 gap-2 flex-wrap">
+                    <div className="fw-semibold small">
+                      Sorgente (<code className="text-dark">{sourceDirDisplay}</code>):
+                    </div>
+                    {sourceDirDisplay && sourceDirDisplay !== "/" && (
+                      <button
+                        type="button"
+                        className="btn btn-outline-secondary btn-sm py-0 px-2"
+                        onClick={() => {
+                          const parts = sourceDirDisplay.split("/").filter(Boolean);
+                          parts.pop();
+                          const parent = parts.length > 0 ? `/${parts.join("/")}` : "/";
+                          setSourceDirCurrent(parent);
+                        }}
+                      >
+                        &uarr; Cartella superiore
+                      </button>
+                    )}
                   </div>
                   {loadingSourceFiles ? (
                     <div className="text-secondary small p-2">Caricamento file sorgente...</div>
-                  ) : sourceAvailableFiles.length === 0 ? (
-                    <div className="text-secondary small p-2">Nessun file presente nella directory sorgente.</div>
+                  ) : sourceAvailableDirs.length === 0 && sourceAvailableFiles.length === 0 ? (
+                    <div className="text-secondary small p-2">Nessun file o cartella presente nella directory sorgente.</div>
                   ) : (
-                    <div className="border rounded bg-white p-2" style={{ maxHeight: "150px", overflowY: "auto" }}>
+                    <div className="border rounded bg-white p-2" style={{ maxHeight: "180px", overflowY: "auto" }}>
+                      {sourceAvailableDirs.map((dir) => (
+                        <div key={`dir-${dir.path}`} className="mb-1">
+                          <button
+                            type="button"
+                            className="btn btn-link btn-sm p-0 text-decoration-none fw-semibold text-start"
+                            onClick={() => setSourceDirCurrent(dir.path)}
+                          >
+                            [Cartella] {dir.name}
+                          </button>
+                        </div>
+                      ))}
                       {sourceAvailableFiles.map((f) => (
                         <label key={f.path} className="d-block small mb-1 cursor-pointer">
                           <input
@@ -565,6 +654,11 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                           {f.name} {f.size !== undefined && `(${Math.round(f.size / 1024)} KB)`}
                         </label>
                       ))}
+                    </div>
+                  )}
+                  {selectedServerFiles.length > 0 && (
+                    <div className="small text-primary mt-1">
+                      {selectedServerFiles.length} file selezionati per il trasferimento.
                     </div>
                   )}
                 </div>
@@ -628,7 +722,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                       onChange={() => toggleDestType("general")}
                     />
                     <div>
-                      <strong>Archivio Generale Server (/home/robots/general)</strong>
+                      <strong>Archivio Generale Server</strong>
                       <div className="small opacity-75">
                         Archiviazione centrale condivisa non legata a singoli robot.
                       </div>
@@ -748,7 +842,9 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                       <div className="d-flex gap-2">
                         <input
                           type="text"
+                          id="input-bulk-common-dir"
                           className="form-control form-control-sm font-monospace"
+                          placeholder="es. TEST, ~/TEST oppure /upload"
                           value={commonDirectory}
                           onChange={(e) => setCommonDirectory(e.target.value)}
                         />
@@ -765,6 +861,21 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                           Scegli Cartella...
                         </button>
                       </div>
+                      {selectedTargetRobotIds.length > 1 && hasRemoteDest && (
+                        <div
+                          id="bulk-multirobot-path-notice"
+                          className="alert alert-info py-2 px-3 small mt-2 mb-0"
+                          role="note"
+                        >
+                          <strong>Nota sui percorsi multi-robot:</strong> un percorso relativo (es.{" "}
+                          <code>TEST</code> o <code>~/TEST</code>) viene risolto e creato automaticamente nella
+                          home directory remota dell'utente SSH di ciascun robot selezionato (es.{" "}
+                          <code>/home/robot/TEST</code> e <code>/home/robot01/TEST</code>). Un percorso assoluto
+                          (es. <code>/home/robot/...</code>) richiede invece che quella cartella esista e sia
+                          scrivibile su tutti i robot selezionati; in alternativa personalizza il percorso per
+                          singolo robot qui sotto.
+                        </div>
+                      )}
                     </div>
 
                     {selectedTargetRobotIds.length > 1 && (
@@ -938,7 +1049,15 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                         {res.success ? "Riuscito" : "Fallito"}
                       </span>
                       <strong>{res.targetName}</strong>: {res.transferredFiles.length} file completati
-                      {res.failedFiles.length > 0 && ` (${res.failedFiles.length} errori)`}
+                      {res.failedFiles.length > 0 && (
+                        <ul className="mb-0 mt-1 ps-4 text-danger">
+                          {res.failedFiles.map((f, j) => (
+                            <li key={`${f.filename}-${j}`}>
+                              <code>{f.filename}</code>: {f.reason}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1027,7 +1146,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                 type="button"
                 className="btn btn-primary btn-sm"
                 id="btn-start-bulk-upload"
-                onClick={handleExecute}
+                onAsyncClick={handleExecute}
                 disabled={isTransferring || (isMove && !moveConfirmation)}
                 pendingText="Trasferimento in corso..."
               >

@@ -44,7 +44,7 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
   const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState<boolean>(false);
 
-  const fetchDirectory = useCallback(async (path: string) => {
+  const fetchDirectory = useCallback(async (path: string, allowFallback = false) => {
     setLoading(true);
     setError(null);
     try {
@@ -56,7 +56,9 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
         endpoint = `/api/robots/${encodeURIComponent(robotId)}/fs/server/list?path=${encodeURIComponent(path)}`;
       } else {
         if (!robotId) throw new Error("Robot non specificato per filesystem remoto.");
-        endpoint = `/api/robots/${encodeURIComponent(robotId)}/fs/remote/list?path=${encodeURIComponent(path)}`;
+        endpoint = path
+          ? `/api/robots/${encodeURIComponent(robotId)}/fs/remote/list?path=${encodeURIComponent(path)}`
+          : `/api/robots/${encodeURIComponent(robotId)}/fs/remote/list`;
       }
 
       const res = await apiClient.get(endpoint);
@@ -71,10 +73,15 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
           .filter((e) => e.type === "directory")
           // Nella root aggregata le directory dei robot non appartengono
           // all'archivio condiviso: non sono destinazioni valide per questo selettore.
-          .filter((e) => scope !== "general" || e.scope !== "robot")
+          .filter((e) => scope !== "general" || (e.scope !== "robot" && e.scope !== "deleted_robot"))
           .map((e) => ({ name: e.name, type: "directory" }));
         setFolders(dirList);
-        setCurrentPath(data.path || data.currentPath || path);
+        setCurrentPath(data.path || data.currentPath || path || "/");
+      } else if (allowFallback && res.status !== 403 && path && path !== "/") {
+        // Se la directory iniziale suggerita non esiste (es. /upload su un robot Linux),
+        // ricade sulla directory naturale di partenza (home SFTP o root archivio).
+        await fetchDirectory(scope === "remote" ? "" : "/", false);
+        return;
       } else {
         setError(ErrorPresenter.formatError(data));
         setFolders([]);
@@ -89,15 +96,15 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      const startPath = initialPath || "/";
-      setCurrentPath(startPath);
+      const startPath = initialPath || (scope === "remote" ? "" : "/");
+      setCurrentPath(startPath || "/");
       setFilterQuery("");
       setIsCreatingFolder(false);
       setNewFolderName("");
       setCreateError(null);
-      fetchDirectory(startPath);
+      void fetchDirectory(startPath, true);
     }
-  }, [isOpen, initialPath, fetchDirectory]);
+  }, [isOpen, initialPath, scope, fetchDirectory]);
 
   const handleNavigateSubfolder = (folderName: string) => {
     const nextPath = currentPath.endsWith("/")

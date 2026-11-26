@@ -425,8 +425,13 @@ export function registerRemoteFsRoutes(
       const query = (req.query as any) || {};
       const folderPath = typeof query.path === "string" ? query.path.trim() : "";
       const recursive = query.recursive === true || query.recursive === "true";
-      const expectedFileCount = Number(query.expectedFileCount);
-      const expectedDirectoryCount = Number(query.expectedDirectoryCount);
+      const hasPreflightCounts =
+        query.expectedFileCount !== undefined &&
+        query.expectedFileCount !== "" &&
+        query.expectedDirectoryCount !== undefined &&
+        query.expectedDirectoryCount !== "";
+      const expectedFileCount = hasPreflightCounts ? Number(query.expectedFileCount) : NaN;
+      const expectedDirectoryCount = hasPreflightCounts ? Number(query.expectedDirectoryCount) : NaN;
 
       if (!folderPath) {
         return reply.status(400).send({
@@ -435,10 +440,23 @@ export function registerRemoteFsRoutes(
           classification: "recuperabile",
         });
       }
-      if (!recursive || !Number.isInteger(expectedFileCount) || !Number.isInteger(expectedDirectoryCount)) {
+      if (
+        !Number.isInteger(expectedFileCount) ||
+        !Number.isInteger(expectedDirectoryCount) ||
+        expectedFileCount < 0 ||
+        expectedDirectoryCount < 0
+      ) {
         return reply.status(400).send({
           code: ErrorCode.REMOTE_FS_ERROR,
-          message: "Eliminazione ricorsiva non confermata: recapito del preflight mancante.",
+          message: "Eliminazione non confermata: recapito del preflight mancante.",
+          classification: "recuperabile",
+        });
+      }
+      const requiresRecursive = expectedFileCount > 0 || expectedDirectoryCount > 0;
+      if (requiresRecursive && !recursive) {
+        return reply.status(400).send({
+          code: ErrorCode.REMOTE_FS_ERROR,
+          message: "Eliminazione ricorsiva non confermata: la cartella non è vuota.",
           classification: "recuperabile",
         });
       }
@@ -462,7 +480,7 @@ export function registerRemoteFsRoutes(
       try {
         await authorizeOperatorPath(context, "remote", robot.id, folderPath);
         await remoteFsService.deleteRemoteFolder(context, robot, folderPath, {
-          recursive: true,
+          recursive,
           expectedFileCount,
           expectedDirectoryCount,
         });

@@ -689,7 +689,7 @@ export function registerTransferRoutes(
   );
 
   // =========================================================================
-  // 7. ANNULLAMENTO TRASFERIMENTO (RF-TRF-013)
+  // 7. ANNULLAMENTO, PAUSA E RIPRESA TRASFERIMENTO (RF-TRF-010, RF-TRF-013)
   // =========================================================================
   app.post(
     "/api/transfers/:transferId/cancel",
@@ -700,6 +700,38 @@ export function registerTransferRoutes(
       const { transferId } = req.params as { transferId: string };
       try {
         const dto = await transferService.cancelTransfer(transferId, req.molirisUser!.id);
+        return reply.status(200).send(dto);
+      } catch (err: any) {
+        return handleRouteError(reply, err);
+      }
+    }
+  );
+
+  app.post(
+    "/api/transfers/:transferId/pause",
+    {
+      preHandler: [(req, reply) => authMiddleware.authenticate(req, reply)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { transferId } = req.params as { transferId: string };
+      try {
+        const dto = await transferService.pauseTransfer(transferId, req.molirisUser!.id);
+        return reply.status(200).send(dto);
+      } catch (err: any) {
+        return handleRouteError(reply, err);
+      }
+    }
+  );
+
+  app.post(
+    "/api/transfers/:transferId/resume",
+    {
+      preHandler: [(req, reply) => authMiddleware.authenticate(req, reply)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { transferId } = req.params as { transferId: string };
+      try {
+        const dto = await transferService.resumeTransfer(transferId, req.molirisUser!.id);
         return reply.status(200).send(dto);
       } catch (err: any) {
         return handleRouteError(reply, err);
@@ -932,7 +964,7 @@ export function registerTransferRoutes(
               context,
               safeFilename,
               Number.isFinite(declaredSize) ? declaredSize : null,
-              targets[0]?.robotId
+              undefined
             );
             stagingRecord.tempDestinationPath = stagingPath;
             stagingRecords.push(stagingRecord);
@@ -987,7 +1019,11 @@ export function registerTransferRoutes(
             }
 
             const sha256 = hash.digest("hex");
-            await transferService.completeBulkStagingTransfer(stagingRecord, sha256);
+            stagingRecord.transferredBytes = totalBytes;
+            if (!stagingRecord.totalBytes || stagingRecord.totalBytes < totalBytes) {
+              stagingRecord.totalBytes = totalBytes;
+            }
+            await transferService.completeBulkStagingTransfer(stagingRecord, sha256, totalBytes);
             stagedFiles.push({
               filename: safeFilename,
               stagingPath,
@@ -1226,7 +1262,13 @@ export function registerTransferRoutes(
       });
 
       const batch = batchTransferManager?.getBatch(batchId);
-      if (!batch) {
+      const historyTransfers = await transferService.listAllTransferHistory({
+        batchId,
+        userId: isAdmin ? undefined : user.id,
+        limit: 500,
+      });
+
+      if (!batch && historyTransfers.length === 0) {
         return reply.status(404).send({
           code: ErrorCode.TRANSFER_INTERRUPTED,
           message: `Batch '${batchId}' non trovato.`,
@@ -1234,7 +1276,7 @@ export function registerTransferRoutes(
         });
       }
 
-      if (!isAdmin && batch.userId !== user.id) {
+      if (batch && !isAdmin && batch.userId !== user.id) {
         return reply.status(403).send({
           code: ErrorCode.INSUFFICIENT_PERMISSIONS,
           message: "Accesso non consentito: batch appartenente a un altro utente.",
@@ -1244,7 +1286,19 @@ export function registerTransferRoutes(
 
       return reply.status(200).send({
         success: true,
-        batch,
+        batch: batch || {
+          batchId,
+          userId: historyTransfers[0]?.userId || user.id,
+          username: historyTransfers[0]?.username || user.username,
+          status: historyTransfers.some((t) => t.status === "FAILED" || t.status === "INTEGRITY_FAILED")
+            ? "FAILED"
+            : historyTransfers.every((t) => t.status === "COMPLETED")
+            ? "COMPLETED"
+            : "IN_PROGRESS",
+          createdAt: historyTransfers[historyTransfers.length - 1]?.startedAt || new Date().toISOString(),
+          totalFiles: historyTransfers.length,
+        },
+        transfers: historyTransfers,
       });
     }
   );

@@ -337,9 +337,17 @@ export class PhysicalFileLogger {
       lines = lines.filter((l) => l.includes(userTarget));
     }
     if (filter?.outcome) {
-      const outcome = filter.outcome;
-      const outcomeTarget = `Esito: ${outcome}`;
-      lines = lines.filter((l) => l.includes(outcomeTarget) || l.includes(`Esito: ${outcome.toUpperCase()}`));
+      const upper = filter.outcome.toUpperCase();
+      if (upper === "FALLIMENTO" || upper === "FAILED" || upper === "FALLITO") {
+        lines = lines.filter((l) =>
+          /Esito:\s*(FALLIMENTO|FALLITO|FAILED|INTEGRITY_FAILED|PARZIALE|ANNULLATO|CANCELLED)/i.test(l)
+        );
+      } else if (upper === "SUCCESSO" || upper === "COMPLETED") {
+        lines = lines.filter((l) => /Esito:\s*(SUCCESSO|COMPLETED|OK)/i.test(l));
+      } else {
+        const outcomeTarget = `Esito: ${filter.outcome}`;
+        lines = lines.filter((l) => l.includes(outcomeTarget) || l.includes(`Esito: ${upper}`));
+      }
     }
 
     const limit = filter?.limit && filter.limit > 0 ? Math.min(filter.limit, 1000) : 100;

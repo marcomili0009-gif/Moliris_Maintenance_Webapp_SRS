@@ -4,11 +4,13 @@ export type TransferDirection =
   | "CLIENT_TO_SERVER"
   | "CLIENT_TO_ROBOT"
   | "SERVER_TO_CLIENT"
-  | "ROBOT_TO_CLIENT";
+  | "ROBOT_TO_CLIENT"
+  | "ROBOT_TO_ROBOT";
 
 export type TransferStatus =
   | "QUEUED"
   | "IN_PROGRESS"
+  | "PAUSED"
   | "INTEGRITY_CHECKING"
   | "COMPLETED"
   | "FAILED"
@@ -18,6 +20,8 @@ export type TransferStatus =
 export interface TransferProgress {
   transferId: string;
   batchId?: string;
+  userId?: string;
+  username?: string;
   robotId?: string;
   /** Nome del file trasferito. */
   filename: string;
@@ -33,12 +37,44 @@ export interface TransferProgress {
   totalBytes: number;
   percentage: number;
   speedBps: number;
+  currentSpeedBps?: number | null;
+  averageSpeedBps?: number | null;
+  durationMs?: number | null;
   etaSeconds: number | null;
   errorMessage?: string;
+  errorCode?: string;
   integrityLabel?: string;
   checksum?: string;
   startedAt: string;
+  activeStartedAt?: string | null;
   completedAt?: string;
+}
+
+export interface TransferLogRecord {
+  transferId: string;
+  batchId?: string;
+  userId: string;
+  username?: string;
+  robotId: string;
+  direction: TransferDirection;
+  filename: string;
+  sourcePath: string;
+  destinationPath: string;
+  totalBytes: number | null;
+  transferredBytes: number;
+  percent: number | null;
+  status: TransferStatus;
+  currentSpeedBytesPerSec: number | null;
+  averageSpeedBytesPerSec: number | null;
+  etaSeconds: number | null;
+  startedAt: string;
+  activeStartedAt?: string | null;
+  completedAt?: string | null;
+  durationMs?: number | null;
+  error?: string | null;
+  errorCode?: string | null;
+  checksum?: string | null;
+  integrityLabel?: string | null;
 }
 
 /** Esito dell'avvio di un trasferimento Server ↔ Robot (HTTP 202 = preso in carico). */

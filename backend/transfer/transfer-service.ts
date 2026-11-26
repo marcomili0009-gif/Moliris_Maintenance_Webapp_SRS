@@ -7,12 +7,18 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import { performance } from "perf_hooks";
 import { PassThrough, pipeline, type Readable, type Writable } from "stream";
 import { pipeline as pipelineWithSignal } from "node:stream/promises";
 import { type SystemConfiguration } from "../../config/configuration.ts";
 import { type RobotEntity } from "../../storage/robot-models.ts";
 import { type RobotRepository } from "../../storage/robot-repository.ts";
 import { type ServerFilesystemService } from "../../storage/server-fs.ts";
+import {
+  type TransferRepository,
+  type TransferHistoryDocument,
+  InMemoryTransferRepository,
+} from "../../storage/transfer-repository.ts";
 import { type RemoteFilesystemService } from "../remote-fs/remote-fs-service.ts";
 import { type RobotConnectionManager, type ManagedRobotConnection } from "../connection/robot-connection-manager.ts";
 import { type SessionManager, type AuthorizedContext } from "../auth/session-manager.ts";
@@ -99,6 +105,8 @@ export class TransferService {
 
   private physicalFileLogger?: PhysicalFileLogger;
   private batchTransferManager?: BatchTransferManager;
+  private transferRepository: TransferRepository = new InMemoryTransferRepository();
+  private readonly failureLoggedRecords = new WeakSet<TransferRecord>();
 
   public setPhysicalFileLogger(logger: PhysicalFileLogger): void {
     this.physicalFileLogger = logger;
@@ -106,6 +114,184 @@ export class TransferService {
 
   public setBatchTransferManager(manager: BatchTransferManager): void {
     this.batchTransferManager = manager;
+  }
+
+  public setTransferRepository(repo: TransferRepository): void {
+    this.transferRepository = repo;
+  }
+
+  public getTransferRepository(): TransferRepository {
+    return this.transferRepository;
+  }
+
+  /**
+   * All'avvio del server:
+   * 1) marca come FAILED eventuali trasferimenti rimasti bloccati in stati attivi da un crash/riavvio precedente;
+   * 2) idrata in memoria lo storico recente così avanzamento, velocità media ed errori restano visibili dopo il riavvio.
+   */
+  public async hydrateFromRepository(limit = 200): Promise<void> {
+    try {
+      if (this.transferRepository.ensureIndexes) {
+        await this.transferRepository.ensureIndexes();
+      }
+      const interrupted = await this.transferRepository.markStaleActiveAsInterrupted(
+        "Trasferimento interrotto per riavvio del server."
+      );
+      if (interrupted > 0) {
+        this.logger.warn(`Ripristinati ${interrupted} trasferimenti rimasti in stato attivo dopo riavvio.`);
+      }
+      const persisted = await this.transferRepository.list({
+        includeHiddenFromRecent: false,
+        limit,
+      });
+      for (const doc of persisted) {
+        if (this.transfers.has(doc.transferId)) continue;
+        this.transfers.set(doc.transferId, this.fromHistoryDocument(doc));
+      }
+    } catch (err: any) {
+      this.logger.warn("Impossibile idratare lo storico trasferimenti dal repository", {
+        error: err?.message || String(err),
+      });
+    }
+  }
+
+  private fromHistoryDocument(doc: TransferHistoryDocument): TransferRecord {
+    return {
+      transferId: doc.transferId,
+      batchId: doc.batchId,
+      userId: doc.userId,
+      username: doc.username,
+      userSessionId: "persisted-history",
+      robotId: doc.robotId,
+      direction: doc.direction,
+      filename: doc.filename,
+      sourcePath: doc.sourcePath,
+      destinationPath: doc.destinationPath,
+      totalBytes: doc.totalBytes,
+      transferredBytes: doc.transferredBytes,
+      speedBytesPerSec: doc.speedBytesPerSec ?? doc.averageSpeedBytesPerSec ?? null,
+      currentSpeedBytesPerSec: doc.currentSpeedBytesPerSec ?? null,
+      averageSpeedBytesPerSec: doc.averageSpeedBytesPerSec ?? null,
+      etaSeconds: doc.etaSeconds ?? null,
+      status: doc.status,
+      error: doc.error,
+      errorCode: doc.errorCode,
+      computedChecksum: doc.checksum || undefined,
+      checksumAlgorithm: doc.checksumAlgorithm || undefined,
+      integrityLabel: doc.integrityLabel,
+      integrityVerification: doc.integrityVerification,
+      startedAt: new Date(doc.startedAt),
+      activeStartedAt: doc.activeStartedAt ? new Date(doc.activeStartedAt) : undefined,
+      completedAt: doc.completedAt ? new Date(doc.completedAt) : undefined,
+      durationMs: doc.durationMs ?? null,
+      pausedDurationMs: doc.pausedDurationMs ?? 0,
+      lastProgressUpdateAt: new Date(doc.updatedAt || doc.completedAt || doc.startedAt).getTime(),
+      lastBytesAtUpdate: doc.transferredBytes,
+      abortController: new AbortController(),
+      cleanupHandlers: [],
+    };
+  }
+
+  private toHistoryDocument(record: TransferRecord): TransferHistoryDocument {
+    const dto = this.toDto(record);
+    return {
+      transferId: dto.transferId,
+      batchId: dto.batchId,
+      userId: dto.userId,
+      username: record.username,
+      robotId: dto.robotId,
+      direction: dto.direction,
+      filename: dto.filename,
+      sourcePath: dto.sourcePath,
+      destinationPath: dto.destinationPath,
+      totalBytes: dto.totalBytes,
+      transferredBytes: dto.transferredBytes,
+      percent: dto.percent,
+      status: dto.status,
+      error: dto.error,
+      errorCode: record.errorCode,
+      checksum: dto.checksum,
+      checksumAlgorithm: dto.checksumAlgorithm,
+      integrityLabel: dto.integrityLabel,
+      integrityVerification: dto.integrityVerification,
+      startedAt: dto.startedAt,
+      activeStartedAt: dto.activeStartedAt ?? null,
+      completedAt: dto.completedAt,
+      durationMs: dto.durationMs ?? null,
+      pausedDurationMs: record.pausedDurationMs ?? 0,
+      currentSpeedBytesPerSec: dto.currentSpeedBytesPerSec ?? null,
+      averageSpeedBytesPerSec: dto.averageSpeedBytesPerSec ?? null,
+      speedBytesPerSec: dto.speedBytesPerSec,
+      etaSeconds: dto.etaSeconds,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  private persistRecord(record: TransferRecord): void {
+    this.transferRepository.upsert(this.toHistoryDocument(record)).catch((err) => {
+      this.logger.warn("Errore persistenza record trasferimento", {
+        transferId: record.transferId,
+        error: err?.message || String(err),
+      });
+    });
+  }
+
+  private markTransferActive(record: TransferRecord): void {
+    record.status = TransferStatus.IN_PROGRESS;
+    if (!record.activeStartedAt) {
+      record.activeStartedAt = new Date();
+      record.activeStartedPerfMs = performance.now();
+    }
+    if (record.pausedDurationMs === undefined) {
+      record.pausedDurationMs = 0;
+    }
+    this.persistRecord(record);
+  }
+
+  private finalizeTransferStats(record: TransferRecord, verifiedBytes?: number): void {
+    if (verifiedBytes !== undefined && Number.isFinite(verifiedBytes) && verifiedBytes >= 0) {
+      record.transferredBytes = verifiedBytes;
+    }
+    if (!record.completedAt) {
+      record.completedAt = new Date();
+    }
+    if (record.pausedAtMs !== null && record.pausedAtMs !== undefined) {
+      record.pausedDurationMs = (record.pausedDurationMs ?? 0) + Math.max(0, performance.now() - record.pausedAtMs);
+      record.pausedAtMs = null;
+    }
+    if (record.status === TransferStatus.COMPLETED) {
+      if (record.totalBytes === null || record.totalBytes === undefined) {
+        record.totalBytes = record.transferredBytes;
+      } else if (record.transferredBytes === 0 && record.totalBytes === 0) {
+        record.transferredBytes = 0;
+      }
+      record.etaSeconds = 0;
+    } else {
+      record.etaSeconds = null;
+    }
+
+    const pausedMs = Math.max(0, record.pausedDurationMs ?? 0);
+    let activeDurationMs: number | null = null;
+    if (record.activeStartedPerfMs !== undefined) {
+      activeDurationMs = Math.max(1, Math.round(performance.now() - record.activeStartedPerfMs - pausedMs));
+    } else if (record.activeStartedAt) {
+      activeDurationMs = Math.max(1, record.completedAt.getTime() - record.activeStartedAt.getTime() - Math.round(pausedMs));
+    } else if (record.startedAt) {
+      activeDurationMs = Math.max(1, record.completedAt.getTime() - record.startedAt.getTime() - Math.round(pausedMs));
+    }
+    record.durationMs = activeDurationMs;
+
+    if (activeDurationMs !== null && activeDurationMs > 0 && record.transferredBytes > 0) {
+      const avgBps = Math.round(record.transferredBytes / (activeDurationMs / 1000));
+      record.averageSpeedBytesPerSec = avgBps;
+      if (record.status === TransferStatus.COMPLETED) {
+        record.speedBytesPerSec = avgBps;
+      } else if (!record.speedBytesPerSec || record.speedBytesPerSec <= 0) {
+        record.speedBytesPerSec = avgBps;
+      }
+    }
+    record.pauseController = undefined;
+    this.persistRecord(record);
   }
 
   constructor(
@@ -199,7 +385,9 @@ export class TransferService {
    */
   private buildTransferRecord(args: {
     transferId?: string;
+    batchId?: string;
     userId: string;
+    username?: string;
     userSessionId: string;
     robotId: string;
     direction: TransferDirection;
@@ -215,7 +403,9 @@ export class TransferService {
     const initialBytes = args.initialBytes ?? 0;
     return {
       transferId: args.transferId || crypto.randomUUID(),
+      batchId: args.batchId,
       userId: args.userId,
+      username: args.username,
       userSessionId: args.userSessionId,
       robotId: args.robotId,
       direction: args.direction,
@@ -226,12 +416,17 @@ export class TransferService {
       totalBytes: args.totalBytes ?? null,
       transferredBytes: initialBytes,
       speedBytesPerSec: null,
+      currentSpeedBytesPerSec: null,
+      averageSpeedBytesPerSec: null,
       etaSeconds: null,
       status: TransferStatus.QUEUED,
       error: null,
       expectedChecksum: args.expectedChecksum,
       checksumAlgorithm: args.checksumAlgorithm || this.checksumAlgorithm.name,
       startedAt: new Date(),
+      pausedAtMs: null,
+      pausedDurationMs: 0,
+      durationMs: null,
       lastProgressUpdateAt: Date.now(),
       lastBytesAtUpdate: initialBytes,
       abortController: new AbortController(),
@@ -248,6 +443,7 @@ export class TransferService {
   private registerTransfer(record: TransferRecord): void {
     this.assertActiveSession(record.userSessionId);
     this.transfers.set(record.transferId, record);
+    this.persistRecord(record);
   }
 
   private assertTransferActive(record: TransferRecord): void {
@@ -397,6 +593,7 @@ export class TransferService {
     const record = this.buildTransferRecord({
       transferId,
       userId: context.userId,
+      username: context.username,
       userSessionId: context.sessionId,
       robotId: robot.id,
       direction: TransferDirection.CLIENT_TO_SERVER,
@@ -416,7 +613,7 @@ export class TransferService {
       await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
       slotAcquired = true;
       this.assertTransferActive(record);
-      record.status = TransferStatus.IN_PROGRESS;
+      this.markTransferActive(record);
       this.acquireDestinationLock(destLockKey);
       lockAcquired = true;
       await this.recordAuditStart(record);
@@ -529,6 +726,17 @@ export class TransferService {
     });
     const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm, this.getChunkSize());
     const outStream = new PassThrough({ highWaterMark: this.getChunkSize() });
+
+    record.pauseController = {
+      pause: () => {
+        sourceStream.pause();
+        progressTracker.markPaused();
+      },
+      resume: () => {
+        progressTracker.markResumed();
+        sourceStream.resume();
+      },
+    };
 
     let settled = false;
     let released = false;
@@ -652,6 +860,7 @@ export class TransferService {
     const filename = path.basename(targetPath);
     const record = this.buildTransferRecord({
       userId: context.userId,
+      username: context.username,
       userSessionId: context.sessionId,
       robotId: robot.id,
       direction: TransferDirection.SERVER_TO_CLIENT,
@@ -674,7 +883,7 @@ export class TransferService {
       await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
       slotAcquired = true;
       this.assertTransferActive(record);
-      record.status = TransferStatus.IN_PROGRESS;
+      this.markTransferActive(record);
       await this.recordAuditStart(record);
 
       const rawStream = fs.createReadStream(targetPath, {
@@ -782,6 +991,7 @@ export class TransferService {
     // Record visibile già in coda, prima dello slot e dell'handshake SSH.
     const record = this.buildTransferRecord({
       userId: context.userId,
+      username: context.username,
       userSessionId: context.sessionId,
       robotId: robot.id,
       direction: TransferDirection.SERVER_TO_ROBOT,
@@ -802,7 +1012,7 @@ export class TransferService {
       await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
       slotAcquired = true;
       this.assertTransferActive(record);
-      record.status = TransferStatus.IN_PROGRESS;
+      this.markTransferActive(record);
       this.acquireDestinationLock(destLockKey);
       lockAcquired = true;
       await this.recordAuditStart(record);
@@ -1036,6 +1246,7 @@ export class TransferService {
     // Record visibile già in coda, prima dello slot e della connessione SFTP.
     const record = this.buildTransferRecord({
       userId: context.userId,
+      username: context.username,
       userSessionId: context.sessionId,
       robotId: robot.id,
       direction: TransferDirection.ROBOT_TO_SERVER,
@@ -1056,7 +1267,7 @@ export class TransferService {
       await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
       slotAcquired = true;
       this.assertTransferActive(record);
-      record.status = TransferStatus.IN_PROGRESS;
+      this.markTransferActive(record);
       this.acquireDestinationLock(destLockKey);
       lockAcquired = true;
       await this.recordAuditStart(record);
@@ -1239,6 +1450,7 @@ export class TransferService {
     // Record visibile già in coda, prima dello slot e dell'handshake SSH.
     const record = this.buildTransferRecord({
       userId: context.userId,
+      username: context.username,
       userSessionId: context.sessionId,
       robotId: robot.id,
       direction: TransferDirection.CLIENT_TO_ROBOT,
@@ -1258,7 +1470,7 @@ export class TransferService {
       await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
       slotAcquired = true;
       this.assertTransferActive(record);
-      record.status = TransferStatus.IN_PROGRESS;
+      this.markTransferActive(record);
       this.acquireDestinationLock(destLockKey);
       lockAcquired = true;
       await this.recordAuditStart(record);
@@ -1438,6 +1650,7 @@ export class TransferService {
     const filename = path.basename(remoteFilePath);
     const record = this.buildTransferRecord({
       userId: context.userId,
+      username: context.username,
       userSessionId: context.sessionId,
       robotId: robot.id,
       direction: TransferDirection.ROBOT_TO_CLIENT,
@@ -1461,7 +1674,7 @@ export class TransferService {
       await this.acquireTransferSlot(context.userId, robot.id, record.abortController.signal);
       slotAcquired = true;
       this.assertTransferActive(record);
-      record.status = TransferStatus.IN_PROGRESS;
+      this.markTransferActive(record);
       await this.recordAuditStart(record);
 
       remoteReadHandle = await this.remoteFsService.openRemoteReadStream(context, robot, remoteFilePath);
@@ -1546,6 +1759,7 @@ export class TransferService {
 
     const record = this.buildTransferRecord({
       userId: context.userId,
+      username: context.username,
       userSessionId: context.sessionId,
       robotId: TransferService.GENERAL_SERVER_ID,
       direction: TransferDirection.CLIENT_TO_SERVER,
@@ -1571,7 +1785,7 @@ export class TransferService {
       await this.acquireTransferSlot(context.userId, TransferService.GENERAL_SERVER_ID, record.abortController.signal);
       slotAcquired = true;
       this.assertTransferActive(record);
-      record.status = TransferStatus.IN_PROGRESS;
+      this.markTransferActive(record);
       this.acquireDestinationLock(destLockKey);
       lockAcquired = true;
       await this.recordAuditStart(record);
@@ -1778,6 +1992,7 @@ export class TransferService {
     const filename = path.basename(finalPath);
     const record = this.buildTransferRecord({
       userId: context.userId,
+      username: context.username,
       userSessionId: context.sessionId,
       robotId: TransferService.GENERAL_SERVER_ID,
       direction: TransferDirection.SERVER_TO_CLIENT,
@@ -1800,7 +2015,7 @@ export class TransferService {
       await this.acquireTransferSlot(context.userId, TransferService.GENERAL_SERVER_ID, record.abortController.signal);
       slotAcquired = true;
       this.assertTransferActive(record);
-      record.status = TransferStatus.IN_PROGRESS;
+      this.markTransferActive(record);
       await this.recordAuditStart(record);
 
       const rawStream = fs.createReadStream(finalPath, { highWaterMark: this.getChunkSize() });
@@ -1865,9 +2080,25 @@ export class TransferService {
 
     const checksumStream = new ChecksumTransformStream(this.checksumAlgorithm, this.getChunkSize());
 
-    await pipelineWithSignal(sourceStream, progressTracker, checksumStream, destStream, {
-      signal: record.abortController.signal,
-    });
+    record.pauseController = {
+      pause: () => {
+        sourceStream.pause();
+        progressTracker.markPaused();
+      },
+      resume: () => {
+        progressTracker.markResumed();
+        sourceStream.resume();
+      },
+    };
+
+    try {
+      await pipelineWithSignal(sourceStream, progressTracker, checksumStream, destStream, {
+        signal: record.abortController.signal,
+      });
+    } finally {
+      record.pausedDurationMs = Math.max(record.pausedDurationMs ?? 0, progressTracker.getPausedDurationMs());
+      record.pauseController = undefined;
+    }
     this.assertTransferActive(record);
     record.computedChecksum = checksumStream.getDigest() || undefined;
 
@@ -1921,6 +2152,7 @@ export class TransferService {
       ? "Trasferimento interrotto perché la sessione è scaduta."
       : "Trasferimento annullato dall'utente.";
     record.integrityLabel = "integrità non verificata";
+    this.finalizeTransferStats(record);
     record.abortController.abort();
 
     // Riavvia il timer di inattività della sessione al termine dell'operazione (Prompt #4)
@@ -1943,13 +2175,81 @@ export class TransferService {
       timestamp: new Date(),
       details: {
         transferId: record.transferId,
+        batchId: record.batchId,
         direction: record.direction,
         filename: record.filename,
+        sourcePath: record.sourcePath,
+        destinationPath: record.destinationPath,
+        transferredBytes: record.transferredBytes,
+        totalBytes: record.totalBytes,
+        error: record.error,
         cancelled: true,
         reason,
       },
     });
 
+    if (this.physicalFileLogger && !this.failureLoggedRecords.has(record)) {
+      this.failureLoggedRecords.add(record);
+      try {
+        await this.physicalFileLogger.logTransfer({
+          filename: record.filename,
+          username: record.username || record.userId,
+          direction: record.direction,
+          outcome: "FALLIMENTO",
+          details: `Annullato (transferId: ${record.transferId}${record.batchId ? `, batchId: ${record.batchId}` : ""}, ${record.transferredBytes}/${record.totalBytes ?? "?"} byte): ${record.error}`,
+          timestamp: record.completedAt || new Date(),
+        });
+      } catch {}
+    }
+
+    return this.toDto(record);
+  }
+
+  /**
+   * Mette in pausa un trasferimento attivo (escludendo la durata della pausa dalla velocità media).
+   */
+  public pauseTransfer(transferId: string, requestedByUserId: string): TransferDto {
+    const record = this.transfers.get(transferId);
+    if (!record) {
+      throw new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, `Trasferimento '${transferId}' non trovato`, "Trasferimento non trovato.");
+    }
+    if (record.userId !== requestedByUserId) {
+      throw new MolirisAppError(ErrorCode.INSUFFICIENT_PERMISSIONS, "Non autorizzato a mettere in pausa trasferimenti altrui.");
+    }
+    if (record.status !== TransferStatus.IN_PROGRESS) {
+      return this.toDto(record);
+    }
+    record.status = TransferStatus.PAUSED;
+    record.pausedAtMs = performance.now();
+    record.currentSpeedBytesPerSec = 0;
+    record.speedBytesPerSec = 0;
+    record.etaSeconds = null;
+    record.pauseController?.pause();
+    this.persistRecord(record);
+    return this.toDto(record);
+  }
+
+  /**
+   * Riprende un trasferimento precedentemente messo in pausa.
+   */
+  public resumeTransfer(transferId: string, requestedByUserId: string): TransferDto {
+    const record = this.transfers.get(transferId);
+    if (!record) {
+      throw new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, `Trasferimento '${transferId}' non trovato`, "Trasferimento non trovato.");
+    }
+    if (record.userId !== requestedByUserId) {
+      throw new MolirisAppError(ErrorCode.INSUFFICIENT_PERMISSIONS, "Non autorizzato a riprendere trasferimenti altrui.");
+    }
+    if (record.status !== TransferStatus.PAUSED) {
+      return this.toDto(record);
+    }
+    if (record.pausedAtMs !== null && record.pausedAtMs !== undefined) {
+      record.pausedDurationMs = (record.pausedDurationMs ?? 0) + Math.max(0, performance.now() - record.pausedAtMs);
+      record.pausedAtMs = null;
+    }
+    record.status = TransferStatus.IN_PROGRESS;
+    record.pauseController?.resume();
+    this.persistRecord(record);
     return this.toDto(record);
   }
 
@@ -2034,6 +2334,8 @@ export class TransferService {
       );
     }
     this.transfers.delete(transferId);
+    // Nasconde dalla lista Recenti ma conserva intatto lo storico per la vista LOG
+    this.transferRepository.markHiddenFromRecent(transferId).catch(() => {});
   }
 
   /**
@@ -2314,6 +2616,7 @@ export class TransferService {
 
     record.error = safeUserMsg;
     record.errorCode = errorCode;
+    this.finalizeTransferStats(record);
 
     // Esecuzione pulizia dei file temporanei (RF-TRF-009, RNF-REL-005)
     for (const cleanup of record.cleanupHandlers) {
@@ -2322,6 +2625,7 @@ export class TransferService {
 
     this.logger.error("Fallimento trasferimento file", err?.message || safeUserMsg, {
       transferId: record.transferId,
+      batchId: record.batchId,
       direction: record.direction,
       robotId: record.robotId,
       errorCode,
@@ -2332,17 +2636,37 @@ export class TransferService {
       operation: AuditOperation.TRANSFER_FAILURE,
       robotId: record.robotId,
       outcome: "FAILURE",
-      timestamp: new Date(),
+      timestamp: record.completedAt || new Date(),
       details: {
         transferId: record.transferId,
+        batchId: record.batchId,
         direction: record.direction,
         filename: record.filename,
         sourcePath: record.sourcePath,
         destinationPath: record.destinationPath,
+        transferredBytes: record.transferredBytes,
+        totalBytes: record.totalBytes,
+        durationMs: record.durationMs,
+        averageSpeedBytesPerSec: record.averageSpeedBytesPerSec,
+        error: safeUserMsg,
         errorCode,
-        cancelled: false,
+        cancelled: record.status === TransferStatus.CANCELLED,
       },
     });
+
+    if (this.physicalFileLogger && !this.failureLoggedRecords.has(record)) {
+      this.failureLoggedRecords.add(record);
+      try {
+        await this.physicalFileLogger.logTransfer({
+          filename: record.filename,
+          username: record.username || record.userId,
+          direction: record.direction,
+          outcome: "FALLIMENTO",
+          details: `Fallito (transferId: ${record.transferId}${record.batchId ? `, batchId: ${record.batchId}` : ""}, ${record.transferredBytes}/${record.totalBytes ?? "?"} byte): ${safeUserMsg}`,
+          timestamp: record.completedAt || new Date(),
+        });
+      } catch {}
+    }
   }
 
   // =========================================================================
@@ -2513,6 +2837,7 @@ export class TransferService {
   private updateProgress(record: TransferRecord, snap: TransferProgressSnapshot): void {
     record.transferredBytes = snap.transferredBytes;
     record.totalBytes = snap.totalBytes;
+    record.currentSpeedBytesPerSec = snap.speedBytesPerSec;
     record.speedBytesPerSec = snap.speedBytesPerSec;
     record.etaSeconds = snap.etaSeconds;
     record.lastProgressUpdateAt = Date.now();
@@ -2562,16 +2887,106 @@ export class TransferService {
       .map((record) => this.toDto(record));
   }
 
+  /**
+   * Restituisce l'elenco completo dello storico trasferimenti per la vista LOG (inclusi falliti,
+   * annullati, interrotti, in corso e quelli nascosti dalla lista Recenti).
+   * Non esclude mai i trasferimenti falliti salvo filtro esplicito.
+   */
+  public async listAllTransferHistory(options?: {
+    userId?: string;
+    isAdmin?: boolean;
+    batchId?: string;
+    status?: string;
+    user?: string;
+    outcome?: string;
+    file?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<TransferHistoryDocument[]> {
+    const merged = new Map<string, TransferHistoryDocument>();
+    const persisted = await this.transferRepository.list({
+      userId: options?.userId,
+      isAdmin: options?.isAdmin ?? true,
+      batchId: options?.batchId,
+      status: options?.status,
+      includeHiddenFromRecent: true,
+    });
+    for (const doc of persisted) {
+      merged.set(doc.transferId, doc);
+    }
+    for (const record of this.transfers.values()) {
+      const doc = this.toHistoryDocument(record);
+      if (options?.batchId && doc.batchId !== options.batchId) continue;
+      if (options?.status && options.status !== "ALL" && doc.status !== options.status) continue;
+      if (options?.isAdmin === false && options?.userId && doc.userId !== options.userId) continue;
+      merged.set(doc.transferId, doc);
+    }
+
+    const userNeedle = options?.user?.trim().toLowerCase();
+    const fileNeedle = options?.file?.trim().toLowerCase();
+    const outcomeUpper = options?.outcome?.trim().toUpperCase();
+
+    const filtered = Array.from(merged.values()).filter((doc) => {
+      if (userNeedle) {
+        const matchUser =
+          (doc.username || "").toLowerCase().includes(userNeedle) ||
+          (doc.userId || "").toLowerCase().includes(userNeedle);
+        if (!matchUser) return false;
+      }
+      if (fileNeedle && !(doc.filename || "").toLowerCase().includes(fileNeedle)) {
+        return false;
+      }
+      if (outcomeUpper && outcomeUpper !== "ALL") {
+        if (outcomeUpper === "SUCCESSO" || outcomeUpper === "COMPLETED") {
+          if (doc.status !== TransferStatus.COMPLETED) return false;
+        } else if (outcomeUpper === "FALLIMENTO" || outcomeUpper === "FALLITO" || outcomeUpper === "FAILED") {
+          if (
+            doc.status !== TransferStatus.FAILED &&
+            doc.status !== TransferStatus.INTEGRITY_FAILED &&
+            doc.status !== TransferStatus.CANCELLED
+          ) {
+            return false;
+          }
+        } else if (doc.status.toUpperCase() !== outcomeUpper) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    const sorted = filtered.sort(
+      (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
+    );
+    const offset = Math.max(0, options?.offset ?? 0);
+    const limit = options?.limit && options.limit > 0 ? options.limit : sorted.length;
+    return sorted.slice(offset, offset + limit);
+  }
+
   private toDto(record: TransferRecord): TransferDto {
     let percent: number | null = null;
     if (record.totalBytes && record.totalBytes > 0) {
       percent = Math.min(100, Math.round((record.transferredBytes / record.totalBytes) * 10000) / 100);
+    } else if (record.status === TransferStatus.COMPLETED && record.totalBytes === 0 && record.transferredBytes === 0) {
+      percent = 100;
     }
+
+    const effectiveCurrentSpeed =
+      record.status === TransferStatus.IN_PROGRESS
+        ? (record.currentSpeedBytesPerSec ?? record.speedBytesPerSec ?? null)
+        : null;
+    const effectiveAverageSpeed = record.averageSpeedBytesPerSec ?? null;
+    const effectiveDisplaySpeed =
+      record.status === TransferStatus.COMPLETED
+        ? (effectiveAverageSpeed ?? record.speedBytesPerSec ?? null)
+        : record.status === TransferStatus.IN_PROGRESS
+          ? effectiveCurrentSpeed
+          : (effectiveAverageSpeed ?? record.speedBytesPerSec ?? null);
 
     return {
       transferId: record.transferId,
       batchId: record.batchId,
       userId: record.userId,
+      username: record.username,
       robotId: record.robotId,
       direction: record.direction,
       filename: record.filename,
@@ -2580,20 +2995,27 @@ export class TransferService {
       totalBytes: record.totalBytes,
       transferredBytes: record.transferredBytes,
       percent,
-      speedBytesPerSec: record.speedBytesPerSec,
-      etaSeconds: record.etaSeconds,
+      speedBytesPerSec: effectiveDisplaySpeed,
+      currentSpeedBytesPerSec: effectiveCurrentSpeed,
+      averageSpeedBytesPerSec: effectiveAverageSpeed,
+      etaSeconds: record.status === TransferStatus.IN_PROGRESS ? record.etaSeconds : record.status === TransferStatus.COMPLETED ? 0 : null,
       status: record.status,
       error: record.error,
+      errorCode: record.errorCode,
       checksum: record.computedChecksum || null,
       checksumAlgorithm: record.checksumAlgorithm || null,
       integrityLabel: record.integrityLabel || (record.status === TransferStatus.COMPLETED ? "completato" : "integrità non verificata"),
       integrityVerification: record.integrityVerification,
       startedAt: record.startedAt.toISOString(),
+      activeStartedAt: record.activeStartedAt ? record.activeStartedAt.toISOString() : null,
       completedAt: record.completedAt ? record.completedAt.toISOString() : null,
+      durationMs: record.durationMs ?? null,
       sourceFile: record.filename || record.sourcePath,
       targetFile: record.destinationPath ? path.basename(record.destinationPath) : record.filename,
       percentage: percent ?? 0,
-      speedBps: record.speedBytesPerSec || 0,
+      speedBps: effectiveDisplaySpeed || 0,
+      currentSpeedBps: effectiveCurrentSpeed,
+      averageSpeedBps: effectiveAverageSpeed,
       errorMessage: record.error || undefined,
     };
   }
@@ -3040,6 +3462,8 @@ export class TransferService {
   }
 
   private async recordAuditSuccess(record: TransferRecord): Promise<void> {
+    this.finalizeTransferStats(record);
+
     if (record.userSessionId) {
       try {
         this.sessionManager.touchSession(record.userSessionId);
@@ -3054,23 +3478,31 @@ export class TransferService {
       timestamp: record.completedAt || new Date(),
       details: {
         transferId: record.transferId,
+        batchId: record.batchId,
         direction: record.direction,
         filename: record.filename,
         sourcePath: record.sourcePath,
         destinationPath: record.destinationPath,
         transferredBytes: record.transferredBytes,
+        totalBytes: record.totalBytes,
+        durationMs: record.durationMs,
+        averageSpeedBytesPerSec: record.averageSpeedBytesPerSec,
         checksum: record.computedChecksum,
       },
     });
 
     if (this.physicalFileLogger) {
       try {
+        const avgLabel =
+          record.averageSpeedBytesPerSec && record.averageSpeedBytesPerSec > 0
+            ? `, media: ${record.averageSpeedBytesPerSec} B/s`
+            : "";
         await this.physicalFileLogger.logTransfer({
           filename: record.filename,
-          username: record.userId,
+          username: record.username || record.userId,
           direction: record.direction,
           outcome: "SUCCESSO",
-          details: `Completato (${record.transferredBytes} byte, checksum: ${record.computedChecksum || "N/A"})`,
+          details: `Completato (transferId: ${record.transferId}${record.batchId ? `, batchId: ${record.batchId}` : ""}, ${record.transferredBytes}/${record.totalBytes ?? record.transferredBytes} byte${avgLabel}, checksum: ${record.computedChecksum || "N/A"})`,
           timestamp: record.completedAt || new Date(),
         });
       } catch {}
@@ -3079,6 +3511,8 @@ export class TransferService {
 
   private async recordAuditFailure(record: TransferRecord, err: any): Promise<void> {
     try {
+      this.finalizeTransferStats(record);
+      const errMsg = record.error || err?.userMessage || err?.message || String(err);
       await this.auditRepository.record({
         userId: record.userId,
         operation: AuditOperation.TRANSFER_FAILURE,
@@ -3087,20 +3521,28 @@ export class TransferService {
         timestamp: record.completedAt || new Date(),
         details: {
           transferId: record.transferId,
+          batchId: record.batchId,
           direction: record.direction,
           filename: record.filename,
-          error: record.error || err?.message || String(err),
+          sourcePath: record.sourcePath,
+          destinationPath: record.destinationPath,
+          transferredBytes: record.transferredBytes,
+          totalBytes: record.totalBytes,
+          durationMs: record.durationMs,
+          averageSpeedBytesPerSec: record.averageSpeedBytesPerSec,
+          error: errMsg,
         },
       });
 
-      if (this.physicalFileLogger) {
+      if (this.physicalFileLogger && !this.failureLoggedRecords.has(record)) {
+        this.failureLoggedRecords.add(record);
         try {
           await this.physicalFileLogger.logTransfer({
             filename: record.filename,
-            username: record.userId,
+            username: record.username || record.userId,
             direction: record.direction,
             outcome: "FALLIMENTO",
-            details: record.error || err?.message || String(err),
+            details: `Fallito (transferId: ${record.transferId}${record.batchId ? `, batchId: ${record.batchId}` : ""}, ${record.transferredBytes}/${record.totalBytes ?? "?"} byte): ${errMsg}`,
             timestamp: record.completedAt || new Date(),
           });
         } catch {}
@@ -3135,11 +3577,14 @@ export class TransferService {
     context: AuthorizedContext,
     filename: string,
     totalBytes: number | null,
-    robotId?: string
+    robotId?: string,
+    batchId?: string
   ): Promise<TransferRecord> {
     const safeFilename = this.sanitizeFilename(filename);
     const record = this.buildTransferRecord({
+      batchId,
       userId: context.userId,
+      username: context.username,
       userSessionId: context.sessionId,
       robotId: robotId || TransferService.GENERAL_SERVER_ID,
       direction: TransferDirection.CLIENT_TO_SERVER,
@@ -3148,8 +3593,8 @@ export class TransferService {
       destinationPath: safeFilename,
       totalBytes,
     });
-    record.status = TransferStatus.IN_PROGRESS;
     this.registerTransfer(record);
+    this.markTransferActive(record);
     await this.recordAuditStart(record);
     return record;
   }
@@ -3161,6 +3606,7 @@ export class TransferService {
     etaSeconds: number | null
   ): void {
     record.transferredBytes = transferredBytes;
+    record.currentSpeedBytesPerSec = speedBytesPerSec;
     record.speedBytesPerSec = speedBytesPerSec;
     record.etaSeconds = etaSeconds;
     record.lastProgressUpdateAt = Date.now();
@@ -3169,10 +3615,17 @@ export class TransferService {
 
   public async completeBulkStagingTransfer(
     record: TransferRecord,
-    checksum: string | null
+    checksum: string | null,
+    finalBytes?: number
   ): Promise<void> {
     if (this.isTerminalRecord(record)) return;
     this.assertTransferActive(record);
+    if (finalBytes !== undefined && Number.isFinite(finalBytes) && finalBytes >= 0) {
+      record.transferredBytes = finalBytes;
+      if (record.totalBytes === null || record.totalBytes === undefined || record.totalBytes === 0) {
+        record.totalBytes = finalBytes;
+      }
+    }
     record.status = TransferStatus.COMPLETED;
     record.completedAt = new Date();
     record.computedChecksum = checksum || undefined;
@@ -3193,6 +3646,36 @@ export class TransferService {
    * Pre-check preventivo dei conflitti di sovrascrittura per upload massivo multi-target (RF-TRF-009, RF-TRF-011).
    * Verifica le autorizzazioni, il jail dell'operatore e l'esistenza preventiva dei file sulle destinazioni.
    */
+  /**
+   * Normalizza un percorso directory relativo lato server (Archivio Generale o Directory Robot)
+   * rifiutando prima eventuali sequenze di path traversal o byte nulli (RNF-SEC-005),
+   * e rimuovendo eventuali slash iniziali usati dalla UI (es. "/upload" -> "upload", "/" -> "").
+   */
+  private normalizeRelativeServerDirectory(rawDir?: string): string {
+    let trimmed = (rawDir ?? "").trim();
+    if (trimmed === "~" || trimmed === "~/") {
+      return "";
+    }
+    if (trimmed.startsWith("~/")) {
+      trimmed = trimmed.slice(2).trim();
+    }
+    if (!trimmed || trimmed === "/" || trimmed === "\\" || trimmed === "." || trimmed === "./" || trimmed === ".\\") {
+      return "";
+    }
+    if (trimmed.includes("\0") || /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(trimmed) || /%2e%2e/i.test(trimmed)) {
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `Percorso non consentito: attraversamento directory non autorizzato (${trimmed}).`,
+        "Percorso non consentito: attraversamento directory non autorizzato."
+      );
+    }
+    const stripped = trimmed.replace(/^[/\\]+/, "").replace(/[/\\]+$/, "");
+    if (!stripped || stripped === ".") {
+      return "";
+    }
+    return stripped.replace(/\\/g, "/");
+  }
+
   public async checkBulkConflicts(
     context: AuthorizedContext,
     request: BulkPreCheckRequest
@@ -3235,9 +3718,8 @@ export class TransferService {
         for (const fname of filenames) {
           totalChecks++;
           const safeFilename = this.sanitizeFilename(fname);
-          const relPath = target.directory && target.directory !== "/"
-            ? path.posix.join(path.posix.normalize(target.directory).replace(/^\/+/, ""), safeFilename)
-            : safeFilename;
+          const cleanDir = this.normalizeRelativeServerDirectory(target.directory);
+          const relPath = cleanDir ? path.posix.join(cleanDir, safeFilename) : safeFilename;
           const fullPath = await this.serverFsService.resolveGeneralPath(relPath);
 
           if (fs.existsSync(fullPath)) {
@@ -3278,9 +3760,8 @@ export class TransferService {
         for (const fname of filenames) {
           totalChecks++;
           const safeFilename = this.sanitizeFilename(fname);
-          const relPath = target.directory
-            ? path.posix.join(path.posix.normalize(target.directory), safeFilename)
-            : safeFilename;
+          const cleanDir = this.normalizeRelativeServerDirectory(target.directory);
+          const relPath = cleanDir ? path.posix.join(cleanDir, safeFilename) : safeFilename;
           const fullPath = await this.serverFsService.resolveRobotPath(robot, relPath);
 
           if (fs.existsSync(fullPath)) {
@@ -3309,7 +3790,7 @@ export class TransferService {
         const managedConn = await this.connectionManager.acquireConnection(context.username, robot);
         try {
           const sftp = await managedConn.getSftpClient();
-          const targetDir = target.directory || "/";
+          const targetDir = (target.directory ?? "").trim() || ".";
 
           for (const fname of filenames) {
             totalChecks++;
@@ -3337,7 +3818,9 @@ export class TransferService {
             }
           }
         } finally {
-          // Connessione gestita dal connection pool (RobotConnectionManager)
+          try {
+            await managedConn.close();
+          } catch {}
         }
       }
     }
@@ -3348,6 +3831,121 @@ export class TransferService {
       allowedTargetsCount: targets.length,
       totalChecks,
     };
+  }
+
+  /**
+   * Assicura che la directory genitore sul robot esista prima di creare il file .part
+   * durante un caricamento massivo multi-target (fix Batch 540f0b21 / 203e6760).
+   * Richiamato esclusivamente DOPO resolveAndValidatePath (jail Operatore + anti-traversal).
+   */
+  private async ensureRemoteDirectoryExists(
+    sftp: any,
+    remoteDir: string,
+    robotId: string
+  ): Promise<void> {
+    const normalized = path.posix.normalize(remoteDir || "/");
+    if (!normalized || normalized === "/" || normalized === ".") return;
+
+    const statPath = (p: string): Promise<any | null> =>
+      new Promise((resolve) => {
+        sftp.stat(p, (err: any, st: any) => resolve(err ? null : st));
+      });
+
+    const existing = await statPath(normalized);
+    if (existing) {
+      const isDir =
+        typeof existing.isDirectory === "function"
+          ? existing.isDirectory()
+          : Boolean(existing.mode && (existing.mode & 0o170000) === 0o040000);
+      if (!isDir) {
+        throw new MolirisAppError(
+          ErrorCode.REMOTE_FS_ERROR,
+          `Il percorso di destinazione '${normalized}' sul robot '${robotId}' esiste ma non è una directory.`,
+          `Percorso non valido sul robot '${robotId}': '${normalized}' non è una directory.`
+        );
+      }
+      return;
+    }
+
+    if (typeof sftp.mkdir !== "function") {
+      throw new MolirisAppError(
+        ErrorCode.REMOTE_FS_ERROR,
+        `Directory remota '${normalized}' non trovata sul robot '${robotId}' e creazione directory SFTP non supportata.`,
+        `Directory remota '${normalized}' inesistente sul robot '${robotId}'.`
+      );
+    }
+
+    const segments = normalized.split("/").filter(Boolean);
+    let current = normalized.startsWith("/") ? "" : ".";
+    for (const seg of segments) {
+      current = current === "" ? `/${seg}` : `${current}/${seg}`;
+      const st = await statPath(current);
+      if (st) continue;
+      await new Promise<void>((resolve, reject) => {
+        sftp.mkdir(current, (err: any) => {
+          if (!err) return resolve();
+          // Verifica se nel frattempo è stata creata (race / codice EEXIST / FAILURE)
+          statPath(current).then((retryStat) => {
+            if (retryStat) return resolve();
+            const mapped = this.remoteFsService.mapSftpError(err, current, robotId);
+            reject(
+              new MolirisAppError(
+                mapped.code,
+                `Impossibile creare la directory remota '${current}' sul robot '${robotId}': ${err?.message || err}`,
+                `Impossibile creare la directory remota '${current}' sul robot '${robotId}': verificare permessi e percorso.`
+              )
+            );
+          }).catch(() => reject(this.remoteFsService.mapSftpError(err, current, robotId)));
+        });
+      });
+    }
+  }
+
+  /**
+   * Registra e persiste un TransferRecord fallito anche quando l'errore in un batch massivo
+   * si verifica prima dell'avvio dello stream (es. robot inesistente/disabilitato, errore SSH/SFTP,
+   * violazione permessi, percorso non valido, file già esistente senza sovrascrittura).
+   * Garantisce visibilità al 100% in UI, DB transfers, audit_events e transfers.log.
+   */
+  private async recordBulkTargetFailure(args: {
+    context: AuthorizedContext;
+    batchId: string;
+    filename: string;
+    sourcePath: string;
+    totalBytes: number;
+    target: BulkTarget;
+    destinationPath?: string;
+    err: any;
+  }): Promise<TransferRecord> {
+    const safeFilename = this.sanitizeFilename(args.filename);
+    const robotId =
+      args.target.type === "general"
+        ? TransferService.GENERAL_SERVER_ID
+        : args.target.robotId || "unknown-robot";
+    const direction =
+      args.target.type === "robot"
+        ? TransferDirection.CLIENT_TO_ROBOT
+        : TransferDirection.CLIENT_TO_SERVER;
+    const fallbackDest = args.destinationPath
+      || (args.target.directory
+        ? path.posix.join(args.target.directory, safeFilename)
+        : safeFilename);
+
+    const failedRecord = this.buildTransferRecord({
+      batchId: args.batchId,
+      userId: args.context.userId,
+      username: args.context.username,
+      userSessionId: args.context.sessionId || "session-system",
+      robotId,
+      direction,
+      filename: safeFilename,
+      sourcePath: args.sourcePath,
+      destinationPath: fallbackDest,
+      totalBytes: args.totalBytes,
+    });
+    this.registerTransfer(failedRecord);
+    await this.handleTransferFailure(failedRecord, args.err);
+    return failedRecord;
   }
 
   /**
@@ -3424,6 +4022,7 @@ export class TransferService {
         if (target.type === "general") {
           let tempPartPath = "";
           let record: TransferRecord | null = null;
+          let resolvedDestForError = "";
           try {
             if (!context.permissions.has(AppPermission.FS_SERVER_UPLOAD)) {
               this.recordSecurityViolation(context.username, TransferService.GENERAL_SERVER_ID, `PERMISSION_DENIED_${AppPermission.FS_SERVER_UPLOAD}`);
@@ -3436,12 +4035,27 @@ export class TransferService {
             this.serverFsService.assertOperatorAccess(context, target.directory, "UPLOAD");
 
             const safeFilename = this.sanitizeFilename(staged.filename);
-            const relPath = target.directory && target.directory !== "/"
-              ? path.posix.join(path.posix.normalize(target.directory).replace(/^\/+/, ""), safeFilename)
-              : safeFilename;
+            const cleanDir = this.normalizeRelativeServerDirectory(target.directory);
+            const relPath = cleanDir ? path.posix.join(cleanDir, safeFilename) : safeFilename;
             const finalPath = await this.serverFsService.resolveGeneralPath(relPath);
+            resolvedDestForError = finalPath;
 
             if (fs.existsSync(finalPath) && !overwrite) {
+              const conflictErr = new MolirisAppError(
+                ErrorCode.SERVER_DIR_INACCESSIBLE,
+                "File già esistente nell'archivio generale. Sovrascrittura non autorizzata.",
+                "File già esistente. Sovrascrittura non autorizzata."
+              );
+              await this.recordBulkTargetFailure({
+                context,
+                batchId,
+                filename: staged.filename,
+                sourcePath: staged.stagingPath,
+                totalBytes: staged.sizeBytes,
+                target,
+                destinationPath: finalPath,
+                err: conflictErr,
+              });
               this.batchTransferManager?.setItemFailed(batchId, batchItemId, "File già esistente nell'archivio generale.");
               fileTargetResults.push({
                 target,
@@ -3461,38 +4075,26 @@ export class TransferService {
             const transferId = crypto.randomUUID();
             tempPartPath = path.join(tempDir, `bulk_general_${transferId}.part`);
 
-            const startTime = Date.now();
-            const genRecord: TransferRecord = {
+            const genRecord = this.buildTransferRecord({
               transferId,
               batchId,
               userId: context.userId,
+              username: context.username,
               userSessionId: context.sessionId || "session-system",
               robotId: TransferService.GENERAL_SERVER_ID,
               direction: TransferDirection.CLIENT_TO_SERVER,
+              filename: safeFilename,
               sourcePath: staged.stagingPath,
               destinationPath: finalPath,
               tempDestinationPath: tempPartPath,
-              filename: safeFilename,
               totalBytes: staged.sizeBytes,
-              transferredBytes: 0,
-              status: TransferStatus.IN_PROGRESS,
-              speedBytesPerSec: 0,
-              etaSeconds: null,
-              startedAt: new Date(),
-              completedAt: undefined,
-              error: null,
-              checksumAlgorithm: this.checksumAlgorithm.name,
-              lastProgressUpdateAt: startTime,
-              lastBytesAtUpdate: 0,
-              abortController: new AbortController(),
-              cleanupHandlers: [
-                async () => {
-                  try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
-                },
-              ],
-            };
+            });
+            genRecord.cleanupHandlers.push(async () => {
+              try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
+            });
             record = genRecord;
             this.registerTransfer(genRecord);
+            this.markTransferActive(genRecord);
             await this.recordAuditStart(genRecord);
 
             this.batchTransferManager?.setItemInProgress(batchId, batchItemId, {
@@ -3502,12 +4104,15 @@ export class TransferService {
                 genRecord.status = TransferStatus.CANCELLED;
                 genRecord.completedAt = new Date();
                 genRecord.error = "Trasferimento annullato con il blocco massivo.";
+                this.finalizeTransferStats(genRecord);
+                await this.recordAuditFailure(genRecord, new Error(genRecord.error));
                 for (const c of genRecord.cleanupHandlers) {
                   try { await c(); } catch {}
                 }
               },
             });
 
+            const startPerfMs = genRecord.activeStartedPerfMs ?? performance.now();
             const hash = crypto.createHash("sha256");
             let writtenBytes = 0;
             const readStream = fs.createReadStream(staged.stagingPath);
@@ -3526,11 +4131,13 @@ export class TransferService {
                 hash.update(buf);
                 writtenBytes += buf.length;
                 genRecord.transferredBytes = writtenBytes;
-                const elapsedSec = Math.max(0.001, (Date.now() - startTime) / 1000);
-                genRecord.speedBytesPerSec = Math.round(writtenBytes / elapsedSec);
-                if (genRecord.totalBytes && genRecord.speedBytesPerSec > 0) {
+                const elapsedSec = Math.max(0.0001, (performance.now() - startPerfMs) / 1000);
+                const speed = Math.round(writtenBytes / elapsedSec);
+                genRecord.currentSpeedBytesPerSec = speed;
+                genRecord.speedBytesPerSec = speed;
+                if (genRecord.totalBytes && speed > 0) {
                   const remaining = Math.max(0, genRecord.totalBytes - writtenBytes);
-                  genRecord.etaSeconds = Math.ceil(remaining / genRecord.speedBytesPerSec);
+                  genRecord.etaSeconds = Math.ceil(remaining / speed);
                 }
                 genRecord.lastProgressUpdateAt = Date.now();
                 this.batchTransferManager?.updateItemProgress(batchId, batchItemId, writtenBytes);
@@ -3542,10 +4149,7 @@ export class TransferService {
               });
             }).catch(async (err) => {
               if (genRecord.status !== TransferStatus.CANCELLED) {
-                genRecord.status = TransferStatus.FAILED;
-                genRecord.error = err.message;
-                genRecord.completedAt = new Date();
-                await this.recordAuditFailure(genRecord, err);
+                await this.handleTransferFailure(genRecord, err);
               }
               try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
               throw err;
@@ -3591,13 +4195,26 @@ export class TransferService {
             completed++;
           } catch (err: any) {
             const errMsg = err?.userMessage || err?.message || "Errore durante scrittura nell'archivio generale";
-            if (!record || record.status !== TransferStatus.CANCELLED) {
+            if (record && record.status !== TransferStatus.CANCELLED) {
+              await this.handleTransferFailure(record, err);
+              this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
+            } else if (!record) {
+              await this.recordBulkTargetFailure({
+                context,
+                batchId,
+                filename: staged.filename,
+                sourcePath: staged.stagingPath,
+                totalBytes: staged.sizeBytes,
+                target,
+                destinationPath: resolvedDestForError,
+                err,
+              });
               this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
             }
             fileTargetResults.push({
               target,
               success: false,
-              destinationPath: "",
+              destinationPath: resolvedDestForError,
               error: errMsg,
             });
             allTargetsSuccess = false;
@@ -3609,6 +4226,20 @@ export class TransferService {
         const targetRobotId = target.robotId || "";
         const robot = await this.robotRepository.findById(targetRobotId);
         if (!robot) {
+          const notFoundErr = new MolirisAppError(
+            ErrorCode.MISSING_ROBOT_PARAMS,
+            `Robot '${targetRobotId}' non trovato.`,
+            `Robot '${targetRobotId}' non trovato.`
+          );
+          await this.recordBulkTargetFailure({
+            context,
+            batchId,
+            filename: staged.filename,
+            sourcePath: staged.stagingPath,
+            totalBytes: staged.sizeBytes,
+            target,
+            err: notFoundErr,
+          });
           this.batchTransferManager?.setItemFailed(batchId, batchItemId, `Robot '${targetRobotId}' non trovato.`);
           fileTargetResults.push({
             target,
@@ -3623,18 +4254,34 @@ export class TransferService {
 
         if (target.type === "server") {
           let record: TransferRecord | null = null;
+          let resolvedDestForError = "";
           try {
             this.assertAuthorized(context, robot, [AppPermission.FS_SERVER_UPLOAD]);
             this.serverFsService.assertOperatorAccess(context, target.directory, "UPLOAD");
 
             const safeFilename = this.sanitizeFilename(staged.filename);
-            const relPath = target.directory
-              ? path.posix.join(path.posix.normalize(target.directory), safeFilename)
-              : safeFilename;
+            const cleanDir = this.normalizeRelativeServerDirectory(target.directory);
+            const relPath = cleanDir ? path.posix.join(cleanDir, safeFilename) : safeFilename;
             const finalPath = await this.serverFsService.resolveRobotPath(robot, relPath);
+            resolvedDestForError = finalPath;
 
             // Verifica esistenza e politica sovrascrittura
             if (fs.existsSync(finalPath) && !overwrite) {
+              const conflictErr = new MolirisAppError(
+                ErrorCode.SERVER_DIR_INACCESSIBLE,
+                "File già esistente sul server robot. Sovrascrittura non autorizzata.",
+                "File già esistente. Sovrascrittura non autorizzata."
+              );
+              await this.recordBulkTargetFailure({
+                context,
+                batchId,
+                filename: staged.filename,
+                sourcePath: staged.stagingPath,
+                totalBytes: staged.sizeBytes,
+                target,
+                destinationPath: finalPath,
+                err: conflictErr,
+              });
               this.batchTransferManager?.setItemFailed(batchId, batchItemId, "File già esistente. Sovrascrittura non autorizzata.");
               fileTargetResults.push({
                 target,
@@ -3652,38 +4299,26 @@ export class TransferService {
             const transferId = crypto.randomUUID();
             const tempPartPath = path.join(tempDir, `bulk_${transferId}.part`);
 
-            const startTime = Date.now();
-            const serverRecord: TransferRecord = {
+            const serverRecord = this.buildTransferRecord({
               transferId,
               batchId,
               userId: context.userId,
+              username: context.username,
               userSessionId: context.sessionId || "session-system",
               robotId: robot.id,
               direction: TransferDirection.CLIENT_TO_SERVER,
+              filename: safeFilename,
               sourcePath: staged.stagingPath,
               destinationPath: finalPath,
               tempDestinationPath: tempPartPath,
-              filename: safeFilename,
               totalBytes: staged.sizeBytes,
-              transferredBytes: 0,
-              status: TransferStatus.IN_PROGRESS,
-              speedBytesPerSec: 0,
-              etaSeconds: null,
-              startedAt: new Date(),
-              completedAt: undefined,
-              error: null,
-              checksumAlgorithm: this.checksumAlgorithm.name,
-              lastProgressUpdateAt: startTime,
-              lastBytesAtUpdate: 0,
-              abortController: new AbortController(),
-              cleanupHandlers: [
-                async () => {
-                  try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
-                },
-              ],
-            };
+            });
+            serverRecord.cleanupHandlers.push(async () => {
+              try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
+            });
             record = serverRecord;
             this.registerTransfer(serverRecord);
+            this.markTransferActive(serverRecord);
             await this.recordAuditStart(serverRecord);
 
             this.batchTransferManager?.setItemInProgress(batchId, batchItemId, {
@@ -3693,6 +4328,8 @@ export class TransferService {
                 serverRecord.status = TransferStatus.CANCELLED;
                 serverRecord.completedAt = new Date();
                 serverRecord.error = "Trasferimento annullato con il blocco massivo.";
+                this.finalizeTransferStats(serverRecord);
+                await this.recordAuditFailure(serverRecord, new Error(serverRecord.error));
                 for (const c of serverRecord.cleanupHandlers) {
                   try { await c(); } catch {}
                 }
@@ -3700,6 +4337,7 @@ export class TransferService {
             });
 
             // Stream da staging a tempPartPath con calcolo sha256 e tracciamento in tempo reale
+            const startPerfMs = serverRecord.activeStartedPerfMs ?? performance.now();
             const hash = crypto.createHash("sha256");
             let writtenBytes = 0;
             const readStream = fs.createReadStream(staged.stagingPath);
@@ -3710,11 +4348,13 @@ export class TransferService {
               hash.update(buf);
               writtenBytes += buf.length;
               serverRecord.transferredBytes = writtenBytes;
-              const elapsedSec = Math.max(0.001, (Date.now() - startTime) / 1000);
-              serverRecord.speedBytesPerSec = Math.round(writtenBytes / elapsedSec);
-              if (serverRecord.totalBytes && serverRecord.speedBytesPerSec > 0) {
+              const elapsedSec = Math.max(0.0001, (performance.now() - startPerfMs) / 1000);
+              const speed = Math.round(writtenBytes / elapsedSec);
+              serverRecord.currentSpeedBytesPerSec = speed;
+              serverRecord.speedBytesPerSec = speed;
+              if (serverRecord.totalBytes && speed > 0) {
                 const remaining = Math.max(0, serverRecord.totalBytes - writtenBytes);
-                serverRecord.etaSeconds = Math.ceil(remaining / serverRecord.speedBytesPerSec);
+                serverRecord.etaSeconds = Math.ceil(remaining / speed);
               }
               serverRecord.lastProgressUpdateAt = Date.now();
               this.batchTransferManager?.updateItemProgress(batchId, batchItemId, writtenBytes);
@@ -3780,13 +4420,26 @@ export class TransferService {
             completed++;
           } catch (err: any) {
             const errMsg = err.userMessage || err.message || "Errore durante scrittura su server";
-            if (!record || record.status !== TransferStatus.CANCELLED) {
+            if (record && record.status !== TransferStatus.CANCELLED) {
+              await this.handleTransferFailure(record, err);
+              this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
+            } else if (!record) {
+              await this.recordBulkTargetFailure({
+                context,
+                batchId,
+                filename: staged.filename,
+                sourcePath: staged.stagingPath,
+                totalBytes: staged.sizeBytes,
+                target,
+                destinationPath: resolvedDestForError,
+                err,
+              });
               this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
             }
             fileTargetResults.push({
               target,
               success: false,
-              destinationPath: "",
+              destinationPath: resolvedDestForError,
               error: errMsg,
             });
             allTargetsSuccess = false;
@@ -3796,6 +4449,7 @@ export class TransferService {
           let managedConn: ManagedRobotConnection | null = null;
           let tempRemotePartPath = "";
           let record: TransferRecord | null = null;
+          let resolvedDestForError = "";
           try {
             this.assertRobotAccessible(robot);
             this.assertAuthorized(context, robot, [AppPermission.FS_REMOTE_UPLOAD]);
@@ -3804,19 +4458,38 @@ export class TransferService {
             const sftp = await managedConn.getSftpClient();
 
             const safeFilename = this.sanitizeFilename(staged.filename);
-            const targetDir = target.directory || "/";
+            const targetDir = (target.directory ?? "").trim() || ".";
             const finalRemotePath = await this.remoteFsService.resolveAndValidatePath(
               path.posix.join(targetDir, safeFilename),
               context,
               robot,
               sftp
             );
+            resolvedDestForError = finalRemotePath;
+
+            // Assicura che la directory di destinazione esista sul robot (fix Batch 540f0b21 / 203e6760)
+            await this.ensureRemoteDirectoryExists(sftp, path.posix.dirname(finalRemotePath), robot.id);
 
             // Verifica esistenza preventiva
             const exists = await new Promise<boolean>((resolve) => {
               sftp.stat(finalRemotePath, (err) => resolve(!err));
             });
             if (exists && !overwrite) {
+              const conflictErr = new MolirisAppError(
+                ErrorCode.REMOTE_FS_ERROR,
+                "File già esistente sul robot. Sovrascrittura non autorizzata.",
+                "File già esistente sul robot. Sovrascrittura non autorizzata."
+              );
+              await this.recordBulkTargetFailure({
+                context,
+                batchId,
+                filename: staged.filename,
+                sourcePath: staged.stagingPath,
+                totalBytes: staged.sizeBytes,
+                target,
+                destinationPath: finalRemotePath,
+                err: conflictErr,
+              });
               this.batchTransferManager?.setItemFailed(batchId, batchItemId, "File già esistente sul robot.");
               fileTargetResults.push({
                 target,
@@ -3836,40 +4509,28 @@ export class TransferService {
               `.tmp_moliris_${transferId}.part`
             );
 
-            const startTime = Date.now();
-            const targetRecord: TransferRecord = {
+            const targetRecord = this.buildTransferRecord({
               transferId,
               batchId,
               userId: context.userId,
+              username: context.username,
               userSessionId: context.sessionId || "session-system",
               robotId: robot.id,
               direction: TransferDirection.CLIENT_TO_ROBOT,
+              filename: safeFilename,
               sourcePath: staged.stagingPath,
               destinationPath: finalRemotePath,
               tempDestinationPath: tempRemotePartPath,
-              filename: safeFilename,
               totalBytes: staged.sizeBytes,
-              transferredBytes: 0,
-              status: TransferStatus.IN_PROGRESS,
-              speedBytesPerSec: 0,
-              etaSeconds: null,
-              startedAt: new Date(),
-              completedAt: undefined,
-              error: null,
-              checksumAlgorithm: this.checksumAlgorithm.name,
-              lastProgressUpdateAt: startTime,
-              lastBytesAtUpdate: 0,
-              abortController: new AbortController(),
-              cleanupHandlers: [
-                async () => {
-                  try {
-                    await new Promise<void>((res) => sftp.unlink(tempRemotePartPath, () => res()));
-                  } catch {}
-                },
-              ],
-            };
+            });
+            targetRecord.cleanupHandlers.push(async () => {
+              try {
+                await new Promise<void>((res) => sftp.unlink(tempRemotePartPath, () => res()));
+              } catch {}
+            });
             record = targetRecord;
             this.registerTransfer(targetRecord);
+            this.markTransferActive(targetRecord);
             await this.recordAuditStart(targetRecord);
 
             this.batchTransferManager?.setItemInProgress(batchId, batchItemId, {
@@ -3878,12 +4539,15 @@ export class TransferService {
                 targetRecord.status = TransferStatus.CANCELLED;
                 targetRecord.completedAt = new Date();
                 targetRecord.error = "Trasferimento annullato con il blocco massivo.";
+                this.finalizeTransferStats(targetRecord);
+                await this.recordAuditFailure(targetRecord, new Error(targetRecord.error));
                 for (const c of targetRecord.cleanupHandlers) {
                   try { await c(); } catch {}
                 }
               },
             });
 
+            const startPerfMs = targetRecord.activeStartedPerfMs ?? performance.now();
             const hash = crypto.createHash("sha256");
             let writtenBytes = 0;
             const readStream = fs.createReadStream(staged.stagingPath);
@@ -3898,11 +4562,13 @@ export class TransferService {
               writtenBytes += buf.length;
               if (record) {
                 record.transferredBytes = writtenBytes;
-                const elapsedSec = Math.max(0.001, (Date.now() - startTime) / 1000);
-                record.speedBytesPerSec = Math.round(writtenBytes / elapsedSec);
-                if (record.totalBytes && record.speedBytesPerSec > 0) {
+                const elapsedSec = Math.max(0.0001, (performance.now() - startPerfMs) / 1000);
+                const speed = Math.round(writtenBytes / elapsedSec);
+                record.currentSpeedBytesPerSec = speed;
+                record.speedBytesPerSec = speed;
+                if (record.totalBytes && speed > 0) {
                   const remaining = Math.max(0, record.totalBytes - writtenBytes);
-                  record.etaSeconds = Math.ceil(remaining / record.speedBytesPerSec);
+                  record.etaSeconds = Math.ceil(remaining / speed);
                 }
                 record.lastProgressUpdateAt = Date.now();
                 this.batchTransferManager?.updateItemProgress(batchId, batchItemId, writtenBytes);
@@ -3993,6 +4659,16 @@ export class TransferService {
               await this.handleTransferFailure(record, err);
               this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
             } else if (!record) {
+              await this.recordBulkTargetFailure({
+                context,
+                batchId,
+                filename: staged.filename,
+                sourcePath: staged.stagingPath,
+                totalBytes: staged.sizeBytes,
+                target,
+                destinationPath: resolvedDestForError,
+                err,
+              });
               this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
             }
             if (tempRemotePartPath && managedConn) {
@@ -4004,13 +4680,17 @@ export class TransferService {
             fileTargetResults.push({
               target,
               success: false,
-              destinationPath: "",
+              destinationPath: resolvedDestForError,
               error: errMsg,
             });
             allTargetsSuccess = false;
             failed++;
           } finally {
-            // Connessione gestita dal pool (RobotConnectionManager)
+            if (managedConn) {
+              try {
+                await managedConn.close();
+              } catch {}
+            }
           }
         }
       }
@@ -4059,9 +4739,13 @@ export class TransferService {
     }> = [];
 
     for (const sourceRel of req.sourcePaths) {
+      const normalizedSourceRel = this.normalizeRelativeServerDirectory(sourceRel);
+      if (!normalizedSourceRel) {
+        throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, `Percorso sorgente sul server '${sourceRel}' non valido.`);
+      }
       let resolvedSourcePath: string;
       if (req.sourceScope === "general") {
-        resolvedSourcePath = await this.serverFsService.resolveGeneralPath(sourceRel);
+        resolvedSourcePath = await this.serverFsService.resolveGeneralPath(normalizedSourceRel);
       } else {
         if (!req.sourceRobotId) {
           throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "sourceRobotId mancante per sorgente server robot.");
@@ -4073,7 +4757,7 @@ export class TransferService {
         if (!robot) {
           throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot sorgente '${req.sourceRobotId}' non trovato.`);
         }
-        resolvedSourcePath = await this.serverFsService.resolveRobotPath(robot, sourceRel);
+        resolvedSourcePath = await this.serverFsService.resolveRobotPath(robot, normalizedSourceRel);
       }
 
       if (!fs.existsSync(resolvedSourcePath)) {
@@ -4184,6 +4868,7 @@ export class TransferService {
       const targetRecord = this.buildTransferRecord({
         transferId,
         userId: context.userId,
+        username: context.username,
         userSessionId: context.sessionId,
         robotId: targetRobot.id,
         direction: TransferDirection.ROBOT_TO_ROBOT,
@@ -4210,20 +4895,21 @@ export class TransferService {
         this.assertAuthorized(context, targetRobot, [AppPermission.FS_REMOTE_UPLOAD]);
         this.acquireDestinationLock(destLockKey);
         lockAcquired = true;
-        targetRecord.status = TransferStatus.IN_PROGRESS;
+        this.markTransferActive(targetRecord);
 
         // Connessione dedicata al robot destinatario, riusata per scrittura,
         // verifica di dimensione e promozione atomica (CA-TRF-005).
         targetManagedConn = await this.connectionManager.acquireConnection(context.username, targetRobot);
         targetSftp = await targetManagedConn.getSftpClient();
 
-        // Validazione del percorso finale (jail operatore, traversal, symlink).
+        // Validazione del percorso finale (jail operatore, traversal, symlink) e supporto percorsi relativi/home (~).
         const resolvedDestPath = await this.remoteFsService.resolveAndValidatePath(
           finalDestPath,
           context,
           targetRobot,
           targetSftp
         );
+        await this.ensureRemoteDirectoryExists(targetSftp, path.posix.dirname(resolvedDestPath), targetRobot.id);
 
         // Verifica esistenza su target se overwrite non abilitato
         if (!overwrite) {

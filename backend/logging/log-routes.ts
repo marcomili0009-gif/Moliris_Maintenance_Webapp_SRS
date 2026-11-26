@@ -4,12 +4,14 @@ import fs from "fs";
 import { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
 import { type PhysicalFileLogger } from "./physical-file-logger.ts";
 import { type AuthMiddleware } from "../auth/auth-middleware.ts";
+import { type TransferService } from "../transfer/transfer-service.ts";
 import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
 
 export function registerLogRoutes(
   app: FastifyInstance,
   fileLogger: PhysicalFileLogger,
-  authMiddleware: AuthMiddleware
+  authMiddleware: AuthMiddleware,
+  transferService?: TransferService
 ): void {
   const requireAdmin = (req: FastifyRequest, reply: FastifyReply): boolean => {
     const user = req.molirisUser;
@@ -75,7 +77,10 @@ export function registerLogRoutes(
 
   /**
    * GET /api/logs/transfers
-   * Query filtri: limit, user, outcome
+   * Query filtri: limit, offset, user, outcome, status, batchId, file
+   * Restituisce sia le righe testuali di transfers.log (retrocompatibilità) sia
+   * lo storico strutturato completo (records) inclusi TUTTI i trasferimenti falliti,
+   * annullati, interrotti, in corso, in coda e completati.
    */
   app.get(
     "/api/logs/transfers",
@@ -84,17 +89,36 @@ export function registerLogRoutes(
       if (!requireAdmin(req, reply)) return;
 
       const query = (req.query as any) || {};
-      const limit = query.limit ? Number(query.limit) : 100;
+      const limit = query.limit ? Number(query.limit) : 200;
+      const offset = query.offset ? Number(query.offset) : 0;
       const user = typeof query.user === "string" ? query.user.trim() : undefined;
       const outcome = typeof query.outcome === "string" ? query.outcome.trim() : undefined;
+      const status = typeof query.status === "string" ? query.status.trim() : undefined;
+      const batchId = typeof query.batchId === "string" ? query.batchId.trim() : undefined;
+      const file = typeof query.file === "string" ? query.file.trim() : undefined;
 
       try {
-        const logs = await fileLogger.getTransferLogs({ limit, user, outcome });
+        const [logs, records] = await Promise.all([
+          fileLogger.getTransferLogs({ limit, user, outcome }),
+          transferService
+            ? transferService.listAllTransferHistory({
+                limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 1000) : 200,
+                offset: Number.isFinite(offset) && offset > 0 ? offset : 0,
+                user: user || undefined,
+                outcome: outcome || undefined,
+                status: status || undefined,
+                batchId: batchId || undefined,
+                file: file || undefined,
+              })
+            : Promise.resolve([]),
+        ]);
         return reply.status(200).send({
           success: true,
           type: "transfers",
           total: logs.length,
           logs,
+          totalRecords: records.length,
+          records,
         });
       } catch (err: any) {
         return reply.status(500).send({
