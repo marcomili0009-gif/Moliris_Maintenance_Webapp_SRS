@@ -58,6 +58,9 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
       if (cancelled) return;
       const term = new Terminal({
         cursorBlink: true,
+        cursorStyle: "bar",
+        cursorWidth: 2,
+        cursorInactiveStyle: "outline",
         // Il bridge PTY locale (pipe senza ONLCR) emette solo "\n": senza questa
         // opzione xterm interpreterebbe il newline senza ritorno a capo,
         // producendo l'effetto "staircase".
@@ -65,11 +68,29 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
         cols: cols || 80,
         rows: rows || 24,
         fontFamily: '"DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", Menlo, Monaco, Consolas, "Courier New", monospace',
-        fontSize: 12,
+        fontSize: 13,
         theme: {
           background: "#1e1e1e",
           foreground: "#f0f0f0",
           cursor: "#ffffff",
+          cursorAccent: "#1e1e1e",
+          selectionBackground: "rgba(255, 255, 255, 0.28)",
+          black: "#1e1e1e",
+          red: "#f14c4c",
+          green: "#23d18b",
+          yellow: "#f5f543",
+          blue: "#3b8eea",
+          magenta: "#d670d6",
+          cyan: "#29b8db",
+          white: "#e5e5e5",
+          brightBlack: "#666666",
+          brightRed: "#f14c4c",
+          brightGreen: "#23d18b",
+          brightYellow: "#f5f543",
+          brightBlue: "#3b8eea",
+          brightMagenta: "#d670d6",
+          brightCyan: "#29b8db",
+          brightWhite: "#ffffff",
         },
       });
 
@@ -81,6 +102,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
 
       container.replaceChildren();
       term.open(container);
+      term.focus();
 
       // Adatta il PTY alle dimensioni reali del contenitore. Invia il resize
       // solo quando righe/colonne cambiano davvero, per evitare raffiche inutili.
