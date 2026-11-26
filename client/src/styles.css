@@ -1710,6 +1710,11 @@ body {
 .badge-avviso { background-color: var(--bs-warning-subtle); color: var(--bs-warning-text); }
 .badge-nodata { background-color: var(--bs-secondary-subtle); color: var(--bs-secondary-text); font-style: italic; }
 
+#table-transfer-logs .transfer-log-badge-orange {
+  background-color: #ffecd5;
+  color: #843c0c;
+}
+
 .badge-classification {
   font-size: 0.78rem;
   font-weight: 600;

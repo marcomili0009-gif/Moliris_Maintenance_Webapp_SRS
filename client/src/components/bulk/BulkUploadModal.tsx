@@ -359,8 +359,10 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
 
       // Flusso C: Copia / Spostamento Robot -> Robot (§6)
       else if (sourceType === "remote_robot") {
+        const logBatchId = crypto.randomUUID();
         for (const filePath of selectedServerFiles) {
           const res = await apiClient.post("/api/transfers/robot-robot", {
+            logBatchId,
             sourceRobotId,
             sourceRemotePath: filePath,
             targetRobotIds: selectedTargetRobotIds,

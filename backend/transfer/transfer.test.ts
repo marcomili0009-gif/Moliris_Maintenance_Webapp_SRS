@@ -25,6 +25,7 @@ import { InMemoryUserRepository } from "../auth/user-repository.ts";
 import { SessionManager } from "../auth/session-manager.ts";
 import { ServerFilesystemService } from "../../storage/server-fs.ts";
 import { RemoteFilesystemService } from "../remote-fs/remote-fs-service.ts";
+import { PhysicalFileLogger } from "../logging/physical-file-logger.ts";
 import { TransferService } from "./transfer-service.ts";
 import { TransferDirection, TransferStatus } from "./transfer-models.ts";
 import { createServer } from "../server.ts";
@@ -330,6 +331,8 @@ const transferService = new TransferService(
   logger,
   DEFAULT_ROLE_PERMISSIONS
 );
+const transferFileLogger = new PhysicalFileLogger(path.join(tmpServerRoot, "test-transfer-logs"));
+transferService.setPhysicalFileLogger(transferFileLogger);
 
 // Creazione robot di test
 const testRobot: any = {
@@ -913,6 +916,21 @@ fs.writeFileSync(validPreexistingServerPath, "VALID_SERVER_PREEXISTING_DATA_ORIG
   slowStream.destroy();
   const trfErr = await trfPromise;
   assert.strictEqual(trfErr.code, ErrorCode.TRANSFER_INTERRUPTED);
+
+  await transferService.cancelTransfer(activeTrf.transferId, contextAuth.userId);
+  const cancellationLogs = await transferFileLogger.getTransferLogs({ outcome: "ANNULLATO" });
+  const matching = cancellationLogs.filter((line) => line.includes(` | ID: ${activeTrf.transferId} |`));
+  assert.strictEqual(matching.length, 1);
+  assert.ok(matching[0].includes(`Utente: ${contextAuth.username} | Direzione: CLIENT_TO_SERVER`));
+  assert.match(matching[0], /Sorgente: Computer \| Destinazione: Archivio server robot/);
+
+  const activeCountBeforePrecheck = transferService.listTransfers(contextAuth).length;
+  await assert.rejects(transferService.openDownloadServerToClient(contextAuth, testRobot, "log-missing-file.bin"));
+  assert.strictEqual(transferService.listTransfers(contextAuth).length, activeCountBeforePrecheck);
+  const precheckLogs = (await transferFileLogger.getTransferLogs({ outcome: "FALLIMENTO" }))
+    .filter((line) => line.includes("File: log-missing-file.bin"));
+  assert.strictEqual(precheckLogs.length, 1);
+  assert.match(precheckLogs[0], /Pre-check:.*File.*presente|Pre-check:.*File.*trovat/i);
 
   console.log("  PASS: RF-TRF-013 - Annullamento trasferimento funzionante con stato CANCELLED e risorse liberate.");
 }

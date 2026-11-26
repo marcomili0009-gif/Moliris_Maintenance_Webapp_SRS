@@ -1877,6 +1877,14 @@ try {
   }
   const historicalAccess = "[2026-01-15 12:00:00] EVENT: LOGIN | Utente: storico | Esito: SUCCESSO";
   await fs.promises.appendFile(physicalFileLogger.getAccessLogFilePath(), historicalAccess + "\n");
+  const oldFailure = await physicalFileLogger.logTransfer({
+    filename: "fallimento-oltre-il-limite.bin", username: "storico",
+    direction: "CLIENT_TO_ROBOT", outcome: "FALLIMENTO", details: "Errore storico",
+  });
+  await fs.promises.appendFile(physicalFileLogger.getTransferLogFilePath(),
+    Array.from({ length: 501 }, (_, index) =>
+      `[2026-01-15 12:00:00] File: filler-${index} | Utente: storico | Direzione: CLIENT_TO_SERVER | Esito: SUCCESSO | Dettagli: fixture`
+    ).join("\n") + "\n");
   const winterTransfer = await physicalFileLogger.logTransfer({
     timestamp: new Date("2026-01-15T12:00:00Z"), filename: "inverno.bin",
     username: "storico", direction: "SERVER_TO_ROBOT", outcome: "SUCCESSO",
@@ -1889,6 +1897,30 @@ try {
     "=== INIZIO CARICAMENTO MASSIVO === [batchId: inverno] (1 file) Utente: storico | Data: 2026-01-15 | Ora: 12:00:00 ===\n" +
     "=== CARICAMENTO MASSIVO TERMINATO === [batchId: estate] - Esito: SUCCESSO (Completati: 1/1, Annullati: 0, Falliti: 0) | Data: 2026-07-15 | Ora: 22:30:00 ===\n"
   );
+  const orangeBadge = "rgb(255, 236, 213)";
+  const bulkSummaries = [
+    { id: "estate", label: "Completato", color: "rgb(25, 135, 84)", completed: 1, failed: 0, cancelled: 0 },
+    { id: "bulk-all-failed", label: "Fallito", color: "rgb(220, 53, 69)", completed: 0, failed: 3, cancelled: 0 },
+    { id: "bulk-all-cancelled", label: "Annullato", color: orangeBadge, completed: 0, failed: 0, cancelled: 3 },
+    { id: "bulk-mixed", label: "Concluso con errori", color: orangeBadge, completed: 1, failed: 1, cancelled: 1 },
+    { id: "bulk-failed-cancelled", label: "Concluso con errori", color: orangeBadge, completed: 0, failed: 1, cancelled: 2 },
+    { id: "bulk-mixed-cancelled", label: "Concluso con annullamenti", color: orangeBadge, completed: 2, failed: 0, cancelled: 1 },
+  ];
+  for (const summary of bulkSummaries.slice(1)) {
+    const { id, completed, failed, cancelled } = summary;
+    await physicalFileLogger.logBulkEnd(id, { totalFiles: completed + failed + cancelled, completed, failed, cancelled });
+  }
+  await physicalFileLogger.logBulkFile("bulk-storico", 1, 1, {
+    filename: "legacy-bulk.bin", username: "storico", direction: "CLIENT_TO_ROBOT", outcome: "ANNULLATO",
+  });
+  const structuredLogRows = [];
+  for (const outcome of ["FALLIMENTO", "ANNULLATO"] as const) {
+    structuredLogRows.push(await physicalFileLogger.logTransfer({
+      filename: `fixture-${outcome}.bin`, username: "storico", direction: "CLIENT_TO_ROBOT", outcome,
+      source: "Computer", destination: "SFTP robot robot-test · /upload", transferId: `id-${outcome}`,
+      batchId: "batch-fixture-log", details: "Motivazione specifica di prova",
+    }));
+  }
   await sendCdpCommand("Emulation.setTimezoneOverride", { timezoneId: "America/New_York" });
 
   // 3. Clic su Logs (nav-logs)
@@ -1923,10 +1955,49 @@ try {
       row[0] === ${JSON.stringify(timestamp)} && row[1].includes(${JSON.stringify(text)})
     )`);
   }
+  const bulkStyle = await evaluateInBrowser<{ badges: [string, string, string][]; bulkItem: string[] }>(`
+    const rows = Array.from(document.querySelectorAll('#table-transfer-logs tbody tr'));
+    const badges = rows.filter(row => row.cells[1].textContent.includes('Fine Caricamento Massivo')).map(row => {
+      const badge = row.cells[2].querySelector('.badge');
+      return [row.cells[1].querySelector('code').textContent, badge.textContent, getComputedStyle(badge).backgroundColor];
+    });
+    const row = rows.find(row => row.cells[1].textContent.includes('legacy-bulk.bin'));
+    const cellStyle = getComputedStyle(row.cells[0]);
+    const bulkItem = [
+      row.cells[1].querySelector('.badge').textContent.trim(), row.cells[5].querySelector('code').textContent,
+      getComputedStyle(row).borderLeftWidth, cellStyle.borderBottomWidth, cellStyle.borderBottomColor,
+      getComputedStyle(row.cells[4].querySelector('.badge')).backgroundColor,
+    ];
+    ({ badges, bulkItem })
+  `);
+  for (const { id, label, color } of bulkSummaries) {
+    assert.deepEqual(bulkStyle.badges.find(([batchId]) => batchId === id), [id, label, color]);
+  }
+  assert.deepEqual(bulkStyle.bulkItem, ["Bulk", "bulk-storico", "0px", "1px", "rgb(222, 226, 230)", orangeBadge]);
+  console.log("  PASS: Stati finali dei batch, identificazione Bulk storica e separatori neutri verificati in Chrome.");
+  for (const outcome of ["SUCCESSO", "FALLIMENTO", "ANNULLATO"]) {
+    await evaluateInBrowser(`(() => {
+      const filter = document.getElementById('filter-transfer-outcome');
+      filter.value = ${JSON.stringify(outcome)};
+      filter.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await waitForBrowser(`${readLogRows("table-transfer-logs")}.length > 0 &&
+      ${readLogRows("table-transfer-logs")}.every(row => row[4] === ${JSON.stringify(outcome)})`);
+    if (outcome === "FALLIMENTO") {
+      await waitForBrowser(`${readLogRows("table-transfer-logs")}.some(row => row[1].includes('fallimento-oltre-il-limite.bin'))`);
+    }
+    if (outcome !== "SUCCESSO") {
+      await waitForBrowser(`${readLogRows("table-transfer-logs")}.some(row =>
+        row[5].includes('SFTP robot robot-test') && row[5].includes('batch-fixture-log')
+          && row[5].includes('Motivazione specifica di prova'))`);
+    }
+  }
   const rawLogs = await evaluateInBrowser<string[]>(`Promise.all(['access', 'transfers'].map(async type =>
     (await fetch('/api/logs/download/' + type)).text()))`);
   assert.ok(rawLogs[0].includes(historicalAccess));
   assert.ok(rawLogs[1].includes(winterTransfer) && rawLogs[1].includes(summerTransfer));
+  assert.ok(structuredLogRows.every((row) => rawLogs[1].includes(row)) && rawLogs[1].includes(oldFailure));
+  console.log("  PASS: Log trasferimenti con tutti gli esiti, filtro, percorso, batch e download.");
   await sendCdpCommand("Emulation.setTimezoneOverride", { timezoneId: "" });
   console.log("  PASS: Ruoli LOGIN/LOGOUT, UTC nei download e Europe/Rome in entrambe le tabelle, in estate e inverno.");
 

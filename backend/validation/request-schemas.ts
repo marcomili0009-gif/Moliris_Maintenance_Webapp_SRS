@@ -101,6 +101,7 @@ export const bulkServerSourceBodySchema = z.object({
 }).passthrough();
 
 export const robotToRobotBodySchema = z.object({
+  logBatchId: z.uuid().optional(),
   sourceRobotId: z.string().min(1),
   sourceRemotePath: z.string().min(1),
   targetRobotIds: z.array(z.string().min(1)),

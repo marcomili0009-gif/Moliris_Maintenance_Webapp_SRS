@@ -25,6 +25,7 @@ export interface BatchItem {
   abortController?: AbortController;
   error?: string;
   onCancelCleanup?: () => Promise<void> | void;
+  onCancelQueued?: () => Promise<void>;
   onCompleteForce?: () => Promise<void> | void;
 }
 
@@ -67,6 +68,7 @@ export class BatchTransferManager {
       sizeBytes?: number;
       target?: any;
       tempPartPath?: string;
+      onCancelQueued?: () => Promise<void>;
     }>;
   }): BatchRecord {
     const batchId = params.batchId || crypto.randomUUID();
@@ -81,6 +83,7 @@ export class BatchTransferManager {
       progressPercent: 0,
       target: f.target,
       tempPartPath: f.tempPartPath,
+      onCancelQueued: f.onCancelQueued,
     }));
 
     const batch: BatchRecord = {
@@ -135,6 +138,7 @@ export class BatchTransferManager {
     if (!item) return;
 
     item.status = "IN_PROGRESS";
+    item.onCancelQueued = undefined;
     if (options?.abortController) item.abortController = options.abortController;
     if (options?.tempPartPath) item.tempPartPath = options.tempPartPath;
     if (options?.onCancelCleanup) item.onCancelCleanup = options.onCancelCleanup;
@@ -166,6 +170,7 @@ export class BatchTransferManager {
     if (!item) return;
 
     item.status = "COMPLETED";
+    item.onCancelQueued = undefined;
     item.transferredBytes = item.sizeBytes;
     item.progressPercent = 100;
     batch.completedCount = batch.items.filter((i) => i.status === "COMPLETED").length;
@@ -193,6 +198,7 @@ export class BatchTransferManager {
     if (!item) return;
 
     item.status = "FAILED";
+    item.onCancelQueued = undefined;
     item.error = error;
     batch.failedCount = batch.items.filter((i) => i.status === "FAILED").length;
     batch.updatedAt = new Date();
@@ -249,11 +255,15 @@ export class BatchTransferManager {
     const cancelledFiles: string[] = [];
     const completedFiles: string[] = [];
 
+    const queuedLogWrites: Array<Promise<void>> = [];
+
     for (const item of batch.items) {
       if (item.status === "QUEUED") {
         item.status = "CANCELLED";
         item.error = "Annullato dall'utente prima dell'avvio.";
         cancelledFiles.push(item.filename);
+        if (item.onCancelQueued) queuedLogWrites.push(item.onCancelQueued());
+        item.onCancelQueued = undefined;
       } else if (item.status === "COMPLETED") {
         // I file già completati vengono mantenuti intatti
         completedFiles.push(item.filename);
@@ -302,6 +312,7 @@ export class BatchTransferManager {
     batch.status = "CANCELLED";
     batch.updatedAt = new Date();
 
+    await Promise.all(queuedLogWrites);
     if (this.fileLogger) {
       await this.fileLogger.logBulkEnd(batchId, {
         completed: batch.completedCount,

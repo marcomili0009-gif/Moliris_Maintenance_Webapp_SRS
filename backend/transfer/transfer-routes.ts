@@ -17,7 +17,7 @@ import { type AuthMiddleware } from "../auth/auth-middleware.ts";
 import { AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "../auth/permissions.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
 import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
-import { type StartServerRobotTransferRequest, type TransferDto, type TransferRecord, isActiveTransferStatus } from "./transfer-models.ts";
+import { TransferDirection, type StartServerRobotTransferRequest, type TransferDto, type TransferRecord, isActiveTransferStatus } from "./transfer-models.ts";
 import { type BulkTarget } from "./bulk-transfer-models.ts";
 import { authorizeOperatorPath } from "../auth/path-authorization.ts";
 import { BatchTransferManager } from "./batch-transfer-manager.ts";
@@ -268,9 +268,11 @@ export function registerTransferRoutes(
           ? (req.body as Readable)
           : req.raw;
 
+      const destPath = subPath ? path.posix.join(subPath, filename) : filename;
+      let delegated = false;
       try {
-        const destPath = subPath ? path.posix.join(subPath, filename) : filename;
         await authorizeOperatorPath(context, "server", robot.id, destPath);
+        delegated = true;
         const transferDto = await transferService.uploadClientToServer(
           context,
           robot,
@@ -282,6 +284,9 @@ export function registerTransferRoutes(
         );
         return reply.status(200).send(transferDto);
       } catch (err: any) {
+        if (!delegated) await transferService.logTransferPrecheckFailure(
+          context.username, transferService.describeTransferAttempt(TransferDirection.CLIENT_TO_SERVER, robot.id, filename, undefined, destPath), err
+        );
         return handleRouteError(reply, err);
       }
     }
@@ -322,12 +327,14 @@ export function registerTransferRoutes(
         roleMapping
       );
 
+      let delegated = false;
       try {
         await authorizeOperatorPath(context, "server", robot.id, relativePath);
         if (query.preflight === "1") {
           const info = await transferService.inspectServerDownload(context, robot, relativePath);
           return reply.status(200).send({ ok: true, ...info });
         }
+        delegated = true;
         const { stream, filename, totalBytes, transferDto } =
           await transferService.openDownloadServerToClient(context, robot, relativePath);
 
@@ -338,6 +345,9 @@ export function registerTransferRoutes(
 
         return reply.send(stream);
       } catch (err: any) {
+        if (!delegated) await transferService.logTransferPrecheckFailure(
+          context.username, transferService.describeTransferAttempt(TransferDirection.SERVER_TO_CLIENT, robot.id, relativePath, relativePath), err
+        );
         return handleRouteError(reply, err);
       }
     }
@@ -386,9 +396,11 @@ export function registerTransferRoutes(
           ? (req.body as Readable)
           : req.raw;
 
+      const destPath = remoteDirectory ? path.posix.join(remoteDirectory, filename) : filename;
+      let delegated = false;
       try {
-        const destPath = remoteDirectory ? path.posix.join(remoteDirectory, filename) : filename;
         await authorizeOperatorPath(context, "remote", robot.id, destPath);
+        delegated = true;
         const transferDto = await transferService.uploadClientToRobot(
           context,
           robot,
@@ -400,6 +412,9 @@ export function registerTransferRoutes(
         );
         return reply.status(200).send(transferDto);
       } catch (err: any) {
+        if (!delegated) await transferService.logTransferPrecheckFailure(
+          context.username, transferService.describeTransferAttempt(TransferDirection.CLIENT_TO_ROBOT, robot.id, filename, undefined, destPath), err
+        );
         return handleRouteError(reply, err);
       }
     }
@@ -440,12 +455,14 @@ export function registerTransferRoutes(
         roleMapping
       );
 
+      let delegated = false;
       try {
         await authorizeOperatorPath(context, "remote", robot.id, remoteFilePath);
         if (query.preflight === "1") {
           const info = await transferService.inspectRobotDownload(context, robot, remoteFilePath);
           return reply.status(200).send({ ok: true, ...info });
         }
+        delegated = true;
         const { stream, filename, totalBytes, transferDto } =
           await transferService.openDownloadRobotToClient(context, robot, remoteFilePath);
 
@@ -458,6 +475,9 @@ export function registerTransferRoutes(
 
         return reply.send(stream);
       } catch (err: any) {
+        if (!delegated) await transferService.logTransferPrecheckFailure(
+          context.username, transferService.describeTransferAttempt(TransferDirection.ROBOT_TO_CLIENT, robot.id, remoteFilePath, remoteFilePath), err
+        );
         return handleRouteError(reply, err);
       }
     }
@@ -854,6 +874,7 @@ export function registerTransferRoutes(
         roleMapping
       );
 
+      const batchId = crypto.randomUUID();
       try {
         // ISS-002: la jail Operatore è sempre applicata; directory omessa => "/" (403 per operatore, mai bypass).
         for (const target of body.targets) {
@@ -867,7 +888,8 @@ export function registerTransferRoutes(
         const response = await transferService.checkBulkConflicts(context, body);
         return reply.status(200).send(response);
       } catch (err) {
-        logBulkRequestFailure(req, "pre-check", err, { targets: bulkTargetLogDetails(body.targets), fileCount: body.filenames.length });
+        await transferService.logBulkPrecheckFailure(context.username, body.filenames, body.targets, batchId, err);
+        logBulkRequestFailure(req, "pre-check", err, { batchId, targets: bulkTargetLogDetails(body.targets), fileCount: body.filenames.length });
         return handleRouteError(reply, err);
       }
     }
@@ -907,6 +929,7 @@ export function registerTransferRoutes(
         sha256: string;
       }> = [];
       const stagingPaths: string[] = [];
+      const observedFilenames: string[] = [];
       let totalStagedBytes = 0;
 
       let stagingDir: string | undefined;
@@ -932,9 +955,10 @@ export function registerTransferRoutes(
         for await (const part of parts) {
           if (part.type === "file") {
             phase = "staging";
-            stagingDir ??= await transferService.ensureBulkTempDirectory();
             fileIndex++;
             const safeFilename = path.basename(part.filename);
+            observedFilenames.push(safeFilename);
+            stagingDir ??= await transferService.ensureBulkTempDirectory();
             const stagingPath = path.join(stagingDir, `staging_${uploadSessionId}_${fileIndex}.part`);
             stagingPaths.push(stagingPath);
 
@@ -1064,6 +1088,9 @@ export function registerTransferRoutes(
           });
 
           if (preCheck.hasConflicts) {
+            await transferService.logBulkPrecheckFailure(context.username, observedFilenames, targets, uploadSessionId,
+              new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED,
+                "Sovrascrittura non confermata.", "Invio sospeso per conflitto di sovrascrittura."));
             reply.status(409);
             return {
               code: "CONFLICTS_DETECTED",
@@ -1081,6 +1108,9 @@ export function registerTransferRoutes(
           stagedFiles,
         });
       } catch (err) {
+        if (phase !== "distribuzione") {
+          await transferService.logBulkPrecheckFailure(context.username, observedFilenames, targets, uploadSessionId, err);
+        }
         logBulkRequestFailure(req, phase, err, { batchId: uploadSessionId, fileCount: fileIndex, targets: bulkTargetLogDetails(targets) });
         for (const rec of stagingRecords) {
           if (rec.status === "IN_PROGRESS" || rec.status === "QUEUED") {
@@ -1122,6 +1152,9 @@ export function registerTransferRoutes(
         roleMapping
       );
 
+      const batchId = crypto.randomUUID();
+      const source = { scope: body.sourceScope ?? "general", robotId: body.sourceRobotId } as const;
+      let delegated = false;
       try {
         for (const sp of body.sourcePaths) {
           await authorizeOperatorPath(context, "server", body.sourceRobotId, sp);
@@ -1135,8 +1168,10 @@ export function registerTransferRoutes(
             target.directory ?? ""
           );
         }
+        delegated = true;
         const response = await transferService.executeBulkServerSource(context, {
-          sourceScope: body.sourceScope || "general",
+          batchId,
+          sourceScope: source.scope,
           sourceRobotId: body.sourceRobotId,
           sourcePaths: body.sourcePaths,
           targets: body.targets,
@@ -1144,7 +1179,10 @@ export function registerTransferRoutes(
         });
         return reply.status(200).send(response);
       } catch (err) {
-        logBulkRequestFailure(req, "sorgente server", err, { targets: bulkTargetLogDetails(body.targets), fileCount: body.sourcePaths.length });
+        if (!delegated) await transferService.logBulkPrecheckFailure(
+          context.username, body.sourcePaths, body.targets, batchId, err, source
+        );
+        logBulkRequestFailure(req, "sorgente server", err, { batchId, targets: bulkTargetLogDetails(body.targets), fileCount: body.sourcePaths.length });
         return handleRouteError(reply, err);
       }
     }
@@ -1169,6 +1207,18 @@ export function registerTransferRoutes(
         roleMapping
       );
 
+      const transferRequest = {
+        sourceRobotId: body.sourceRobotId,
+        sourceRemotePath: body.sourceRemotePath,
+        targetRobotIds: body.targetRobotIds,
+        targetRemotePaths: body.targetRemotePaths,
+        commonTargetDirectory: body.commonTargetDirectory,
+        isMove: Boolean(body.isMove),
+        confirmation: Boolean(body.confirmation),
+        overwrite: Boolean(body.overwrite),
+        logBatchId: body.logBatchId || (body.targetRobotIds.length > 1 ? crypto.randomUUID() : undefined),
+      };
+      let delegated = false;
       try {
         await authorizeOperatorPath(context, "remote", body.sourceRobotId, body.sourceRemotePath);
         // ISS-002: ogni destinazione (per-robot o comune) deve ricadere negli allowedPaths; mai omissioni.
@@ -1176,18 +1226,11 @@ export function registerTransferRoutes(
           const destDir = body.targetRemotePaths?.[tid] || body.commonTargetDirectory || "";
           await authorizeOperatorPath(context, "remote", tid, destDir);
         }
-        const response = await transferService.executeRobotToRobotTransfer(context, {
-          sourceRobotId: body.sourceRobotId,
-          sourceRemotePath: body.sourceRemotePath,
-          targetRobotIds: body.targetRobotIds,
-          targetRemotePaths: body.targetRemotePaths,
-          commonTargetDirectory: body.commonTargetDirectory,
-          isMove: Boolean(body.isMove),
-          confirmation: Boolean(body.confirmation),
-          overwrite: Boolean(body.overwrite),
-        });
+        delegated = true;
+        const response = await transferService.executeRobotToRobotTransfer(context, transferRequest);
         return reply.status(200).send(response);
       } catch (err: any) {
+        if (!delegated) await transferService.logRobotToRobotPrecheckFailure(context.username, transferRequest, err);
         return handleRouteError(reply, err);
       }
     }

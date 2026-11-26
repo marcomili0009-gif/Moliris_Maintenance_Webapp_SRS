@@ -66,13 +66,18 @@ export function sanitizeLogText(value: string): string {
     .replace(/={3,}/g, (match) => match.replace(/=/g, "\\="));
 }
 
+function redactLogValue(value: string): string {
+  return redactSensitiveData(value)
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, "$1[REDACTED]@");
+}
+
 /**
  * Sanitizza i dettagli rimuovendo segreti e neutralizzando i delimitatori.
  */
 export function sanitizeLogDetails(details?: string | Record<string, any>): string {
   if (!details) return "N/A";
   if (typeof details === "string") {
-    let s = redactSensitiveData(details);
+    let s = redactLogValue(details);
     s = s.replace(/password[:=]\s*[^\s,;]+/gi, "password: [REDACTED]");
     s = s.replace(/token[:=]\s*[^\s,;]+/gi, "token: [REDACTED]");
     s = s.replace(/secret[:=]\s*[^\s,;]+/gi, "secret: [REDACTED]");
@@ -97,7 +102,7 @@ export function sanitizeLogDetails(details?: string | Record<string, any>): stri
       if (key && forbiddenKeys.some((f) => key.toLowerCase().includes(f.toLowerCase()))) {
         return "[REDACTED]";
       }
-      return value;
+      return typeof value === "string" ? redactLogValue(value) : value;
     });
     return sanitizeLogText(serialized || "N/A").replace(/\\\[REDACTED\\\]/g, "[REDACTED]");
   } catch {
@@ -246,8 +251,7 @@ export class PhysicalFileLogger {
    */
   public async logTransfer(entry: TransferLogEntry): Promise<string> {
     const ts = formatLogTimestamp(entry.timestamp || new Date());
-    const field = (value: string) => sanitizeLogText(redactSensitiveData(value)
-      .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, "$1[REDACTED]@"));
+    const field = (value: string) => sanitizeLogText(redactLogValue(value));
     const details = sanitizeLogDetails(entry.details);
     const metadata = [
       entry.source && `Sorgente: ${field(entry.source)}`,
@@ -353,7 +357,16 @@ export class PhysicalFileLogger {
   public async openTransferLogDownload(): Promise<Readable> {
     const paths = (await this.transferLogPaths()).reverse();
     return Readable.from((async function* () {
-      for (const filePath of paths) yield* fs.createReadStream(filePath);
+      let needsSeparator = false;
+      for (const filePath of paths) {
+        let firstChunk = true;
+        for await (const chunk of fs.createReadStream(filePath) as AsyncIterable<Buffer>) {
+          if (firstChunk && needsSeparator) yield "\n";
+          yield chunk;
+          needsSeparator = chunk[chunk.length - 1] !== 10;
+          firstChunk = false;
+        }
+      }
     })());
   }
 
@@ -365,9 +378,12 @@ export class PhysicalFileLogger {
         if (!line.trim()) continue;
         const entry = line.split(" | Dettagli:")[0];
         const user = /(?:^|\|) Utente: (.*?)(?: \||$)/.exec(entry)?.[1];
-        const outcome = / \| Esito: ([\p{L}_]+)/u.exec(entry)?.[1]?.toUpperCase();
+        const rawOutcome = / \| Esito: ([\p{L}_]+)/u.exec(entry)?.[1]?.toUpperCase();
+        const outcome = rawOutcome === "OK" || rawOutcome === "COMPLETED" ? "SUCCESSO"
+          : rawOutcome === "FALLITO" || rawOutcome === "FAILED" ? "FALLIMENTO"
+          : rawOutcome === "CANCELLED" ? "ANNULLATO" : rawOutcome;
         const genuineEntry = /^\[\d{4}-\d{2}-\d{2} |^\[batchId: /.test(entry);
-        if (filter?.user && user !== sanitizeLogText(filter.user)) continue;
+        if (filter?.user && !user?.includes(sanitizeLogText(filter.user))) continue;
         if (filter?.outcome && (!genuineEntry || outcome !== filter.outcome.toUpperCase())) continue;
         lines.push(line);
         if (lines.length === limit) return lines.reverse();

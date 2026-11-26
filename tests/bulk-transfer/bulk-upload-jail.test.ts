@@ -832,7 +832,35 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
   const mixedFailureLog = await physicalFileLogger.getTransferLogs({ outcome: "FALLIMENTO", limit: 200 });
   assert.strictEqual(mixedFailureLog.filter((line) => line.includes("missing-directory-")).length, 12,
     "I 12 errori individuali devono essere persistiti in transfers.log");
+  const missingBatchId = missingDirectory.json().batchId;
+  const mixedRows = (await physicalFileLogger.getTransferLogs({ limit: 300 }))
+    .filter((line) => line.includes(` | Batch: ${missingBatchId} |`));
+  assert.strictEqual(mixedRows.length, 60, "48 invii, 12 ricezioni iniziali e una riga per operazione");
+  assert.strictEqual(mixedRows.filter((row) => row.includes(" | Esito: FALLIMENTO |")).length, 12);
+  for (const row of mixedRows.filter((item) => item.includes(" | Esito: FALLIMENTO |"))) {
+    assert.match(row, /Utente: .* \| Direzione: CLIENT_TO_ROBOT \| Esito: FALLIMENTO \| Sorgente: Computer \| Destinazione: SFTP robot robot2/);
+    assert.match(row, /Cartella di destinazione assente sul robot.*codice SFTP 2/);
+  }
+  const mixedIds = mixedRows.map((row) => / \| ID: (.*?) \|/.exec(row)?.[1]);
+  assert.ok(mixedIds.every(Boolean));
+  assert.strictEqual(new Set(mixedIds).size, mixedRows.length);
+
   console.log("  PASS: 12 file, destinazione assente sul secondo robot, zero byte confermati e causa specifica.");
+
+  const authFailureRobot: RobotEntity = {
+    ...robot2, id: "robot-precheck-auth-failure", remoteUsername: "utente_rifiutato",
+    serverDirectoryPath: path.join(tmpServerRoot, "auth-failure"),
+  };
+  await robotRepo.create(authFailureRobot);
+  const precheckFailure = await server.inject({
+    method: "POST", url: "/api/transfers/bulk/pre-check", headers: authHeaders, cookies,
+    payload: { filenames: ["precheck-auth-failure.bin"], targets: [{ ...mixedTargets[3], robotId: authFailureRobot.id }] },
+  });
+  assert.ok(precheckFailure.statusCode >= 400, precheckFailure.body);
+  const rejectedPrecheckRows = (await physicalFileLogger.getTransferLogs({ outcome: "FALLIMENTO" }))
+    .filter((row) => row.includes("File: precheck-auth-failure.bin"));
+  assert.strictEqual(rejectedPrecheckRows.length, 1);
+  assert.match(rejectedPrecheckRows[0], /Pre-check:.*SSH_AUTH_FAILED/);
 
   // Entrambi i tipi di destinazione devono funzionare anche senza target misti.
   for (const [type, filename] of [["server", "server_only.txt"], ["robot", "remote_only.txt"]]) {
@@ -869,6 +897,10 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
   assert.deepStrictEqual(partial.json().summary, { completed: 3, failed: 1, skipped: 0 });
   assert.strictEqual(mockRemoteFs["/upload/partial.txt"].toString(), "Payload da verificare");
   assert.strictEqual(secondRemoteFs["/shared/partial.txt"].toString(), "File originale");
+  const integrityRows = (await physicalFileLogger.getTransferLogs({ outcome: "FALLIMENTO" }))
+    .filter((line) => line.includes(` | Batch: ${partial.json().batchId} |`));
+  assert.strictEqual(integrityRows.length, 1);
+  assert.match(integrityRows[0], /verifica checksum sul robot/);
   corruptSecondRemoteWrite = false;
   assertNoParts();
 
@@ -896,6 +928,32 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
   }
   failingOperation = undefined;
   console.log("  PASS: riconosciuti WRITE parziale, CLOSE e RENAME con 100% confermato, senza .part residui.");
+
+  delaySecondRemoteWrite = 400;
+  const cancelUpload = submit(upload([mixedTargets[3]], [
+    { filename: "log-cancel-active.bin", contents: "A".repeat(170000) },
+    { filename: "log-cancel-queued.bin", contents: "B".repeat(170000) },
+  ]));
+  let cancelBatchId: string | undefined;
+  for (let attempt = 0; !cancelBatchId && attempt < 200; attempt++) {
+    cancelBatchId = transferService.listTransfers(contextAdmin).find((item) =>
+      item.filename === "log-cancel-active.bin" && !item.isBulkStaging && item.status === "IN_PROGRESS"
+    )?.batchId;
+    if (!cancelBatchId) await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(cancelBatchId);
+  const cancellation = await server.inject({
+    method: "POST", url: `/api/transfers/batches/${cancelBatchId}/cancel`, headers: authHeaders, cookies, payload: {},
+  });
+  assert.strictEqual(cancellation.statusCode, 200, cancellation.body);
+  await cancelUpload;
+  delaySecondRemoteWrite = 0;
+  const cancelLogs = (await physicalFileLogger.getTransferLogs({ outcome: "ANNULLATO", limit: 100 }))
+    .filter((row) => row.includes(` | Batch: ${cancelBatchId} |`));
+  assert.strictEqual(cancelLogs.length, 2);
+  assert.ok(cancelLogs.some((row) => row.includes("log-cancel-active.bin")));
+  assert.ok(cancelLogs.some((row) => row.includes("log-cancel-queued.bin")));
+  assertNoParts();
 
   const originalIdleTimeout = config.transferIdleTimeoutMs;
   config.transferIdleTimeoutMs = 650;
@@ -1000,7 +1058,45 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
   assertNoParts();
   console.log("  PASS: Test 8 - HTTPS per target omogenei, duplicati, limite multipart, esito parziale, readback, sorgente server, pulizia e jail.");
 
+  const archiveRow = "[2026-01-01 12:00:00] File: archivio-legacy.bin | Utente: storico | Direzione: SERVER_TO_ROBOT | Esito: SUCCESSO | Dettagli: storico";
+  const logPath = physicalFileLogger.getTransferLogFilePath();
+  fs.writeFileSync(`${logPath}.1`, archiveRow, { mode: 0o600 });
+  const activeLogText = fs.readFileSync(logPath, "utf8");
   await server.close();
+
+  const restartedLogger = new PhysicalFileLogger(path.dirname(logPath), { maxFileSizeBytes: 1 });
+  const newSessions = new SessionManager(30);
+  const resumedSession = newSessions.createSession(adminUser);
+  const reopened = createServer(config, logger, {
+    sessionManager: newSessions, userRepository: userRepo, auditRepository: auditRepo,
+    robotRepository: robotRepo, physicalFileLogger: restartedLogger, credentialProvider,
+  });
+  try {
+    // Un'ulteriore scrittura oltre la soglia conserva sia il file attivo sia l'archivio storico.
+    const redactedRow = await restartedLogger.logTransfer({
+      filename: "sanitizzazione.bin", username: "admin", direction: "CLIENT_TO_ROBOT", outcome: "FALLIMENTO",
+      source: "Computer", destination: "sftp://user:URI_SECRET_FIXTURE@robot.test/path",
+      details: "password=TEST_PASSWORD_FIXTURE\n-----BEGIN OPENSSH PRIVATE KEY-----\nKEY_SECRET_FIXTURE\n-----END OPENSSH PRIVATE KEY-----",
+    });
+    const requestCookies = { "__Host-moliris_session": resumedSession.sessionId };
+    const download = await reopened.inject({ method: "GET", url: "/api/logs/download/transfers", cookies: requestCookies });
+    assert.strictEqual(download.statusCode, 200, download.body);
+    assert.strictEqual(download.body, `${archiveRow}\n${activeLogText}${redactedRow}\n`);
+    assert.doesNotMatch(download.body, /URI_SECRET_FIXTURE|TEST_PASSWORD_FIXTURE|KEY_SECRET_FIXTURE/);
+    for (const outcome of ["SUCCESSO", "FALLIMENTO", "ANNULLATO"]) {
+      const result = await reopened.inject({
+        method: "GET", url: `/api/logs/transfers?outcome=${outcome}&limit=1000`, cookies: requestCookies,
+      });
+      assert.strictEqual(result.statusCode, 200, result.body);
+      const rows = result.json().logs as string[];
+      assert.ok(rows.length > 0);
+      assert.ok(rows.every((row) => row.includes(` | Esito: ${outcome}`)));
+    }
+  } finally {
+    await reopened.close();
+  }
+  console.log("  PASS: righe singole dei batch, cancellazioni, filtri, storico e download dopo il riavvio del backend.");
+
   secondSftpServer.close();
   console.log("  PASS: Test 6 - Endpoint REST Fastify /pre-check e /upload multipart collaudati con successo.");
 }

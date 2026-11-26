@@ -200,6 +200,7 @@ export interface TransferExecutionOptions {
  * Richiesta trasferimento Copia/Sposta Robot -> Robot (§6)
  */
 export interface RobotToRobotTransferRequest {
+  logBatchId?: string;
   sourceRobotId: string;
   sourceRemotePath: string;
   targetRobotIds: string[];
