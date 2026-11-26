@@ -16,7 +16,7 @@ import { hashPassword, verifyPassword, toUserProfileDto } from "./user-models.ts
 import { AppPermission } from "./permissions.ts";
 import { ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
-import { type PhysicalFileLogger, normalizeRoleForLog, sanitizeLogText } from "../logging/physical-file-logger.ts";
+import { type PhysicalFileLogger, sanitizeLogText } from "../logging/physical-file-logger.ts";
 
 export function registerAuthRoutes(
   app: FastifyInstance,
@@ -32,7 +32,7 @@ export function registerAuthRoutes(
       fileLogger.logAccess({
         event: "INACTIVITY_LOGOUT",
         username: session.username,
-        role: normalizeRoleForLog(session.roles),
+        role: session.roles,
         outcome: "SUCCESSO",
         details: `Sessione scaduta per inattività: ${reason}`,
       }).catch(() => {});
@@ -119,7 +119,6 @@ export function registerAuthRoutes(
         fileLogger.logAccess({
           event: "LOGIN",
           username: username || "anonymous",
-          role: "Operatore",
           outcome: "FALLIMENTO",
           details: "Payload credenziali non valido",
         }).catch(() => {});
@@ -149,7 +148,6 @@ export function registerAuthRoutes(
         fileLogger.logAccess({
           event: "LOGIN",
           username,
-          role: "Operatore",
           outcome: "FALLIMENTO",
           details: "Utente non trovato o disabilitato",
         }).catch(() => {});
@@ -176,7 +174,7 @@ export function registerAuthRoutes(
         fileLogger.logAccess({
           event: "LOGIN",
           username,
-          role: normalizeRoleForLog(user.roles),
+          role: user.roles,
           outcome: "FALLIMENTO",
           details: "Password errata",
         }).catch(() => {});
@@ -216,7 +214,7 @@ export function registerAuthRoutes(
           fileLogger.logAccess({
             event: "LOGIN",
             username: user.username,
-            role: normalizeRoleForLog(user.roles),
+            role: user.roles,
             outcome: "FALLIMENTO",
             details: `Limite utenti contemporanei raggiunto (${app.appConfig.maxConcurrentWebUsers})`,
           }).catch(() => {});
@@ -245,7 +243,7 @@ export function registerAuthRoutes(
         fileLogger.logAccess({
           event: "LOGIN",
           username: user.username,
-          role: normalizeRoleForLog(user.roles),
+          role: user.roles,
           outcome: "FALLIMENTO",
           details: "Sessione già attiva per questo account (HTTP 409)",
         }).catch(() => {});
@@ -287,7 +285,7 @@ export function registerAuthRoutes(
       fileLogger.logAccess({
         event: "LOGIN",
         username: user.username,
-        role: normalizeRoleForLog(user.roles),
+        role: user.roles,
         outcome: "SUCCESSO",
         details: "Autenticazione riuscita",
       }).catch(() => {});
@@ -335,7 +333,7 @@ export function registerAuthRoutes(
         fileLogger.logAccess({
           event: "LOGOUT",
           username: session.username,
-          role: normalizeRoleForLog(session.roles),
+          role: session.roles,
           outcome: "SUCCESSO",
           details: reason,
         }).catch(() => {});

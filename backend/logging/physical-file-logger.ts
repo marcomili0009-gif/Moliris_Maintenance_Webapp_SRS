@@ -6,7 +6,7 @@ import path from "path";
 export interface AccessLogEntry {
   event: "LOGIN" | "LOGOUT" | "INACTIVITY_LOGOUT" | string;
   username: string;
-  role: string; // "Amministratore" | "Operatore"
+  role?: string | string[];
   outcome: "SUCCESSO" | "FALLIMENTO";
   details?: string | Record<string, any>;
   timestamp?: Date;
@@ -30,17 +30,10 @@ export interface BulkSummary {
 }
 
 /**
- * Formatta un timestamp nel formato tassativo [YYYY-MM-DD HH:MM:SS].
+ * Formatta un timestamp UTC nel formato tassativo [YYYY-MM-DD HH:MM:SS].
  */
 export function formatLogTimestamp(date: Date = new Date()): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const y = date.getFullYear();
-  const m = pad(date.getMonth() + 1);
-  const d = pad(date.getDate());
-  const h = pad(date.getHours());
-  const min = pad(date.getMinutes());
-  const s = pad(date.getSeconds());
-  return `${y}-${m}-${d} ${h}:${min}:${s}`;
+  return date.toISOString().slice(0, 19).replace("T", " ");
 }
 
 /**
@@ -107,13 +100,11 @@ export function sanitizeLogDetails(details?: string | Record<string, any>): stri
  * Normalizza il ruolo per l'output leggibile: Amministratore o Operatore.
  */
 export function normalizeRoleForLog(roleOrRoles?: string | string[]): string {
-  if (!roleOrRoles) return "Operatore";
-  const roles = Array.isArray(roleOrRoles) ? roleOrRoles : [roleOrRoles];
-  const isAdmin = roles.some((r) => {
-    const lower = (r || "").toLowerCase();
-    return lower === "admin";
-  });
-  return isAdmin ? "Amministratore" : "Operatore";
+  const roles = (Array.isArray(roleOrRoles) ? roleOrRoles : [roleOrRoles])
+    .map((role) => role?.trim().toLowerCase());
+  if (roles.includes("admin") || roles.includes("amministratore")) return "Amministratore";
+  if (roles.includes("operatore")) return "Operatore";
+  return "—";
 }
 
 /**

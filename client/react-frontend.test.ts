@@ -13,6 +13,7 @@ import { InMemoryRobotRepository } from "../storage/robot-repository.ts";
 import { InMemoryAuditRepository } from "../storage/audit-repository.ts";
 import { InMemoryUserRepository } from "../backend/auth/user-repository.ts";
 import { hashPassword } from "../backend/auth/user-models.ts";
+import { PhysicalFileLogger } from "../backend/logging/physical-file-logger.ts";
 import { SessionManager } from "../backend/auth/session-manager.ts";
 import { ServerFilesystemService } from "../storage/server-fs.ts";
 import { InMemoryCredentialProvider } from "../backend/connection/credential-provider.ts";
@@ -343,7 +344,9 @@ try {
   }
 }
 
+const physicalFileLogger = new PhysicalFileLogger(path.join(tmpDir, "logs"));
 const server = createServer(testConfig, logger, {
+  physicalFileLogger,
   robotRepository: robotRepo,
   auditRepository: auditRepo,
   userRepository: userRepo,
@@ -1588,6 +1591,46 @@ try {
   }`);
   assert.strictEqual(isTransfersActive, true, "Dopo il logo, il clic su Trasferimenti deve mostrare la vista Trasferimenti e non restare bloccato su Flotta");
 
+  // Esercita login e logout reali senza dedurre il ruolo dal nome utente.
+  const logAccounts = [
+    { username: "utente_registro_a", role: "admin", label: "Amministratore" },
+    { username: "utente_registro_b", role: "operatore", label: "Operatore" },
+  ];
+  const headers = { host: new URL(serverBaseUrl).host, origin: serverBaseUrl };
+  for (const { username, role } of logAccounts) {
+    await userRepo.create({
+      id: username, username, roles: [role], passwordHash: adminHash, enabled: true,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    const login = await server.inject({
+      method: "POST", url: "/api/auth/login", headers,
+      payload: { username, password: "AdminPassword123!" },
+    });
+    assert.equal(login.statusCode, 200);
+    const cookie = login.cookies.find(({ name }) => name === "__Host-moliris_session");
+    assert.ok(cookie);
+    const logout = await server.inject({
+      method: "POST", url: "/api/auth/logout",
+      headers: { ...headers, cookie: `${cookie.name}=${cookie.value}` },
+    });
+    assert.equal(logout.statusCode, 200);
+  }
+  const historicalAccess = "[2026-01-15 12:00:00] EVENT: LOGIN | Utente: storico | Esito: SUCCESSO";
+  await fs.promises.appendFile(physicalFileLogger.getAccessLogFilePath(), historicalAccess + "\n");
+  const winterTransfer = await physicalFileLogger.logTransfer({
+    timestamp: new Date("2026-01-15T12:00:00Z"), filename: "inverno.bin",
+    username: "storico", direction: "SERVER_TO_ROBOT", outcome: "SUCCESSO",
+  });
+  const summerTransfer = await physicalFileLogger.logTransfer({
+    timestamp: new Date("2026-07-15T22:30:00Z"), filename: "estate.bin",
+    username: "storico", direction: "SERVER_TO_ROBOT", outcome: "SUCCESSO",
+  });
+  await fs.promises.appendFile(physicalFileLogger.getTransferLogFilePath(),
+    "=== INIZIO CARICAMENTO MASSIVO === [batchId: inverno] (1 file) Utente: storico | Data: 2026-01-15 | Ora: 12:00:00 ===\n" +
+    "=== CARICAMENTO MASSIVO TERMINATO === [batchId: estate] - Esito: SUCCESSO (Completati: 1/1, Annullati: 0, Falliti: 0) | Data: 2026-07-15 | Ora: 22:30:00 ===\n"
+  );
+  await sendCdpCommand("Emulation.setTimezoneOverride", { timezoneId: "America/New_York" });
+
   // 3. Clic su Logs (nav-logs)
   await evaluateInBrowser<void>(`
     const logsNavBtn = document.getElementById('nav-logs') || document.querySelector('button[data-view="logs"]');
@@ -1599,6 +1642,33 @@ try {
     "Boolean(document.getElementById('logs-view-container')) && Boolean(document.getElementById('nav-logs')?.classList.contains('active'))"
   );
   assert.strictEqual(isLogsActive, true, "Dopo il logo e Trasferimenti, il clic su Logs deve mostrare la vista Logs");
+
+  const readLogRows = (table: string) => `Array.from(document.querySelectorAll('#${table} tbody tr'), row =>
+    Array.from(row.cells, cell => cell.textContent.trim()))`;
+  for (const { username, label } of logAccounts) {
+    await waitForBrowser(`${readLogRows("table-access-logs")}.filter(row =>
+      row[2] === ${JSON.stringify(username)} && row[3] === ${JSON.stringify(label)} &&
+      ['LOGIN', 'LOGOUT'].includes(row[1]) && row[4] === 'SUCCESSO'
+    ).length === 2`);
+  }
+  await waitForBrowser(`${readLogRows("table-access-logs")}.some(row =>
+    row[0] === '2026-01-15 13:00:00' && row[2] === 'storico' && row[3] === '—'
+  )`);
+  await evaluateInBrowser("document.getElementById('tab-transfer-logs').click()");
+  for (const [timestamp, text] of [
+    ["2026-01-15 13:00:00", "inverno.bin"], ["2026-07-16 00:30:00", "estate.bin"],
+    ["2026-01-15 13:00:00", "Batch ID: inverno"], ["2026-07-16 00:30:00", "Batch ID: estate"],
+  ]) {
+    await waitForBrowser(`${readLogRows("table-transfer-logs")}.some(row =>
+      row[0] === ${JSON.stringify(timestamp)} && row[1].includes(${JSON.stringify(text)})
+    )`);
+  }
+  const rawLogs = await evaluateInBrowser<string[]>(`Promise.all(['access', 'transfers'].map(async type =>
+    (await fetch('/api/logs/download/' + type)).text()))`);
+  assert.ok(rawLogs[0].includes(historicalAccess));
+  assert.ok(rawLogs[1].includes(winterTransfer) && rawLogs[1].includes(summerTransfer));
+  await sendCdpCommand("Emulation.setTimezoneOverride", { timezoneId: "" });
+  console.log("  PASS: Ruoli LOGIN/LOGOUT, UTC nei download e Europe/Rome in entrambe le tabelle, in estate e inverno.");
 
   // 4. Sequenza specifica di smontaggio: Logs -> Logo -> Logs -> Trasferimenti
   console.log("  -> Test Regressione Smontaggio Dashboard: Sequenza Logs -> Logo -> Logs -> Trasferimenti");

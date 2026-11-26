@@ -5,7 +5,7 @@ import assert from "node:assert";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { PhysicalFileLogger, formatLogTimestamp, sanitizeLogDetails, normalizeRoleForLog } from "../backend/logging/physical-file-logger.ts";
+import { PhysicalFileLogger, formatLogTimestamp, normalizeRoleForLog } from "../backend/logging/physical-file-logger.ts";
 import { BatchTransferManager } from "../backend/transfer/batch-transfer-manager.ts";
 import { SessionManager } from "../backend/auth/session-manager.ts";
 import { InMemoryUserRepository } from "../backend/auth/user-repository.ts";
@@ -41,6 +41,22 @@ async function testPhysicalFileLogger() {
 
   const accessStat = fs.statSync(accessFile);
   assert.strictEqual(accessStat.mode & 0o777, 0o600, "access.log deve avere permessi 0600");
+
+  // Gli istanti rimangono UTC anche se il processo usa un altro fuso.
+  const originalTimeZone = process.env.TZ;
+  try {
+    process.env.TZ = "Europe/Rome";
+    assert.equal(formatLogTimestamp(new Date("2026-01-15T12:00:00Z")), "2026-01-15 12:00:00");
+    assert.equal(formatLogTimestamp(new Date("2026-07-15T22:30:00Z")), "2026-07-15 22:30:00");
+  } finally {
+    if (originalTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTimeZone;
+  }
+  assert.equal(normalizeRoleForLog(["operatore", "admin"]), "Amministratore");
+  assert.equal(normalizeRoleForLog("Amministratore"), "Amministratore");
+  assert.equal(normalizeRoleForLog(["operatore"]), "Operatore");
+  assert.equal(normalizeRoleForLog(), "—");
+  assert.equal(normalizeRoleForLog(["ruolo-sconosciuto"]), "—");
 
   // 1a. Registrazione access.log
   const accessLine = await logger.logAccess({

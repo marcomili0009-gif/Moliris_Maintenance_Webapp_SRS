@@ -31,7 +31,7 @@ interface ParsedTransferLog {
 }
 
 const ACCESS_LINE_REGEX =
-  /^\[(.*?)\]\s+EVENT:\s*(.*?)\s*\|\s*Utente:\s*(.*?)\s*\|\s*Ruolo:\s*(.*?)\s*\|\s*Esito:\s*(.*?)(?:\s*\|\s*Dettagli:\s*(.*))?$/i;
+  /^\[(.*?)\]\s+EVENT:\s*(.*?)\s*\|\s*Utente:\s*(.*?)(?:\s*\|\s*Ruolo:\s*(.*?))?\s*\|\s*Esito:\s*(.*?)(?:\s*\|\s*Dettagli:\s*(.*))?$/i;
 
 const TRANSFER_STANDARD_REGEX =
   /^\[(.*?)\]\s+File:\s*(.*?)\s*\|\s*Utente:\s*(.*?)\s*\|\s*Direzione:\s*(.*?)\s*\|\s*Esito:\s*(.*?)(?:\s*\|\s*Dettagli:\s*(.*))?$/i;
@@ -44,6 +44,28 @@ const BULK_FOOTER_REGEX =
 
 const BULK_ITEM_REGEX =
   /^\[batchId:\s*(.*?)\]\s+\[FILE\s*(\d+)\/(\d+)\]\s+File\s+\d+:\s*(.*?)\s*\|\s*Esito:\s*(.*?)(?:\s+\((.*?)\))?\s*\|\s*Direzione:\s*(.*?)\s*\|\s*Dettagli:\s*(.*)$/i;
+
+const romeLogFormatter = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: "Europe/Rome",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
+
+function formatLogTime(timestamp: string): string {
+  // Il formato storico dei file non contiene la sigla UTC.
+  const value = timestamp.trim();
+  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+    ? value.replace(" ", "T") + "Z"
+    : value;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(iso)) return value;
+  const instant = new Date(iso);
+  return Number.isNaN(instant.getTime()) ? value : romeLogFormatter.format(instant);
+}
 
 export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
   const isAdmin = user.roles.some(
@@ -156,7 +178,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
       if (match) {
         return {
           raw: line,
-          timestamp: match[1]?.trim(),
+          timestamp: formatLogTime(match[1]),
           event: match[2]?.trim().toUpperCase(),
           username: match[3]?.trim(),
           role: match[4]?.trim(),
@@ -196,7 +218,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
           batchId: bulkHeaderMatch[1]?.trim(),
           details: `Inizio caricamento massivo: ${bulkHeaderMatch[2]?.trim()} file`,
           username: bulkHeaderMatch[3]?.trim(),
-          timestamp: `${bulkHeaderMatch[4]?.trim()} ${bulkHeaderMatch[5]?.trim()}`,
+          timestamp: formatLogTime(`${bulkHeaderMatch[4].trim()} ${bulkHeaderMatch[5].trim()}`),
         };
       }
       const bulkFooterMatch = line.match(BULK_FOOTER_REGEX);
@@ -207,7 +229,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
           batchId: bulkFooterMatch[1]?.trim(),
           outcome: bulkFooterMatch[2]?.trim().toUpperCase(),
           details: `Completati: ${bulkFooterMatch[3]?.trim()}/${bulkFooterMatch[4]?.trim()} (Annullati: ${bulkFooterMatch[5]?.trim()}, Falliti: ${bulkFooterMatch[6]?.trim()})`,
-          timestamp: `${bulkFooterMatch[7]?.trim()} ${bulkFooterMatch[8]?.trim()}`,
+          timestamp: formatLogTime(`${bulkFooterMatch[7].trim()} ${bulkFooterMatch[8].trim()}`),
         };
       }
       const bulkItemMatch = line.match(BULK_ITEM_REGEX);
@@ -230,7 +252,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
       if (stdMatch) {
         return {
           raw: line,
-          timestamp: stdMatch[1]?.trim(),
+          timestamp: formatLogTime(stdMatch[1]),
           filename: stdMatch[2]?.trim(),
           username: stdMatch[3]?.trim(),
           direction: stdMatch[4]?.trim(),
