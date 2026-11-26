@@ -531,6 +531,57 @@ body {
   margin: 0 !important;
 }
 
+.terminal-context-menu,
+.terminal-paste-panel {
+  border: 1px solid #626262;
+  border-radius: 6px;
+  background: #252526;
+  color: #f1f1f1;
+  box-shadow: var(--bs-box-shadow);
+  padding: 0.35rem;
+}
+
+.terminal-context-menu {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+}
+
+.terminal-context-menu button {
+  display: block;
+  width: 100%;
+  padding: 0.3rem 0.75rem;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.terminal-context-menu button:enabled:is(:hover, :focus-visible) {
+  background: #444;
+}
+
+.terminal-context-menu button:disabled {
+  color: #a5a5a5;
+}
+
+.terminal-paste-panel {
+  max-width: calc(100vw - 2rem);
+  padding: 0.75rem;
+}
+
+.terminal-paste-panel textarea {
+  display: block;
+  width: 100%;
+  margin-block: 0.5rem;
+}
+
+.terminal-clipboard-status {
+  padding: 0.25rem 0.5rem;
+}
+
 /* Modalità Espansione Terminale (§12): riempie la viewport del browser senza API Fullscreen */
 .modal-terminal-window.terminal-expanded {
   position: fixed !important;
@@ -1704,6 +1755,11 @@ body {
 .badge-errore { background-color: var(--bs-danger-subtle); color: var(--bs-danger-text); }
 .badge-avviso { background-color: var(--bs-warning-subtle); color: var(--bs-warning-text); }
 .badge-nodata { background-color: var(--bs-secondary-subtle); color: var(--bs-secondary-text); font-style: italic; }
+
+#table-transfer-logs .transfer-log-badge-orange {
+  background-color: #ffecd5;
+  color: #843c0c;
+}
 
 .badge-classification {
   font-size: 0.78rem;

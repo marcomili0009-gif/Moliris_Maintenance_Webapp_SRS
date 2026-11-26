@@ -4,11 +4,16 @@ import assert from "assert";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { MongoClient, type Db } from "mongodb";
+import { MongoClient, type CommandStartedEvent, type Db } from "mongodb";
+import { AppPermission } from "../../backend/auth/permissions.ts";
+import { SessionManager } from "../../backend/auth/session-manager.ts";
+import { MongoUserRepository } from "../../backend/auth/user-repository.ts";
 import { type UserEntity } from "../../backend/auth/user-models.ts";
+import { InMemoryCredentialProvider } from "../../backend/connection/credential-provider.ts";
 import { DefaultHostKeyVerifier } from "../../backend/connection/host-key-verifier.ts";
 import { MongoCredentialProvider } from "../../backend/connection/mongo-credential-provider.ts";
 import { RobotConnectionManager } from "../../backend/connection/robot-connection-manager.ts";
@@ -28,30 +33,34 @@ console.log("--> Esecuzione test suite Migliorie Database (Indici, Naming, Telem
 const mongoUri = process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/moliris_test_improvements";
 let client: MongoClient | null = null;
 
+function createTestConfig(root: string) {
+  const cert = path.join(root, "fixture-cert.pem");
+  const tlsKey = path.join(root, "fixture-tls.key");
+  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+    "-subj", "/CN=localhost", "-out", cert, "-keyout", tlsKey], { stdio: "ignore", timeout: 8_000 });
+  return loadAndValidateConfig({
+    MOLIRIS_FS_ROOT: root,
+    MOLIRIS_POLLING_INTERVAL_SEC: "10",
+    MOLIRIS_SSH_TIMEOUT_MS: "3000",
+    MOLIRIS_MAX_TRF_PER_USER: "1",
+    MOLIRIS_MAX_TRF_PER_ROBOT: "1",
+    MOLIRIS_MAX_TRF_SERVER: "1",
+    MOLIRIS_TEMP_RETENTION_MIN: "60",
+    MOLIRIS_STATE_FILE_PATHS: "/tmp/status.txt",
+    MOLIRIS_SESSION_TIMEOUT_MIN: "30",
+    MOLIRIS_TLS_CERT_PATH: cert,
+    MOLIRIS_TLS_KEY_PATH: tlsKey,
+    MOLIRIS_AUDIT_RETENTION_DAYS: "30",
+    MOLIRIS_REGISTRATION_MODE: "rigorosa",
+    MOLIRIS_CREDENTIAL_PROVIDER: "in-memory",
+  });
+}
+
 async function verifyRemovalRecovery(db: Db, fixture: RobotEntity): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "moliris-removal-recovery-"));
   const reconnect = new MongoClient(mongoUri, { serverSelectionTimeoutMS: 2000 });
   try {
-    const cert = path.join(root, "fixture-cert.pem");
-    const tlsKey = path.join(root, "fixture-tls.key");
-    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
-      "-subj", "/CN=localhost", "-out", cert, "-keyout", tlsKey], { stdio: "ignore", timeout: 8_000 });
-    const config = loadAndValidateConfig({
-      MOLIRIS_FS_ROOT: root,
-      MOLIRIS_POLLING_INTERVAL_SEC: "10",
-      MOLIRIS_SSH_TIMEOUT_MS: "3000",
-      MOLIRIS_MAX_TRF_PER_USER: "1",
-      MOLIRIS_MAX_TRF_PER_ROBOT: "1",
-      MOLIRIS_MAX_TRF_SERVER: "1",
-      MOLIRIS_TEMP_RETENTION_MIN: "60",
-      MOLIRIS_STATE_FILE_PATHS: "/tmp/status.txt",
-      MOLIRIS_SESSION_TIMEOUT_MIN: "30",
-      MOLIRIS_TLS_CERT_PATH: cert,
-      MOLIRIS_TLS_KEY_PATH: tlsKey,
-      MOLIRIS_AUDIT_RETENTION_DAYS: "30",
-      MOLIRIS_REGISTRATION_MODE: "rigorosa",
-      MOLIRIS_CREDENTIAL_PROVIDER: "in-memory",
-    });
+    const config = createTestConfig(root);
     const archive = path.join(root, "archivio.txt");
     await fs.writeFile(archive, "contenuto di prova");
     const key = randomBytes(32);
@@ -137,6 +146,157 @@ async function verifyRemovalRecovery(db: Db, fixture: RobotEntity): Promise<void
   } finally {
     await reconnect.close();
     await fs.rm(root, { recursive: true, force: true });
+  }
+}
+
+async function verifyReadinessAndFleetPage(fixture: RobotEntity): Promise<void> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "moliris-post-audit-"));
+  const mongo = new MongoClient(mongoUri, { monitorCommands: true, serverSelectionTimeoutMS: 2_000 });
+  const cleanup = new MongoClient(mongoUri, { serverSelectionTimeoutMS: 2_000 });
+  const db = mongo.db(`moliris_post_audit_${randomBytes(6).toString("hex")}`);
+  const commands: CommandStartedEvent[] = [];
+  mongo.on("commandStarted", event => {
+    if (event.commandName === "find" && event.command.find === "robots") commands.push(event);
+  });
+  const config = createTestConfig(root);
+  const logger = new MolirisLogger();
+  const robots = new MongoRobotRepository(db);
+  const users = new MongoUserRepository(db);
+  const audit = new MongoAuditRepository(db);
+  const credentials = new InMemoryCredentialProvider();
+  const verifier = new DefaultHostKeyVerifier();
+  const connections = new RobotConnectionManager(credentials, verifier, {
+    maxConcurrentPerUser: 1, maxConcurrentPerRobot: 1, maxConcurrentServer: 1, connectionTimeoutMs: 3_000,
+  }, logger);
+  const fleet = new FleetService(
+    config, robots, audit, new ServerFilesystemService(root, audit, logger), credentials, verifier, connections, logger
+  );
+  const sessions = new SessionManager(30);
+  const app = createServer(config, logger, {
+    db, robotRepository: robots, auditRepository: audit, userRepository: users, fleetService: fleet,
+    sessionManager: sessions, credentialProvider: credentials, connectionManager: connections,
+  });
+  try {
+    await robots.initIndexes();
+    await users.initIndexes();
+    const admin: UserEntity = {
+      id: "page-admin", username: "page-admin", roles: ["admin"], enabled: true,
+      passwordHash: "fixture", createdAt: new Date(), updatedAt: new Date(),
+    };
+    const restricted: UserEntity = {
+      ...admin, id: "page-scoped", username: "page-scoped", roles: [],
+      robotPermissions: {
+        "first-visible": [AppPermission.FLEET_VIEW],
+        "earlier-removed": [AppPermission.FLEET_VIEW],
+        "disabled-visible": [AppPermission.FLEET_VIEW],
+        "denied-by-permission": [AppPermission.STATUS_VIEW],
+        "legacy-visible": [AppPermission.FLEET_VIEW],
+      },
+    };
+    const cookie = (user: UserEntity) => ({
+      cookie: `__Host-moliris_session=${sessions.createSession(user).sessionId}`,
+    });
+    await users.create(admin);
+    await users.create(restricted);
+    const adminHeaders = cookie(admin);
+    const restrictedHeaders = cookie(restricted);
+    const makeRobot = (id: string, anagraphicState: RobotEntity["anagraphicState"] = "attivo") => ({
+      ...fixture, id, anagraphicState, remoteUsername: id, serverDirectoryPath: path.join(root, id),
+    });
+    const collection = db.collection<RobotEntity>("robots");
+    await collection.insertMany([
+      makeRobot("earlier-removed", "rimosso"),
+      makeRobot("first-visible"),
+      makeRobot("denied-by-permission"),
+      makeRobot("disabled-visible", "disabilitato"),
+      makeRobot("legacy-visible"),
+      ...Array.from({ length: 995 }, (_, i) => makeRobot(`extra-${i}`)),
+    ]);
+    await collection.updateOne({ id: "legacy-visible" }, { $unset: { anagraphicState: "" } });
+
+    const healthy = await app.inject("/healthz");
+    assert.equal(healthy.statusCode, 200);
+    assert.equal(healthy.headers["cache-control"], "no-store");
+    assert.equal(healthy.json().status, "OK");
+    const page = await app.inject({ url: "/api/robots?offset=1&limit=1", headers: adminHeaders });
+    assert.equal(page.statusCode, 200);
+    assert.deepEqual(page.json().robots.map((robot: RobotEntity) => robot.id), ["denied-by-permission"]);
+    const pageCommand = commands.at(-1)?.command;
+    assert.ok(pageCommand, "L'endpoint deve eseguire una query Mongo della flotta");
+    assert.deepEqual(pageCommand.filter, { anagraphicState: { $ne: "rimosso" } });
+    assert.equal(pageCommand.skip, 1);
+    assert.equal(pageCommand.limit, 1);
+    const commandSort = pageCommand.sort instanceof Map ? Object.fromEntries(pageCommand.sort) : pageCommand.sort;
+    assert.deepEqual(commandSort, { _id: 1 });
+    const explain = await db.command({
+      explain: { find: "robots", filter: pageCommand.filter, sort: commandSort, skip: 1, limit: 1 },
+      verbosity: "executionStats",
+    });
+    assert.ok(explain.executionStats.totalDocsExamined <= 5, "La pagina non deve leggere la collezione intera");
+    console.log(`  ✓ Pagina MongoDB: ${explain.executionStats.totalDocsExamined}/1000 documenti esaminati per limit=1, offset=1`);
+
+    const scopedPage = await fleet.listFleet(restricted, { offset: 1, limit: 1 });
+    assert.deepEqual(scopedPage.map(robot => robot.id), ["disabled-visible"]);
+    assert.equal(scopedPage[0].anagraphicState, "disabilitato");
+    const scopedFilter = commands.at(-1)?.command.filter;
+    assert.deepEqual(scopedFilter.id.$in, ["first-visible", "earlier-removed", "disabled-visible", "legacy-visible"]);
+    assert.deepEqual((await fleet.listFleet(restricted, { offset: 2 })).map(robot => robot.id), ["legacy-visible"]);
+    assert.deepEqual((await fleet.listFleet(restricted)).map(robot => robot.id), ["first-visible", "disabled-visible", "legacy-visible"]);
+    const commandCount = commands.length;
+    assert.deepEqual(await fleet.listFleet({ ...restricted, enabled: false }), []);
+    assert.deepEqual(await fleet.listFleet({ ...restricted, robotPermissions: {} }), []);
+    const denied = await app.inject({ url: "/api/robots?limit=1", headers: restrictedHeaders });
+    assert.equal(denied.statusCode, 403, "La guardia HTTP continua a richiedere il permesso globale preesistente");
+    assert.equal(commands.length, commandCount);
+    console.log("  ✓ Filtri, ordine, pagine scoped, retrocompatibilità record e guardia RBAC verificati");
+
+    await mongo.close();
+    const degraded = await app.inject("/healthz");
+    assert.equal(degraded.statusCode, 503);
+    assert.equal(degraded.headers["cache-control"], "no-store");
+    assert.deepEqual(Object.keys(degraded.json()).sort(), ["status", "timestamp"]);
+    assert.equal(degraded.json().status, "UNAVAILABLE");
+    assert.equal((await app.inject("/livez")).statusCode, 200);
+    const apiError = await app.inject({ url: "/api/robots", headers: adminHeaders });
+    assert.equal(apiError.statusCode, 500);
+    assert.equal(apiError.json().code, "DB_PERSISTENCE_ERROR");
+    console.log("  ✓ Mongo indisponibile: readiness 503, liveness 200 e API protetta 500");
+
+    // Un socket che accetta connessioni senza completare l'handshake Mongo.
+    const sockets = new Set<net.Socket>();
+    const stalled = net.createServer(socket => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+    });
+    await new Promise<void>((resolve, reject) => {
+      stalled.once("error", reject);
+      stalled.listen(0, "127.0.0.1", resolve);
+    });
+    const address = stalled.address() as net.AddressInfo;
+    const unavailable = new MongoClient(`mongodb://127.0.0.1:${address.port}`);
+    const stalledApp = createServer(config, logger, { db: unavailable.db() });
+    try {
+      const started = Date.now();
+      assert.equal((await stalledApp.inject("/healthz")).statusCode, 503);
+      const elapsed = Date.now() - started;
+      assert.ok(elapsed < 3_000, `Readiness deve avere un timeout breve: ${elapsed} ms`);
+      assert.equal((await stalledApp.inject("/livez")).statusCode, 200);
+      console.log(`  ✓ Timeout readiness con handshake Mongo bloccato: ${elapsed} ms`);
+    } finally {
+      await stalledApp.close();
+      for (const socket of sockets) socket.destroy();
+      await unavailable.close();
+      await new Promise<void>((resolve, reject) => stalled.close(error => error ? reject(error) : resolve()));
+    }
+  } finally {
+    await app.close();
+    await mongo.close();
+    try {
+      await cleanup.db(db.databaseName).dropDatabase();
+    } finally {
+      await cleanup.close();
+      await fs.rm(root, { recursive: true, force: true });
+    }
   }
 }
 
@@ -248,6 +408,7 @@ try {
   console.log("  ✓ Collection robot_telemetry_history e query storico verificate con successo");
 
   await verifyRemovalRecovery(db, r1);
+  await verifyReadinessAndFleetPage(r1);
 
   console.log("--> TUTTI I TEST DELLE MIGLIORIE DEL DATABASE SONO STATI SUPERATI CON SUCCESSO! ✓");
 } catch (err: any) {

@@ -10,6 +10,16 @@ import {
 } from "../types/transfer.ts";
 import type { FormattedError } from "../types/error.ts";
 
+function formatBulkResponseError(data: { message?: unknown }, status: number): FormattedError {
+  const error = ErrorPresenter.formatError(data);
+  if (status >= 400 && status < 500 && typeof data?.message === "string") {
+    // L'API bulk fornisce un messaggio utente specifico, ad esempio per duplicati o limiti multipart.
+    const message = ErrorPresenter.sanitizeString(data.message);
+    if (message) return { ...error, userMessage: message };
+  }
+  return error;
+}
+
 /** Normalizza il DTO del backend nel modello usato dall'interfaccia. */
 export function normalizeTransfer(dto: any): TransferProgress {
   const transferredBytes = Number(dto.transferredBytes || 0);
@@ -52,6 +62,8 @@ export function normalizeTransfer(dto: any): TransferProgress {
     batchId: dto.batchId ? String(dto.batchId) : undefined,
     userId: dto.userId ? String(dto.userId) : undefined,
     username: dto.username ? String(dto.username) : undefined,
+    isBulkStaging: dto.isBulkStaging === true,
+    bulkBatch: dto.bulkBatch,
     robotId: dto.robotId,
     filename,
     sourcePath: String(dto.sourcePath || ""),
@@ -295,7 +307,7 @@ export function useTransfers(isAuthenticated: boolean) {
         return {
           hasConflicts: false,
           conflicts: [],
-          error: ErrorPresenter.formatError(data),
+          error: formatBulkResponseError(data, res.status),
         };
       }
     } catch (err) {
@@ -366,7 +378,7 @@ export function useTransfers(isAuthenticated: boolean) {
       } else {
         return {
           success: false,
-          error: ErrorPresenter.formatError(data),
+          error: formatBulkResponseError(data, res.status),
         };
       }
     } catch (err) {

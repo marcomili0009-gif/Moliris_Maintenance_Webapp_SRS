@@ -22,6 +22,12 @@ export interface TransferProgress {
   batchId?: string;
   userId?: string;
   username?: string;
+  isBulkStaging?: boolean;
+  bulkBatch?: {
+    totalItems: number;
+    totalBytes: number;
+    status?: "QUEUED" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED" | "FAILED";
+  };
   robotId?: string;
   /** Nome del file trasferito. */
   filename: string;

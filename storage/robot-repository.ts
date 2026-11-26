@@ -2,7 +2,7 @@
 // RF-ROB-006, RF-ROB-008, RF-ROB-010, RF-ROB-012, RF-ROB-013, RF-ROB-014, RF-MON-005,
 // RNF-SEC-002, RNF-REL-002, SRS §8.2, §8.3, §8.4, §9, §10.1, §10.2, CA-ROB-003, CA-ROB-006, CA-ROB-011, CA-MON-004
 
-import { type Db, type Collection } from "mongodb";
+import { type Db, type Collection, type Filter } from "mongodb";
 import {
   type RobotEntity,
   type AnagraphicState,
@@ -37,6 +37,13 @@ export interface RobotConfigurationUpdate {
   plantName?: string;
 }
 
+export interface FleetPage {
+  // undefined indica tutti i robot visibili globalmente; [] non autorizza alcun ID.
+  robotIds?: readonly string[];
+  offset: number;
+  limit?: number;
+}
+
 /**
  * Interfaccia astratta del repository Robot (RNF-MNT-002)
  * Disaccoppia la logica applicativa dai dettagli di persistenza (MongoDB o InMemory).
@@ -48,6 +55,7 @@ export interface RobotRepository {
   findByServerDirectory(serverDirectoryPath: string): Promise<RobotEntity | null>;
   findByHostPortUsername(host: string, sshPort: number, remoteUsername: string): Promise<RobotEntity | null>;
   list(): Promise<RobotEntity[]>;
+  listFleetPage(page: FleetPage): Promise<RobotEntity[]>;
   updateConfiguration(id: string, update: RobotConfigurationUpdate): Promise<RobotEntity>;
   updateServerDirectoryPath(id: string, serverDirectoryPath: string): Promise<RobotEntity>;
   updateConnectionState(id: string, connectionState: ConnectionState, outcome?: LastAttemptOutcome): Promise<RobotEntity>;
@@ -166,6 +174,15 @@ export class InMemoryRobotRepository implements RobotRepository {
 
   async list(): Promise<RobotEntity[]> {
     return Array.from(this.robots.values()).map(r => structuredClone(r));
+  }
+
+  async listFleetPage({ robotIds, offset, limit }: FleetPage): Promise<RobotEntity[]> {
+    const allowedIds = robotIds === undefined ? undefined : new Set(robotIds);
+    const visible = Array.from(this.robots.values()).filter(robot =>
+      robot.anagraphicState !== "rimosso" && (allowedIds === undefined || allowedIds.has(robot.id))
+    );
+    return visible.slice(offset, limit === undefined ? undefined : offset + limit)
+      .map(robot => structuredClone(robot));
   }
 
   async updateConfiguration(id: string, update: RobotConfigurationUpdate): Promise<RobotEntity> {
@@ -476,6 +493,23 @@ export class MongoRobotRepository implements RobotRepository {
       return docs as RobotEntity[];
     } catch (err: any) {
       throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore MongoDB durante list: ${err.message}`);
+    }
+  }
+
+  async listFleetPage({ robotIds, offset, limit }: FleetPage): Promise<RobotEntity[]> {
+    const filter: Filter<RobotEntity> = { anagraphicState: { $ne: "rimosso" } };
+    if (robotIds !== undefined) filter.id = { $in: robotIds };
+
+    try {
+      const cursor = this.collection.find(filter, {
+        projection: { _id: 0 },
+        sort: { _id: 1 },
+        skip: offset,
+        limit,
+      });
+      return await cursor.toArray();
+    } catch (err: any) {
+      throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore MongoDB durante listFleetPage: ${err.message}`);
     }
   }
 

@@ -164,7 +164,9 @@ export function registerLogRoutes(
         });
       }
 
-      const stream = fs.createReadStream(filePath);
+      const stream = type === "transfers"
+        ? await fileLogger.openTransferLogDownload()
+        : fs.createReadStream(filePath);
       reply.header("Content-Disposition", `attachment; filename="${type}.log"`);
       reply.header("Content-Type", "text/plain; charset=utf-8");
       return reply.send(stream);

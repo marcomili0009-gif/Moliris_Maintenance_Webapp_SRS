@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import type { TerminalState } from "../../hooks/useTerminal.ts";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
+import { TerminalClipboard } from "./TerminalClipboard.tsx";
 
 interface TerminalModalProps {
   terminalState: TerminalState;
@@ -30,6 +31,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
   const lastSentSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const [failedSession, setFailedSession] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
+  const [clipboardSession, setClipboardSession] = useState<{ id: string; terminal: Terminal } | null>(null);
 
   const { isOpen, robotId, robotName, sessionId, status, error, cols, rows } = terminalState;
 
@@ -103,6 +105,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
       container.replaceChildren();
       term.open(container);
       term.focus();
+      setClipboardSession({ id: sessionId, terminal: term });
 
       // Adatta il PTY alle dimensioni reali del contenitore. Invia il resize
       // solo quando righe/colonne cambiano davvero, per evitare raffiche inutili.
@@ -167,6 +170,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
         window.removeEventListener("resize", handleWindowResize);
         resizeObserver.disconnect();
         fitRef.current = () => {};
+        setClipboardSession(null);
         try {
           term.dispose();
         } catch {}
@@ -270,6 +274,9 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
         )}
 
         <div className="terminal-body" id="terminal-container" ref={containerRef} />
+        {clipboardSession && clipboardSession.id === sessionId && (
+          <TerminalClipboard key={sessionId} terminal={clipboardSession.terminal} />
+        )}
 
         <div className="terminal-footer flex justify-between items-center text-xs text-gray-400 p-2">
           <span id="terminal-footer-info">

@@ -6,6 +6,7 @@ import { type ServerFilesystemService } from "../storage/server-fs.ts";
 import { type RobotRepository } from "../storage/robot-repository.ts";
 import { type AuthMiddleware } from "./auth/auth-middleware.ts";
 import { type SessionManager } from "./auth/session-manager.ts";
+import { TransferDirection } from "./transfer/transfer-models.ts";
 import { type TransferService } from "./transfer/transfer-service.ts";
 import { AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "./auth/permissions.ts";
 import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../errors/app-errors.ts";
@@ -858,6 +859,7 @@ export function registerServerFsRoutes(
         roleMapping
       );
 
+      let delegated = false;
       try {
         await authorizeOperatorPath(context, "server", undefined, filePath);
         if (transferService && query.preflight === "1") {
@@ -865,6 +867,7 @@ export function registerServerFsRoutes(
           return reply.status(200).send({ ok: true, ...info });
         }
         if (transferService) {
+          delegated = true;
           const tracked = await transferService.openGeneralDownload(context, filePath);
           reply.header("content-disposition", `attachment; filename="${encodeURIComponent(tracked.filename)}"`);
           reply.header("content-type", "application/octet-stream");
@@ -878,6 +881,9 @@ export function registerServerFsRoutes(
         reply.header("content-type", "application/octet-stream");
         return reply.send(stream);
       } catch (err: any) {
+        if (!delegated && transferService) await transferService.logTransferPrecheckFailure(
+          context.username, transferService.describeTransferAttempt(TransferDirection.SERVER_TO_CLIENT, "server", filePath, filePath), err
+        );
         if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
           const status =
             err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
@@ -925,6 +931,7 @@ export function registerServerFsRoutes(
       let targetSubPath = (req.headers["x-subpath"] as string) || query.path || "";
       const overwrite = req.headers["x-overwrite"] === "true" || query.overwrite === "true";
 
+      let delegated = false;
       try {
         if (req.isMultipart()) {
           const data = await req.file();
@@ -941,6 +948,7 @@ export function registerServerFsRoutes(
           const filePath = targetSubPath ? `${targetSubPath.replace(/^[/\\]+/, "")}/${filename}` : filename;
           await authorizeOperatorPath(context, "server", undefined, filePath);
           if (transferService) {
+            delegated = true;
             const dto = await transferService.executeGeneralUpload(
               context,
               filePath,
@@ -983,6 +991,7 @@ export function registerServerFsRoutes(
             ? Number.parseInt(String(req.headers["content-length"]), 10)
             : null;
           if (transferService) {
+            delegated = true;
             const dto = await transferService.executeGeneralUpload(
               context,
               filePath,
@@ -1014,6 +1023,11 @@ export function registerServerFsRoutes(
           });
         }
       } catch (err: any) {
+        if (!delegated && transferService && typeof filename === "string") await transferService.logTransferPrecheckFailure(
+          context.username, transferService.describeTransferAttempt(
+            TransferDirection.CLIENT_TO_SERVER, "server", filename, undefined, path.posix.join(String(targetSubPath), filename)
+          ), err
+        );
         if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
           const status = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : err.userMessage?.toLowerCase().includes("esiste già") ? 409 : 400;
           return reply.status(status).send({

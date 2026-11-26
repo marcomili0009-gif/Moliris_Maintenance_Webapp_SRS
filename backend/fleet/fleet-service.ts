@@ -219,34 +219,18 @@ export class FleetService {
    * I robot non raggiungibili compaiono con stato appropriato (mai nascosti o eliminati).
    */
   public async listFleet(user: UserEntity, pagination?: { limit?: number; offset?: number }): Promise<RobotSummaryDto[]> {
-    // Verifica autorizzazione generale FLEET_VIEW
-    const allRobots = await this.robotRepository.list();
+    const canViewAll = hasPermission(user, AppPermission.FLEET_VIEW, undefined, this.roleMapping);
+    const robotIds = canViewAll ? undefined : Object.keys(user.robotPermissions ?? {}).filter(id =>
+      hasPermission(user, AppPermission.FLEET_VIEW, id, this.roleMapping)
+    );
+    if (robotIds?.length === 0) return [];
 
-    let visibleRobots: RobotSummaryDto[] = [];
-    for (const robot of allRobots) {
-      // Esclusione robot rimossi dalla lista attiva (RF-ROB-014, CA-ROB-012)
-      if (robot.anagraphicState === "rimosso") {
-        continue;
-      }
-
-      // Filtro per robot visibili secondo i permessi specifici dell'utente (Prompt 3)
-      if (hasPermission(user, AppPermission.FLEET_VIEW, robot.id, this.roleMapping)) {
-        visibleRobots.push(toRobotSummaryDto(robot, this.config.staleDataThresholdSeconds));
-      }
-    }
-
-    // Paginazione e limite configurabile (RNF-PERF-002, RNF-PERF-005)
-    if (pagination) {
-      const offset = pagination.offset && pagination.offset > 0 ? pagination.offset : 0;
-      const limit = pagination.limit && pagination.limit > 0 ? pagination.limit : undefined;
-      if (limit !== undefined) {
-        visibleRobots = visibleRobots.slice(offset, offset + limit);
-      } else if (offset > 0) {
-        visibleRobots = visibleRobots.slice(offset);
-      }
-    }
-
-    return visibleRobots;
+    const robots = await this.robotRepository.listFleetPage({
+      robotIds,
+      offset: pagination?.offset && pagination.offset > 0 ? pagination.offset : 0,
+      limit: pagination?.limit && pagination.limit > 0 ? pagination.limit : undefined,
+    });
+    return robots.map(robot => toRobotSummaryDto(robot, this.config.staleDataThresholdSeconds));
   }
 
   /**

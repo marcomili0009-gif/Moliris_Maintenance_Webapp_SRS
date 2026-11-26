@@ -130,31 +130,37 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
     const batches = new Map<string, TransferProgress[]>();
     const individuals: TransferProgress[] = [];
 
-    for (const trf of visible) {
+    for (const trf of transfers) {
       const normalizedBatchId = trf.batchId?.trim();
-      if (normalizedBatchId) {
+      if (normalizedBatchId && !trf.isBulkStaging) {
         const existing = batches.get(normalizedBatchId) || [];
         existing.push(trf);
         batches.set(normalizedBatchId, existing);
-      } else {
+      } else if (matchesFilter(trf, filter)) {
         individuals.push(trf);
       }
     }
 
     return {
-      batchGroups: Array.from(batches.entries()).map(([batchId, items]) => ({
-        batchId,
-        items: [...items].sort((a, b) => {
-          const byName = a.filename.localeCompare(b.filename);
-          if (byName !== 0) return byName;
-          const byEndpoint = formatTransferEndpoints(a).label.localeCompare(formatTransferEndpoints(b).label);
-          if (byEndpoint !== 0) return byEndpoint;
-          return a.transferId.localeCompare(b.transferId);
-        }),
-      })),
+      batchGroups: Array.from(batches.entries())
+        .map(([batchId, items]) => {
+          const sortedItems = [...items].sort((a, b) => {
+            const byName = a.filename.localeCompare(b.filename);
+            if (byName !== 0) return byName;
+            const byEndpoint = formatTransferEndpoints(a).label.localeCompare(formatTransferEndpoints(b).label);
+            if (byEndpoint !== 0) return byEndpoint;
+            return a.transferId.localeCompare(b.transferId);
+          });
+          return {
+            batchId,
+            items: sortedItems,
+            visibleItems: sortedItems.filter((item) => matchesFilter(item, filter)),
+          };
+        })
+        .filter(({ visibleItems }) => visibleItems.length > 0),
       individualTransfers: individuals,
     };
-  }, [visible]);
+  }, [transfers, filter]);
 
   const toggleExpanded = useCallback((transferId: string) => {
     setExpanded((prev) => {
@@ -188,7 +194,7 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
         <div>
           <h3 className="h5 fw-bold mb-1">Trasferimenti File e Avanzamento Streaming</h3>
           <small className="fs-subtitle text-secondary">
-            Monitoraggio in tempo reale di tutte le operazioni di trasferimento (Computer ↔ Server, Server ↔ Robot, Computer ↔ Robot).
+            Il totale include le ricezioni iniziali dal browser. Ogni batch conta solo gli invii alle destinazioni.
           </small>
         </div>
         <div className="d-flex align-items-center gap-2">
@@ -230,24 +236,34 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
         ) : (
           <>
             {/* RAGGRUPPAMENTO BATCH / CARICAMENTO MASSIVO (REQUISITO #9) */}
-            {batchGroups.map(({ batchId, items }) => {
-              const totalBytes = items.reduce((sum, item) => sum + (item.totalBytes || 0), 0);
+            {batchGroups.map(({ batchId, items, visibleItems }) => {
+              const batch = items[0].bulkBatch;
+              const totalItems = batch?.totalItems ?? items.length;
+              const totalBytes = batch?.totalBytes ?? items.reduce((sum, item) => sum + (item.totalBytes || 0), 0);
               const transferredBytes = items.reduce((sum, item) => sum + (item.transferredBytes || 0), 0);
               const batchPercent =
                 totalBytes > 0
                   ? Math.min(100, (transferredBytes / totalBytes) * 100)
                   : Math.min(
                       100,
-                      items.reduce((sum, item) => sum + (Number(item.percentage) || 0), 0) / (items.length || 1)
+                      items.reduce((sum, item) => sum + (Number(item.percentage) || 0), 0) / totalItems
                     );
 
               const completedCount = items.filter((trf) => trf.status === "COMPLETED").length;
               const failedCount = items.filter((trf) => isErrorStatus(trf.status)).length;
               const cancelledCount = items.filter((trf) => trf.status === "CANCELLED").length;
-              const isBatchActive = items.some((trf) => isActiveStatus(trf.status));
-              const isBatchCompleted = items.length > 0 && completedCount === items.length;
-              const isBatchCancelled = items.length > 0 && cancelledCount === items.length;
-              const isBatchFailed = !isBatchActive && failedCount > 0;
+              const isBatchActive = batch?.status
+                ? batch.status === "QUEUED" || batch.status === "IN_PROGRESS"
+                : items.some((trf) => isActiveStatus(trf.status));
+              const isBatchCompleted = batch?.status
+                ? batch.status === "COMPLETED"
+                : items.length > 0 && completedCount === items.length;
+              const isBatchCancelled = batch?.status
+                ? batch.status === "CANCELLED"
+                : items.length > 0 && cancelledCount === items.length;
+              const isBatchFailed = batch?.status
+                ? batch.status === "FAILED"
+                : !isBatchActive && failedCount > 0;
 
               const batchStatusLabel = isBatchActive
                 ? "In corso"
@@ -280,7 +296,7 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                       <span className="badge text-bg-primary">Caricamento Massivo</span>
                       <span className="fw-bold small">Batch ID: <code>{batchId}</code></span>
                       <span className="text-secondary small">
-                        ({items.length} elementi · {completedCount} completati
+                        ({totalItems} invii · {completedCount} completati
                         {failedCount > 0 ? ` · ${failedCount} falliti` : ""}
                         {cancelledCount > 0 ? ` · ${cancelledCount} annullati` : ""})
                       </span>
@@ -312,12 +328,12 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                     <div className="mb-3">
                       <div className="d-flex justify-content-between align-items-center small mb-1">
                         <span className="text-secondary">Avanzamento complessivo:</span>
-                        <span className="fw-bold">{batchPercent.toFixed(batchPercent % 1 === 0 ? 0 : 1)}%</span>
+                        <span className="fw-bold">{(Math.floor(batchPercent * 10) / 10).toLocaleString("it-IT", { maximumFractionDigits: 1 })}%</span>
                       </div>
                       <div
                         className="transfer-progress-bar-bg"
                         role="progressbar"
-                        aria-valuenow={Math.round(batchPercent)}
+                        aria-valuenow={Math.floor(batchPercent)}
                         aria-valuemin={0}
                         aria-valuemax={100}
                         aria-label={`Avanzamento complessivo batch ${batchId}`}
@@ -355,7 +371,7 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                           </tr>
                         </thead>
                         <tbody className="small">
-                          {items.map((trf) => {
+                          {visibleItems.map((trf) => {
                             const itemPercent = Math.min(100, Math.max(0, Number(trf.percentage) || 0));
                             const itemCompleted = trf.status === "COMPLETED";
                             const itemFailed = isErrorStatus(trf.status);
@@ -476,7 +492,9 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                                 <span className="transfers-filename" title={trf.filename}>
                                   {trf.filename}
                                 </span>
-                                <span className="transfer-direction-badge">{directionLabel}</span>
+                                <span className="transfer-direction-badge">
+                                  {trf.isBulkStaging ? "Ricezione dal browser" : directionLabel}
+                                </span>
                               </div>
                               <div className="transfers-route">
                                 {endpoint.label}

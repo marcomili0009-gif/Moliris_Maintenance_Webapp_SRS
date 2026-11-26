@@ -554,7 +554,7 @@ async function runTests() {
     // Verifica che il record di staging (<200ms!) sia 100% e NON 0%!
     const recentAfterBulk = (await (await fetch(`${baseUrl}/api/transfers/recent`, { headers: authHeaders })).json()) as any;
     const stagingRows = recentAfterBulk.transfers.filter(
-      (t: any) => t.filename === "Schermata_167kb.png" && !t.batchId
+      (t: any) => t.filename === "Schermata_167kb.png" && t.isBulkStaging === true
     );
     assert.strictEqual(stagingRows.length, 1, "Record staging Computer->Server presente");
     assert.strictEqual(stagingRows[0].status, "COMPLETED");

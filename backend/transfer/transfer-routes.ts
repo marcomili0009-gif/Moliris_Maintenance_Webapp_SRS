@@ -15,9 +15,10 @@ import { type RobotRepository } from "../../storage/robot-repository.ts";
 import { type SessionManager } from "../auth/session-manager.ts";
 import { type AuthMiddleware } from "../auth/auth-middleware.ts";
 import { AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "../auth/permissions.ts";
+import { MolirisLogger } from "../../logging/logger.ts";
 import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
-import { type StartServerRobotTransferRequest, type TransferDto, isActiveTransferStatus } from "./transfer-models.ts";
-import { type BulkPreCheckRequest, type BulkTarget } from "./bulk-transfer-models.ts";
+import { TransferDirection, type StartServerRobotTransferRequest, type TransferDto, type TransferRecord, isActiveTransferStatus } from "./transfer-models.ts";
+import { type BulkTarget } from "./bulk-transfer-models.ts";
 import { authorizeOperatorPath } from "../auth/path-authorization.ts";
 import { BatchTransferManager } from "./batch-transfer-manager.ts";
 import { parseRequestInput } from "../validation/request-validation.ts";
@@ -267,9 +268,11 @@ export function registerTransferRoutes(
           ? (req.body as Readable)
           : req.raw;
 
+      const destPath = subPath ? path.posix.join(subPath, filename) : filename;
+      let delegated = false;
       try {
-        const destPath = subPath ? path.posix.join(subPath, filename) : filename;
         await authorizeOperatorPath(context, "server", robot.id, destPath);
+        delegated = true;
         const transferDto = await transferService.uploadClientToServer(
           context,
           robot,
@@ -281,6 +284,9 @@ export function registerTransferRoutes(
         );
         return reply.status(200).send(transferDto);
       } catch (err: any) {
+        if (!delegated) await transferService.logTransferPrecheckFailure(
+          context.username, transferService.describeTransferAttempt(TransferDirection.CLIENT_TO_SERVER, robot.id, filename, undefined, destPath), err
+        );
         return handleRouteError(reply, err);
       }
     }
@@ -321,12 +327,14 @@ export function registerTransferRoutes(
         roleMapping
       );
 
+      let delegated = false;
       try {
         await authorizeOperatorPath(context, "server", robot.id, relativePath);
         if (query.preflight === "1") {
           const info = await transferService.inspectServerDownload(context, robot, relativePath);
           return reply.status(200).send({ ok: true, ...info });
         }
+        delegated = true;
         const { stream, filename, totalBytes, transferDto } =
           await transferService.openDownloadServerToClient(context, robot, relativePath);
 
@@ -337,6 +345,9 @@ export function registerTransferRoutes(
 
         return reply.send(stream);
       } catch (err: any) {
+        if (!delegated) await transferService.logTransferPrecheckFailure(
+          context.username, transferService.describeTransferAttempt(TransferDirection.SERVER_TO_CLIENT, robot.id, relativePath, relativePath), err
+        );
         return handleRouteError(reply, err);
       }
     }
@@ -385,9 +396,11 @@ export function registerTransferRoutes(
           ? (req.body as Readable)
           : req.raw;
 
+      const destPath = remoteDirectory ? path.posix.join(remoteDirectory, filename) : filename;
+      let delegated = false;
       try {
-        const destPath = remoteDirectory ? path.posix.join(remoteDirectory, filename) : filename;
         await authorizeOperatorPath(context, "remote", robot.id, destPath);
+        delegated = true;
         const transferDto = await transferService.uploadClientToRobot(
           context,
           robot,
@@ -399,6 +412,9 @@ export function registerTransferRoutes(
         );
         return reply.status(200).send(transferDto);
       } catch (err: any) {
+        if (!delegated) await transferService.logTransferPrecheckFailure(
+          context.username, transferService.describeTransferAttempt(TransferDirection.CLIENT_TO_ROBOT, robot.id, filename, undefined, destPath), err
+        );
         return handleRouteError(reply, err);
       }
     }
@@ -439,12 +455,14 @@ export function registerTransferRoutes(
         roleMapping
       );
 
+      let delegated = false;
       try {
         await authorizeOperatorPath(context, "remote", robot.id, remoteFilePath);
         if (query.preflight === "1") {
           const info = await transferService.inspectRobotDownload(context, robot, remoteFilePath);
           return reply.status(200).send({ ok: true, ...info });
         }
+        delegated = true;
         const { stream, filename, totalBytes, transferDto } =
           await transferService.openDownloadRobotToClient(context, robot, remoteFilePath);
 
@@ -457,6 +475,9 @@ export function registerTransferRoutes(
 
         return reply.send(stream);
       } catch (err: any) {
+        if (!delegated) await transferService.logTransferPrecheckFailure(
+          context.username, transferService.describeTransferAttempt(TransferDirection.ROBOT_TO_CLIENT, robot.id, remoteFilePath, remoteFilePath), err
+        );
         return handleRouteError(reply, err);
       }
     }
@@ -885,6 +906,7 @@ export function registerTransferRoutes(
         roleMapping
       );
 
+      const batchId = crypto.randomUUID();
       try {
         // ISS-002: la jail Operatore è sempre applicata; directory omessa => "/" (403 per operatore, mai bypass).
         for (const target of body.targets) {
@@ -897,7 +919,9 @@ export function registerTransferRoutes(
         }
         const response = await transferService.checkBulkConflicts(context, body);
         return reply.status(200).send(response);
-      } catch (err: any) {
+      } catch (err) {
+        await transferService.logBulkPrecheckFailure(context.username, body.filenames, body.targets, batchId, err);
+        logBulkRequestFailure(req, "pre-check", err, { batchId, targets: bulkTargetLogDetails(body.targets), fileCount: body.filenames.length });
         return handleRouteError(reply, err);
       }
     }
@@ -929,7 +953,7 @@ export function registerTransferRoutes(
       let targets: BulkTarget[] = [];
       let overwrite = false;
       let declaredFileSizes: number[] = [];
-      const stagingRecords: any[] = [];
+      const stagingRecords: TransferRecord[] = [];
       const stagedFiles: Array<{
         filename: string;
         stagingPath: string;
@@ -937,25 +961,36 @@ export function registerTransferRoutes(
         sha256: string;
       }> = [];
       const stagingPaths: string[] = [];
+      const observedFilenames: string[] = [];
       let totalStagedBytes = 0;
 
-      const stagingDir = path.join(
-        transferService.getConfig().serverFilesystemRoot,
-        ".tmp_bulk"
-      );
-      if (!fs.existsSync(stagingDir)) {
-        await fs.promises.mkdir(stagingDir, { recursive: true, mode: 0o700 });
-      }
+      let stagingDir: string | undefined;
+      let phase = "multipart";
 
       const uploadSessionId = crypto.randomUUID();
       let fileIndex = 0;
+
+      const cleanupStaging = async () => {
+        for (const stagingPath of stagingPaths.splice(0)) {
+          try {
+            await fs.promises.unlink(stagingPath);
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+              logBulkRequestFailure(req, "pulizia staging", err, { batchId: uploadSessionId, stagingPath });
+            }
+          }
+        }
+      };
 
       try {
         const parts = req.parts();
         for await (const part of parts) {
           if (part.type === "file") {
+            phase = "staging";
             fileIndex++;
             const safeFilename = path.basename(part.filename);
+            observedFilenames.push(safeFilename);
+            stagingDir ??= await transferService.ensureBulkTempDirectory();
             const stagingPath = path.join(stagingDir, `staging_${uploadSessionId}_${fileIndex}.part`);
             stagingPaths.push(stagingPath);
 
@@ -964,7 +999,8 @@ export function registerTransferRoutes(
               context,
               safeFilename,
               Number.isFinite(declaredSize) ? declaredSize : null,
-              undefined
+              undefined,
+              uploadSessionId
             );
             stagingRecord.tempDestinationPath = stagingPath;
             stagingRecords.push(stagingRecord);
@@ -973,7 +1009,7 @@ export function registerTransferRoutes(
             let totalBytes = 0;
             let speedWindowBytes = 0;
             let speedWindowStartedAt = Date.now();
-            const writeStream = fs.createWriteStream(stagingPath, { mode: 0o600 });
+            const writeStream = fs.createWriteStream(stagingPath, { mode: 0o600, flags: "wx" });
 
             try {
               part.file.on("data", (chunk: Buffer | string) => {
@@ -1001,21 +1037,16 @@ export function registerTransferRoutes(
               throw streamErr;
             }
 
-            if (part.file.truncated) {
-              await transferService.failBulkStagingTransfer(
-                stagingRecord,
-                new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Un file supera la dimensione massima consentita.")
-              );
-              throw new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Un file supera la dimensione massima consentita.");
-            }
             totalStagedBytes += totalBytes;
             const maxUploadBytes = (req.server as any).appConfig.maxFileUploadBytes as number;
-            if (totalStagedBytes > maxUploadBytes) {
-              await transferService.failBulkStagingTransfer(
-                stagingRecord,
-                new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "La dimensione totale dei file supera il limite consentito.")
-              );
-              throw new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "La dimensione totale dei file supera il limite consentito.");
+            if (part.file.truncated || totalStagedBytes > maxUploadBytes) {
+              const detail = part.file.truncated
+                ? "Un file supera la dimensione massima consentita."
+                : "La dimensione totale dei file supera il limite consentito.";
+              throw Object.assign(new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, detail, detail), { statusCode: 413 });
+            }
+            if (Number.isFinite(declaredSize) && totalBytes !== declaredSize) {
+              throw new MolirisAppError(ErrorCode.INTEGRITY_CHECK_FAILED, "Dimensione del file ricevuto diversa da quella dichiarata.");
             }
 
             const sha256 = hash.digest("hex");
@@ -1057,7 +1088,7 @@ export function registerTransferRoutes(
               try {
                 const parsed = typeof part.value === "string" ? JSON.parse(part.value) : part.value;
                 if (Array.isArray(parsed)) {
-                  declaredFileSizes = parsed.map((n: any) => Number(n)).filter((n: number) => Number.isFinite(n) && n >= 0);
+                  declaredFileSizes = parsed.map((value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : NaN);
                 }
               } catch {
                 // Metadato opzionale: se malformato la percentuale resta non disponibile.
@@ -1070,7 +1101,8 @@ export function registerTransferRoutes(
           throw new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Nessun file presente nel payload di caricamento.");
         }
 
-        if (!targets || targets.length === 0) {
+        phase = "destinazioni";
+        if (targets.length === 0) {
           throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Nessuna destinazione (server/robot) selezionata.");
         }
 
@@ -1085,47 +1117,54 @@ export function registerTransferRoutes(
 
         // Se overwrite non è confermata, esegui pre-check dei conflitti
         if (!overwrite) {
+          phase = "pre-check";
           const preCheck = await transferService.checkBulkConflicts(context, {
             filenames: stagedFiles.map((f) => f.filename),
             targets,
           });
 
           if (preCheck.hasConflicts) {
-            // Pulizia immediata dei file di staging per evitare spreco spazio o residui
-            for (const s of stagedFiles) {
-              try { if (fs.existsSync(s.stagingPath)) await fs.promises.unlink(s.stagingPath); } catch {}
-            }
-            return reply.status(409).send({
+            await transferService.logBulkPrecheckFailure(context.username, observedFilenames, targets, uploadSessionId,
+              new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED,
+                "Sovrascrittura non confermata.", "Invio sospeso per conflitto di sovrascrittura."));
+            reply.status(409);
+            return {
               code: "CONFLICTS_DETECTED",
               message: "Rilevati conflitti di sovrascrittura. Richiesta conferma esplicita.",
               conflicts: preCheck.conflicts,
-            });
+            };
           }
         }
 
-        // Esecuzione atomica del caricamento massivo
-        const bulkResponse = await transferService.executeBulkUpload(context, {
+        phase = "distribuzione";
+        return await transferService.executeBulkUpload(context, {
+          batchId: uploadSessionId,
           targets,
           overwrite,
           stagedFiles,
         });
-
-        return reply.status(200).send(bulkResponse);
-      } catch (err: any) {
+      } catch (err) {
+        if (phase !== "distribuzione") {
+          await transferService.logBulkPrecheckFailure(context.username, observedFilenames, targets, uploadSessionId, err);
+        }
+        logBulkRequestFailure(req, phase, err, { batchId: uploadSessionId, fileCount: fileIndex, targets: bulkTargetLogDetails(targets) });
         for (const rec of stagingRecords) {
           if (rec.status === "IN_PROGRESS" || rec.status === "QUEUED") {
             await transferService.failBulkStagingTransfer(rec, err);
           }
         }
+        await cleanupStaging();
+        const ioError = err as NodeJS.ErrnoException & { statusCode?: number };
+        if (ioError.code === "ENOSPC" || ioError.code === "EDQUOT") {
+          return handleRouteError(reply, new MolirisAppError(ErrorCode.INSUFFICIENT_STORAGE, ioError.message));
+        }
+        if (ioError.statusCode === 413) {
+          const message = err instanceof MolirisAppError ? err.userMessage : "Superato il limite di dimensione o numero di file.";
+          return sendErrorReply(reply, 413, ErrorCode.TRANSFER_INTERRUPTED, message);
+        }
         return handleRouteError(reply, err);
       } finally {
-        for (const s of stagingPaths) {
-          try {
-            if (fs.existsSync(s)) {
-              await fs.promises.unlink(s);
-            }
-          } catch {}
-        }
+        await cleanupStaging();
       }
     }
   );
@@ -1149,6 +1188,9 @@ export function registerTransferRoutes(
         roleMapping
       );
 
+      const batchId = crypto.randomUUID();
+      const source = { scope: body.sourceScope ?? "general", robotId: body.sourceRobotId } as const;
+      let delegated = false;
       try {
         for (const sp of body.sourcePaths) {
           await authorizeOperatorPath(context, "server", body.sourceRobotId, sp);
@@ -1162,15 +1204,21 @@ export function registerTransferRoutes(
             target.directory ?? ""
           );
         }
+        delegated = true;
         const response = await transferService.executeBulkServerSource(context, {
-          sourceScope: body.sourceScope || "general",
+          batchId,
+          sourceScope: source.scope,
           sourceRobotId: body.sourceRobotId,
           sourcePaths: body.sourcePaths,
           targets: body.targets,
           overwrite: Boolean(body.overwrite),
         });
         return reply.status(200).send(response);
-      } catch (err: any) {
+      } catch (err) {
+        if (!delegated) await transferService.logBulkPrecheckFailure(
+          context.username, body.sourcePaths, body.targets, batchId, err, source
+        );
+        logBulkRequestFailure(req, "sorgente server", err, { batchId, targets: bulkTargetLogDetails(body.targets), fileCount: body.sourcePaths.length });
         return handleRouteError(reply, err);
       }
     }
@@ -1195,6 +1243,18 @@ export function registerTransferRoutes(
         roleMapping
       );
 
+      const transferRequest = {
+        sourceRobotId: body.sourceRobotId,
+        sourceRemotePath: body.sourceRemotePath,
+        targetRobotIds: body.targetRobotIds,
+        targetRemotePaths: body.targetRemotePaths,
+        commonTargetDirectory: body.commonTargetDirectory,
+        isMove: Boolean(body.isMove),
+        confirmation: Boolean(body.confirmation),
+        overwrite: Boolean(body.overwrite),
+        logBatchId: body.logBatchId || (body.targetRobotIds.length > 1 ? crypto.randomUUID() : undefined),
+      };
+      let delegated = false;
       try {
         await authorizeOperatorPath(context, "remote", body.sourceRobotId, body.sourceRemotePath);
         // ISS-002: ogni destinazione (per-robot o comune) deve ricadere negli allowedPaths; mai omissioni.
@@ -1202,18 +1262,11 @@ export function registerTransferRoutes(
           const destDir = body.targetRemotePaths?.[tid] || body.commonTargetDirectory || "";
           await authorizeOperatorPath(context, "remote", tid, destDir);
         }
-        const response = await transferService.executeRobotToRobotTransfer(context, {
-          sourceRobotId: body.sourceRobotId,
-          sourceRemotePath: body.sourceRemotePath,
-          targetRobotIds: body.targetRobotIds,
-          targetRemotePaths: body.targetRemotePaths,
-          commonTargetDirectory: body.commonTargetDirectory,
-          isMove: Boolean(body.isMove),
-          confirmation: Boolean(body.confirmation),
-          overwrite: Boolean(body.overwrite),
-        });
+        delegated = true;
+        const response = await transferService.executeRobotToRobotTransfer(context, transferRequest);
         return reply.status(200).send(response);
       } catch (err: any) {
+        if (!delegated) await transferService.logRobotToRobotPrecheckFailure(context.username, transferRequest, err);
         return handleRouteError(reply, err);
       }
     }
@@ -1419,6 +1472,21 @@ async function startInBackground(
     return outcome.dto;
   }
   return first.dto;
+}
+
+const bulkLogger = new MolirisLogger();
+
+function bulkTargetLogDetails(targets: BulkTarget[]) {
+  return targets.map(({ type, robotId, directory }) => ({ type, robotId, directory }));
+}
+
+function logBulkRequestFailure(
+  request: FastifyRequest, phase: string, err: unknown, details: Record<string, unknown>
+): void {
+  const ioError = err as NodeJS.ErrnoException;
+  bulkLogger.error("Richiesta di caricamento massivo non riuscita",
+    err instanceof MolirisAppError ? err.diagnosticDetail : ioError?.message,
+    { requestId: request.id, phase, code: ioError?.code, ...details });
 }
 
 function handleRouteError(reply: FastifyReply, err: any): FastifyReply {

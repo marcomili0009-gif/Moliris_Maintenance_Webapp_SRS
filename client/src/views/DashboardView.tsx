@@ -351,10 +351,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         setGlobalMessage("Caricamento massivo completato con sovrascrittura.");
       } else {
         const firstFailure = res.results?.flatMap((r) => r.failedFiles)[0];
+        const completed = res.results?.filter((item) => item.success).length ?? 0;
+        const failed = res.results?.filter((item) => !item.success).length ?? 0;
         pushToast(
           "error",
           res.error?.userMessage ||
-            (firstFailure ? `Sovrascrittura non riuscita (${firstFailure.filename}): ${firstFailure.reason}` : "Caricamento massivo con sovrascrittura non riuscito.")
+            (firstFailure
+              ? `Sovrascrittura non riuscita (${firstFailure.filename}): ${firstFailure.reason}`
+              : `Caricamento massivo incompleto. Invii riusciti: ${completed}. Invii falliti: ${failed}.`)
         );
       }
     }

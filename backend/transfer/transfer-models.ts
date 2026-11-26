@@ -82,9 +82,17 @@ export interface TransferProgressSnapshot {
  * DTO sicuro restituito al frontend (RNF-SEC-002, RNF-SEC-007, RF-TRF-006)
  * Non include percorsi interni assoluti del server, né segreti.
  */
+export interface BulkTransferTotals {
+  totalItems: number;
+  totalBytes: number;
+}
+
 export interface TransferDto {
   transferId: string;
   batchId?: string;
+  isBulkStaging?: boolean;
+  bulkBatch?: BulkTransferTotals & { status?: import("./batch-transfer-manager.ts").BatchRecord["status"] };
+  failurePhase?: string;
   userId: string;
   username?: string;
   robotId: string;
@@ -130,6 +138,9 @@ export interface TransferDto {
 export interface TransferRecord {
   transferId: string;
   batchId?: string;
+  isBulkStaging?: boolean;
+  bulkBatch?: BulkTransferTotals;
+  failurePhase?: string;
   userId: string;
   username?: string;
   userSessionId: string;
@@ -148,6 +159,7 @@ export interface TransferRecord {
   status: TransferStatus;
   error: string | null;
   errorCode?: string;
+  protocolErrorCode?: string | number;
   expectedChecksum?: string;
   computedChecksum?: string;
   checksumAlgorithm?: string;
@@ -210,6 +222,7 @@ export interface TransferExecutionOptions {
  * Richiesta trasferimento Copia/Sposta Robot -> Robot (§6)
  */
 export interface RobotToRobotTransferRequest {
+  logBatchId?: string;
   sourceRobotId: string;
   sourceRemotePath: string;
   targetRobotIds: string[];

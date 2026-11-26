@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { apiClient } from "../services/api-client.ts";
 import { StateFormatter } from "../services/state-formatter.ts";
 import type { User } from "../types/auth.ts";
@@ -31,8 +31,12 @@ interface ParsedTransferLog {
   raw: string;
   isBulkHeader?: boolean;
   isBulkFooter?: boolean;
+  bulkSummary?: { label: string; badgeClass: string };
   isBulkItem?: boolean;
   batchId?: string;
+  source?: string;
+  destination?: string;
+  transferId?: string;
   timestamp?: string;
   filename?: string;
   username?: string;
@@ -45,7 +49,18 @@ const ACCESS_LINE_REGEX =
   /^\[(.*?)\]\s+EVENT:\s*(.*?)\s*\|\s*Utente:\s*(.*?)(?:\s*\|\s*Ruolo:\s*(.*?))?\s*\|\s*Esito:\s*(.*?)(?:\s*\|\s*Dettagli:\s*(.*))?$/i;
 
 const TRANSFER_STANDARD_REGEX =
+  /^\[(.*?)\] File: (.*?) \| Utente: (.*?) \| Direzione: (.*?) \| Esito: ([\p{L}_]+)(?: \| Sorgente: (.*?))?(?: \| Destinazione: (.*?))?(?: \| Batch: (.*?))?(?: \| ID: (.*?))?(?: \| Dettagli: (.*))?$/iu;
+
+const LEGACY_TRANSFER_REGEX =
   /^\[(.*?)\]\s+File:\s*(.*?)\s*\|\s*Utente:\s*(.*?)\s*\|\s*Direzione:\s*(.*?)\s*\|\s*Esito:\s*(.*?)(?:\s*\|\s*Dettagli:\s*(.*))?$/i;
+
+function normalizeTransferOutcome(raw?: string): string | undefined {
+  const outcome = raw?.trim().toUpperCase();
+  if (outcome === "OK" || outcome === "COMPLETED") return "SUCCESSO";
+  if (outcome === "FALLITO" || outcome === "FAILED") return "FALLIMENTO";
+  if (outcome === "CANCELLED") return "ANNULLATO";
+  return outcome;
+}
 
 const BULK_HEADER_REGEX =
   /^=== INIZIO CARICAMENTO MASSIVO === \[batchId:\s*(.*?)\] \((\d+) file\)\s+Utente:\s*(.*?)\s*\|\s*Data:\s*(.*?)\s*\|\s*Ora:\s*(.*?) ===$/i;
@@ -55,6 +70,26 @@ const BULK_FOOTER_REGEX =
 
 const BULK_ITEM_REGEX =
   /^\[batchId:\s*(.*?)\]\s+\[FILE\s*(\d+)\/(\d+)\]\s+File\s+\d+:\s*(.*?)\s*\|\s*Esito:\s*(.*?)(?:\s+\((.*?)\))?\s*\|\s*Direzione:\s*(.*?)\s*\|\s*Dettagli:\s*(.*)$/i;
+
+function getBulkSummary(completed: number, total: number, cancelled: number, failed: number) {
+  if (total <= 0 || completed + cancelled + failed !== total ||
+      [completed, total, cancelled, failed].some((count) => !Number.isSafeInteger(count) || count < 0)) {
+    return { label: "Concluso", badgeClass: "text-bg-secondary" };
+  }
+  if (completed === total) return { label: "Completato", badgeClass: "text-bg-success" };
+  if (failed === total) return { label: "Fallito", badgeClass: "text-bg-danger" };
+  if (cancelled === total) return { label: "Annullato", badgeClass: "transfer-log-badge-orange" };
+  return {
+    label: failed > 0 ? "Concluso con errori" : "Concluso con annullamenti",
+    badgeClass: "transfer-log-badge-orange",
+  };
+}
+
+const transferOutcomeBadgeClasses: Partial<Record<string, string>> = {
+  SUCCESSO: "text-bg-success",
+  FALLIMENTO: "text-bg-danger",
+  ANNULLATO: "transfer-log-badge-orange",
+};
 
 const romeLogFormatter = new Intl.DateTimeFormat("sv-SE", {
   timeZone: "Europe/Rome",
@@ -249,11 +284,16 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
     }
   }, []);
 
+  const transferLogRequest = useRef(0);
+
   const loadTransferLogs = useCallback(async () => {
+    const requestId = ++transferLogRequest.current;
     setTransferLoading(true);
     setTransferError(null);
     try {
-      const res = await apiClient.get("/api/logs/transfers?limit=500");
+      const params = new URLSearchParams({ limit: "500" });
+      if (transferOutcomeFilter !== "ALL") params.set("outcome", transferOutcomeFilter);
+      const res = await apiClient.get(`/api/logs/transfers?${params}`);
       if (!res.ok) {
         throw new Error(`Errore caricamento log trasferimenti (${res.status})`);
       }
@@ -284,21 +324,27 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
         lines = textOrJson.split("\n").filter((l) => l.trim().length > 0);
       }
       // Ordine cronologico decrescente (i più recenti in cima)
-      setRawTransferLogs([...lines].reverse());
-      setTransferRecords(records);
+      if (requestId === transferLogRequest.current) {
+        setRawTransferLogs([...lines].reverse());
+        setTransferRecords(records);
+      }
     } catch (err: any) {
-      setTransferError(err.message || "Impossibile recuperare i log dei trasferimenti.");
+      if (requestId === transferLogRequest.current) {
+        setTransferError(err.message || "Impossibile recuperare i log dei trasferimenti.");
+      }
     } finally {
-      setTransferLoading(false);
+      if (requestId === transferLogRequest.current) setTransferLoading(false);
     }
-  }, []);
+  }, [transferOutcomeFilter]);
 
   useEffect(() => {
-    if (isAdmin) {
-      loadAccessLogs();
-      loadTransferLogs();
-    }
-  }, [isAdmin, loadAccessLogs, loadTransferLogs]);
+    if (isAdmin) void loadAccessLogs();
+  }, [isAdmin, loadAccessLogs]);
+
+  useEffect(() => {
+    if (isAdmin && activeTab === "transfers") void loadTransferLogs();
+    return () => { transferLogRequest.current += 1; };
+  }, [isAdmin, activeTab, loadTransferLogs]);
 
   // Parse and filter Access Logs
   const parsedAccessLogs = useMemo<ParsedAccessLog[]>(() => {
@@ -362,6 +408,10 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
         return {
           raw: line,
           isBulkFooter: true,
+          bulkSummary: getBulkSummary(
+            Number(bulkFooterMatch[3]), Number(bulkFooterMatch[4]),
+            Number(bulkFooterMatch[5]), Number(bulkFooterMatch[6]),
+          ),
           batchId: bulkFooterMatch[1]?.trim(),
           outcome: bulkFooterMatch[2]?.trim().toUpperCase(),
           details: summaryParts.join(" · "),
@@ -379,7 +429,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
           isBulkItem: true,
           batchId: bulkItemMatch[1]?.trim(),
           filename: bulkItemMatch[4]?.trim(),
-          outcome: bulkItemMatch[5]?.trim().toUpperCase(),
+          outcome: normalizeTransferOutcome(bulkItemMatch[5]),
           direction: bulkItemMatch[7]?.trim(),
           details: `[FILE ${itemIndex}/${itemTotal}]${reason ? ` (${reason})` : ""}${extraDetails ? ` ${extraDetails}` : ""}`,
         };
@@ -392,8 +442,25 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
           filename: stdMatch[2]?.trim(),
           username: stdMatch[3]?.trim(),
           direction: stdMatch[4]?.trim(),
-          outcome: stdMatch[5]?.trim().toUpperCase(),
-          details: stdMatch[6]?.trim(),
+          outcome: normalizeTransferOutcome(stdMatch[5]),
+          source: stdMatch[6]?.trim(),
+          destination: stdMatch[7]?.trim(),
+          batchId: stdMatch[8]?.trim(),
+          isBulkItem: Boolean(stdMatch[8]),
+          transferId: stdMatch[9]?.trim(),
+          details: stdMatch[10]?.trim(),
+        };
+      }
+      const legacy = line.match(LEGACY_TRANSFER_REGEX);
+      if (legacy) {
+        return {
+          raw: line,
+          timestamp: formatLogTime(legacy[1]),
+          filename: legacy[2]?.trim(),
+          username: legacy[3]?.trim(),
+          direction: legacy[4]?.trim(),
+          outcome: normalizeTransferOutcome(legacy[5]),
+          details: legacy[6]?.trim(),
         };
       }
       return { raw: line };
@@ -420,6 +487,8 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
           if (rec.status !== "COMPLETED") return false;
         } else if (transferOutcomeFilter === "FALLIMENTO") {
           if (rec.status !== "FAILED" && rec.status !== "INTEGRITY_FAILED") return false;
+        } else if (transferOutcomeFilter === "ANNULLATO" || transferOutcomeFilter === "CANCELLED") {
+          if (rec.status !== "CANCELLED") return false;
         } else if (rec.status !== transferOutcomeFilter) {
           return false;
         }
@@ -433,25 +502,24 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
     const fileNeedle = transferFileFilter.trim().toLowerCase();
     const batchNeedle = transferBatchFilter.trim().toLowerCase();
     return parsedTransferLogs.filter((entry) => {
-      if (userNeedle && entry.username) {
-        if (!entry.username.toLowerCase().includes(userNeedle)) {
-          return false;
-        }
+      if (userNeedle && !entry.username?.toLowerCase().includes(userNeedle)) {
+        return false;
       }
-      if (fileNeedle && entry.filename) {
-        if (!entry.filename.toLowerCase().includes(fileNeedle)) {
-          return false;
-        }
+      if (fileNeedle && !entry.filename?.toLowerCase().includes(fileNeedle)) {
+        return false;
       }
       if (batchNeedle) {
         if (!(entry.batchId || "").toLowerCase().includes(batchNeedle) && !entry.raw.toLowerCase().includes(batchNeedle)) {
           return false;
         }
       }
-      if (transferOutcomeFilter !== "ALL" && entry.outcome) {
+      if (transferOutcomeFilter !== "ALL") {
+        if (entry.isBulkHeader || entry.isBulkFooter || !entry.outcome) {
+          return false;
+        }
         const up = entry.outcome.toUpperCase();
         if (transferOutcomeFilter === "SUCCESSO" || transferOutcomeFilter === "COMPLETED") {
-          if (!up.includes("SUCCESSO") && !up.includes("COMPLETED") && up !== "OK") return false;
+          if (up !== "SUCCESSO" && up !== "COMPLETED" && up !== "OK") return false;
         } else if (transferOutcomeFilter === "FALLIMENTO" || transferOutcomeFilter === "FAILED") {
           if (
             !up.includes("FALLIMENT") &&
@@ -462,7 +530,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
           ) {
             return false;
           }
-        } else if (transferOutcomeFilter === "CANCELLED") {
+        } else if (transferOutcomeFilter === "ANNULLATO" || transferOutcomeFilter === "CANCELLED") {
           if (!up.includes("ANNULLAT") && !up.includes("CANCEL")) return false;
         } else if (!up.includes(transferOutcomeFilter)) {
           return false;
@@ -744,9 +812,9 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                     onChange={(e) => setTransferOutcomeFilter(e.target.value)}
                   >
                     <option value="ALL">Tutti gli stati / esiti</option>
-                    <option value="SUCCESSO">Completati (SUCCESSO)</option>
-                    <option value="FALLIMENTO">Falliti / Errori</option>
-                    <option value="CANCELLED">Annullati</option>
+                    <option value="SUCCESSO">SUCCESSO (Completati)</option>
+                    <option value="FALLIMENTO">FALLIMENTO (Falliti / Errori)</option>
+                    <option value="ANNULLATO">ANNULLATO (Annullati)</option>
                     <option value="IN_PROGRESS">In corso</option>
                     <option value="PAUSED">In pausa</option>
                     <option value="QUEUED">In coda</option>
@@ -983,7 +1051,11 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                               Batch ID: <code>{item.batchId}</code>
                             </td>
                             <td>
-                              <span className={`badge ${footerBadgeClass}`}>{footerLabel}</span>
+                              {item.bulkSummary ? (
+                                <span className={`badge ${item.bulkSummary.badgeClass}`}>{item.bulkSummary.label}</span>
+                              ) : (
+                                <span className={`badge ${footerBadgeClass}`}>{footerLabel}</span>
+                              )}
                             </td>
                             <td>{item.details}</td>
                           </tr>
@@ -998,16 +1070,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                       );
                       const isTechExpanded = expandedLogRows.has(idx);
                       return (
-                        <tr
-                          key={idx}
-                          className={
-                            !isSuccessEntry && entryOutcome
-                              ? "table-danger-subtle"
-                              : item.isBulkItem
-                              ? "border-start border-3 border-primary ps-2 bg-light-subtle"
-                              : ""
-                          }
-                        >
+                        <tr key={idx}>
                           <td className="text-monospace text-secondary">{item.timestamp || "—"}</td>
                           <td className="fw-semibold text-break">
                             {item.isBulkItem && (
@@ -1029,7 +1092,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                             {item.outcome ? (
                               <span
                                 className={`badge ${
-                                  isSuccessEntry ? "text-bg-success" : "text-bg-danger"
+                                  transferOutcomeBadgeClasses[item.outcome] ?? (isSuccessEntry ? "text-bg-success" : "text-bg-danger")
                                 }`}
                               >
                                 {item.outcome}
@@ -1039,7 +1102,17 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                             )}
                           </td>
                           <td className="text-break" title={formattedDetails.technical}>
-                            <span className={!isSuccessEntry && entryOutcome ? "text-danger fw-semibold" : ""}>
+                            {(item.source || item.destination) && (
+                              <div className="small text-secondary">
+                                {item.source || "—"} → {item.destination || "—"}
+                              </div>
+                            )}
+                            {item.batchId && (
+                              <div className="small text-secondary">
+                                Batch ID: <code>{item.batchId}</code>
+                              </div>
+                            )}
+                            <span className={entryOutcome === "FALLIMENTO" ? "text-danger fw-semibold" : ""}>
                               {formattedDetails.summary}
                             </span>
                             {formattedDetails.technical && (

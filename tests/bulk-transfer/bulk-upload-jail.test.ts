@@ -6,9 +6,11 @@
 import assert from "assert";
 import crypto from "crypto";
 import fs from "fs";
+import https from "node:https";
 import os from "os";
 import path from "path";
 import ssh2 from "ssh2";
+import { loadConfig } from "../../src/config/index.ts";
 import { type SystemConfiguration } from "../../config/configuration.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
 import { InMemoryCredentialProvider } from "../../backend/connection/credential-provider.ts";
@@ -21,10 +23,12 @@ import { InMemoryUserRepository } from "../../backend/auth/user-repository.ts";
 import { ServerFilesystemService } from "../../storage/server-fs.ts";
 import { RemoteFilesystemService } from "../../backend/remote-fs/remote-fs-service.ts";
 import { TransferService } from "../../backend/transfer/transfer-service.ts";
+import { TransferDirection } from "../../backend/transfer/transfer-models.ts";
 import { AppPermission, DEFAULT_ROLE_PERMISSIONS } from "../../backend/auth/permissions.ts";
 import { type RobotEntity } from "../../storage/robot-models.ts";
 import { type UserEntity } from "../../backend/auth/user-models.ts";
 import { ErrorCode, MolirisAppError } from "../../errors/app-errors.ts";
+import { PhysicalFileLogger } from "../../backend/logging/physical-file-logger.ts";
 import { createServer } from "../../backend/server.ts";
 import { execSync } from "child_process";
 
@@ -60,13 +64,23 @@ const mockRemoteFs: Record<string, Buffer> = {
 let nextHandleId = 1;
 const openHandles = new Map<string, { path: string; isDir: boolean; readSent?: boolean }>();
 
-const sftpServer = new ssh2.Server(
+const createSftpTestServer = (
+  remoteFiles: Record<string, Buffer>,
+  corruptWrite = () => false,
+  failOperation?: (operation: "WRITE" | "CLOSE" | "RENAME", offset: number) => number | null | undefined,
+  writeDelay = () => 0,
+  readLimit = () => Number.POSITIVE_INFINITY
+) => new ssh2.Server(
   {
     hostKeys: [serverHostKey.privateKey],
   },
   (client) => {
     client.on("authentication", (ctx) => {
-      ctx.accept();
+      if (ctx.method === "password" && ctx.username === "operator" && ctx.password === "TestPassword123!") {
+        ctx.accept();
+      } else {
+        ctx.reject(["password"]);
+      }
     });
 
     client.on("ready", () => {
@@ -81,11 +95,11 @@ const sftpServer = new ssh2.Server(
 
           sftp.on("STAT", (reqid: number, p: string) => {
             const norm = path.posix.normalize(p);
-            if (mockRemoteFs[norm] !== undefined) {
-              const isDir = mockRemoteFs[norm].toString() === "DIR";
+            if (remoteFiles[norm] !== undefined) {
+              const isDir = remoteFiles[norm].toString() === "DIR";
               return sftp.attrs(reqid, {
                 mode: isDir ? 0o040755 : 0o100644,
-                size: mockRemoteFs[norm].length,
+                size: remoteFiles[norm].length,
                 mtime: Math.floor(Date.now() / 1000),
                 atime: Math.floor(Date.now() / 1000),
               } as any);
@@ -108,16 +122,16 @@ const sftpServer = new ssh2.Server(
             h.readSent = true;
             const entries: Array<{ filename: string; attrs: any }> = [];
             const dirPrefix = h.path.endsWith("/") ? h.path : `${h.path}/`;
-            for (const key of Object.keys(mockRemoteFs)) {
+            for (const key of Object.keys(remoteFiles)) {
               if (key !== h.path && key.startsWith(dirPrefix)) {
                 const sub = key.slice(dirPrefix.length);
                 if (!sub.includes("/")) {
-                  const isDir = mockRemoteFs[key].toString() === "DIR";
+                  const isDir = remoteFiles[key].toString() === "DIR";
                   entries.push({
                     filename: sub,
                     attrs: {
                       mode: isDir ? 0o040755 : 0o100644,
-                      size: mockRemoteFs[key].length,
+                      size: remoteFiles[key].length,
                       mtime: Math.floor(Date.now() / 1000),
                     },
                   });
@@ -129,10 +143,13 @@ const sftpServer = new ssh2.Server(
 
           sftp.on("OPEN", (reqid: number, filename: string, pflags: number) => {
             const norm = path.posix.normalize(filename);
+            if (!remoteFiles[norm] && path.posix.dirname(norm) !== "/" && !remoteFiles[path.posix.dirname(norm)]) {
+              return sftp.status(reqid, 2);
+            }
             const handle = Buffer.from(`file_${nextHandleId++}`);
             openHandles.set(handle.toString(), { path: norm, isDir: false });
-            if (!mockRemoteFs[norm]) {
-              mockRemoteFs[norm] = Buffer.alloc(0);
+            if (!remoteFiles[norm]) {
+              remoteFiles[norm] = Buffer.alloc(0);
             }
             sftp.handle(reqid, handle);
           });
@@ -140,7 +157,13 @@ const sftpServer = new ssh2.Server(
           sftp.on("WRITE", (reqid: number, handle: Buffer, offset: number, data: Buffer) => {
             const h = openHandles.get(handle.toString());
             if (!h) return sftp.status(reqid, 4 /* SSH_FX_FAILURE */);
-            const cur = mockRemoteFs[h.path] || Buffer.alloc(0);
+            const failure = failOperation?.("WRITE", offset);
+            if (failure === null) return;
+            if (failure !== undefined) {
+              setTimeout(() => sftp.status(reqid, failure), 40);
+              return;
+            }
+            const cur = remoteFiles[h.path] || Buffer.alloc(0);
             const needed = offset + data.length;
             let nextBuf = cur;
             if (cur.length < needed) {
@@ -148,29 +171,44 @@ const sftpServer = new ssh2.Server(
               cur.copy(nextBuf, 0, 0, cur.length);
             }
             data.copy(nextBuf, offset);
-            mockRemoteFs[h.path] = nextBuf;
-            sftp.status(reqid, 0 /* SSH_FX_OK */);
+            if (data.length > 0 && corruptWrite()) nextBuf[offset] ^= 0xff;
+            remoteFiles[h.path] = nextBuf;
+            const delay = writeDelay();
+            if (delay > 0) setTimeout(() => sftp.status(reqid, 0), delay);
+            else sftp.status(reqid, 0);
+          });
+
+          sftp.on("READ", (reqid, handle, offset, length) => {
+            const opened = openHandles.get(handle.toString());
+            const buffer = opened && remoteFiles[opened.path];
+            if (!buffer) return sftp.status(reqid, 4);
+            if (offset >= buffer.length) return sftp.status(reqid, 1);
+            sftp.data(reqid, buffer.subarray(offset, offset + Math.min(length, readLimit())));
           });
 
           sftp.on("CLOSE", (reqid: number, handle: Buffer) => {
+            const wasTemporary = openHandles.get(handle.toString())?.path.endsWith(".part");
             openHandles.delete(handle.toString());
-            sftp.status(reqid, 0);
+            sftp.status(reqid, wasTemporary ? failOperation?.("CLOSE", 0) ?? 0 : 0);
           });
 
           sftp.on("RENAME", (reqid: number, oldPath: string, newPath: string) => {
             const normOld = path.posix.normalize(oldPath);
             const normNew = path.posix.normalize(newPath);
-            if (mockRemoteFs[normOld] !== undefined) {
-              mockRemoteFs[normNew] = mockRemoteFs[normOld];
-              delete mockRemoteFs[normOld];
+            const failure = failOperation?.("RENAME", 0);
+            if (failure != null) return sftp.status(reqid, failure);
+            if (remoteFiles[normNew] !== undefined) return sftp.status(reqid, 4);
+            if (remoteFiles[normOld] !== undefined) {
+              remoteFiles[normNew] = remoteFiles[normOld];
+              delete remoteFiles[normOld];
               return sftp.status(reqid, 0);
             }
             return sftp.status(reqid, 2);
           });
 
-          sftp.on("UNLINK", (reqid: number, p: string) => {
+          sftp.on("REMOVE", (reqid: number, p: string) => {
             const norm = path.posix.normalize(p);
-            delete mockRemoteFs[norm];
+            delete remoteFiles[norm];
             sftp.status(reqid, 0);
           });
         });
@@ -179,6 +217,7 @@ const sftpServer = new ssh2.Server(
   }
 );
 
+const sftpServer = createSftpTestServer(mockRemoteFs);
 await new Promise<void>((resolve) => {
   sftpServer.listen(0, "127.0.0.1", () => resolve());
 });
@@ -201,9 +240,9 @@ const config: SystemConfiguration = {
   registrationMode: "rigorosa",
   auditLogRetentionDays: 90,
   defaultSshPort: sshPort,
-  maxBulkUploadFiles: 20,
+  maxBulkUploadFiles: 100,
   defaultOperatorAllowedPaths: ["upload", "shared", "logs"],
-  remoteFsAllowedPaths: ["/upload", "/shared"],
+  remoteFsAllowedPaths: ["/upload", "/shared", "/home/robot/TEST"],
 };
 
 const robotRepo = new InMemoryRobotRepository();
@@ -446,7 +485,7 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
 
   // File di staging
   const stagingDir = path.join(tmpServerRoot, ".tmp_bulk");
-  if (!fs.existsSync(stagingDir)) fs.mkdirSync(stagingDir, { recursive: true });
+  if (!fs.existsSync(stagingDir)) fs.mkdirSync(stagingDir, { recursive: true, mode: 0o700 });
   const stagingFile = path.join(stagingDir, "staging_abort_test.part");
   fs.writeFileSync(stagingFile, "Nuovo contenuto che NON deve sovrascrivere");
 
@@ -488,7 +527,7 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
 // =========================================================================
 {
   const stagingDir = path.join(tmpServerRoot, ".tmp_bulk");
-  if (!fs.existsSync(stagingDir)) fs.mkdirSync(stagingDir, { recursive: true });
+  if (!fs.existsSync(stagingDir)) fs.mkdirSync(stagingDir, { recursive: true, mode: 0o700 });
 
   const file1Content = "Contenuto del primo file per upload massivo multi-target";
   const file2Content = "Contenuto del secondo file per upload massivo multi-target";
@@ -557,7 +596,9 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
   await userRepo.create(adminUser);
   await userRepo.create(operatorUser);
 
+  const physicalFileLogger = new PhysicalFileLogger(path.join(tmpTlsDir, "logs"));
   const server = createServer(config, logger, {
+    physicalFileLogger,
     sessionManager,
     userRepository: userRepo,
     auditRepository: auditRepo,
@@ -567,6 +608,10 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
     hostKeyVerifier,
     connectionManager,
     transferService,
+    appConfig: loadConfig({
+      env: { MOLIRIS_MAX_BULK_UPLOAD_FILES: "100" },
+      overrides: { maxFileUploadBytes: 1024 * 1024 },
+    }),
   });
   await server.ready();
 
@@ -655,7 +700,404 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
   const writtenRestFile = path.join(robot1.serverDirectoryPath, "upload", "rest_upload_file.txt");
   assert.strictEqual(fs.readFileSync(writtenRestFile, "utf-8"), restFileContent);
 
+  // Il wizard usa /upload come cartella comune anche quando i target includono l'archivio.
+  const secondRemoteFs: Record<string, Buffer> = { "/shared": Buffer.from("DIR") };
+  let corruptSecondRemoteWrite = false;
+  let failingOperation: "WRITE" | "CLOSE" | "RENAME" | undefined;
+  let stallSecondRemoteWrite = false;
+  let delaySecondRemoteWrite = 0;
+  const secondSftpServer = createSftpTestServer(secondRemoteFs, () => corruptSecondRemoteWrite,
+    (operation, offset) => operation === failingOperation && (operation !== "WRITE" || offset >= 100000)
+      ? (operation === "RENAME" ? 3 : stallSecondRemoteWrite ? null : 4)
+      : undefined,
+    () => delaySecondRemoteWrite,
+    () => 8192);
+
+  await new Promise<void>((resolve) => secondSftpServer.listen(0, "127.0.0.1", resolve));
+  const robot2: RobotEntity = {
+    ...robot1,
+    id: "robot2",
+    displayName: "Robot 2 Test",
+    sshPort: (secondSftpServer.address() as { port: number }).port,
+    serverDirectoryPath: path.join(tmpServerRoot, "operator_robot2"),
+  };
+  await robotRepo.create(robot2);
+  await serverFsService.ensureRobotDirectory(robot2, { standardSubdirectories: ["upload"] });
+  const mixedTargets = [
+    { type: "server", robotId: robot1.id, directory: "/upload" },
+    { type: "server", robotId: robot2.id, directory: "/upload" },
+    { type: "robot", robotId: robot1.id, directory: "/upload" },
+    { type: "robot", robotId: robot2.id, directory: "/shared" },
+  ];
+  const files = Array.from({ length: 11 }, (_, index) => ({
+    filename: `wizard_${index}.txt`,
+    contents: `Payload ${index} — Caricamento Massivo`,
+  }));
+  const authHeaders = { origin: "http://localhost" };
+  const cookies = { "__Host-moliris_session": sessionAdmin.sessionId };
+  const mixedPreCheck = await server.inject({
+    method: "POST",
+    url: "/api/transfers/bulk/pre-check",
+    headers: authHeaders,
+    cookies,
+    payload: { filenames: files.map(({ filename }) => filename), targets: mixedTargets },
+  });
+  assert.strictEqual(mixedPreCheck.statusCode, 200, mixedPreCheck.body);
+  assert.strictEqual(mixedPreCheck.json().totalChecks, 44);
+  assert.strictEqual(connectionManager.getUserConnectionCount(contextAdmin.username), 0);
+
+  const upload = (targets: unknown, inputFiles: typeof files = files, overwrite = false) => {
+    const form = new FormData();
+    form.append("targets", JSON.stringify(targets));
+    if (overwrite) form.append("overwrite", "true");
+    form.append("fileSizes", JSON.stringify(inputFiles.map(({ contents }) => Buffer.byteLength(contents))));
+    for (const { filename, contents } of inputFiles) {
+      form.append("files", new Blob([contents]), filename);
+    }
+    return new Request("http://localhost", { method: "POST", body: form });
+  };
+  const baseUrl = await server.listen({ host: "127.0.0.1", port: 0 });
+  const submit = async (request: Request) => {
+    const body = Buffer.from(await request.arrayBuffer());
+    const headers = {
+      origin: baseUrl,
+      cookie: `__Host-moliris_session=${sessionAdmin.sessionId}`,
+      "content-type": request.headers.get("content-type")!,
+      "content-length": body.length,
+    };
+    const response = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+      const client = https.request(`${baseUrl}/api/transfers/bulk/upload`, {
+        method: "POST", headers, ca: fs.readFileSync(certPath), servername: "localhost",
+      }, (res) => {
+        let responseBody = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => { responseBody += chunk; });
+        res.on("end", () => resolve({ statusCode: res.statusCode!, body: responseBody }));
+        res.on("error", reject);
+      });
+      client.on("error", reject);
+      client.end(body);
+    });
+    return { ...response, json: () => JSON.parse(response.body) };
+  };
+
+  const mixedUpload = await submit(upload(mixedTargets));
+  assert.strictEqual(mixedUpload.statusCode, 200, mixedUpload.body);
+  assert.deepStrictEqual(mixedUpload.json().summary, { completed: 44, failed: 0, skipped: 0 });
+  assert.strictEqual(connectionManager.getUserConnectionCount(contextAdmin.username), 0);
+  for (const [index, { filename, contents }] of files.entries()) {
+    const sha256 = crypto.createHash("sha256").update(contents).digest("hex");
+    assert.deepStrictEqual(mixedUpload.json().results[index].targets.map((item: { checksum: string }) => item.checksum), Array(4).fill(sha256));
+    for (const robot of [robot1, robot2]) {
+      assert.strictEqual(fs.readFileSync(path.join(robot.serverDirectoryPath, "upload", filename), "utf-8"), contents);
+    }
+    assert.strictEqual(mockRemoteFs[`/upload/${filename}`]?.toString(), contents);
+    assert.strictEqual(secondRemoteFs[`/shared/${filename}`]?.toString(), contents);
+  }
+  assert.deepStrictEqual(fs.readdirSync(path.join(tmpServerRoot, ".tmp_bulk")), []);
+  console.log("  PASS: Test 7 - Wizard, 11 file e 4 destinazioni, verifica contenuti e SHA-256.");
+
+  const stagingDir = path.join(tmpServerRoot, ".tmp_bulk");
+  const assertNoParts = () => {
+    for (const directory of [
+      stagingDir,
+      path.join(robot1.serverDirectoryPath, ".tmp"),
+      path.join(robot2.serverDirectoryPath, ".tmp"),
+      path.join(serverFsService.getGeneralFsRoot(), ".tmp"),
+    ]) {
+      if (fs.existsSync(directory)) assert.deepStrictEqual(fs.readdirSync(directory), [], directory);
+    }
+    for (const remoteFs of [mockRemoteFs, secondRemoteFs]) {
+      assert.ok(Object.keys(remoteFs).every((filename) => !filename.endsWith(".part")));
+    }
+    assert.strictEqual(connectionManager.getUserConnectionCount(contextAdmin.username), 0);
+  };
+
+  const missingDirectoryFiles = Array.from({ length: 12 }, (_, index) => ({
+    filename: `missing-directory-${index}.txt`,
+    contents: "X".repeat(100 + index * 4501),
+  }));
+  const missingDirectory = await submit(upload(
+    [...mixedTargets.slice(0, 3), { ...mixedTargets[3], directory: "/home/robot/TEST" }],
+    missingDirectoryFiles
+  ));
+  assert.strictEqual(missingDirectory.statusCode, 200, missingDirectory.body);
+  assert.deepStrictEqual(missingDirectory.json().summary, { completed: 36, failed: 12, skipped: 0 });
+  const missingRecords = transferService.listTransfers(contextAdmin)
+    .filter((item) => item.batchId === missingDirectory.json().batchId && item.status === "FAILED");
+  assert.strictEqual(missingRecords.length, 12);
+  assert.deepStrictEqual(missingRecords.map((item) => item.transferredBytes), Array(12).fill(0));
+  for (const item of missingRecords) assert.match(item.error ?? "", /Cartella di destinazione assente/);
+  assertNoParts();
+  const mixedFailureLog = await physicalFileLogger.getTransferLogs({ outcome: "FALLIMENTO", limit: 200 });
+  assert.strictEqual(mixedFailureLog.filter((line) => line.includes("missing-directory-")).length, 12,
+    "I 12 errori individuali devono essere persistiti in transfers.log");
+  const missingBatchId = missingDirectory.json().batchId;
+  const mixedRows = (await physicalFileLogger.getTransferLogs({ limit: 300 }))
+    .filter((line) => line.includes(` | Batch: ${missingBatchId} |`));
+  assert.strictEqual(mixedRows.length, 60, "48 invii, 12 ricezioni iniziali e una riga per operazione");
+  assert.strictEqual(mixedRows.filter((row) => row.includes(" | Esito: FALLIMENTO |")).length, 12);
+  for (const row of mixedRows.filter((item) => item.includes(" | Esito: FALLIMENTO |"))) {
+    assert.match(row, /Utente: .* \| Direzione: CLIENT_TO_ROBOT \| Esito: FALLIMENTO \| Sorgente: Computer \| Destinazione: SFTP robot robot2/);
+    assert.match(row, /Cartella di destinazione assente sul robot.*codice SFTP 2/);
+  }
+  const mixedIds = mixedRows.map((row) => / \| ID: (.*?) \|/.exec(row)?.[1]);
+  assert.ok(mixedIds.every(Boolean));
+  assert.strictEqual(new Set(mixedIds).size, mixedRows.length);
+
+  console.log("  PASS: 12 file, destinazione assente sul secondo robot, zero byte confermati e causa specifica.");
+
+  const authFailureRobot: RobotEntity = {
+    ...robot2, id: "robot-precheck-auth-failure", remoteUsername: "utente_rifiutato",
+    serverDirectoryPath: path.join(tmpServerRoot, "auth-failure"),
+  };
+  await robotRepo.create(authFailureRobot);
+  const precheckFailure = await server.inject({
+    method: "POST", url: "/api/transfers/bulk/pre-check", headers: authHeaders, cookies,
+    payload: { filenames: ["precheck-auth-failure.bin"], targets: [{ ...mixedTargets[3], robotId: authFailureRobot.id }] },
+  });
+  assert.ok(precheckFailure.statusCode >= 400, precheckFailure.body);
+  const rejectedPrecheckRows = (await physicalFileLogger.getTransferLogs({ outcome: "FALLIMENTO" }))
+    .filter((row) => row.includes("File: precheck-auth-failure.bin"));
+  assert.strictEqual(rejectedPrecheckRows.length, 1);
+  assert.match(rejectedPrecheckRows[0], /Pre-check:.*SSH_AUTH_FAILED/);
+
+  // Entrambi i tipi di destinazione devono funzionare anche senza target misti.
+  for (const [type, filename] of [["server", "server_only.txt"], ["robot", "remote_only.txt"]]) {
+    const response = await submit(upload(mixedTargets.filter((target) => target.type === type), [{ filename, contents: type }]));
+    assert.strictEqual(response.statusCode, 200, response.body);
+    assert.deepStrictEqual(response.json().summary, { completed: 2, failed: 0, skipped: 0 });
+  }
+
+  const duplicate = await submit(upload(mixedTargets, [
+    { filename: "duplicate.txt", contents: "A" },
+    { filename: "duplicate.txt", contents: "B" },
+  ], true));
+  assert.strictEqual(duplicate.statusCode, 400, duplicate.body);
+  assert.match(duplicate.body, /file con lo stesso nome/);
+  assert.ok(!fs.existsSync(path.join(robot1.serverDirectoryPath, "upload", "duplicate.txt")));
+  assert.ok(!mockRemoteFs["/upload/duplicate.txt"]);
+
+  const oversized = await submit(upload(mixedTargets, [
+    { filename: "would-have-succeeded.txt", contents: "A" },
+    { filename: "oversized.txt", contents: "B".repeat(1024 * 1024 + 1) },
+  ]));
+  assert.strictEqual(oversized.statusCode, 413, oversized.body);
+  assert.ok(!fs.existsSync(path.join(robot1.serverDirectoryPath, "upload", "would-have-succeeded.txt")));
+  assertNoParts();
+
+  // Un file della stessa dimensione cambiato durante la scrittura SFTP deve
+  // essere respinto dal readback, preservando le copie delle altre destinazioni.
+  config.transferVerifyMode = "readback";
+  corruptSecondRemoteWrite = true;
+  secondRemoteFs["/shared/partial.txt"] = Buffer.from("File originale");
+  const partial = await submit(upload(mixedTargets, [{ filename: "partial.txt", contents: "Payload da verificare" }], true));
+  assert.strictEqual(partial.statusCode, 200, partial.body);
+  assert.strictEqual(partial.json().success, false);
+  assert.deepStrictEqual(partial.json().summary, { completed: 3, failed: 1, skipped: 0 });
+  assert.strictEqual(mockRemoteFs["/upload/partial.txt"].toString(), "Payload da verificare");
+  assert.strictEqual(secondRemoteFs["/shared/partial.txt"].toString(), "File originale");
+  const integrityRows = (await physicalFileLogger.getTransferLogs({ outcome: "FALLIMENTO" }))
+    .filter((line) => line.includes(` | Batch: ${partial.json().batchId} |`));
+  assert.strictEqual(integrityRows.length, 1);
+  assert.match(integrityRows[0], /verifica checksum sul robot/);
+  corruptSecondRemoteWrite = false;
+  assertNoParts();
+
+  for (const operation of ["WRITE", "CLOSE", "RENAME"] as const) {
+    failingOperation = operation;
+    const filename = `fault-${operation}.bin`;
+    const contents = "R".repeat(170_000);
+    const response = await submit(upload([mixedTargets[3]], [{ filename, contents }]));
+    assert.strictEqual(response.statusCode, 200, response.body);
+    assert.deepStrictEqual(response.json().summary, { completed: 0, failed: 1, skipped: 0 });
+    const failure = transferService.listTransfers(contextAdmin).find((item) =>
+      item.batchId === response.json().batchId && item.direction === TransferDirection.CLIENT_TO_ROBOT);
+    assert.ok(failure);
+    assert.strictEqual(failure.status, "FAILED");
+    assert.match(failure.error ?? "", operation === "WRITE" ? /scrittura SFTP/
+      : operation === "CLOSE" ? /chiusura temporaneo SFTP/ : /pubblicazione/);
+    if (operation === "WRITE") {
+      assert.ok(failure.transferredBytes > 0 && failure.transferredBytes < contents.length, JSON.stringify(failure));
+    } else {
+      assert.strictEqual(failure.transferredBytes, contents.length);
+      assert.strictEqual(failure.percent, 100);
+    }
+    assert.ok(!secondRemoteFs[`/shared/${filename}`]);
+    assertNoParts();
+  }
+  failingOperation = undefined;
+  console.log("  PASS: riconosciuti WRITE parziale, CLOSE e RENAME con 100% confermato, senza .part residui.");
+
+  delaySecondRemoteWrite = 400;
+  const cancelUpload = submit(upload([mixedTargets[3]], [
+    { filename: "log-cancel-active.bin", contents: "A".repeat(170000) },
+    { filename: "log-cancel-queued.bin", contents: "B".repeat(170000) },
+  ]));
+  let cancelBatchId: string | undefined;
+  for (let attempt = 0; !cancelBatchId && attempt < 200; attempt++) {
+    cancelBatchId = transferService.listTransfers(contextAdmin).find((item) =>
+      item.filename === "log-cancel-active.bin" && !item.isBulkStaging && item.status === "IN_PROGRESS"
+    )?.batchId;
+    if (!cancelBatchId) await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(cancelBatchId);
+  const cancellation = await server.inject({
+    method: "POST", url: `/api/transfers/batches/${cancelBatchId}/cancel`, headers: authHeaders, cookies, payload: {},
+  });
+  assert.strictEqual(cancellation.statusCode, 200, cancellation.body);
+  await cancelUpload;
+  delaySecondRemoteWrite = 0;
+  const cancelLogs = (await physicalFileLogger.getTransferLogs({ outcome: "ANNULLATO", limit: 100 }))
+    .filter((row) => row.includes(` | Batch: ${cancelBatchId} |`));
+  assert.strictEqual(cancelLogs.length, 2);
+  assert.ok(cancelLogs.some((row) => row.includes("log-cancel-active.bin")));
+  assert.ok(cancelLogs.some((row) => row.includes("log-cancel-queued.bin")));
+  assertNoParts();
+
+  const originalIdleTimeout = config.transferIdleTimeoutMs;
+  config.transferIdleTimeoutMs = 650;
+  failingOperation = "WRITE";
+  stallSecondRemoteWrite = true;
+  const stalled = await submit(upload([mixedTargets[3]], [{ filename: "stalled.bin", contents: "R".repeat(170_000) }]));
+  assert.strictEqual(stalled.statusCode, 200, stalled.body);
+  assert.deepStrictEqual(stalled.json().summary, { completed: 0, failed: 1, skipped: 0 });
+  assert.match(stalled.json().results[0].targets[0].error, /timeout|tempo massimo/i);
+  assert.ok(!secondRemoteFs["/shared/stalled.bin"]);
+  stallSecondRemoteWrite = false;
+  failingOperation = undefined;
+  config.transferIdleTimeoutMs = originalIdleTimeout;
+  assertNoParts();
+
+  delaySecondRemoteWrite = 160;
+  const racing = await Promise.all(["A", "B"].map((letter) => submit(upload([mixedTargets[3]], [{
+    filename: "same-destination.bin",
+    contents: letter.repeat(100_000),
+  }], true))));
+  delaySecondRemoteWrite = 0;
+  assert.deepStrictEqual(racing.map((item) => item.json().summary.completed).sort(), [0, 1]);
+  assert.match(racing.find((item) => item.json().summary.failed === 1)?.json().results[0].targets[0].error ??
+    "", /in corso|un altro trasferimento/i);
+  assert.ok(["A", "B"].some((letter) => secondRemoteFs["/shared/same-destination.bin"]?.toString() === letter.repeat(100_000)));
+  assertNoParts();
+  console.log("  PASS: timeout SFTP con pulizia e due batch simultanei sulla stessa destinazione.");
+
+  const stress = async (count: number) => {
+    const stressFiles = Array.from({ length: count }, (_, index) => ({
+      filename: `stress-${count}-${index}.bin`,
+      contents: String(count % 10).repeat(index === 0 ? 0 : index === 1 ? 138_000 : index * 113 % 8_000),
+    }));
+    const response = await submit(upload(mixedTargets, stressFiles));
+    assert.strictEqual(response.statusCode, 200, response.body);
+    assert.deepStrictEqual(response.json().summary, { completed: count * 4, failed: 0, skipped: 0 });
+    for (const [index, { filename, contents }] of stressFiles.entries()) {
+      assert.strictEqual(fs.readFileSync(path.join(robot1.serverDirectoryPath, "upload", filename), "utf8"), contents);
+      assert.strictEqual(fs.readFileSync(path.join(robot2.serverDirectoryPath, "upload", filename), "utf8"), contents);
+      assert.strictEqual(mockRemoteFs[`/upload/${filename}`]?.toString(), contents);
+      assert.strictEqual(secondRemoteFs[`/shared/${filename}`]?.toString(), contents);
+      const sha256 = crypto.createHash("sha256").update(contents).digest("hex");
+      assert.deepStrictEqual(response.json().results[index].targets.map((target: { checksum: string }) => target.checksum),
+        Array(4).fill(sha256));
+    }
+    const items = transferService.listTransfers(contextAdmin).filter((item) => item.batchId === response.json().batchId);
+    assert.strictEqual(items.filter((item) => !item.isBulkStaging).length, count * 4);
+    assert.strictEqual(items.filter((item) => item.isBulkStaging).length, count);
+    assert.ok(items.every((item) => item.status === "COMPLETED" && item.percent === 100 && item.transferredBytes === item.totalBytes));
+    console.log(`  PASS: ${count} file, ${count * 4} invii misti, byte e SHA-256 verificati.`);
+  };
+  await stress(1);
+  await stress(12);
+  await Promise.all([stress(10), stress(50)]);
+  await stress(100);
+  assertNoParts();
+
+  // Il rename fallisce se la destinazione è una directory. L'originale resta
+  // al suo posto e il .part viene rimosso anche dopo una pipeline riuscita.
+  const occupiedPath = path.join(robot1.serverDirectoryPath, "upload", "occupied.txt");
+  fs.mkdirSync(occupiedPath, { mode: 0o750 });
+  const cannotPublish = await submit(upload([mixedTargets[0]], [{ filename: "occupied.txt", contents: "A" }], true));
+  assert.deepStrictEqual(cannotPublish.json().summary, { completed: 0, failed: 1, skipped: 0 });
+  assert.ok(fs.statSync(occupiedPath).isDirectory());
+  assertNoParts();
+
+  const serverSource = await server.inject({
+    method: "POST",
+    url: "/api/transfers/bulk/server-source",
+    headers: authHeaders,
+    cookies,
+    payload: {
+      sourceScope: "server",
+      sourceRobotId: robot1.id,
+      sourcePaths: ["/upload/wizard_0.txt"],
+      targets: [{ type: "general", directory: "/" }, { type: "server", robotId: robot2.id, directory: "/" }],
+    },
+  });
+  assert.strictEqual(serverSource.statusCode, 200, serverSource.body);
+  assert.deepStrictEqual(serverSource.json().summary, { completed: 2, failed: 0, skipped: 0 });
+  assert.strictEqual(fs.readFileSync(path.join(serverFsService.getGeneralFsRoot(), files[0].filename), "utf8"), files[0].contents);
+  assert.strictEqual(fs.readFileSync(path.join(robot1.serverDirectoryPath, "upload", files[0].filename), "utf8"), files[0].contents);
+  assertNoParts();
+
+  const outgoing = path.join(tmpServerRoot, "outside-robot");
+  fs.mkdirSync(outgoing, { mode: 0o750 });
+  fs.symlinkSync(outgoing, path.join(robot1.serverDirectoryPath, "test-link"), "dir");
+  for (const directory of ["/upload/../configs", "/.tmp", "/test-link/new-directory"]) {
+    const denied = await submit(upload([{ ...mixedTargets[0], directory }], [{ filename: "blocked.txt", contents: "A" }]));
+    assert.strictEqual(denied.statusCode, 400, denied.body);
+  }
+  assert.deepStrictEqual(fs.readdirSync(outgoing), []);
+  assertNoParts();
+
+  fs.renameSync(stagingDir, `${stagingDir}.test-backup`);
+  fs.symlinkSync(outgoing, stagingDir, "dir");
+  const unsafeStaging = await submit(upload([mixedTargets[0]], [{ filename: "blocked.txt", contents: "A" }]));
+  assert.strictEqual(unsafeStaging.statusCode, 400, unsafeStaging.body);
+  assert.deepStrictEqual(fs.readdirSync(outgoing), []);
+  fs.unlinkSync(stagingDir);
+  fs.renameSync(`${stagingDir}.test-backup`, stagingDir);
+  assertNoParts();
+  console.log("  PASS: Test 8 - HTTPS per target omogenei, duplicati, limite multipart, esito parziale, readback, sorgente server, pulizia e jail.");
+
+  const archiveRow = "[2026-01-01 12:00:00] File: archivio-legacy.bin | Utente: storico | Direzione: SERVER_TO_ROBOT | Esito: SUCCESSO | Dettagli: storico";
+  const logPath = physicalFileLogger.getTransferLogFilePath();
+  fs.writeFileSync(`${logPath}.1`, archiveRow, { mode: 0o600 });
+  const activeLogText = fs.readFileSync(logPath, "utf8");
   await server.close();
+
+  const restartedLogger = new PhysicalFileLogger(path.dirname(logPath), { maxFileSizeBytes: 1 });
+  const newSessions = new SessionManager(30);
+  const resumedSession = newSessions.createSession(adminUser);
+  const reopened = createServer(config, logger, {
+    sessionManager: newSessions, userRepository: userRepo, auditRepository: auditRepo,
+    robotRepository: robotRepo, physicalFileLogger: restartedLogger, credentialProvider,
+  });
+  try {
+    // Un'ulteriore scrittura oltre la soglia conserva sia il file attivo sia l'archivio storico.
+    const redactedRow = await restartedLogger.logTransfer({
+      filename: "sanitizzazione.bin", username: "admin", direction: "CLIENT_TO_ROBOT", outcome: "FALLIMENTO",
+      source: "Computer", destination: "sftp://user:URI_SECRET_FIXTURE@robot.test/path",
+      details: "password=TEST_PASSWORD_FIXTURE\n-----BEGIN OPENSSH PRIVATE KEY-----\nKEY_SECRET_FIXTURE\n-----END OPENSSH PRIVATE KEY-----",
+    });
+    const requestCookies = { "__Host-moliris_session": resumedSession.sessionId };
+    const download = await reopened.inject({ method: "GET", url: "/api/logs/download/transfers", cookies: requestCookies });
+    assert.strictEqual(download.statusCode, 200, download.body);
+    assert.strictEqual(download.body, `${archiveRow}\n${activeLogText}${redactedRow}\n`);
+    assert.doesNotMatch(download.body, /URI_SECRET_FIXTURE|TEST_PASSWORD_FIXTURE|KEY_SECRET_FIXTURE/);
+    for (const outcome of ["SUCCESSO", "FALLIMENTO", "ANNULLATO"]) {
+      const result = await reopened.inject({
+        method: "GET", url: `/api/logs/transfers?outcome=${outcome}&limit=1000`, cookies: requestCookies,
+      });
+      assert.strictEqual(result.statusCode, 200, result.body);
+      const rows = result.json().logs as string[];
+      assert.ok(rows.length > 0);
+      assert.ok(rows.every((row) => row.includes(` | Esito: ${outcome}`)));
+    }
+  } finally {
+    await reopened.close();
+  }
+  console.log("  PASS: righe singole dei batch, cancellazioni, filtri, storico e download dopo il riavvio del backend.");
+
+  secondSftpServer.close();
   console.log("  PASS: Test 6 - Endpoint REST Fastify /pre-check e /upload multipart collaudati con successo.");
 }
 
