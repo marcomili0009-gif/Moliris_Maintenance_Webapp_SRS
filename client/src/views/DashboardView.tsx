@@ -339,14 +339,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const handleConfirmBulkOverwrite = async () => {
     if (bulkConflicts) {
-      await transfers.executeBulkUpload(
-        bulkConflicts.files,
-        bulkConflicts.destinations,
-        true
-      );
+      const result = await handleBulkExecute(bulkConflicts.files, bulkConflicts.destinations, true);
       setBulkConflicts(null);
-      setIsBulkUploadOpen(false);
-      setGlobalMessage("Caricamento massivo completato con sovrascrittura.");
+      if (result.success) {
+        setIsBulkUploadOpen(false);
+        setGlobalMessage("Caricamento massivo completato con sovrascrittura.");
+      } else {
+        const completed = result.results?.filter((item) => item.success).length ?? 0;
+        const failed = result.results?.filter((item) => !item.success).length ?? 0;
+        pushToast("error", result.error?.userMessage ?? `Caricamento massivo incompleto. Invii riusciti: ${completed}. Invii falliti: ${failed}.`);
+      }
     }
   };
 

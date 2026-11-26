@@ -21,7 +21,7 @@ import {
   MongoClientRepository,
   MongoPlantRepository,
 } from "../storage/client-plant-repository.ts";
-import { MongoClient } from "mongodb";
+import { MongoClient, type Db } from "mongodb";
 import { ServerFilesystemService } from "../storage/server-fs.ts";
 import { AuthMiddleware } from "./auth/auth-middleware.ts";
 import { registerAuthRoutes } from "./auth/auth-routes.ts";
@@ -86,7 +86,7 @@ export interface ServerDependencies {
   physicalFileLogger?: PhysicalFileLogger;
   batchTransferManager?: BatchTransferManager;
   roleMapping?: RolePermissionMapping;
-  db?: any;
+  db?: Db;
   appConfig?: AppConfig;
 }
 
@@ -130,6 +130,7 @@ export function createServer(
         [ErrorCode.CONNECTION_LIMIT_REACHED]: 429,
         [ErrorCode.SESSION_ALREADY_ACTIVE]: 409,
         [ErrorCode.HOST_KEY_INVALID]: 403,
+        [ErrorCode.DB_PERSISTENCE_ERROR]: 500,
       };
       const statusCode = statusMap[error.code] || 400;
       return reply.status(statusCode).send({
@@ -567,9 +568,27 @@ export function createServer(
     await connectionManager.closeAll();
   });
 
-  // Singolo endpoint tecnico di verifica dello stato del servizio (senza dati sensibili)
+  // La liveness dipende solo dal processo; la readiness richiede anche MongoDB.
+  app.get("/livez", async (_request, reply) => {
+    return reply.header("Cache-Control", "no-store").send({
+      status: "OK",
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   app.get("/healthz", async (_request, reply) => {
-    return reply.status(200).send({
+    reply.header("Cache-Control", "no-store");
+    if (deps.db) {
+      try {
+        await deps.db.command({ ping: 1 }, { signal: AbortSignal.timeout(1_000) });
+      } catch {
+        return reply.status(503).send({
+          status: "UNAVAILABLE",
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+    return reply.send({
       status: "OK",
       timestamp: new Date().toISOString(),
     });

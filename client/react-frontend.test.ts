@@ -4,7 +4,9 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { spawn, execSync, type ChildProcess } from "child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { fileURLToPath } from "url";
+import ssh2 from "ssh2";
 import { createServer } from "../backend/server.ts";
 import { loadConfig } from "../src/config/index.ts";
 import { MolirisLogger } from "../logging/logger.ts";
@@ -17,7 +19,7 @@ import { PhysicalFileLogger } from "../backend/logging/physical-file-logger.ts";
 import { SessionManager } from "../backend/auth/session-manager.ts";
 import { ServerFilesystemService } from "../storage/server-fs.ts";
 import { InMemoryCredentialProvider } from "../backend/connection/credential-provider.ts";
-import { DefaultHostKeyVerifier } from "../backend/connection/host-key-verifier.ts";
+import { computeHostKeyFingerprint, DefaultHostKeyVerifier } from "../backend/connection/host-key-verifier.ts";
 import { RobotConnectionManager } from "../backend/connection/robot-connection-manager.ts";
 
 import { ErrorPresenter, ERROR_CATALOG } from "./src/services/error-presenter.ts";
@@ -413,7 +415,6 @@ const chromeProcess: ChildProcess = spawn(
     "--disable-gpu",
     "--no-sandbox",
     `--remote-debugging-port=${cdpPort}`,
-    "--ignore-certificate-errors",
     `--user-data-dir=${chromeUserDataDir}`,
     "about:blank",
   ],
@@ -450,6 +451,8 @@ const pendingCdpReplies = new Map<number, (reply: any) => void>();
 const networkRequestsMade: string[] = [];
 const networkRequestsWithMethod: Array<{ method: string; url: string }> = [];
 const browserJavaScriptErrors: string[] = [];
+const terminalSocketIds = new Set<string>();
+const terminalInputs: string[] = [];
 
 cdpWs.onmessage = (event) => {
   try {
@@ -469,6 +472,12 @@ cdpWs.onmessage = (event) => {
           url: reqUrl,
         });
       }
+    }
+    if (data.method === "Network.webSocketCreated" && new URL(data.params.url).pathname.startsWith("/api/terminal/ws/")) {
+      terminalSocketIds.add(data.params.requestId);
+    }
+    if (data.method === "Network.webSocketFrameSent" && terminalSocketIds.has(data.params.requestId)) {
+      terminalInputs.push(data.params.response.payloadData);
     }
     if (data.id && pendingCdpReplies.has(data.id)) {
       const cb = pendingCdpReplies.get(data.id)!;
@@ -520,6 +529,173 @@ async function waitForBrowser(expression: string, timeoutMs = 4_000): Promise<vo
     await new Promise((resolve) => setTimeout(resolve, 50));
   } while (performance.now() < deadline);
   assert.fail(`Condizione browser non soddisfatta: ${expression}`);
+}
+
+async function terminalKey(key: string, code: string, windowsVirtualKeyCode: number, modifiers: number) {
+  for (const type of ["rawKeyDown", "keyUp"]) {
+    await sendCdpCommand("Input.dispatchKeyEvent", { type, key, code, windowsVirtualKeyCode, modifiers });
+  }
+}
+
+async function testTerminalClipboard() {
+  const menu = ".terminal-context-menu:popover-open";
+  const input = "#terminal-clipboard-input";
+  const origin = serverBaseUrl;
+  await sendCdpCommand("Browser.grantPermissions", { origin, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] });
+  try {
+    // Il primo fit può ridisegnare le righe dopo l'arrivo del prompt SSH.
+    await evaluateInBrowser("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    const { x, y, cellWidth } = await evaluateInBrowser<{ x: number; y: number; cellWidth: number }>(`(() => {
+      const screen = document.querySelector('#terminal-container .xterm-screen');
+      const row = [...screen.querySelectorAll('.xterm-rows > div')]
+        .find(row => row.textContent === 'BETA_LINE');
+      const { top, height } = row.getBoundingClientRect();
+      const { left, width } = screen.getBoundingClientRect();
+      const columns = parseInt(document.querySelector('#terminal-footer-dims').textContent, 10);
+      return { x: left, y: top + height / 2, cellWidth: width / columns };
+    })()`);
+    const startX = x + cellWidth * 0.2;
+    const endX = x + cellWidth * 9.2;
+    await sendCdpCommand("Input.dispatchMouseEvent", { type: "mousePressed", x: startX, y, button: "left", buttons: 1, clickCount: 1 });
+    await sendCdpCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: endX, y, buttons: 1 });
+    await waitForBrowser("Boolean(document.querySelector('#terminal-container .xterm-selection > div'))");
+    await sendCdpCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: endX, y, button: "left", clickCount: 1 });
+
+    const beforeCopy = terminalInputs.length;
+    await terminalKey("C", "KeyC", 67, 10);
+    assert.strictEqual(await evaluateInBrowser("navigator.clipboard.readText()"), "BETA_LINE");
+    assert.strictEqual(terminalInputs.length, beforeCopy);
+
+    async function chooseMenu(label: string) {
+      await sendCdpCommand("Input.dispatchMouseEvent", { type: "mousePressed", x: endX, y, button: "right", buttons: 2, clickCount: 1 });
+      await sendCdpCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: endX, y, button: "right", clickCount: 1 });
+      await waitForBrowser(`Boolean(document.querySelector('${menu}'))`);
+      const { x, y: buttonY } = await evaluateInBrowser<{ x: number; y: number }>(`(() => {
+        const button = [...document.querySelectorAll('${menu} button')].find(button => button.textContent === ${JSON.stringify(label)});
+        const rect = button.getBoundingClientRect();
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      })()`);
+      await sendCdpCommand("Input.dispatchMouseEvent", { type: "mousePressed", x, y: buttonY, button: "left", buttons: 1, clickCount: 1 });
+      await sendCdpCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x, y: buttonY, button: "left", clickCount: 1 });
+    }
+
+    await chooseMenu("Seleziona tutto");
+    await chooseMenu("Copia");
+    assert.match(await evaluateInBrowser<string>("navigator.clipboard.readText()"), /ALPHA_LINE\nBETA_LINE\nGAMMA_LINE/);
+
+    const shortcuts = [
+      ["v", "KeyV", 86, 2, "PASTE_CTRL_V"],
+      ["V", "KeyV", 86, 10, "PASTE_CTRL_SHIFT_V"],
+      ["Insert", "Insert", 45, 8, "PASTE_SHIFT_INSERT"],
+    ] as const;
+    for (const [key, code, virtualCode, modifiers, marker] of shortcuts) {
+      await evaluateInBrowser(`navigator.clipboard.writeText(${JSON.stringify(marker)})`);
+      const before = terminalInputs.length;
+      await terminalKey(key, code, virtualCode, modifiers);
+      assert.deepStrictEqual(terminalInputs.slice(before), [`\x1b[200~${marker}\x1b[201~`], marker);
+    }
+
+    await evaluateInBrowser(String.raw`navigator.clipboard.writeText('PASTE_MENU\r\nRIGA_2\nRIGA_3')`);
+    const beforeMenu = terminalInputs.length;
+    await chooseMenu("Incolla");
+    await waitForBrowser(`!document.querySelector('${menu}')`);
+    await evaluateInBrowser("navigator.clipboard.readText()");
+    assert.deepStrictEqual(terminalInputs.slice(beforeMenu), ["\x1b[200~PASTE_MENU\rRIGA_2\rRIGA_3\x1b[201~"]);
+
+    await evaluateInBrowser("navigator.clipboard.writeText('PASTE_NEGA_PERMESSO')");
+    await sendCdpCommand("Browser.setPermission", { origin, permission: { name: "clipboard-read" }, setting: "denied" });
+    const beforeFallback = terminalInputs.length;
+    await chooseMenu("Incolla");
+    await waitForBrowser(`document.activeElement.matches('${input}')`);
+    assert.strictEqual(terminalInputs.length, beforeFallback, "Il menu deve attendere un incolla esplicito");
+    await terminalKey("v", "KeyV", 86, 2);
+    assert.deepStrictEqual(terminalInputs.slice(beforeFallback), ["\x1b[200~PASTE_NEGA_PERMESSO\x1b[201~"]);
+
+    await evaluateInBrowser("Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })");
+    try {
+      const beforeUnavailable = terminalInputs.length;
+      await chooseMenu("Incolla");
+      await waitForBrowser(`document.activeElement.matches('${input}')`);
+      assert.strictEqual(terminalInputs.length, beforeUnavailable);
+      await terminalKey("v", "KeyV", 86, 2);
+      assert.deepStrictEqual(terminalInputs.slice(beforeUnavailable), ["\x1b[200~PASTE_NEGA_PERMESSO\x1b[201~"]);
+    } finally {
+      await evaluateInBrowser("delete navigator.clipboard");
+    }
+
+    const beforeInterrupt = terminalInputs.length;
+    await terminalKey("c", "KeyC", 67, 2);
+    assert.deepStrictEqual(terminalInputs.slice(beforeInterrupt), ["\x03"]);
+  } finally {
+    await sendCdpCommand("Browser.resetPermissions");
+  }
+}
+
+async function testRemoteTerminalClipboard() {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs1", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const parsedKey = ssh2.utils.parseKey(privateKey);
+  assert.ok(!(parsedKey instanceof Error) && !Array.isArray(parsedKey));
+  const { sha256Hex } = computeHostKeyFingerprint(parsedKey.getPublicSSH());
+  const password = "TerminalClipboardFixture";
+  const sshClients = new Set<ssh2.Connection>();
+  const sshServer = new ssh2.Server({ hostKeys: [privateKey] }, (client) => {
+    sshClients.add(client);
+    client.on("close", () => sshClients.delete(client));
+    client.on("authentication", (ctx) => {
+      if (ctx.method === "password" && ctx.username === "clipboard_fixture" && ctx.password === password) ctx.accept();
+      else ctx.reject();
+    });
+    client.on("ready", () => client.on("session", (accept) => {
+      const session = accept();
+      session.on("pty", (acceptPty) => acceptPty?.());
+      session.on("window-change", (acceptResize) => acceptResize?.());
+      session.on("shell", (acceptShell) => {
+        const stream = acceptShell();
+        stream.write("ALPHA_LINE\r\nBETA_LINE\r\nGAMMA_LINE\r\n\x1b[?2004h$ ");
+        stream.on("data", (data: Buffer) => {
+          if (data.includes(3)) stream.write("^C\r\n$ ");
+        });
+      });
+    }));
+  });
+  await new Promise<void>((resolve, reject) => {
+    sshServer.once("error", reject);
+    sshServer.listen(0, "127.0.0.1", resolve);
+  });
+
+  const robotId = "robot_clipboard_ssh";
+  const robotButton = `#btn-terminal-${robotId}`;
+  try {
+    const credentialReference = await credentialProvider.store(robotId, { method: "password", password });
+    await robotRepo.create({
+      ...robotReact,
+      id: robotId,
+      displayName: "Robot Clipboard",
+      remoteUsername: "clipboard_fixture",
+      serverDirectoryPath: path.join(serverFsRoot, "clipboard_fixture"),
+      sshPort: (sshServer.address() as { port: number }).port,
+      credentialReference,
+      hostKeyVerification: { fingerprint: sha256Hex, strictHostKeyChecking: true },
+    });
+    await waitForBrowser(`document.querySelector('${robotButton}:enabled') !== null`, 8_000);
+    await evaluateInBrowser(`document.querySelector('${robotButton}').click()`);
+    await waitForBrowser("document.querySelector('#terminal-session-status')?.textContent === 'Connesso'");
+    await waitForBrowser("document.querySelector('#terminal-container .xterm-rows')?.textContent.includes('BETA_LINE')");
+    await testTerminalClipboard();
+    await waitForBrowser("document.querySelector('#terminal-container .xterm-rows')?.textContent.includes('^C')");
+    await evaluateInBrowser("document.querySelector('#btn-close-terminal').click()");
+    await waitForBrowser("!document.querySelector('#modal-terminal')");
+    console.log("  PASS: Clipboard Chrome attraverso WSS e sessione PTY SSH del robot con verifica della chiave host.");
+  } finally {
+    await robotRepo.deleteById(robotId);
+    for (const client of sshClients) client.end();
+    await new Promise<void>((resolve) => sshServer.close(() => resolve()));
+    await waitForBrowser(`!document.querySelector('${robotButton}')`, 8_000);
+  }
 }
 
 async function setBrowserNetwork(latency: number, offline = false): Promise<void> {
@@ -787,7 +963,11 @@ async function testStalledLogout(): Promise<void> {
 
 try {
   console.log(`  -> Navigazione su ${serverBaseUrl}...`);
-  await sendCdpCommand("Page.navigate", { url: serverBaseUrl });
+  const navigation = await sendCdpCommand("Page.navigate", { url: serverBaseUrl });
+  assert.strictEqual(navigation.errorText, "net::ERR_CERT_AUTHORITY_INVALID");
+  // Accetta l'avviso solo per la fixture TLS locale generata da questo test.
+  await waitForBrowser("location.protocol === 'chrome-error:' && Boolean(document.querySelector('#proceed-link'))");
+  await evaluateInBrowser("document.querySelector('#details-button').click(); document.querySelector('#proceed-link').click()");
 
   // Attesa montaggio React e Login Section con retry resiliente
   let isLoginVisible = false;
@@ -1335,6 +1515,16 @@ try {
     );
   }
 
+  await testTerminalClipboard();
+  await sendCdpCommand("Input.insertText", { text: "printf 'PTY_%s\\n' READY; sleep 20" });
+  await terminalKey("Enter", "Enter", 13, 0);
+  await waitForBrowser("[...document.querySelectorAll('.xterm-rows > div')].some(row => row.textContent === 'PTY_READY')");
+  await terminalKey("c", "KeyC", 67, 2);
+  await sendCdpCommand("Input.insertText", { text: "printf 'PTY_%s\\n' RESUMED" });
+  await terminalKey("Enter", "Enter", 13, 0);
+  await waitForBrowser("[...document.querySelectorAll('.xterm-rows > div')].some(row => row.textContent === 'PTY_RESUMED')");
+  console.log("  PASS: Clipboard Chrome sul Terminale Server e interruzione di un processo PTY con Ctrl+C.");
+
   // Ripristino dimensioni ridotte: la sessione deve restare viva.
   await evaluateInBrowser<void>(`
     document.getElementById('btn-terminal-expand').click();
@@ -1389,6 +1579,8 @@ try {
     "Dopo la X la sessione PTY non deve più esistere sul backend (nessuna sessione orfana)"
   );
   console.log("  PASS: Terminale server ridotto/espanso senza perdita sessione, newline a colonna 0, X con chiusura PTY verificata.");
+
+  await testRemoteTerminalClipboard();
 
   // Test Prompt Correttivo #2: Modale «Gestione File» alla selezione di «Invia al Robot»
   console.log("  -> Test Prompt Correttivo #2: Apertura e funzionamento modale Gestione File");

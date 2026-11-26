@@ -7,7 +7,7 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import { PassThrough, pipeline, type Readable, type Writable } from "stream";
+import { addAbortSignal, PassThrough, pipeline, type Readable, type Writable } from "stream";
 import { pipeline as pipelineWithSignal } from "node:stream/promises";
 import { type SystemConfiguration } from "../../config/configuration.ts";
 import { type RobotEntity } from "../../storage/robot-models.ts";
@@ -18,6 +18,7 @@ import { type RobotConnectionManager, type ManagedRobotConnection } from "../con
 import { type SessionManager, type AuthorizedContext } from "../auth/session-manager.ts";
 import { AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "../auth/permissions.ts";
 import { type AuditRepository } from "../../storage/audit-repository.ts";
+import { validateAndNormalizePath } from "../auth/path-authorization.ts";
 import { AuditOperation } from "../../storage/audit-models.ts";
 import { MolirisLogger, redactSensitiveData } from "../../logging/logger.ts";
 import { MolirisAppError, ErrorCode } from "../../errors/app-errors.ts";
@@ -3109,7 +3110,14 @@ export class TransferService {
   }
 
   private async recordAuditComplete(record: TransferRecord): Promise<void> {
-    await this.recordAuditSuccess(record);
+    try {
+      await this.recordAuditSuccess(record);
+    } catch (err) {
+      // La promozione è già avvenuta. Un errore di audit non rende incompleto il file pubblicato.
+      this.logger.error("Audit di completamento bulk non riuscito", String(err), {
+        batchId: record.batchId, transferId: record.transferId,
+      });
+    }
   }
 
   private async recordSecurityViolation(username: string, robotId: string, reason: string): Promise<void> {
@@ -3186,7 +3194,130 @@ export class TransferService {
   }
 
   public async failBulkStagingTransfer(record: TransferRecord, err: any): Promise<void> {
-    await this.handleTransferFailure(record, err);
+    await this.handleBulkTargetFailure(record, err);
+  }
+
+  private validateBulkFilenames(filenames: string[]): void {
+    const maxFiles = this.config.maxBulkUploadFiles || 20;
+    if (filenames.length > maxFiles) {
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        `Numero di file selezionati (${filenames.length}) superiore al limite massimo consentito (${maxFiles}).`
+      );
+    }
+    const names = new Set<string>();
+    for (const filename of filenames) {
+      const name = this.sanitizeFilename(filename).trim();
+      if (names.has(name)) {
+        throw new MolirisAppError(
+          ErrorCode.MISSING_ROBOT_PARAMS,
+          "Più sorgenti hanno lo stesso nome di destinazione.",
+          "La selezione contiene file con lo stesso nome. Seleziona file con nomi distinti."
+        );
+      }
+      names.add(name);
+    }
+  }
+
+  private async resolveBulkServerDestination(directory: string | undefined, filename: string, robot?: RobotEntity): Promise<string> {
+    // Il selettore usa "/" come radice virtuale dell'archivio, come il file browser.
+    // Valida la sintassi originale prima di rimuovere il prefisso virtuale.
+    const relativeDir = validateAndNormalizePath(directory?.trim() || "/").replace(/^\/+/, "");
+    const resolvePath = (relativePath: string) => robot
+      ? this.serverFsService.resolveRobotPath(robot, relativePath)
+      : this.serverFsService.resolveGeneralPath(relativePath);
+    const destination = await resolvePath(path.posix.join(relativeDir, filename));
+
+    // Il file nuovo non ha ancora un realpath. Verifica il primo antenato
+    // esistente, compresi i link simbolici pendenti, prima di creare directory.
+    let parent = relativeDir || ".";
+    while (parent !== ".") {
+      const resolvedParent = await resolvePath(parent);
+      try {
+        await fs.promises.realpath(resolvedParent);
+        break;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        const entry = await fs.promises.lstat(resolvedParent).catch((statError: NodeJS.ErrnoException) => {
+          if (statError.code !== "ENOENT") throw statError;
+        });
+        if (entry?.isSymbolicLink()) {
+          throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, "Collegamento simbolico di destinazione non risolvibile.");
+        }
+        parent = path.posix.dirname(parent);
+      }
+    }
+    return destination;
+  }
+
+  public async ensureBulkTempDirectory(
+    root = path.resolve(this.config.serverFilesystemRoot.trim()),
+    name = ".tmp_bulk"
+  ): Promise<string> {
+    const directory = path.join(root, name);
+    try {
+      await fs.promises.mkdir(directory, { mode: 0o700 });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+    const entry = await fs.promises.lstat(directory);
+    if (!entry.isDirectory() || (entry.mode & 0o022) !== 0) {
+      throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, `Directory temporanea non sicura: ${directory}`);
+    }
+    await fs.promises.access(directory, fs.constants.W_OK | fs.constants.X_OK);
+    return directory;
+  }
+
+  private async handleBulkTargetFailure(record: TransferRecord, err: unknown): Promise<void> {
+    if (record.status === TransferStatus.CANCELLED) return;
+    try {
+      await this.handleTransferFailure(record, err);
+    } catch (auditError) {
+      this.logger.error("Audit di fallimento bulk non riuscito", String(auditError), {
+        batchId: record.batchId, transferId: record.transferId,
+      });
+    }
+  }
+
+  private logBulkTargetFailure(batchId: string, target: BulkTarget, filename: string, err: unknown): void {
+    const detail = err as NodeJS.ErrnoException;
+    this.logger.error(
+      "Destinazione del caricamento massivo non riuscita",
+      err instanceof MolirisAppError ? err.diagnosticDetail : detail?.message,
+      { batchId, targetType: target.type, robotId: target.robotId, directory: target.directory, filename, code: detail?.code }
+    );
+  }
+
+  private async removeBulkPart(tempPath: string): Promise<void> {
+    try {
+      await fs.promises.unlink(tempPath);
+    } catch (err) {
+      const ioError = err as NodeJS.ErrnoException;
+      if (ioError.code !== "ENOENT") {
+        this.logger.warn("Pulizia del file temporaneo bulk non riuscita", { path: tempPath, code: ioError.code });
+      }
+    }
+  }
+
+  private async promoteBulkServerFile(record: TransferRecord, tempPath: string, finalPath: string, overwrite: boolean): Promise<void> {
+    await fs.promises.mkdir(path.dirname(finalPath), { recursive: true, mode: 0o750 });
+    this.beginPromotion(record);
+    const mayReplace = overwrite && this.config.transferOverwritePolicy !== "rifiuta";
+    if (mayReplace) {
+      await fs.promises.rename(tempPath, finalPath);
+    } else {
+      try {
+        // Pubblica atomicamente un file nuovo, anche se un'altra richiesta vince la corsa.
+        await fs.promises.link(tempPath, finalPath);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+        throw new MolirisAppError(
+          ErrorCode.SERVER_DIR_INACCESSIBLE,
+          `File di destinazione già esistente: ${finalPath}`,
+          "File già esistente. Sovrascrittura non autorizzata."
+        );
+      }
+    }
   }
 
   /**
@@ -3209,13 +3340,7 @@ export class TransferService {
       };
     }
 
-    const maxFiles = this.config.maxBulkUploadFiles || 20;
-    if (filenames.length > maxFiles) {
-      throw new MolirisAppError(
-        ErrorCode.INSUFFICIENT_PERMISSIONS,
-        `Numero di file selezionati (${filenames.length}) superiore al limite massimo consentito (${maxFiles}).`
-      );
-    }
+    this.validateBulkFilenames(filenames);
 
     const conflicts: BulkFileConflict[] = [];
     let totalChecks = 0;
@@ -3235,10 +3360,7 @@ export class TransferService {
         for (const fname of filenames) {
           totalChecks++;
           const safeFilename = this.sanitizeFilename(fname);
-          const relPath = target.directory && target.directory !== "/"
-            ? path.posix.join(path.posix.normalize(target.directory).replace(/^\/+/, ""), safeFilename)
-            : safeFilename;
-          const fullPath = await this.serverFsService.resolveGeneralPath(relPath);
+          const fullPath = await this.resolveBulkServerDestination(target.directory, safeFilename);
 
           if (fs.existsSync(fullPath)) {
             try {
@@ -3278,10 +3400,7 @@ export class TransferService {
         for (const fname of filenames) {
           totalChecks++;
           const safeFilename = this.sanitizeFilename(fname);
-          const relPath = target.directory
-            ? path.posix.join(path.posix.normalize(target.directory), safeFilename)
-            : safeFilename;
-          const fullPath = await this.serverFsService.resolveRobotPath(robot, relPath);
+          const fullPath = await this.resolveBulkServerDestination(target.directory, safeFilename, robot);
 
           if (fs.existsSync(fullPath)) {
             try {
@@ -3332,12 +3451,14 @@ export class TransferService {
                 existingSizeBytes: stats.size,
                 existingModifiedAt: stats.mtime ? new Date(stats.mtime * 1000) : undefined,
               });
-            } catch {
-              // File non presente, nessun conflitto
+            } catch (err) {
+              if ((err as { code?: number }).code !== 2) {
+                throw this.remoteFsService.mapSftpError(err, remotePath, robot.id);
+              }
             }
           }
         } finally {
-          // Connessione gestita dal connection pool (RobotConnectionManager)
+          await managedConn.close();
         }
       }
     }
@@ -3369,6 +3490,7 @@ export class TransferService {
     }
   ): Promise<BulkUploadResponse> {
     const { targets, overwrite, stagedFiles } = options;
+    this.validateBulkFilenames(stagedFiles.map(({ filename }) => filename));
     const results: BulkFileResult[] = [];
     let completed = 0;
     let failed = 0;
@@ -3436,10 +3558,7 @@ export class TransferService {
             this.serverFsService.assertOperatorAccess(context, target.directory, "UPLOAD");
 
             const safeFilename = this.sanitizeFilename(staged.filename);
-            const relPath = target.directory && target.directory !== "/"
-              ? path.posix.join(path.posix.normalize(target.directory).replace(/^\/+/, ""), safeFilename)
-              : safeFilename;
-            const finalPath = await this.serverFsService.resolveGeneralPath(relPath);
+            const finalPath = await this.resolveBulkServerDestination(target.directory, safeFilename);
 
             if (fs.existsSync(finalPath) && !overwrite) {
               this.batchTransferManager?.setItemFailed(batchId, batchItemId, "File già esistente nell'archivio generale.");
@@ -3454,10 +3573,7 @@ export class TransferService {
               continue;
             }
 
-            const tempDir = path.join(this.config.serverFilesystemRoot, ".tmp_bulk");
-            if (!fs.existsSync(tempDir)) {
-              await fs.promises.mkdir(tempDir, { recursive: true, mode: 0o700 });
-            }
+            const tempDir = await this.ensureBulkTempDirectory();
             const transferId = crypto.randomUUID();
             tempPartPath = path.join(tempDir, `bulk_general_${transferId}.part`);
 
@@ -3481,14 +3597,12 @@ export class TransferService {
               startedAt: new Date(),
               completedAt: undefined,
               error: null,
-              checksumAlgorithm: this.checksumAlgorithm.name,
+              checksumAlgorithm: "sha256",
               lastProgressUpdateAt: startTime,
               lastBytesAtUpdate: 0,
               abortController: new AbortController(),
               cleanupHandlers: [
-                async () => {
-                  try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
-                },
+                () => this.removeBulkPart(tempPartPath),
               ],
             };
             record = genRecord;
@@ -3511,45 +3625,23 @@ export class TransferService {
             const hash = crypto.createHash("sha256");
             let writtenBytes = 0;
             const readStream = fs.createReadStream(staged.stagingPath);
-            const writeStream = fs.createWriteStream(tempPartPath, { mode: 0o600 });
+            const writeStream = fs.createWriteStream(tempPartPath, { mode: 0o600, flags: "wx" });
 
-            await new Promise<void>((resolve, reject) => {
-              const onAbort = () => {
-                const abortErr = new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Trasferimento annullato con il blocco massivo.");
-                readStream.destroy(abortErr);
-                writeStream.destroy(abortErr);
-                reject(abortErr);
-              };
-              genRecord.abortController.signal.addEventListener("abort", onAbort, { once: true });
-              readStream.on("data", (chunk: Buffer | string) => {
-                const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-                hash.update(buf);
-                writtenBytes += buf.length;
-                genRecord.transferredBytes = writtenBytes;
-                const elapsedSec = Math.max(0.001, (Date.now() - startTime) / 1000);
-                genRecord.speedBytesPerSec = Math.round(writtenBytes / elapsedSec);
-                if (genRecord.totalBytes && genRecord.speedBytesPerSec > 0) {
-                  const remaining = Math.max(0, genRecord.totalBytes - writtenBytes);
-                  genRecord.etaSeconds = Math.ceil(remaining / genRecord.speedBytesPerSec);
-                }
-                genRecord.lastProgressUpdateAt = Date.now();
-                this.batchTransferManager?.updateItemProgress(batchId, batchItemId, writtenBytes);
-              });
-              pipeline(readStream, writeStream, (err) => {
-                genRecord.abortController.signal.removeEventListener("abort", onAbort);
-                if (err) reject(err);
-                else resolve();
-              });
-            }).catch(async (err) => {
-              if (genRecord.status !== TransferStatus.CANCELLED) {
-                genRecord.status = TransferStatus.FAILED;
-                genRecord.error = err.message;
-                genRecord.completedAt = new Date();
-                await this.recordAuditFailure(genRecord, err);
+            readStream.on("data", (chunk: Buffer | string) => {
+              const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+              hash.update(buf);
+              writtenBytes += buf.length;
+              genRecord.transferredBytes = writtenBytes;
+              const elapsedSec = Math.max(0.001, (Date.now() - startTime) / 1000);
+              genRecord.speedBytesPerSec = Math.round(writtenBytes / elapsedSec);
+              if (genRecord.totalBytes && genRecord.speedBytesPerSec > 0) {
+                const remaining = Math.max(0, genRecord.totalBytes - writtenBytes);
+                genRecord.etaSeconds = Math.ceil(remaining / genRecord.speedBytesPerSec);
               }
-              try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
-              throw err;
+              genRecord.lastProgressUpdateAt = Date.now();
+              this.batchTransferManager?.updateItemProgress(batchId, batchItemId, writtenBytes);
             });
+            await pipelineWithSignal(readStream, writeStream, { signal: genRecord.abortController.signal });
 
             const computedHash = hash.digest("hex");
             if (computedHash !== staged.sha256) {
@@ -3557,22 +3649,19 @@ export class TransferService {
               genRecord.error = "Checksum non corrispondente durante il salvataggio nell'archivio generale.";
               genRecord.completedAt = new Date();
               await this.recordAuditFailure(genRecord, new Error(genRecord.error));
-              try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
               throw new MolirisAppError(ErrorCode.INTEGRITY_CHECK_FAILED, genRecord.error);
             }
 
             const tempStat = await fs.promises.stat(tempPartPath);
-            if (tempStat.size !== writtenBytes) {
+            if (tempStat.size !== writtenBytes || writtenBytes !== staged.sizeBytes) {
               genRecord.status = TransferStatus.INTEGRITY_FAILED;
               genRecord.error = "Dimensione del file temporaneo non corrispondente ai byte ricevuti.";
               genRecord.completedAt = new Date();
               await this.recordAuditFailure(genRecord, new Error(genRecord.error));
-              try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
               throw new MolirisAppError(ErrorCode.INTEGRITY_CHECK_FAILED, genRecord.error);
             }
 
-            await fs.promises.mkdir(path.dirname(finalPath), { recursive: true, mode: 0o750 });
-            await fs.promises.rename(tempPartPath, finalPath);
+            await this.promoteBulkServerFile(genRecord, tempPartPath, finalPath, overwrite);
 
             genRecord.status = TransferStatus.COMPLETED;
             genRecord.completedAt = new Date();
@@ -3590,7 +3679,9 @@ export class TransferService {
             });
             completed++;
           } catch (err: any) {
-            const errMsg = err?.userMessage || err?.message || "Errore durante scrittura nell'archivio generale";
+            const errMsg = err instanceof MolirisAppError ? err.userMessage : "Errore durante scrittura nell'archivio generale.";
+            if (record) await this.handleBulkTargetFailure(record, err);
+            this.logBulkTargetFailure(batchId, target, staged.filename, err);
             if (!record || record.status !== TransferStatus.CANCELLED) {
               this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
             }
@@ -3602,6 +3693,8 @@ export class TransferService {
             });
             allTargetsSuccess = false;
             failed++;
+          } finally {
+            if (tempPartPath) await this.removeBulkPart(tempPartPath);
           }
           continue;
         }
@@ -3622,16 +3715,14 @@ export class TransferService {
         }
 
         if (target.type === "server") {
+          let tempPartPath = "";
           let record: TransferRecord | null = null;
           try {
             this.assertAuthorized(context, robot, [AppPermission.FS_SERVER_UPLOAD]);
             this.serverFsService.assertOperatorAccess(context, target.directory, "UPLOAD");
 
             const safeFilename = this.sanitizeFilename(staged.filename);
-            const relPath = target.directory
-              ? path.posix.join(path.posix.normalize(target.directory), safeFilename)
-              : safeFilename;
-            const finalPath = await this.serverFsService.resolveRobotPath(robot, relPath);
+            const finalPath = await this.resolveBulkServerDestination(target.directory, safeFilename, robot);
 
             // Verifica esistenza e politica sovrascrittura
             if (fs.existsSync(finalPath) && !overwrite) {
@@ -3648,9 +3739,9 @@ export class TransferService {
             }
 
             // Sostituzione atomica: scrittura in file temporaneo .part e rename solo a checksum verificato
-            const tempDir = await this.serverFsService.ensureTempDirectory(robot);
+            const tempDir = await this.ensureBulkTempDirectory(robot.serverDirectoryPath, ".tmp");
             const transferId = crypto.randomUUID();
-            const tempPartPath = path.join(tempDir, `bulk_${transferId}.part`);
+            tempPartPath = path.join(tempDir, `bulk_${transferId}.part`);
 
             const startTime = Date.now();
             const serverRecord: TransferRecord = {
@@ -3672,14 +3763,12 @@ export class TransferService {
               startedAt: new Date(),
               completedAt: undefined,
               error: null,
-              checksumAlgorithm: this.checksumAlgorithm.name,
+              checksumAlgorithm: "sha256",
               lastProgressUpdateAt: startTime,
               lastBytesAtUpdate: 0,
               abortController: new AbortController(),
               cleanupHandlers: [
-                async () => {
-                  try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
-                },
+                () => this.removeBulkPart(tempPartPath),
               ],
             };
             record = serverRecord;
@@ -3703,7 +3792,7 @@ export class TransferService {
             const hash = crypto.createHash("sha256");
             let writtenBytes = 0;
             const readStream = fs.createReadStream(staged.stagingPath);
-            const writeStream = fs.createWriteStream(tempPartPath, { mode: 0o600 });
+            const writeStream = fs.createWriteStream(tempPartPath, { mode: 0o600, flags: "wx" });
 
             readStream.on("data", (chunk: Buffer | string) => {
               const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -3721,12 +3810,6 @@ export class TransferService {
             });
             await pipelineWithSignal(readStream, writeStream, {
               signal: serverRecord.abortController.signal,
-            }).catch(async (err) => {
-              if (serverRecord.status !== TransferStatus.CANCELLED) {
-                await this.handleTransferFailure(serverRecord, err);
-              }
-              try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
-              throw err;
             });
 
             const computedHash = hash.digest("hex");
@@ -3735,7 +3818,6 @@ export class TransferService {
               serverRecord.error = "Checksum non corrispondente durante il salvataggio sul server.";
               serverRecord.completedAt = new Date();
               await this.recordAuditFailure(serverRecord, new Error(serverRecord.error));
-              try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
               throw new MolirisAppError(
                 ErrorCode.INTEGRITY_CHECK_FAILED,
                 "Checksum non corrispondente durante il salvataggio sul server."
@@ -3744,24 +3826,18 @@ export class TransferService {
 
             // Verifica dimensione su disco prima della promozione (CA-TRF-004)
             const tempStat = await fs.promises.stat(tempPartPath);
-            if (tempStat.size !== writtenBytes) {
+            if (tempStat.size !== writtenBytes || writtenBytes !== staged.sizeBytes) {
               serverRecord.status = TransferStatus.INTEGRITY_FAILED;
               serverRecord.error = "Dimensione del file temporaneo non corrispondente ai byte ricevuti.";
               serverRecord.completedAt = new Date();
               await this.recordAuditFailure(serverRecord, new Error(serverRecord.error));
-              try { if (fs.existsSync(tempPartPath)) await fs.promises.unlink(tempPartPath); } catch {}
               throw new MolirisAppError(
                 ErrorCode.INTEGRITY_CHECK_FAILED,
                 `Dimensione su disco (${tempStat.size}) diversa dai byte ricevuti (${writtenBytes})`
               );
             }
 
-            // Assicura che la directory genitore esista con permessi 0750 prima del rename
-            await fs.promises.mkdir(path.dirname(finalPath), { recursive: true, mode: 0o750 });
-
-            // Sostituzione atomica via rename
-            this.beginPromotion(record);
-            await fs.promises.rename(tempPartPath, finalPath);
+            await this.promoteBulkServerFile(serverRecord, tempPartPath, finalPath, overwrite);
 
             serverRecord.status = TransferStatus.COMPLETED;
             serverRecord.completedAt = new Date();
@@ -3779,7 +3855,9 @@ export class TransferService {
             });
             completed++;
           } catch (err: any) {
-            const errMsg = err.userMessage || err.message || "Errore durante scrittura su server";
+            const errMsg = err instanceof MolirisAppError ? err.userMessage : "Errore durante scrittura su server.";
+            if (record) await this.handleBulkTargetFailure(record, err);
+            this.logBulkTargetFailure(batchId, target, staged.filename, err);
             if (!record || record.status !== TransferStatus.CANCELLED) {
               this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
             }
@@ -3791,6 +3869,8 @@ export class TransferService {
             });
             allTargetsSuccess = false;
             failed++;
+          } finally {
+            if (tempPartPath) await this.removeBulkPart(tempPartPath);
           }
         } else if (target.type === "robot") {
           let managedConn: ManagedRobotConnection | null = null;
@@ -3856,7 +3936,7 @@ export class TransferService {
               startedAt: new Date(),
               completedAt: undefined,
               error: null,
-              checksumAlgorithm: this.checksumAlgorithm.name,
+              checksumAlgorithm: "sha256",
               lastProgressUpdateAt: startTime,
               lastBytesAtUpdate: 0,
               abortController: new AbortController(),
@@ -3910,12 +3990,6 @@ export class TransferService {
             });
             await pipelineWithSignal(readStream, remoteWriteStream, {
               signal: targetRecord.abortController.signal,
-            }).catch(async (err) => {
-              if (targetRecord.status !== TransferStatus.CANCELLED) {
-                await this.handleTransferFailure(targetRecord, err);
-              }
-              await this.safeUnlinkRobotFile(sftp, robot.id, tempRemotePartPath);
-              throw err;
             });
 
             const computedHash = hash.digest("hex");
@@ -3942,7 +4016,7 @@ export class TransferService {
                 resolve(st);
               });
             });
-            if (remoteTempStat.size !== writtenBytes) {
+            if (remoteTempStat.size !== writtenBytes || writtenBytes !== staged.sizeBytes) {
               if (record) {
                 record.status = TransferStatus.INTEGRITY_FAILED;
                 record.error = "Dimensione del file sul robot non corrispondente ai byte inviati.";
@@ -3956,6 +4030,24 @@ export class TransferService {
                 ErrorCode.INTEGRITY_CHECK_FAILED,
                 `Dimensione sul robot (${remoteTempStat.size}) diversa dai byte inviati (${writtenBytes})`
               );
+            }
+
+            if (this.config.transferVerifyMode === "readback") {
+              const readbackHash = crypto.createHash("sha256");
+              const readback = new PipelinedSftpReadStream(sftp, tempRemotePartPath, writtenBytes, {
+                chunkSize: 32768,
+                concurrency: 32,
+                highWaterMark: this.getChunkSize(),
+              });
+              addAbortSignal(record.abortController.signal, readback);
+              for await (const chunk of readback) {
+                this.assertTransferActive(record);
+                readbackHash.update(chunk);
+              }
+              if (readbackHash.digest("hex") !== computedHash) {
+                record.status = TransferStatus.INTEGRITY_FAILED;
+                throw new MolirisAppError(ErrorCode.INTEGRITY_CHECK_FAILED, "Checksum readback diverso dallo staging.");
+              }
             }
 
             // Sostituzione atomica e sicura sul robot: se la destinazione esiste,
@@ -3988,9 +4080,10 @@ export class TransferService {
             });
             completed++;
           } catch (err: any) {
-            const errMsg = err.userMessage || err.message || "Errore durante trasferimento al robot";
+            const errMsg = err instanceof MolirisAppError ? err.userMessage : "Errore durante il trasferimento al robot.";
+            this.logBulkTargetFailure(batchId, target, staged.filename, err);
             if (record && record.status !== TransferStatus.CANCELLED) {
-              await this.handleTransferFailure(record, err);
+              await this.handleBulkTargetFailure(record, err);
               this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
             } else if (!record) {
               this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
@@ -3998,8 +4091,10 @@ export class TransferService {
             if (tempRemotePartPath && managedConn) {
               try {
                 const sftp = await managedConn.getSftpClient();
-                await new Promise<void>((res) => sftp.unlink(tempRemotePartPath, () => res()));
-              } catch {}
+                await this.safeUnlinkRobotFile(sftp, robot.id, tempRemotePartPath);
+              } catch {
+                await this.safeUnlinkRobotFile(null, robot.id, tempRemotePartPath);
+              }
             }
             fileTargetResults.push({
               target,
@@ -4010,7 +4105,7 @@ export class TransferService {
             allTargetsSuccess = false;
             failed++;
           } finally {
-            // Connessione gestita dal pool (RobotConnectionManager)
+            await managedConn?.close();
           }
         }
       }
@@ -4058,31 +4153,25 @@ export class TransferService {
       sha256: string;
     }> = [];
 
+    this.validateBulkFilenames(req.sourcePaths);
     for (const sourceRel of req.sourcePaths) {
+      const relativePath = validateAndNormalizePath(sourceRel).replace(/^\/+/, "");
       let resolvedSourcePath: string;
+      let sizeBytes: number;
       if (req.sourceScope === "general") {
-        resolvedSourcePath = await this.serverFsService.resolveGeneralPath(sourceRel);
+        ({ totalBytes: sizeBytes } = await this.inspectGeneralDownload(context, relativePath));
+        resolvedSourcePath = await this.serverFsService.resolveGeneralPath(relativePath);
       } else {
         if (!req.sourceRobotId) {
           throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "sourceRobotId mancante per sorgente server robot.");
         }
-        let robot = await this.robotRepository.findById(req.sourceRobotId);
-        if (!robot) {
-          robot = await this.robotRepository.findByServerDirectory(req.sourceRobotId);
-        }
+        const robot = await this.robotRepository.findById(req.sourceRobotId)
+          ?? await this.robotRepository.findByServerDirectory(req.sourceRobotId);
         if (!robot) {
           throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot sorgente '${req.sourceRobotId}' non trovato.`);
         }
-        resolvedSourcePath = await this.serverFsService.resolveRobotPath(robot, sourceRel);
-      }
-
-      if (!fs.existsSync(resolvedSourcePath)) {
-        throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, `File sorgente sul server '${sourceRel}' non trovato.`);
-      }
-
-      const stat = await fs.promises.stat(resolvedSourcePath);
-      if (stat.isDirectory()) {
-        throw new MolirisAppError(ErrorCode.SERVER_DIR_INACCESSIBLE, `Il percorso '${sourceRel}' è una directory, atteso un file.`);
+        ({ totalBytes: sizeBytes } = await this.inspectServerDownload(context, robot, relativePath));
+        resolvedSourcePath = await this.serverFsService.resolveRobotPath(robot, relativePath);
       }
 
       const hash = crypto.createHash("sha256");
@@ -4095,9 +4184,9 @@ export class TransferService {
       const sha256 = hash.digest("hex");
 
       stagedFiles.push({
-        filename: path.basename(sourceRel),
+        filename: path.basename(resolvedSourcePath),
         stagingPath: resolvedSourcePath,
-        sizeBytes: stat.size,
+        sizeBytes,
         sha256,
       });
     }
