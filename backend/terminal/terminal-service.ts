@@ -75,6 +75,9 @@ export class ProcessPtyChannel extends EventEmitter {
       return chunk;
     };
 
+    // Il prompt può arrivare durante il POST, prima dell'aggancio WebSocket.
+    // Conserva l'output nei buffer delle pipe fino a quando c'è un destinatario.
+    this.pause();
     this.proc.stdout?.on("data", (chunk: any) => this.emit("data", processChunk(chunk)));
     this.proc.stderr?.on("data", (chunk: any) => this.emit("data", processChunk(chunk)));
     this.proc.on("exit", (code: any) => this.emit("exit", code));
@@ -109,12 +112,14 @@ export class ProcessPtyChannel extends EventEmitter {
   public pause(): void {
     try {
       this.proc.stdout?.pause();
+      this.proc.stderr?.pause();
     } catch {}
   }
 
   public resume(): void {
     try {
       this.proc.stdout?.resume();
+      this.proc.stderr?.resume();
     } catch {}
   }
 
@@ -955,6 +960,10 @@ export class TerminalService {
       session.ptyChannel.removeListener("data", onPtyData);
       this.closeSessionSafely(sessionId, "CLIENT_DISCONNECT", err?.message);
     });
+
+    if (session.ptyChannel instanceof ProcessPtyChannel) {
+      session.ptyChannel.resume();
+    }
   }
 
   /**

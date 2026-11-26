@@ -1117,6 +1117,8 @@ try {
           res.clone().json().then((d) => {
             if (d && d.sessionId) window.__termSessions.push(d.sessionId);
           }).catch(() => {});
+          // Lascia alla shell il tempo di scrivere il prompt prima dell'aggancio WSS.
+          await new Promise((resolve) => setTimeout(resolve, 500));
         }
       } catch (error) {}
       return res;
@@ -1137,6 +1139,11 @@ try {
     if (terminalConnected) break;
   }
   assert.strictEqual(terminalConnected, true, "Il terminale server deve aprirsi e connettersi al PTY");
+  await waitForBrowser(String.raw`
+    Array.from(document.querySelectorAll('#terminal-container .xterm-rows > div'))
+      .some((row) => /[$#]\s*$/.test(row.textContent || ''))
+  `);
+  console.log("  PASS: Prompt iniziale del terminale server visibile prima di qualsiasi input.");
   // Attende il primo fit (requestAnimationFrame + ResizeObserver) prima di
   // leggere le coordinate effettive del PTY.
   await new Promise((r) => setTimeout(r, 500));

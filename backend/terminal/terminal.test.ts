@@ -8,6 +8,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { execSync } from "child_process";
+import { once } from "node:events";
 import ssh2 from "ssh2";
 import { WebSocket } from "ws";
 
@@ -362,10 +363,18 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   assert.strictEqual(openAudit.outcome, "SUCCESS");
   assert.strictEqual(openAudit.userId, opUserAuthorized.username);
 
-  ws.close();
-  await terminalService.closeSession(allocBody.sessionId, "USER_EXPLICIT");
+  const terminalSession = terminalService.getSession(allocBody.sessionId);
+  assert.ok(terminalSession);
+  const serverSocketClosed = once(terminalSession.webSocket, "close", {
+    signal: AbortSignal.timeout(3000),
+  });
+  ws.terminate();
+  const [closeCode] = await serverSocketClosed;
+  assert.strictEqual(closeCode, 1006);
+  assert.strictEqual(terminalSession.closeReason, "CLIENT_DISCONNECT");
+  assert.strictEqual(terminalService.getActiveSessionCount(), 0);
   await server.close();
-  console.log("  PASS: CA-SSH-001 - Utente autorizzato apre shell PTY tramite backend senza connessione diretta browser->robot.");
+  console.log("  PASS: CA-SSH-001 - Prompt SSH via backend e rilascio sessione alla perdita del WebSocket.");
 }
 
 // TEST 2: CA-SSH-002 & CA-SSH-003 - Comandi interattivi, streaming progressivo, Ctrl+C e ridimensionamento
