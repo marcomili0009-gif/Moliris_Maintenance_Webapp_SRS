@@ -23,10 +23,12 @@ import { InMemoryUserRepository } from "../../backend/auth/user-repository.ts";
 import { ServerFilesystemService } from "../../storage/server-fs.ts";
 import { RemoteFilesystemService } from "../../backend/remote-fs/remote-fs-service.ts";
 import { TransferService } from "../../backend/transfer/transfer-service.ts";
+import { TransferDirection } from "../../backend/transfer/transfer-models.ts";
 import { AppPermission, DEFAULT_ROLE_PERMISSIONS } from "../../backend/auth/permissions.ts";
 import { type RobotEntity } from "../../storage/robot-models.ts";
 import { type UserEntity } from "../../backend/auth/user-models.ts";
 import { ErrorCode, MolirisAppError } from "../../errors/app-errors.ts";
+import { PhysicalFileLogger } from "../../backend/logging/physical-file-logger.ts";
 import { createServer } from "../../backend/server.ts";
 import { execSync } from "child_process";
 
@@ -64,7 +66,10 @@ const openHandles = new Map<string, { path: string; isDir: boolean; readSent?: b
 
 const createSftpTestServer = (
   remoteFiles: Record<string, Buffer>,
-  corruptWrite = () => false
+  corruptWrite = () => false,
+  failOperation?: (operation: "WRITE" | "CLOSE" | "RENAME", offset: number) => number | null | undefined,
+  writeDelay = () => 0,
+  readLimit = () => Number.POSITIVE_INFINITY
 ) => new ssh2.Server(
   {
     hostKeys: [serverHostKey.privateKey],
@@ -138,6 +143,9 @@ const createSftpTestServer = (
 
           sftp.on("OPEN", (reqid: number, filename: string, pflags: number) => {
             const norm = path.posix.normalize(filename);
+            if (!remoteFiles[norm] && path.posix.dirname(norm) !== "/" && !remoteFiles[path.posix.dirname(norm)]) {
+              return sftp.status(reqid, 2);
+            }
             const handle = Buffer.from(`file_${nextHandleId++}`);
             openHandles.set(handle.toString(), { path: norm, isDir: false });
             if (!remoteFiles[norm]) {
@@ -149,6 +157,12 @@ const createSftpTestServer = (
           sftp.on("WRITE", (reqid: number, handle: Buffer, offset: number, data: Buffer) => {
             const h = openHandles.get(handle.toString());
             if (!h) return sftp.status(reqid, 4 /* SSH_FX_FAILURE */);
+            const failure = failOperation?.("WRITE", offset);
+            if (failure === null) return;
+            if (failure !== undefined) {
+              setTimeout(() => sftp.status(reqid, failure), 40);
+              return;
+            }
             const cur = remoteFiles[h.path] || Buffer.alloc(0);
             const needed = offset + data.length;
             let nextBuf = cur;
@@ -159,7 +173,9 @@ const createSftpTestServer = (
             data.copy(nextBuf, offset);
             if (data.length > 0 && corruptWrite()) nextBuf[offset] ^= 0xff;
             remoteFiles[h.path] = nextBuf;
-            sftp.status(reqid, 0 /* SSH_FX_OK */);
+            const delay = writeDelay();
+            if (delay > 0) setTimeout(() => sftp.status(reqid, 0), delay);
+            else sftp.status(reqid, 0);
           });
 
           sftp.on("READ", (reqid, handle, offset, length) => {
@@ -167,17 +183,20 @@ const createSftpTestServer = (
             const buffer = opened && remoteFiles[opened.path];
             if (!buffer) return sftp.status(reqid, 4);
             if (offset >= buffer.length) return sftp.status(reqid, 1);
-            sftp.data(reqid, buffer.subarray(offset, offset + length));
+            sftp.data(reqid, buffer.subarray(offset, offset + Math.min(length, readLimit())));
           });
 
           sftp.on("CLOSE", (reqid: number, handle: Buffer) => {
+            const wasTemporary = openHandles.get(handle.toString())?.path.endsWith(".part");
             openHandles.delete(handle.toString());
-            sftp.status(reqid, 0);
+            sftp.status(reqid, wasTemporary ? failOperation?.("CLOSE", 0) ?? 0 : 0);
           });
 
           sftp.on("RENAME", (reqid: number, oldPath: string, newPath: string) => {
             const normOld = path.posix.normalize(oldPath);
             const normNew = path.posix.normalize(newPath);
+            const failure = failOperation?.("RENAME", 0);
+            if (failure != null) return sftp.status(reqid, failure);
             if (remoteFiles[normNew] !== undefined) return sftp.status(reqid, 4);
             if (remoteFiles[normOld] !== undefined) {
               remoteFiles[normNew] = remoteFiles[normOld];
@@ -221,9 +240,9 @@ const config: SystemConfiguration = {
   registrationMode: "rigorosa",
   auditLogRetentionDays: 90,
   defaultSshPort: sshPort,
-  maxBulkUploadFiles: 20,
+  maxBulkUploadFiles: 100,
   defaultOperatorAllowedPaths: ["upload", "shared", "logs"],
-  remoteFsAllowedPaths: ["/upload", "/shared"],
+  remoteFsAllowedPaths: ["/upload", "/shared", "/home/robot/TEST"],
 };
 
 const robotRepo = new InMemoryRobotRepository();
@@ -577,7 +596,9 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
   await userRepo.create(adminUser);
   await userRepo.create(operatorUser);
 
+  const physicalFileLogger = new PhysicalFileLogger(path.join(tmpTlsDir, "logs"));
   const server = createServer(config, logger, {
+    physicalFileLogger,
     sessionManager,
     userRepository: userRepo,
     auditRepository: auditRepo,
@@ -587,7 +608,10 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
     hostKeyVerifier,
     connectionManager,
     transferService,
-    appConfig: loadConfig({ overrides: { maxFileUploadBytes: 1024 * 1024 } }),
+    appConfig: loadConfig({
+      env: { MOLIRIS_MAX_BULK_UPLOAD_FILES: "100" },
+      overrides: { maxFileUploadBytes: 1024 * 1024 },
+    }),
   });
   await server.ready();
 
@@ -679,7 +703,16 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
   // Il wizard usa /upload come cartella comune anche quando i target includono l'archivio.
   const secondRemoteFs: Record<string, Buffer> = { "/shared": Buffer.from("DIR") };
   let corruptSecondRemoteWrite = false;
-  const secondSftpServer = createSftpTestServer(secondRemoteFs, () => corruptSecondRemoteWrite);
+  let failingOperation: "WRITE" | "CLOSE" | "RENAME" | undefined;
+  let stallSecondRemoteWrite = false;
+  let delaySecondRemoteWrite = 0;
+  const secondSftpServer = createSftpTestServer(secondRemoteFs, () => corruptSecondRemoteWrite,
+    (operation, offset) => operation === failingOperation && (operation !== "WRITE" || offset >= 100000)
+      ? (operation === "RENAME" ? 3 : stallSecondRemoteWrite ? null : 4)
+      : undefined,
+    () => delaySecondRemoteWrite,
+    () => 8192);
+
   await new Promise<void>((resolve) => secondSftpServer.listen(0, "127.0.0.1", resolve));
   const robot2: RobotEntity = {
     ...robot1,
@@ -780,6 +813,27 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
     assert.strictEqual(connectionManager.getUserConnectionCount(contextAdmin.username), 0);
   };
 
+  const missingDirectoryFiles = Array.from({ length: 12 }, (_, index) => ({
+    filename: `missing-directory-${index}.txt`,
+    contents: "X".repeat(100 + index * 4501),
+  }));
+  const missingDirectory = await submit(upload(
+    [...mixedTargets.slice(0, 3), { ...mixedTargets[3], directory: "/home/robot/TEST" }],
+    missingDirectoryFiles
+  ));
+  assert.strictEqual(missingDirectory.statusCode, 200, missingDirectory.body);
+  assert.deepStrictEqual(missingDirectory.json().summary, { completed: 36, failed: 12, skipped: 0 });
+  const missingRecords = transferService.listTransfers(contextAdmin)
+    .filter((item) => item.batchId === missingDirectory.json().batchId && item.status === "FAILED");
+  assert.strictEqual(missingRecords.length, 12);
+  assert.deepStrictEqual(missingRecords.map((item) => item.transferredBytes), Array(12).fill(0));
+  for (const item of missingRecords) assert.match(item.error ?? "", /Cartella di destinazione assente/);
+  assertNoParts();
+  const mixedFailureLog = await physicalFileLogger.getTransferLogs({ outcome: "FALLIMENTO", limit: 200 });
+  assert.strictEqual(mixedFailureLog.filter((line) => line.includes("missing-directory-")).length, 12,
+    "I 12 errori individuali devono essere persistiti in transfers.log");
+  console.log("  PASS: 12 file, destinazione assente sul secondo robot, zero byte confermati e causa specifica.");
+
   // Entrambi i tipi di destinazione devono funzionare anche senza target misti.
   for (const [type, filename] of [["server", "server_only.txt"], ["robot", "remote_only.txt"]]) {
     const response = await submit(upload(mixedTargets.filter((target) => target.type === type), [{ filename, contents: type }]));
@@ -816,6 +870,87 @@ const contextAdmin = sessionManager.createAuthorizedContext(sessionAdmin, adminU
   assert.strictEqual(mockRemoteFs["/upload/partial.txt"].toString(), "Payload da verificare");
   assert.strictEqual(secondRemoteFs["/shared/partial.txt"].toString(), "File originale");
   corruptSecondRemoteWrite = false;
+  assertNoParts();
+
+  for (const operation of ["WRITE", "CLOSE", "RENAME"] as const) {
+    failingOperation = operation;
+    const filename = `fault-${operation}.bin`;
+    const contents = "R".repeat(170_000);
+    const response = await submit(upload([mixedTargets[3]], [{ filename, contents }]));
+    assert.strictEqual(response.statusCode, 200, response.body);
+    assert.deepStrictEqual(response.json().summary, { completed: 0, failed: 1, skipped: 0 });
+    const failure = transferService.listTransfers(contextAdmin).find((item) =>
+      item.batchId === response.json().batchId && item.direction === TransferDirection.CLIENT_TO_ROBOT);
+    assert.ok(failure);
+    assert.strictEqual(failure.status, "FAILED");
+    assert.match(failure.error ?? "", operation === "WRITE" ? /scrittura SFTP/
+      : operation === "CLOSE" ? /chiusura temporaneo SFTP/ : /pubblicazione/);
+    if (operation === "WRITE") {
+      assert.ok(failure.transferredBytes > 0 && failure.transferredBytes < contents.length, JSON.stringify(failure));
+    } else {
+      assert.strictEqual(failure.transferredBytes, contents.length);
+      assert.strictEqual(failure.percent, 100);
+    }
+    assert.ok(!secondRemoteFs[`/shared/${filename}`]);
+    assertNoParts();
+  }
+  failingOperation = undefined;
+  console.log("  PASS: riconosciuti WRITE parziale, CLOSE e RENAME con 100% confermato, senza .part residui.");
+
+  const originalIdleTimeout = config.transferIdleTimeoutMs;
+  config.transferIdleTimeoutMs = 650;
+  failingOperation = "WRITE";
+  stallSecondRemoteWrite = true;
+  const stalled = await submit(upload([mixedTargets[3]], [{ filename: "stalled.bin", contents: "R".repeat(170_000) }]));
+  assert.strictEqual(stalled.statusCode, 200, stalled.body);
+  assert.deepStrictEqual(stalled.json().summary, { completed: 0, failed: 1, skipped: 0 });
+  assert.match(stalled.json().results[0].targets[0].error, /timeout|tempo massimo/i);
+  assert.ok(!secondRemoteFs["/shared/stalled.bin"]);
+  stallSecondRemoteWrite = false;
+  failingOperation = undefined;
+  config.transferIdleTimeoutMs = originalIdleTimeout;
+  assertNoParts();
+
+  delaySecondRemoteWrite = 160;
+  const racing = await Promise.all(["A", "B"].map((letter) => submit(upload([mixedTargets[3]], [{
+    filename: "same-destination.bin",
+    contents: letter.repeat(100_000),
+  }], true))));
+  delaySecondRemoteWrite = 0;
+  assert.deepStrictEqual(racing.map((item) => item.json().summary.completed).sort(), [0, 1]);
+  assert.match(racing.find((item) => item.json().summary.failed === 1)?.json().results[0].targets[0].error ??
+    "", /in corso|un altro trasferimento/i);
+  assert.ok(["A", "B"].some((letter) => secondRemoteFs["/shared/same-destination.bin"]?.toString() === letter.repeat(100_000)));
+  assertNoParts();
+  console.log("  PASS: timeout SFTP con pulizia e due batch simultanei sulla stessa destinazione.");
+
+  const stress = async (count: number) => {
+    const stressFiles = Array.from({ length: count }, (_, index) => ({
+      filename: `stress-${count}-${index}.bin`,
+      contents: String(count % 10).repeat(index === 0 ? 0 : index === 1 ? 138_000 : index * 113 % 8_000),
+    }));
+    const response = await submit(upload(mixedTargets, stressFiles));
+    assert.strictEqual(response.statusCode, 200, response.body);
+    assert.deepStrictEqual(response.json().summary, { completed: count * 4, failed: 0, skipped: 0 });
+    for (const [index, { filename, contents }] of stressFiles.entries()) {
+      assert.strictEqual(fs.readFileSync(path.join(robot1.serverDirectoryPath, "upload", filename), "utf8"), contents);
+      assert.strictEqual(fs.readFileSync(path.join(robot2.serverDirectoryPath, "upload", filename), "utf8"), contents);
+      assert.strictEqual(mockRemoteFs[`/upload/${filename}`]?.toString(), contents);
+      assert.strictEqual(secondRemoteFs[`/shared/${filename}`]?.toString(), contents);
+      const sha256 = crypto.createHash("sha256").update(contents).digest("hex");
+      assert.deepStrictEqual(response.json().results[index].targets.map((target: { checksum: string }) => target.checksum),
+        Array(4).fill(sha256));
+    }
+    const items = transferService.listTransfers(contextAdmin).filter((item) => item.batchId === response.json().batchId);
+    assert.strictEqual(items.filter((item) => !item.isBulkStaging).length, count * 4);
+    assert.strictEqual(items.filter((item) => item.isBulkStaging).length, count);
+    assert.ok(items.every((item) => item.status === "COMPLETED" && item.percent === 100 && item.transferredBytes === item.totalBytes));
+    console.log(`  PASS: ${count} file, ${count * 4} invii misti, byte e SHA-256 verificati.`);
+  };
+  await stress(1);
+  await stress(12);
+  await Promise.all([stress(10), stress(50)]);
+  await stress(100);
   assertNoParts();
 
   // Il rename fallisce se la destinazione è una directory. L'originale resta

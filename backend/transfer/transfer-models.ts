@@ -80,9 +80,17 @@ export interface TransferProgressSnapshot {
  * DTO sicuro restituito al frontend (RNF-SEC-002, RNF-SEC-007, RF-TRF-006)
  * Non include percorsi interni assoluti del server, né segreti.
  */
+export interface BulkTransferTotals {
+  totalItems: number;
+  totalBytes: number;
+}
+
 export interface TransferDto {
   transferId: string;
   batchId?: string;
+  isBulkStaging?: boolean;
+  bulkBatch?: BulkTransferTotals & { status?: import("./batch-transfer-manager.ts").BatchRecord["status"] };
+  failurePhase?: string;
   userId: string;
   robotId: string;
   direction: TransferDirection;
@@ -120,6 +128,9 @@ export interface TransferDto {
 export interface TransferRecord {
   transferId: string;
   batchId?: string;
+  isBulkStaging?: boolean;
+  bulkBatch?: BulkTransferTotals;
+  failurePhase?: string;
   userId: string;
   userSessionId: string;
   robotId: string;
@@ -135,6 +146,7 @@ export interface TransferRecord {
   status: TransferStatus;
   error: string | null;
   errorCode?: string;
+  protocolErrorCode?: string | number;
   expectedChecksum?: string;
   computedChecksum?: string;
   checksumAlgorithm?: string;

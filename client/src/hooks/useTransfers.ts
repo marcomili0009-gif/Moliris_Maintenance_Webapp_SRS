@@ -35,6 +35,8 @@ export function normalizeTransfer(dto: any): TransferProgress {
   return {
     transferId: String(dto.transferId),
     batchId: dto.batchId ? String(dto.batchId) : undefined,
+    isBulkStaging: dto.isBulkStaging === true,
+    bulkBatch: dto.bulkBatch,
     robotId: dto.robotId,
     filename,
     sourcePath: String(dto.sourcePath || ""),

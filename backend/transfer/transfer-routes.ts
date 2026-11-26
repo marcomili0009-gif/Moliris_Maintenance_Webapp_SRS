@@ -943,7 +943,8 @@ export function registerTransferRoutes(
               context,
               safeFilename,
               Number.isFinite(declaredSize) ? declaredSize : null,
-              targets[0]?.robotId
+              targets[0]?.robotId,
+              uploadSessionId
             );
             stagingRecord.tempDestinationPath = stagingPath;
             stagingRecords.push(stagingRecord);
@@ -993,7 +994,7 @@ export function registerTransferRoutes(
             }
 
             const sha256 = hash.digest("hex");
-            await transferService.completeBulkStagingTransfer(stagingRecord, sha256);
+            await transferService.completeBulkStagingTransfer(stagingRecord, sha256, totalBytes);
             stagedFiles.push({
               filename: safeFilename,
               stagingPath,

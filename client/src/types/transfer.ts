@@ -18,6 +18,12 @@ export type TransferStatus =
 export interface TransferProgress {
   transferId: string;
   batchId?: string;
+  isBulkStaging?: boolean;
+  bulkBatch?: {
+    totalItems: number;
+    totalBytes: number;
+    status?: "QUEUED" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED" | "FAILED";
+  };
   robotId?: string;
   /** Nome del file trasferito. */
   filename: string;

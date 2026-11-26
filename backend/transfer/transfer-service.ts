@@ -37,7 +37,7 @@ import {
 } from "./transfer-models.ts";
 import { resolveChecksumAlgorithm, ChecksumTransformStream } from "./checksum-service.ts";
 import { ProgressTrackerStream } from "./transfer-progress.ts";
-import { PipelinedSftpReadStream, PipelinedSftpWriteStream } from "../remote-fs/remote-fs-service.ts";
+import { PipelinedSftpReadStream, PipelinedSftpWriteStream, SftpWriteError } from "../remote-fs/remote-fs-service.ts";
 import { type PhysicalFileLogger } from "../logging/physical-file-logger.ts";
 import { type BatchTransferManager } from "./batch-transfer-manager.ts";
 import {
@@ -2341,6 +2341,15 @@ export class TransferService {
         sourcePath: record.sourcePath,
         destinationPath: record.destinationPath,
         errorCode,
+        ...(record.batchId ? {
+          batchId: record.batchId,
+          isBulkStaging: record.isBulkStaging === true,
+          failurePhase: record.failurePhase,
+          protocolErrorCode: record.protocolErrorCode,
+          reason: safeUserMsg,
+          transferredBytes: record.transferredBytes,
+          totalBytes: record.totalBytes,
+        } : {}),
         cancelled: false,
       },
     });
@@ -2564,7 +2573,7 @@ export class TransferService {
   }
 
   private toDto(record: TransferRecord): TransferDto {
-    let percent: number | null = null;
+    let percent: number | null = record.status === TransferStatus.COMPLETED ? 100 : null;
     if (record.totalBytes && record.totalBytes > 0) {
       percent = Math.min(100, Math.round((record.transferredBytes / record.totalBytes) * 10000) / 100);
     }
@@ -2572,6 +2581,12 @@ export class TransferService {
     return {
       transferId: record.transferId,
       batchId: record.batchId,
+      isBulkStaging: record.isBulkStaging,
+      bulkBatch: record.bulkBatch && {
+        ...record.bulkBatch,
+        status: record.batchId ? this.batchTransferManager?.getBatch(record.batchId)?.status : undefined,
+      },
+      failurePhase: record.failurePhase,
       userId: record.userId,
       robotId: record.robotId,
       direction: record.direction,
@@ -2949,9 +2964,17 @@ export class TransferService {
     robotId: string,
     record: TransferRecord
   ): Promise<void> {
+    const mapError = (err: Error & { code?: string | number }) => Object.assign(
+      this.remoteFsService.mapSftpError(err, finalPath, robotId),
+      { protocolErrorCode: err.code }
+    );
     // Controllo anti-corsa TOCTOU su destinazione finale subito prima della promozione
-    const exists = await new Promise<boolean>((resolve) => {
-      sftpClient.stat(finalPath, (err: any) => resolve(!err));
+    const exists = await new Promise<boolean>((resolve, reject) => {
+      sftpClient.stat(finalPath, (err: any) => {
+        if (!err) resolve(true);
+        else if (err.code === 2 || err.code === "ENOENT") resolve(false);
+        else reject(mapError(err));
+      });
     });
 
     if (exists) {
@@ -2982,7 +3005,7 @@ export class TransferService {
         this.beginPromotion(record);
         await new Promise<void>((resolve, reject) => {
           sftpClient.ext_openssh_rename(remoteTempPath, finalPath, (err: any) => {
-            if (err) return reject(this.remoteFsService.mapSftpError(err, finalPath, robotId));
+            if (err) return reject(mapError(err));
             resolve();
           });
         });
@@ -2996,7 +3019,7 @@ export class TransferService {
           await new Promise<void>((res) => sftpClient.unlink(finalPath, () => res()));
           await new Promise<void>((resolve, reject) => {
             sftpClient.rename(remoteTempPath, finalPath, (err: any) => {
-              if (err) return reject(this.remoteFsService.mapSftpError(err, finalPath, robotId));
+              if (err) return reject(mapError(err));
               resolve();
             });
           });
@@ -3013,7 +3036,7 @@ export class TransferService {
       this.beginPromotion(record);
       await new Promise<void>((resolve, reject) => {
         sftpClient.rename(remoteTempPath, finalPath, (err: any) => {
-          if (err) return reject(this.remoteFsService.mapSftpError(err, finalPath, robotId));
+          if (err) return reject(mapError(err));
           resolve();
         });
       });
@@ -3030,6 +3053,7 @@ export class TransferService {
       timestamp: record.startedAt,
       details: {
         transferId: record.transferId,
+        ...(record.batchId ? { batchId: record.batchId, isBulkStaging: record.isBulkStaging === true } : {}),
         direction: record.direction,
         filename: record.filename,
         sourcePath: record.sourcePath,
@@ -3055,6 +3079,7 @@ export class TransferService {
       timestamp: record.completedAt || new Date(),
       details: {
         transferId: record.transferId,
+        ...(record.batchId ? { batchId: record.batchId, isBulkStaging: record.isBulkStaging === true } : {}),
         direction: record.direction,
         filename: record.filename,
         sourcePath: record.sourcePath,
@@ -3143,7 +3168,8 @@ export class TransferService {
     context: AuthorizedContext,
     filename: string,
     totalBytes: number | null,
-    robotId?: string
+    robotId: string | undefined,
+    batchId: string
   ): Promise<TransferRecord> {
     const safeFilename = this.sanitizeFilename(filename);
     const record = this.buildTransferRecord({
@@ -3156,6 +3182,8 @@ export class TransferService {
       destinationPath: safeFilename,
       totalBytes,
     });
+    record.batchId = batchId;
+    record.isBulkStaging = true;
     record.status = TransferStatus.IN_PROGRESS;
     this.registerTransfer(record);
     await this.recordAuditStart(record);
@@ -3177,11 +3205,14 @@ export class TransferService {
 
   public async completeBulkStagingTransfer(
     record: TransferRecord,
-    checksum: string | null
+    checksum: string | null,
+    totalBytes: number
   ): Promise<void> {
     if (this.isTerminalRecord(record)) return;
     this.assertTransferActive(record);
     record.status = TransferStatus.COMPLETED;
+    record.transferredBytes = totalBytes;
+    record.totalBytes = totalBytes;
     record.completedAt = new Date();
     record.computedChecksum = checksum || undefined;
     record.integrityLabel = "completato — file ricevuto dal browser e checksum verificato";
@@ -3509,6 +3540,10 @@ export class TransferService {
         });
       });
     });
+    const bulkBatch = {
+      totalItems: batchItemsSpec.length,
+      totalBytes: stagedFiles.reduce((sum, item) => sum + item.sizeBytes, 0) * targets.length,
+    };
     const batchRecord = this.batchTransferManager?.createBatch({
       batchId,
       userId: context.userId,
@@ -3581,6 +3616,7 @@ export class TransferService {
             const genRecord: TransferRecord = {
               transferId,
               batchId,
+              bulkBatch,
               userId: context.userId,
               userSessionId: context.sessionId || "session-system",
               robotId: TransferService.GENERAL_SERVER_ID,
@@ -3747,6 +3783,7 @@ export class TransferService {
             const serverRecord: TransferRecord = {
               transferId,
               batchId,
+              bulkBatch,
               userId: context.userId,
               userSessionId: context.sessionId || "session-system",
               robotId: robot.id,
@@ -3876,57 +3913,45 @@ export class TransferService {
           let managedConn: ManagedRobotConnection | null = null;
           let tempRemotePartPath = "";
           let record: TransferRecord | null = null;
+          let sftp: Awaited<ReturnType<ManagedRobotConnection["getSftpClient"]>> | undefined;
+          let phase = "connessione SSH/SFTP";
+          let sourceError: Error | undefined;
+          let destinationLock: string | undefined;
+          let idleTimer: ReturnType<typeof setTimeout> | undefined;
+          let timeoutError: MolirisAppError | undefined;
+          const resetIdleTimer = () => {
+            const idleTimeoutMs = this.config.transferIdleTimeoutMs;
+            if (!idleTimeoutMs || timeoutError) return;
+            if (idleTimer) {
+              idleTimer.refresh();
+              return;
+            }
+            idleTimer = setTimeout(() => {
+              timeoutError = new MolirisAppError(ErrorCode.TIMEOUT_ERROR,
+                `Nessuna risposta SFTP durante la fase ${phase} per ${idleTimeoutMs} ms.`,
+                phase === "pubblicazione (rename SFTP)"
+                  ? "Il robot non ha confermato la pubblicazione. Verifica la destinazione prima di riprovare."
+                  : undefined);
+              void managedConn?.close().catch(() => {});
+            }, idleTimeoutMs);
+            idleTimer.unref();
+          };
           try {
-            this.assertRobotAccessible(robot);
             this.assertAuthorized(context, robot, [AppPermission.FS_REMOTE_UPLOAD]);
-
-            managedConn = await this.connectionManager.acquireConnection(context.username, robot);
-            const sftp = await managedConn.getSftpClient();
 
             const safeFilename = this.sanitizeFilename(staged.filename);
             const targetDir = target.directory || "/";
-            const finalRemotePath = await this.remoteFsService.resolveAndValidatePath(
-              path.posix.join(targetDir, safeFilename),
-              context,
-              robot,
-              sftp
-            );
-
-            // Verifica esistenza preventiva
-            const exists = await new Promise<boolean>((resolve) => {
-              sftp.stat(finalRemotePath, (err) => resolve(!err));
-            });
-            if (exists && !overwrite) {
-              this.batchTransferManager?.setItemFailed(batchId, batchItemId, "File già esistente sul robot.");
-              fileTargetResults.push({
-                target,
-                success: false,
-                destinationPath: finalRemotePath,
-                error: "File già esistente sul robot. Sovrascrittura non autorizzata.",
-              });
-              allTargetsSuccess = false;
-              skipped++;
-              continue;
-            }
-
-            // Scrittura atomica remota via .part temporaneo nello stesso filesystem/cartella
-            const transferId = crypto.randomUUID();
-            tempRemotePartPath = path.posix.join(
-              path.posix.dirname(finalRemotePath),
-              `.tmp_moliris_${transferId}.part`
-            );
-
             const startTime = Date.now();
             const targetRecord: TransferRecord = {
-              transferId,
+              transferId: crypto.randomUUID(),
               batchId,
+              bulkBatch,
               userId: context.userId,
               userSessionId: context.sessionId || "session-system",
               robotId: robot.id,
               direction: TransferDirection.CLIENT_TO_ROBOT,
               sourcePath: staged.stagingPath,
-              destinationPath: finalRemotePath,
-              tempDestinationPath: tempRemotePartPath,
+              destinationPath: path.posix.join(targetDir, safeFilename),
               filename: safeFilename,
               totalBytes: staged.sizeBytes,
               transferredBytes: 0,
@@ -3940,13 +3965,7 @@ export class TransferService {
               lastProgressUpdateAt: startTime,
               lastBytesAtUpdate: 0,
               abortController: new AbortController(),
-              cleanupHandlers: [
-                async () => {
-                  try {
-                    await new Promise<void>((res) => sftp.unlink(tempRemotePartPath, () => res()));
-                  } catch {}
-                },
-              ],
+              cleanupHandlers: [],
             };
             record = targetRecord;
             this.registerTransfer(targetRecord);
@@ -3964,84 +3983,122 @@ export class TransferService {
               },
             });
 
+            this.assertRobotAccessible(robot);
+            managedConn = await this.connectionManager.acquireConnection(context.username, robot);
+            resetIdleTimer();
+            sftp = await managedConn.getSftpClient();
+            resetIdleTimer();
+            const channel = sftp;
+            phase = "verifica cartella di destinazione";
+            const finalRemotePath = await this.remoteFsService.resolveAndValidatePath(
+              path.posix.join(targetDir, safeFilename),
+              context,
+              robot,
+              sftp
+            );
+
+            targetRecord.destinationPath = finalRemotePath;
+            const directory = path.posix.dirname(finalRemotePath);
+            const directoryStat = await new Promise<import("ssh2").Stats>((resolve, reject) => {
+              channel.stat(directory, (err, stat) => err ? reject(err) : resolve(stat));
+            });
+            resetIdleTimer();
+            if (!directoryStat.isDirectory()) {
+              throw new MolirisAppError(ErrorCode.REMOTE_FS_ERROR,
+                "Il percorso di destinazione SFTP non è una directory.",
+                "Il percorso selezionato sul robot non è una cartella.");
+            }
+
+            phase = "verifica file di destinazione";
+            const lockKey = `robot:${robot.id}:${finalRemotePath}`;
+            this.acquireDestinationLock(lockKey);
+            destinationLock = lockKey;
+            const exists = await new Promise<boolean>((resolve, reject) => {
+              channel.stat(finalRemotePath, (err) => {
+                if (!err) resolve(true);
+                else if ((err as { code?: number }).code === 2) resolve(false);
+                else reject(err);
+              });
+            });
+            resetIdleTimer();
+            if (exists && !overwrite) {
+              await this.handleBulkTargetFailure(targetRecord, new MolirisAppError(
+                ErrorCode.REMOTE_FS_ERROR, "Conflitto rilevato prima della scrittura SFTP.",
+                "File già esistente sul robot. Sovrascrittura non autorizzata."
+              ));
+              this.batchTransferManager?.setItemFailed(batchId, batchItemId, "File già esistente sul robot.");
+              fileTargetResults.push({
+                target,
+                success: false,
+                destinationPath: finalRemotePath,
+                error: "File già esistente sul robot. Sovrascrittura non autorizzata.",
+              });
+              allTargetsSuccess = false;
+              skipped++;
+              continue;
+            }
+
+            // Scrittura atomica remota via .part temporaneo nello stesso filesystem/cartella
+            tempRemotePartPath = path.posix.join(directory, `.tmp_moliris_${targetRecord.transferId}.part`);
+            targetRecord.tempDestinationPath = tempRemotePartPath;
+            phase = "scrittura SFTP";
+
             const hash = crypto.createHash("sha256");
             let writtenBytes = 0;
             const readStream = fs.createReadStream(staged.stagingPath);
-            const remoteWriteStream = new PipelinedSftpWriteStream(sftp, tempRemotePartPath, {
-              flags: "w",
+            readStream.once("error", (err) => { sourceError = err; });
+            readStream.on("data", (chunk) => { hash.update(chunk); });
+            const remoteWriteStream = new PipelinedSftpWriteStream(channel, tempRemotePartPath, {
+              flags: "wx",
               mode: 0o600,
-            });
-
-            readStream.on("data", (chunk: Buffer | string) => {
-              const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-              hash.update(buf);
-              writtenBytes += buf.length;
-              if (record) {
-                record.transferredBytes = writtenBytes;
+              onWriteAcknowledged: (bytes) => {
+                resetIdleTimer();
+                writtenBytes += bytes;
+                targetRecord.transferredBytes = writtenBytes;
                 const elapsedSec = Math.max(0.001, (Date.now() - startTime) / 1000);
-                record.speedBytesPerSec = Math.round(writtenBytes / elapsedSec);
-                if (record.totalBytes && record.speedBytesPerSec > 0) {
-                  const remaining = Math.max(0, record.totalBytes - writtenBytes);
-                  record.etaSeconds = Math.ceil(remaining / record.speedBytesPerSec);
+                const speed = Math.round(writtenBytes / elapsedSec);
+                targetRecord.speedBytesPerSec = speed;
+                if (targetRecord.totalBytes && speed > 0) {
+                  targetRecord.etaSeconds = Math.ceil(Math.max(0, targetRecord.totalBytes - writtenBytes) / speed);
                 }
-                record.lastProgressUpdateAt = Date.now();
+                targetRecord.lastProgressUpdateAt = Date.now();
                 this.batchTransferManager?.updateItemProgress(batchId, batchItemId, writtenBytes);
-              }
+              },
             });
             await pipelineWithSignal(readStream, remoteWriteStream, {
               signal: targetRecord.abortController.signal,
             });
 
+            resetIdleTimer();
+            targetRecord.status = TransferStatus.INTEGRITY_CHECKING;
+            phase = "verifica checksum";
             const computedHash = hash.digest("hex");
             if (computedHash !== staged.sha256) {
-              if (record) {
-                record.status = TransferStatus.INTEGRITY_FAILED;
-                record.error = "Checksum non corrispondente durante il trasferimento al robot.";
-                record.completedAt = new Date();
-                await this.recordAuditFailure(record, new Error(record.error));
-              }
-              try {
-                await new Promise<void>((res) => sftp.unlink(tempRemotePartPath, () => res()));
-              } catch {}
-              throw new MolirisAppError(
-                ErrorCode.INTEGRITY_CHECK_FAILED,
-                "Checksum non corrispondente durante il trasferimento al robot."
-              );
+              targetRecord.status = TransferStatus.INTEGRITY_FAILED;
+              throw new MolirisAppError(ErrorCode.INTEGRITY_CHECK_FAILED, "Checksum dei dati letti dallo staging diverso da quello atteso.");
             }
 
-            // Verifica dimensione remota prima della promozione (CA-TRF-004)
-            const remoteTempStat = await new Promise<any>((resolve, reject) => {
-              sftp.stat(tempRemotePartPath, (err: any, st: any) => {
-                if (err) return reject(this.remoteFsService.mapSftpError(err, tempRemotePartPath, robot.id));
-                resolve(st);
-              });
+            phase = "verifica dimensione remota";
+            const remoteTempStat = await new Promise<import("ssh2").Stats>((resolve, reject) => {
+              channel.stat(tempRemotePartPath, (err, stat) => err ? reject(err) : resolve(stat));
             });
+            resetIdleTimer();
             if (remoteTempStat.size !== writtenBytes || writtenBytes !== staged.sizeBytes) {
-              if (record) {
-                record.status = TransferStatus.INTEGRITY_FAILED;
-                record.error = "Dimensione del file sul robot non corrispondente ai byte inviati.";
-                record.completedAt = new Date();
-                await this.recordAuditFailure(record, new Error(record.error));
-              }
-              try {
-                await new Promise<void>((res) => sftp.unlink(tempRemotePartPath, () => res()));
-              } catch {}
-              throw new MolirisAppError(
-                ErrorCode.INTEGRITY_CHECK_FAILED,
-                `Dimensione sul robot (${remoteTempStat.size}) diversa dai byte inviati (${writtenBytes})`
-              );
+              targetRecord.status = TransferStatus.INTEGRITY_FAILED;
+              throw new MolirisAppError(ErrorCode.INTEGRITY_CHECK_FAILED,
+                `Dimensioni non coerenti: robot=${remoteTempStat.size}, confermati=${writtenBytes}, attesi=${staged.sizeBytes}`);
             }
 
             if (this.config.transferVerifyMode === "readback") {
+              phase = "verifica checksum sul robot";
               const readbackHash = crypto.createHash("sha256");
-              const readback = new PipelinedSftpReadStream(sftp, tempRemotePartPath, writtenBytes, {
-                chunkSize: 32768,
-                concurrency: 32,
-                highWaterMark: this.getChunkSize(),
-              });
+              // Il lettore SFTP avanza dei byte effettivamente restituiti anche
+              // quando il server risponde con blocchi più corti di quelli richiesti.
+              const readback = channel.createReadStream(tempRemotePartPath, { highWaterMark: 32768 });
               addAbortSignal(record.abortController.signal, readback);
               for await (const chunk of readback) {
                 this.assertTransferActive(record);
+                resetIdleTimer();
                 readbackHash.update(chunk);
               }
               if (readbackHash.digest("hex") !== computedHash) {
@@ -4053,6 +4110,8 @@ export class TransferService {
             // Sostituzione atomica e sicura sul robot: se la destinazione esiste,
             // usa posix-rename quando disponibile e non distrugge il file valido
             // in caso di errore (CA-TRF-005).
+            phase = "pubblicazione (rename SFTP)";
+            resetIdleTimer();
             await this.promoteRemoteTempFile(
               sftp,
               tempRemotePartPath,
@@ -4062,6 +4121,8 @@ export class TransferService {
               record
             );
 
+            clearTimeout(idleTimer);
+            tempRemotePartPath = "";
             if (record) {
               record.status = TransferStatus.COMPLETED;
               record.completedAt = new Date();
@@ -4080,21 +4141,34 @@ export class TransferService {
             });
             completed++;
           } catch (err: any) {
-            const errMsg = err instanceof MolirisAppError ? err.userMessage : "Errore durante il trasferimento al robot.";
-            this.logBulkTargetFailure(batchId, target, staged.filename, err);
-            if (record && record.status !== TransferStatus.CANCELLED) {
-              await this.handleBulkTargetFailure(record, err);
-              this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
-            } else if (!record) {
-              this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
+            if (timeoutError) {
+              err = timeoutError;
+            } else if (err instanceof SftpWriteError) {
+              phase = { OPEN: "apertura temporaneo SFTP", WRITE: "scrittura SFTP", CLOSE: "chiusura temporaneo SFTP" }[err.operation];
+            } else if (err === sourceError) {
+              phase = "lettura staging";
             }
-            if (tempRemotePartPath && managedConn) {
-              try {
-                const sftp = await managedConn.getSftpClient();
-                await this.safeUnlinkRobotFile(sftp, robot.id, tempRemotePartPath);
-              } catch {
-                await this.safeUnlinkRobotFile(null, robot.id, tempRemotePartPath);
-              }
+            const missingDirectory = phase === "verifica cartella di destinazione" && err.code === 2;
+            const cause = err instanceof MolirisAppError ? err
+              : missingDirectory ? new MolirisAppError(ErrorCode.REMOTE_FS_ERROR, err.message,
+                "Cartella di destinazione assente sul robot. Seleziona una cartella esistente.")
+              : phase === "lettura staging" ? new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, err.message,
+                "Impossibile leggere il file temporaneo ricevuto dal browser.")
+              : this.remoteFsService.mapSftpError(err, record?.destinationPath ?? target.directory ?? "/", robot.id);
+            const protocolCode = err.protocolErrorCode ?? (err instanceof MolirisAppError ? undefined : err.code);
+            const errMsg = `${phase}: ${cause.userMessage}`;
+            this.logger.error("Destinazione SFTP del caricamento massivo non riuscita",
+              err instanceof MolirisAppError ? err.diagnosticDetail : err.message, {
+                batchId, transferId: record?.transferId, robotId: robot.id, directory: target.directory,
+                filename: staged.filename, phase, code: err.code, protocolCode, acknowledgedBytes: record?.transferredBytes ?? 0,
+              });
+            if (record) {
+              record.failurePhase = phase;
+              record.protocolErrorCode = protocolCode;
+              await this.handleBulkTargetFailure(record, new MolirisAppError(cause.code, cause.diagnosticDetail, errMsg));
+            }
+            if (record?.status !== TransferStatus.CANCELLED) {
+              this.batchTransferManager?.setItemFailed(batchId, batchItemId, errMsg);
             }
             fileTargetResults.push({
               target,
@@ -4105,7 +4179,13 @@ export class TransferService {
             allTargetsSuccess = false;
             failed++;
           } finally {
-            await managedConn?.close();
+            clearTimeout(idleTimer);
+            try {
+              if (tempRemotePartPath) await this.safeUnlinkRobotFile(timeoutError ? null : sftp, robot.id, tempRemotePartPath);
+            } finally {
+              if (destinationLock !== undefined) this.releaseDestinationLock(destinationLock);
+              await managedConn?.close();
+            }
           }
         }
       }

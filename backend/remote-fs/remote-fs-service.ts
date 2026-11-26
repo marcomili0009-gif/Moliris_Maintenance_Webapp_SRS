@@ -34,6 +34,15 @@ export interface PipelinedStreamOptions {
   start?: number;
 }
 
+export class SftpWriteError extends Error {
+  readonly code: string | number | undefined;
+
+  constructor(readonly operation: "OPEN" | "WRITE" | "CLOSE", cause: Error & { code?: string | number }) {
+    super(cause.message, { cause });
+    this.code = cause.code;
+  }
+}
+
 /**
  * Flusso in scrittura SFTP ad alte prestazioni basato su sliding-window (RNF-PERF-001, §6.7).
  * Mantiene fino a N richieste in volo simultaneamente, eliminando il collo di bottiglia stop-and-wait.
@@ -50,9 +59,10 @@ export class PipelinedSftpWriteStream extends Writable {
   private inFlight = 0;
   private drainCb: (() => void) | null = null;
   private openError: Error | null = null;
-  private isClosing = false;
+  private finishCallback: ((error?: Error | null) => void) | null = null;
+  private onWriteAcknowledged?: (bytes: number) => void;
 
-  constructor(sftp: SFTPWrapper, remotePath: string, options?: PipelinedStreamOptions & { flags?: string; mode?: number }) {
+  constructor(sftp: SFTPWrapper, remotePath: string, options?: PipelinedStreamOptions & { flags?: string; mode?: number; onWriteAcknowledged?: (bytes: number) => void }) {
     super({ highWaterMark: options?.highWaterMark || 2 * 1024 * 1024 });
     this.sftp = sftp;
     this.remotePath = remotePath;
@@ -61,13 +71,14 @@ export class PipelinedSftpWriteStream extends Writable {
     this.concurrency = options?.concurrency || 32;
     this.chunkSize = options?.chunkSize || 32768;
     this.pos = options?.start || 0;
+    this.onWriteAcknowledged = options?.onWriteAcknowledged;
   }
 
   _construct(callback: (error?: Error | null) => void): void {
     this.sftp.open(this.remotePath, this.flags as any, this.mode, (err, handle) => {
       if (err) {
-        this.openError = err;
-        return callback(err);
+        this.openError = new SftpWriteError("OPEN", err);
+        return callback(this.openError);
       }
       this.handle = handle;
       callback();
@@ -95,15 +106,18 @@ export class PipelinedSftpWriteStream extends Writable {
 
         this.sftp.write(this.handle!, sub, 0, len, writePos, (err) => {
           this.inFlight--;
+          if (this.destroyed) return;
           if (err) {
-            this.destroy(err);
+            this.destroy(new SftpWriteError("WRITE", err));
             return;
           }
+          this.onWriteAcknowledged?.(len);
           if (this.drainCb && this.inFlight < this.concurrency) {
             const cb = this.drainCb;
             this.drainCb = null;
             cb();
           }
+          this.finishWhenDrained();
         });
       }
 
@@ -118,33 +132,40 @@ export class PipelinedSftpWriteStream extends Writable {
   }
 
   _final(callback: (error?: Error | null) => void): void {
-    if (this.isClosing) return callback();
-    this.isClosing = true;
+    this.finishCallback = callback;
+    this.finishWhenDrained();
+  }
 
-    const finalize = () => {
-      if (this.inFlight > 0) {
-        setTimeout(finalize, 2);
-        return;
-      }
-      if (this.handle) {
-        const h = this.handle;
-        this.handle = null;
-        this.sftp.close(h, callback);
-      } else {
-        callback();
-      }
-    };
-    finalize();
+  private finishWhenDrained(): void {
+    if (this.inFlight !== 0 || !this.finishCallback || this.destroyed) return;
+    const callback = this.finishCallback;
+    this.finishCallback = null;
+    const handle = this.handle;
+    this.handle = null;
+    if (!handle) return callback();
+    this.sftp.close(handle, (err) => callback(err ? new SftpWriteError("CLOSE", err) : undefined));
   }
 
   _destroy(error: Error | null, callback: (error: Error | null) => void): void {
-    if (this.handle) {
-      const h = this.handle;
-      this.handle = null;
-      this.sftp.close(h, () => callback(error));
-    } else {
+    this.drainCb = null;
+    this.finishCallback = null;
+    const handle = this.handle;
+    this.handle = null;
+    if (!handle || (this.sftp as SFTPWrapper & { readable?: boolean }).readable === false) return callback(error);
+
+    // Durante la chiusura del canale, ssh2 può notificare WRITE prima di
+    // emettere "end". Un nuovo CLOSE in quel momento non riceverà risposta.
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      this.sftp.removeListener("end", finish);
+      this.sftp.removeListener("close", finish);
       callback(error);
-    }
+    };
+    this.sftp.once("end", finish);
+    this.sftp.once("close", finish);
+    this.sftp.close(handle, finish);
   }
 }
 

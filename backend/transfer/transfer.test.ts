@@ -850,26 +850,31 @@ fs.writeFileSync(validPreexistingServerPath, "VALID_SERVER_PREEXISTING_DATA_ORIG
     100
   ).catch((err) => err);
 
-  // Tenta il secondo trasferimento mentre il primo è in corso -> deve essere rifiutato immediatamente!
   try {
-    await limitedTransferService.uploadClientToServer(
-      contextAuth,
-      testRobot,
-      "",
-      "concurrent_2.dat",
-      Readable.from(Buffer.from("second")),
-      { overwrite: true },
-      6
-    );
-    assert.fail("Il secondo trasferimento avrebbe dovuto superare il limite simultaneo");
-  } catch (err: any) {
-    assert.strictEqual(err.code, ErrorCode.TRANSFER_INTERRUPTED);
-    assert.ok(err.diagnosticDetail.includes("Limite trasferimenti simultanei raggiunto"));
-  }
+    // I controlli filesystem sono asincroni: l'ordine delle chiamate da solo
+    // non garantisce che il primo trasferimento abbia già ottenuto lo slot.
+    const firstIsActive = () => limitedTransferService.listTransfers(contextAuth)
+      .some((transfer) => transfer.filename === "concurrent_1.dat" && transfer.status === "IN_PROGRESS");
+    for (let attempt = 0; !firstIsActive() && attempt < 100; attempt++) await delay(10);
+    assert.ok(firstIsActive(), "Il primo trasferimento deve occupare lo slot");
 
-  // Completa il primo trasferimento
-  slowStream1.end(Buffer.from("done"));
-  await trf1Promise;
+    await assert.rejects(
+      limitedTransferService.uploadClientToServer(
+        contextAuth,
+        testRobot,
+        "",
+        "concurrent_2.dat",
+        Readable.from(Buffer.from("second")),
+        { overwrite: true },
+        6
+      ),
+      (err: any) => err.code === ErrorCode.TRANSFER_INTERRUPTED
+        && err.diagnosticDetail.includes("Limite trasferimenti simultanei raggiunto")
+    );
+  } finally {
+    slowStream1.end(Buffer.from("done"));
+    await trf1Promise;
+  }
 
   // Pulizia
   const c1 = path.join(testRobot.serverDirectoryPath, "concurrent_1.dat");
