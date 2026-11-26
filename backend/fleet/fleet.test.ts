@@ -279,6 +279,32 @@ try {
     const strictCheck = await strictRepo.findById("robot-strict-fail");
     assert.strictEqual(strictCheck, null, "Robot non registrato a DB in modalità rigorosa con SSH fallito");
 
+    // Caso 3a-bis: Modalità rigorosa -> host/porta non raggiungibile espone esplicitamente host:sshPort
+    const closedPort = 45999;
+    const strictUnreachableResult = await strictService.registerRobot(adminUser, {
+      id: "robot-strict-unreachable",
+      displayName: "Robot Strict Unreachable",
+      customerName: "Cliente Strict",
+      remoteUsername: "moliris_unreach",
+      host: "127.0.0.1",
+      sshPort: closedPort,
+      sshAuthMethod: "password",
+      password: "ANY_PASSWORD",
+      hostKeyVerification: {
+        fingerprint: serverFingerprintInfo.sha256Hex,
+        strictHostKeyChecking: true,
+      },
+    });
+    assert.strictEqual(strictUnreachableResult.outcome, "ssh_non_verificata");
+    assert.ok(
+      strictUnreachableResult.message.includes(`127.0.0.1:${closedPort}`),
+      `Il messaggio CA-ROB-003 deve includere host:sshPort tentato, ricevuto: ${strictUnreachableResult.message}`
+    );
+    assert.ok(
+      (strictUnreachableResult.diagnosticDetail || "").includes(`127.0.0.1:${closedPort}`),
+      `diagnosticDetail CA-ROB-003 deve includere host:sshPort tentato, ricevuto: ${strictUnreachableResult.diagnosticDetail}`
+    );
+
     // Caso 3b: Modalità differita -> registra il robot con stato esplicito 'ssh_non_verificata'
     const { service: deferredService, repo: deferredRepo } = createService({ registrationMode: "differita" });
     const deferredResult = await deferredService.registerRobot(adminUser, {

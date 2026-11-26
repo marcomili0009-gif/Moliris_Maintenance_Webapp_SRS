@@ -32,7 +32,16 @@ export interface LastAttemptOutcome {
   success: boolean;
   stage: "connection" | "monitoring";
   errorCode?: string;
-  subType?: "missing" | "empty" | "incomplete" | "malformed" | "timeout" | "connection_error" | "read_error";
+  subType?:
+    | "missing"
+    | "empty"
+    | "incomplete"
+    | "malformed"
+    | "timeout"
+    | "connection_error"
+    | "read_error"
+    | "credential_decryption_error"
+    | "destination_not_allowed";
   diagnosticMessage?: string;
   attempts?: Array<{
     path: string;

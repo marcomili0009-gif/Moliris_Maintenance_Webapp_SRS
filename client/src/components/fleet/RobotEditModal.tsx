@@ -1,6 +1,5 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef } from "react";
 import type { RobotSummaryDto, EditRobotPayload } from "../../types/fleet.ts";
-import { DoubleSubmitButton } from "../common/DoubleSubmitButton.tsx";
 
 interface RobotEditModalProps {
   robot: RobotSummaryDto | null;
@@ -30,9 +29,13 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
   const [customerName, setCustomerName] = useState<string>("");
   const [plantName, setPlantName] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [showDeleteServerDataConfirm, setShowDeleteServerDataConfirm] = useState<boolean>(false);
   const [deletingServerData, setDeletingServerData] = useState<boolean>(false);
   const [deleteServerDataSuccess, setDeleteServerDataSuccess] = useState<string | null>(null);
+
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const firstInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (robot) {
@@ -49,16 +52,60 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
       setCustomerName(robot.customerName ?? "");
       setPlantName(robot.plantName ?? "");
       setError(null);
+      setIsSubmitting(false);
       setShowDeleteServerDataConfirm(false);
       setDeletingServerData(false);
       setDeleteServerDataSuccess(null);
     }
   }, [robot]);
 
+  useLayoutEffect(() => {
+    if (!isOpen || !robot) return;
+    const previous = document.activeElement;
+    firstInputRef.current?.focus({ preventScroll: true });
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) {
+        previous.focus({ preventScroll: true });
+      }
+    };
+  }, [isOpen, robot]);
+
+  useEffect(() => {
+    if (!isOpen || !robot) return undefined;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusedDialog = ev.target instanceof Element ? ev.target.closest(".modal") : null;
+      if (focusedDialog && focusedDialog !== dialog) return;
+      if (ev.key === "Escape" && !isSubmitting) {
+        ev.preventDefault();
+        onClose();
+      }
+      if (ev.key !== "Tab" || ev.defaultPrevented) return;
+      const controls = Array.from(dialog.querySelectorAll<HTMLElement>(
+        "button:not(:disabled), input:not(:disabled):not([type=hidden]), select:not(:disabled), textarea:not(:disabled), a[href], summary, [tabindex]"
+      )).filter((element) => {
+        if (element.tabIndex < 0 || !element.getClientRects().length) return false;
+        const collapsed = element.closest("details:not([open])");
+        return !collapsed || collapsed.querySelector(":scope > summary") === element;
+      });
+      const first = controls[0];
+      const last = controls.at(-1);
+      const active = document.activeElement;
+      if (!controls.some((control) => control === active) || active === (ev.shiftKey ? first : last)) {
+        ev.preventDefault();
+        (ev.shiftKey ? last : first)?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, robot, isSubmitting, onClose]);
+
   if (!isOpen || !robot) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setError(null);
 
     const trimmedCustomer = customerName.trim();
@@ -85,7 +132,13 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
       remoteMonitoringPath: remoteMonitoringPath.trim() ? remoteMonitoringPath.trim() : undefined,
     };
 
-    const success = await onUpdate(robot.id, payload);
+    setIsSubmitting(true);
+    let success = false;
+    try {
+      success = await onUpdate(robot.id, payload);
+    } finally {
+      setIsSubmitting(false);
+    }
     if (success) {
       onClose();
     } else {
@@ -94,21 +147,45 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
   };
 
   return (
-    <div id="modal-robot-edit" className="modal" role="dialog" aria-modal="true">
-      <div className="modal-content modal-large">
-        <div className="modal-header">
-          <h3>Modifica Configurazione Robot</h3>
-          <button
-            type="button"
-            className="btn-close"
-            id="btn-close-edit"
-            onClick={onClose}
-            aria-label="Chiudi"
-          />
+    <div ref={dialogRef} id="modal-robot-edit" className="modal" role="dialog" aria-modal="true" aria-labelledby="edit-robot-title">
+      <div className="modal-content modal-large modal-register">
+        <div className="modal-header modal-register-header">
+          <h3 id="edit-robot-title">Modifica Configurazione Robot</h3>
+          <div className="modal-register-actions">
+            <button
+              type="submit"
+              form="form-edit-robot"
+              className="btn btn-primary"
+              id="btn-submit-edit"
+              disabled={isSubmitting}
+              aria-busy={isSubmitting}
+              data-pending={isSubmitting ? "true" : undefined}
+            >
+              {isSubmitting ? (
+                <>
+                  <span className="btn-spinner" aria-hidden="true" /> Salvataggio...
+                </>
+              ) : (
+                "Salva Modifiche"
+              )}
+            </button>
+            <button
+              type="button"
+              className="btn-close"
+              id="btn-close-edit"
+              onClick={onClose}
+              disabled={isSubmitting}
+              aria-label="Annulla"
+            />
+          </div>
         </div>
 
-        <div className="modal-body">
-          {error && <div className="error-message mb-3">{error}</div>}
+        <div className="modal-body modal-register-body">
+          {error && (
+            <div className="error-message mb-4" role="alert">
+              {error}
+            </div>
+          )}
 
           <form id="form-edit-robot" onSubmit={handleSubmit}>
             <input type="hidden" id="edit-robotId" name="editRobotId" value={robot.id} />
@@ -120,6 +197,7 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
                 <input
                   type="text"
                   id="edit-displayName"
+                  ref={firstInputRef}
                   name="displayName"
                   required
                   value={displayName}
@@ -331,25 +409,6 @@ export const RobotEditModal: React.FC<RobotEditModalProps> = ({
                 )}
               </div>
             )}
-
-            <div className="modal-footer">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                id="btn-cancel-edit"
-                onClick={onClose}
-              >
-                Annulla
-              </button>
-              <DoubleSubmitButton
-                type="submit"
-                className="btn btn-primary"
-                id="btn-submit-edit"
-                pendingText="Salvataggio..."
-              >
-                Salva Modifiche
-              </DoubleSubmitButton>
-            </div>
           </form>
         </div>
       </div>

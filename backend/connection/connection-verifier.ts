@@ -74,9 +74,16 @@ export async function verifyRobotConnection(
 
   // Misura anti-abuso su destinazioni consentite (RNF-SEC-006)
   if (deps.destinationValidator && !deps.destinationValidator.isDestinationAllowed(host)) {
+    const diagnostic = deps.destinationValidator.getBlockedDestinationDiagnostic(host);
+    deps.logger.warn("Verifica connessione bloccata da MOLIRIS_ALLOWED_DESTINATIONS (RNF-SEC-006)", {
+      robotId: robotParams.id,
+      host,
+      denyAll: deps.destinationValidator.isDenyAll(),
+    });
     throw new MolirisAppError(
       ErrorCode.HOST_UNREACHABLE,
-      "Connessione verso l'host specificato non consentita dalla politica di sicurezza (destinazione non in whitelist)."
+      diagnostic,
+      diagnostic
     );
   }
 
@@ -90,12 +97,14 @@ export async function verifyRobotConnection(
     // Operazione: Socket TCP verso host:port per verificare se la rete risponde
     const reachability = await checkTcpReachability(host, port, deps.timeoutMs);
     if (!reachability.success) {
+      const targetEndpoint = `${host}:${port}`;
+      const rawErr = reachability.error || "Host non raggiungibile";
       steps.push({
         step: "host_reachability",
         status: "FAILED",
         errorCode: ErrorCode.HOST_UNREACHABLE,
         message: ERROR_CATALOG[ErrorCode.HOST_UNREACHABLE].userMessage,
-        diagnosticDetail: reachability.error,
+        diagnosticDetail: rawErr.includes(targetEndpoint) ? rawErr : `${targetEndpoint} - ${rawErr}`,
       });
       skipRemainingSteps(steps, ["ssh_port_availability", "host_key_verification", "ssh_authentication", "resources_accessibility"]);
       return buildReport(false, timestamp, steps);
@@ -106,12 +115,14 @@ export async function verifyRobotConnection(
     // Operazione: Lettura del banner SSH (es. "SSH-2.0-OpenSSH...") per verificare che il servizio sia effettivamente SSH
     const sshBanner = await checkSshBanner(host, port, deps.timeoutMs);
     if (!sshBanner.success) {
+      const targetEndpoint = `${host}:${port}`;
+      const rawErr = sshBanner.error || "Servizio SSH non disponibile";
       steps.push({
         step: "ssh_port_availability",
         status: "FAILED",
         errorCode: ErrorCode.SSH_PORT_UNAVAILABLE,
         message: ERROR_CATALOG[ErrorCode.SSH_PORT_UNAVAILABLE].userMessage,
-        diagnosticDetail: sshBanner.error,
+        diagnosticDetail: rawErr.includes(targetEndpoint) ? rawErr : `${targetEndpoint} - ${rawErr}`,
       });
       skipRemainingSteps(steps, ["host_key_verification", "ssh_authentication", "resources_accessibility"]);
       return buildReport(false, timestamp, steps);
@@ -119,10 +130,34 @@ export async function verifyRobotConnection(
     steps.push({ step: "ssh_port_availability", status: "SUCCESS" });
 
     // Recupero credenziali per i passi successivi (Vincoli 2.4 punti 1-2, RNF-SEC-002)
-    const credentials = await deps.credentialProvider.getCredentials(
-      robotParams.credentialReference,
-      robotParams.sshAuthMethod
-    );
+    let credentials: any;
+    try {
+      credentials = await deps.credentialProvider.getCredentials(
+        robotParams.credentialReference,
+        robotParams.sshAuthMethod
+      );
+    } catch (credErr: any) {
+      const appErr = credErr instanceof MolirisAppError ? credErr : null;
+      const errCode = appErr?.code || ErrorCode.SSH_AUTH_FAILED;
+      const detail = appErr ? appErr.userMessage || appErr.message : redactSensitiveData(credErr?.message || "Errore recupero credenziali SSH.");
+      deps.logger.warn("Recupero/decifratura credenziali SSH fallito durante verifica connessione", {
+        robotId: robotParams.id,
+        errorCode: errCode,
+      });
+      steps.push({
+        step: "host_key_verification",
+        status: "SKIPPED",
+      });
+      steps.push({
+        step: "ssh_authentication",
+        status: "FAILED",
+        errorCode: errCode,
+        message: detail,
+        diagnosticDetail: detail,
+      });
+      skipRemainingSteps(steps, ["resources_accessibility"]);
+      return buildReport(false, timestamp, steps);
+    }
 
     // --- 3 & 4. Verifica della chiave host e autenticazione ---
     const sshVerification = await executeSshHandshakeAndAuth(

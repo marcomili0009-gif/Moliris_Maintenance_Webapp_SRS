@@ -32,6 +32,7 @@ import { MongoCredentialProvider } from "./connection/mongo-credential-provider.
 import { loadMasterKeyFromFile } from "./connection/master-key.ts";
 import { type HostKeyVerifier, DefaultHostKeyVerifier } from "./connection/host-key-verifier.ts";
 import { RobotConnectionManager } from "./connection/robot-connection-manager.ts";
+import { DestinationValidator } from "./connection/connection-validator.ts";
 import { FleetService } from "./fleet/fleet-service.ts";
 import { registerFleetRoutes } from "./fleet/fleet-routes.ts";
 import { type StateFileParser, MolirisStateFileParser } from "./monitoring/state-file-parser.ts";
@@ -356,12 +357,17 @@ export function createServer(
     maxConcurrentServer: config.maxConcurrentTransfersServer,
     connectionTimeoutMs: config.sshConnectionTimeoutMs,
   };
+  const destinationValidator = new DestinationValidator(
+    config.allowedDestinations,
+    config.maxConcurrentRegistrationVerifications
+  );
   const connectionManager = deps.connectionManager || new RobotConnectionManager(
     credentialProvider,
     hostKeyVerifier,
     connectionLimits,
     logger,
-    auditRepository
+    auditRepository,
+    destinationValidator
   );
 
   // Servizio di gestione flotta (Prompt 6, RF-ROB-001..014, RF-05)

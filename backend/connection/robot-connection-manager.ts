@@ -6,6 +6,7 @@ import crypto from "crypto";
 import { type RobotEntity } from "../../storage/robot-models.ts";
 import { type CredentialProvider, type AuthenticationMaterial } from "./credential-provider.ts";
 import { type HostKeyVerifier, computeHostKeyFingerprint } from "./host-key-verifier.ts";
+import { type DestinationValidator } from "./connection-validator.ts";
 import { type AuditRepository } from "../../storage/audit-repository.ts";
 import { AuditOperation } from "../../storage/audit-models.ts";
 import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
@@ -48,19 +49,22 @@ export class RobotConnectionManager {
   private limits: ConnectionLimits;
   private logger: MolirisLogger;
   private auditRepository?: AuditRepository;
+  private destinationValidator?: DestinationValidator;
 
   constructor(
     credentialProvider: CredentialProvider,
     hostKeyVerifier: HostKeyVerifier,
     limits: ConnectionLimits,
     logger: MolirisLogger,
-    auditRepository?: AuditRepository
+    auditRepository?: AuditRepository,
+    destinationValidator?: DestinationValidator
   ) {
     this.credentialProvider = credentialProvider;
     this.hostKeyVerifier = hostKeyVerifier;
     this.limits = limits;
     this.logger = logger;
     this.auditRepository = auditRepository;
+    this.destinationValidator = destinationValidator;
   }
 
   public getActiveConnectionCount(): number {
@@ -114,6 +118,17 @@ export class RobotConnectionManager {
         ErrorCode.INSUFFICIENT_PERMISSIONS,
         `Impossibile aprire connessioni verso un robot ${robot.anagraphicState}.`
       );
+    }
+
+    // 1b. Verifica whitelist destinazioni (RNF-SEC-006) anche su connessioni runtime/polling
+    if (this.destinationValidator && !this.destinationValidator.isDestinationAllowed(robot.host)) {
+      const diagnostic = this.destinationValidator.getBlockedDestinationDiagnostic(robot.host);
+      this.logger.warn("Connessione SSH bloccata da MOLIRIS_ALLOWED_DESTINATIONS (RNF-SEC-006)", {
+        robotId: robot.id,
+        host: robot.host,
+        denyAll: this.destinationValidator.isDenyAll(),
+      });
+      throw new MolirisAppError(ErrorCode.HOST_UNREACHABLE, diagnostic, diagnostic);
     }
 
     // 2. Controllo e applicazione limiti di concorrenza (RNF-PERF-003, RF-TRF-012)

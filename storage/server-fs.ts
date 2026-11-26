@@ -62,6 +62,8 @@ export interface ServerFileItem {
   isRobotFolder?: boolean;
   /** Flag esplicito per badge 'Eliminato' su directory di robot rimossi dall'anagrafica (ISS-017). */
   isDeletedRobot?: boolean;
+  /** true se il serverDirectoryPath salvato nel DB è esterno al MOLIRIS_FS_ROOT corrente (es. dopo migrazione server). */
+  needsRealignment?: boolean;
 }
 
 export interface DirectoryInspectionResult {
@@ -182,6 +184,46 @@ export class ServerFilesystemService {
   }
 
   /**
+   * Verifica che il percorso directory assegnato al robot sia una sottodirectory diretta
+   * del MOLIRIS_FS_ROOT corrente e non coincida con la root stessa o con l'archivio generale (RNF-FS-001..004).
+   */
+  public isRobotDirectoryUnderFsRoot(serverDirectoryPath?: string | null): boolean {
+    if (!serverDirectoryPath || typeof serverDirectoryPath !== "string" || !serverDirectoryPath.trim()) {
+      return false;
+    }
+    const robotDir = path.resolve(serverDirectoryPath.trim());
+    const generalRoot = path.resolve(this.generalFsRoot);
+    if (robotDir === this.fsRoot || robotDir === generalRoot) {
+      return false;
+    }
+    if (path.dirname(robotDir) !== this.fsRoot) {
+      return false;
+    }
+    const base = path.basename(robotDir);
+    if (!base || base.startsWith(".") || base === ".tmp" || base === ".moliris_tmp") {
+      return false;
+    }
+    return true;
+  }
+
+  private assertRobotDirectoryInsideFsRoot(
+    robot: Pick<RobotEntity, "id" | "serverDirectoryPath">
+  ): string {
+    if (!this.isRobotDirectoryUnderFsRoot(robot.serverDirectoryPath)) {
+      this.logger.warn("Directory server del robot esterna al MOLIRIS_FS_ROOT corrente", {
+        robotId: robot.id,
+        configuredFsRoot: this.fsRoot,
+      });
+      throw new MolirisAppError(
+        ErrorCode.SERVER_DIR_INACCESSIBLE,
+        `La directory server del robot '${robot.id}' non appartiene al MOLIRIS_FS_ROOT corrente ('${this.fsRoot}'). Riallineare la directory da amministratore (POST /api/robots/${robot.id}/realign-directory) oppure eseguire scripts/migrate-robot-directories.ts.`,
+        `La directory server del robot '${robot.id}' punta a un percorso esterno al MOLIRIS_FS_ROOT configurato su questo server. Un amministratore deve riallineare la directory del robot oppure eseguire lo script di migrazione.`
+      );
+    }
+    return path.resolve(robot.serverDirectoryPath);
+  }
+
+  /**
    * Risolve e valida in modo sicuro un percorso relativo all'interno della directory del robot (RNF-SEC-005, CA-ROB-009).
    * Rifiuta percorsi assoluti, path traversal ("..", sequenze codificate), link simbolici che fuoriescono.
    */
@@ -189,7 +231,7 @@ export class ServerFilesystemService {
     robot: Pick<RobotEntity, "id" | "remoteUsername" | "host" | "serverDirectoryPath">,
     relativeSubPath?: string
   ): Promise<string> {
-    const robotDir = path.resolve(robot.serverDirectoryPath);
+    const robotDir = this.assertRobotDirectoryInsideFsRoot(robot);
 
     // Se non è specificato alcun sotto-percorso o rappresenta la root, restituisce la root del robot
     const trimmed = (relativeSubPath ?? "").trim();
@@ -627,15 +669,40 @@ export class ServerFilesystemService {
       if (!robot?.serverDirectoryPath) continue;
 
       const robotDir = path.resolve(robot.serverDirectoryPath);
-
-      // Solo directory di primo livello sotto la root server: evita di esporre
-      // percorsi arbitrari o la stessa directory dell'archivio generale.
-      if (path.dirname(robotDir) !== this.fsRoot) continue;
       if (robotDir === generalRoot) continue;
 
       const name = path.basename(robotDir);
+      const standardName = `${robot.remoteUsername}_${robot.id}`.toLowerCase();
+
+      // Se la directory salvata nel DB appartiene a un MOLIRIS_FS_ROOT precedente (es. migrazione server),
+      // NON la esponiamo come percorso navigabile fuori root (RNF-FS-001..004), ma:
+      // 1) riserviamo i nomi attesi in activeRobotDirNames per non classificarla mai come "deleted_robot"
+      // 2) segnaliamo needsRealignment=true in modo trasparente all'amministratore.
+      if (!this.isRobotDirectoryUnderFsRoot(robot.serverDirectoryPath)) {
+        if (name) activeRobotDirNames.add(name.toLowerCase());
+        activeRobotDirNames.add(standardName);
+        const safeLabelName = name && !name.startsWith(".") ? name : `${robot.remoteUsername}_${robot.id}`;
+        if (!knownNames.has(safeLabelName.toLowerCase())) {
+          knownNames.add(safeLabelName.toLowerCase());
+          robotItems.push({
+            name: safeLabelName,
+            type: "directory",
+            size: null,
+            modifiedAt: new Date(0),
+            scope: "robot",
+            isRobotFolder: true,
+            robotId: robot.id,
+            displayName: robot.displayName || robot.id,
+            exists: false,
+            needsRealignment: true,
+          });
+        }
+        continue;
+      }
+
       if (!name) continue;
       activeRobotDirNames.add(name.toLowerCase());
+      activeRobotDirNames.add(standardName);
       if (knownNames.has(name.toLowerCase())) continue;
       knownNames.add(name.toLowerCase());
 
@@ -808,7 +875,7 @@ export class ServerFilesystemService {
     robot: Pick<RobotEntity, "id" | "remoteUsername" | "host" | "serverDirectoryPath">,
     options?: { standardSubdirectories?: string[]; directoryPermissions?: string }
   ): Promise<DirectoryCreationResult> {
-    const robotDir = path.resolve(robot.serverDirectoryPath);
+    const robotDir = this.assertRobotDirectoryInsideFsRoot(robot);
 
     // CA-ROB-007: Verifica che la root del server esista e sia accessibile in scrittura
     try {

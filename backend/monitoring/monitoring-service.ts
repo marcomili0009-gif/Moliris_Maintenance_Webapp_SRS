@@ -244,7 +244,12 @@ export class MonitoringService {
         // Errore lettura remota, file assente o non interpretabile (Problema B2 punto c, RF-MON-005):
         // Preserva intatto l'ultimo dato valido precedente; aggiorna connectionState e lastAttemptOutcome
         let connectionState: ConnectionState = "avviso";
-        if (readResult.subType === "connection_error" || readResult.subType === "timeout") {
+        if (
+          readResult.subType === "credential_decryption_error" ||
+          readResult.subType === "destination_not_allowed"
+        ) {
+          connectionState = "errore";
+        } else if (readResult.subType === "connection_error" || readResult.subType === "timeout") {
           connectionState = "non_raggiungibile";
         }
 
