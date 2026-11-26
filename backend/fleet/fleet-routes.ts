@@ -201,6 +201,30 @@ export function registerFleetRoutes(
 
   // STEP 10 – Disabilitazione robot (RF-ROB-013, §8.4, CA-ROB-011)
   app.post(
+    "/api/robots/:robotId/realign-directory",
+    {
+      preHandler: [
+        authMiddleware.requirePermission(AppPermission.ROBOT_CONFIG_UPDATE, extractRobotId),
+      ],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = req.molirisUser!;
+        const { robotId } = req.params as { robotId: string };
+        const result = await fleetService.realignServerDirectory(user, robotId);
+        return reply.status(200).send({
+          ...result,
+          message: result.pathUpdated
+            ? "Directory server del robot riallineata al MOLIRIS_FS_ROOT corrente e verificata con successo."
+            : "Directory server del robot verificata e ripristinata con successo.",
+        });
+      } catch (err: any) {
+        return handleError(err, reply);
+      }
+    }
+  );
+
+  app.post(
     "/api/robots/:robotId/disable",
     {
       preHandler: [

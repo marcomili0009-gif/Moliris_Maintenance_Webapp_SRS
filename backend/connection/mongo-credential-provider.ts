@@ -198,9 +198,12 @@ export class MongoCredentialProvider implements CredentialProvider {
 
       return JSON.parse(decrypted) as AuthenticationMaterial;
     } catch {
+      const diagnosticMessage =
+        "Decifratura credenziali SSH fallita per possibile mismatch della master.key (es. dopo ripristino del database su un altro server) o integrità/AAD non validi (RNF-SEC-002, RNF-SEC-004). Reinserire le credenziali del robot dall'interfaccia web oppure rieseguire lo script scripts/reencrypt-credentials.ts.";
       throw new MolirisAppError(
         ErrorCode.SSH_AUTH_FAILED,
-        "Decifratura credenziali fallita: integrità, autenticazione o AAD non validi (RNF-SEC-002, RNF-SEC-004)."
+        diagnosticMessage,
+        diagnosticMessage
       );
     }
   }

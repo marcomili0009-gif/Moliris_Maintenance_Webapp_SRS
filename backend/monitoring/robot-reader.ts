@@ -10,7 +10,9 @@ export type RemoteReadFailureSubType =
   | "missing"
   | "timeout"
   | "connection_error"
-  | "read_error";
+  | "read_error"
+  | "credential_decryption_error"
+  | "destination_not_allowed";
 
 export interface StateFileAttemptDetail {
   path: string;
@@ -119,11 +121,20 @@ export class RemoteRobotReader {
     } catch (connErr: any) {
       const appErr = connErr instanceof MolirisAppError ? connErr : null;
       const errorCode = appErr ? appErr.code : ErrorCode.HOST_UNREACHABLE;
-      const errorMessage = appErr ? appErr.message : redactSensitiveData(connErr?.message || "Errore di connessione");
+      const errorMessage = appErr
+        ? appErr.userMessage || appErr.message
+        : redactSensitiveData(connErr?.message || "Errore di connessione");
 
       let subType: RemoteReadFailureSubType = "connection_error";
       if (errorCode === ErrorCode.TIMEOUT_ERROR) {
         subType = "timeout";
+      } else if (
+        errorCode === ErrorCode.SSH_AUTH_FAILED &&
+        /master\.key|decifratura credenziali/i.test(errorMessage)
+      ) {
+        subType = "credential_decryption_error";
+      } else if (/MOLIRIS_ALLOWED_DESTINATIONS|RNF-SEC-006/i.test(errorMessage)) {
+        subType = "destination_not_allowed";
       }
 
       return {

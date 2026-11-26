@@ -67,8 +67,24 @@ export class DestinationValidator {
       // Se non specificata alcuna whitelist, tutte le destinazioni sintatticamente valide sono ammesse
       return true;
     }
-    const normalized = host.toLowerCase();
+    const normalized = host.trim().toLowerCase();
     return this.allowedDestinations.some(d => d.toLowerCase() === normalized);
+  }
+
+  public isDenyAll(): boolean {
+    return Array.isArray(this.allowedDestinations) && this.allowedDestinations.length === 0;
+  }
+
+  /**
+   * Restituisce un messaggio diagnostico chiaro (privo di segreti) per RNF-SEC-006
+   * quando l'host richiesto è bloccato da MOLIRIS_ALLOWED_DESTINATIONS.
+   */
+  public getBlockedDestinationDiagnostic(host: string): string {
+    const cleanHost = host.trim();
+    if (this.isDenyAll()) {
+      return `Destinazione '${cleanHost}' bloccata dalla policy di sicurezza (RNF-SEC-006): MOLIRIS_ALLOWED_DESTINATIONS è impostato su 'none' (nessun host autorizzato). Aggiungere '${cleanHost}' a MOLIRIS_ALLOWED_DESTINATIONS nel file .env e riavviare il server.`;
+    }
+    return `Destinazione '${cleanHost}' non autorizzata dalla policy di sicurezza (RNF-SEC-006): l'host non è presente nella whitelist configurata. Aggiungere '${cleanHost}' a MOLIRIS_ALLOWED_DESTINATIONS nel file .env e riavviare il server.`;
   }
 
   /**

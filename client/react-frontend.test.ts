@@ -655,6 +655,74 @@ async function testResponsiveNavigationAndRegistrationFocus(): Promise<void> {
   await waitForBrowser("!document.querySelector('#modal-robot-register')");
   assert.equal(await focusId(), "btn-register-robot");
   console.log("  PASS: Focus iniziale, Tab, Shift+Tab, Escape e ripristino del focus.");
+
+  // Verifica allineamento UI e accessibilità di RobotEditModal con RobotRegisterModal
+  const openedEditModal = await evaluateInBrowser<boolean>(`(() => {
+    const toggle = document.querySelector('#fleet-table-body .dropdown-toggle, tbody .dropdown-toggle');
+    if (!toggle) return false;
+    toggle.click();
+    return true;
+  })()`);
+  assert.ok(openedEditModal, "Il menu azioni di un robot deve essere presente per aprire RobotEditModal");
+  await waitForBrowser("Array.from(document.querySelectorAll('.dropdown-item')).some(b => b.textContent?.trim() === 'Configura')");
+  await evaluateInBrowser(`(() => {
+    const btn = Array.from(document.querySelectorAll('.dropdown-item')).find(b => b.textContent?.trim() === 'Configura');
+    btn?.click();
+  })()`);
+  await waitForBrowser("Boolean(document.querySelector('#modal-robot-edit'))");
+  await waitForBrowser("document.activeElement?.id === 'edit-displayName'");
+
+  const editModalCheck = await evaluateInBrowser<{
+    hasRegisterHeader: boolean;
+    title: string | null;
+    ariaLabelledBy: string | null;
+    submitInHeader: boolean;
+    submitFormAttr: string | null;
+    submitText: string | null;
+    closeInHeader: boolean;
+    closeAriaLabel: string | null;
+    hasFooter: boolean;
+    hasDeleteSection: boolean;
+  }>(`(() => {
+    const modal = document.querySelector('#modal-robot-edit');
+    const header = modal?.querySelector('.modal-header.modal-register-header');
+    const actions = header?.querySelector('.modal-register-actions');
+    const submitBtn = actions?.querySelector('#btn-submit-edit');
+    const closeBtn = actions?.querySelector('#btn-close-edit');
+    return {
+      hasRegisterHeader: Boolean(header),
+      title: header?.querySelector('#edit-robot-title')?.textContent?.trim() ?? null,
+      ariaLabelledBy: modal?.getAttribute('aria-labelledby') ?? null,
+      submitInHeader: Boolean(submitBtn),
+      submitFormAttr: submitBtn?.getAttribute('form') ?? null,
+      submitText: submitBtn?.textContent?.trim() ?? null,
+      closeInHeader: Boolean(closeBtn),
+      closeAriaLabel: closeBtn?.getAttribute('aria-label') ?? null,
+      hasFooter: Boolean(modal?.querySelector('.modal-footer')),
+      hasDeleteSection: Boolean(modal?.querySelector('#section-delete-server-data')),
+    };
+  })()`);
+
+  assert.strictEqual(editModalCheck.hasRegisterHeader, true, "RobotEditModal deve usare .modal-header.modal-register-header");
+  assert.strictEqual(editModalCheck.title, "Modifica Configurazione Robot");
+  assert.strictEqual(editModalCheck.ariaLabelledBy, "edit-robot-title");
+  assert.strictEqual(editModalCheck.submitInHeader, true, "Il pulsante Salva Modifiche deve trovarsi nell'header");
+  assert.strictEqual(editModalCheck.submitFormAttr, "form-edit-robot");
+  assert.strictEqual(editModalCheck.submitText, "Salva Modifiche");
+  assert.strictEqual(editModalCheck.closeInHeader, true, "Il pulsante chiudi × deve trovarsi nell'header");
+  assert.strictEqual(editModalCheck.closeAriaLabel, "Annulla");
+  assert.strictEqual(editModalCheck.hasFooter, false, "RobotEditModal non deve più avere .modal-footer");
+  assert.strictEqual(editModalCheck.hasDeleteSection, true, "La sezione rossa Eliminazione Dati Server deve restare intatta nel body");
+
+  // Verifica focus trap Tab / Shift+Tab e chiusura con Escape in RobotEditModal
+  await evaluateInBrowser("document.querySelector('#btn-submit-edit').focus()");
+  await key("Tab", 9, 8);
+  assert.ok(await evaluateInBrowser("document.querySelector('#modal-robot-edit').contains(document.activeElement)"));
+  await key("Tab", 9);
+  assert.equal(await focusId(), "btn-submit-edit");
+  await key("Escape", 27);
+  await waitForBrowser("!document.querySelector('#modal-robot-edit')");
+  console.log("  PASS: RobotEditModal allineato a RobotRegisterModal (header, pulsanti, assenza footer, sezione delete, focus trap ed Escape).");
 }
 
 async function testLogoutCycles(): Promise<void> {

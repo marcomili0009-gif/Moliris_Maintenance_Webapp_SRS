@@ -332,7 +332,12 @@ export class FleetService {
 
         // Verifica contro whitelist destinazioni se configurata (RNF-SEC-006)
         if (!this.destinationValidator.isDestinationAllowed(normHost)) {
-          errors["host"] = "Destinazione di rete non ammessa dalle regole di sicurezza configurate (RNF-SEC-006).";
+          const diagnostic = this.destinationValidator.getBlockedDestinationDiagnostic(normHost);
+          this.logger.warn("Registrazione robot rifiutata da MOLIRIS_ALLOWED_DESTINATIONS (RNF-SEC-006)", {
+            host: normHost,
+            denyAll: this.destinationValidator.isDenyAll(),
+          });
+          errors["host"] = diagnostic;
         }
       } catch (err: any) {
         errors["host"] = err.userMessage || "Indirizzo IP o hostname non valido.";
@@ -657,19 +662,24 @@ export class FleetService {
       sshVerificationSucceeded = connCheckResult.overallSuccess;
     } catch (verifErr: any) {
       sshVerificationSucceeded = false;
+      const errMsg = verifErr instanceof MolirisAppError
+        ? (verifErr.userMessage || verifErr.message)
+        : (verifErr.message || "Errore imprevisto durante la verifica SSH.");
+      const errCode = verifErr instanceof MolirisAppError ? verifErr.code : ErrorCode.HOST_UNREACHABLE;
       connCheckResult = {
         overallSuccess: false,
         lastConnectionVerificationInfo: {
           timestamp: new Date(),
           success: false,
-          message: verifErr.message || "Errore imprevisto durante la verifica SSH.",
+          message: errMsg,
         },
         steps: [
           {
             step: "ssh_connection",
             status: "FAILED",
-            message: "Errore imprevisto durante la verifica SSH.",
-            diagnosticDetail: verifErr.message,
+            errorCode: errCode,
+            message: errMsg,
+            diagnosticDetail: errMsg,
           },
         ],
       };
@@ -726,7 +736,23 @@ export class FleetService {
         diagnosticDetail: failureReason,
       });
 
-      const failedStepMessage = failedStep?.message ? ` Motivo: ${failedStep.message}` : "";
+      const targetEndpoint = `${candidateRobot.host}:${candidateRobot.sshPort}`;
+      const isReachabilityFailure =
+        failedStep?.step === "host_reachability" ||
+        failedStep?.step === "ssh_port_availability" ||
+        failedStep?.errorCode === ErrorCode.HOST_UNREACHABLE ||
+        failedStep?.errorCode === ErrorCode.SSH_PORT_UNAVAILABLE;
+      const detailedDiagnostic =
+        isReachabilityFailure && !failureReason.includes(targetEndpoint)
+          ? `${targetEndpoint} - ${failureReason}`
+          : failureReason;
+      const failedStepMessage = failedStep?.message
+        ? isReachabilityFailure
+          ? ` Motivo (${targetEndpoint}): ${failedStep.message}`
+          : ` Motivo: ${failedStep.message}`
+        : isReachabilityFailure
+          ? ` Destinazione tentata: ${targetEndpoint}.`
+          : "";
       return {
         outcome: "ssh_non_verificata",
         performedActions,
@@ -734,7 +760,7 @@ export class FleetService {
         failedAction: "verifica_connessione_ssh",
         verificationSteps: connCheckResult?.steps,
         message: `Registrazione rifiutata: connessione SSH verso il robot non verificata con successo in modalità rigorosa (CA-ROB-003).${failedStepMessage}`,
-        diagnosticDetail: failureReason,
+        diagnosticDetail: detailedDiagnostic,
         recoveryPath: "Verificare che il robot sia online, che la porta SSH sia raggiungibile e che credenziali e chiave host siano corrette.",
       };
     }
@@ -891,30 +917,55 @@ export class FleetService {
       success = checkResult.overallSuccess;
     } catch (err: any) {
       success = false;
+      const errMsg = err instanceof MolirisAppError ? (err.userMessage || err.message) : err.message;
+      const errCode = err instanceof MolirisAppError ? err.code : ErrorCode.HOST_UNREACHABLE;
       checkResult = {
         overallSuccess: false,
         lastConnectionVerificationInfo: {
           timestamp: new Date(),
           success: false,
-          message: err.message,
+          message: errMsg,
         },
-        steps: [],
+        steps: [
+          {
+            step: errCode === ErrorCode.SSH_AUTH_FAILED ? "ssh_authentication" : "host_reachability",
+            status: "FAILED",
+            errorCode: errCode,
+            message: errMsg,
+            diagnosticDetail: errMsg,
+          },
+        ],
       };
     }
 
-    const failureReason =
-      checkResult?.lastConnectionVerificationInfo?.message ||
-      checkResult?.steps?.find((s: any) => s.status === "FAILED")?.diagnosticDetail ||
-      checkResult?.steps?.find((s: any) => s.status === "FAILED")?.message;
-
-    // Aggiornamento stato connessione
-    const newConnState: ConnectionState = success ? "raggiungibile" : "non_raggiungibile";
     const failedStep = checkResult?.steps?.find((s: any) => s.status === "FAILED");
+    const failureReason =
+      failedStep?.diagnosticDetail ||
+      failedStep?.message ||
+      checkResult?.lastConnectionVerificationInfo?.message;
+
+    // Aggiornamento stato connessione: distingue errori di configurazione/sicurezza (master.key, RNF-SEC-006) da host non raggiungibile
+    const isConfigOrSecurityError =
+      !success &&
+      (failedStep?.errorCode === ErrorCode.SSH_AUTH_FAILED ||
+        /master\.key|MOLIRIS_ALLOWED_DESTINATIONS|RNF-SEC-006/i.test(failureReason || ""));
+    const newConnState: ConnectionState = success
+      ? "raggiungibile"
+      : isConfigOrSecurityError
+        ? "errore"
+        : "non_raggiungibile";
     const outcome = {
       timestamp: new Date(),
       success,
       stage: "connection" as const,
       errorCode: success ? undefined : (failedStep?.errorCode || ErrorCode.HOST_UNREACHABLE),
+      subType: success
+        ? undefined
+        : /master\.key|decifratura credenziali/i.test(failureReason || "")
+          ? ("credential_decryption_error" as const)
+          : /MOLIRIS_ALLOWED_DESTINATIONS|RNF-SEC-006/i.test(failureReason || "")
+            ? ("destination_not_allowed" as const)
+            : undefined,
       diagnosticMessage: failureReason,
     };
 
@@ -972,11 +1023,18 @@ export class FleetService {
     const performedActions: string[] = ["controllo_stato_incompleto"];
     const skippedActions: string[] = [];
 
+    let activeRobot = robot;
+    if (!this.serverFsService.isRobotDirectoryUnderFsRoot(activeRobot.serverDirectoryPath)) {
+      performedActions.push("riallineamento_percorso_fs_root");
+      const targetPath = await this.resolveRealignedDirectoryPath(activeRobot);
+      activeRobot = await this.robotRepository.updateServerDirectoryPath(activeRobot.id, targetPath);
+    }
+
     // Assicura directory server del robot in modo idempotente (RNF-FS-004)
     performedActions.push("ripristino_directory_server");
     try {
-      await this.serverFsService.ensureRobotDirectory(robot, {
-        standardSubdirectories: this.config.standardSubdirectories ?? ["logs", "configs", "backups"],
+      await this.serverFsService.ensureRobotDirectory(activeRobot, {
+        standardSubdirectories: this.config.standardSubdirectories ?? ["upload", "download", "shared", "logs", "configs", "backups"],
         directoryPermissions: this.config.serverDirectoryPermissions ?? "0750",
       });
     } catch (dirErr: any) {
@@ -1005,6 +1063,116 @@ export class FleetService {
       message: verif.success
         ? "Registrazione ripristinata e completata con successo."
         : "Directory ripristinata. Connessione SSH verso il robot ancora non verificata.",
+    };
+  }
+
+  /**
+   * Calcola il percorso di destinazione sicuro dentro il MOLIRIS_FS_ROOT corrente per riallineare un robot
+   * dopo migrazione server o ripristino DB (RNF-FS-001..004).
+   * Preserva il basename esistente se sicuro e privo di collisioni; altrimenti ricade sulla policy <username>_<id>.
+   */
+  private async resolveRealignedDirectoryPath(robot: RobotEntity): Promise<string> {
+    const fsRoot = path.resolve(this.config.serverFilesystemRoot);
+    const standardPath = path.resolve(
+      this.directoryNamingPolicy.resolveDirectoryPath(fsRoot, {
+        id: robot.id,
+        remoteUsername: robot.remoteUsername,
+        host: robot.host,
+      })
+    );
+
+    const rawBase = robot.serverDirectoryPath ? path.basename(robot.serverDirectoryPath.trim()) : "";
+    const isSafeBase =
+      rawBase.length > 0 &&
+      rawBase !== "." &&
+      rawBase !== ".." &&
+      !rawBase.startsWith(".") &&
+      rawBase.toLowerCase() !== "general" &&
+      !/[/\\\0]/.test(rawBase);
+
+    const preferredPath = isSafeBase ? path.resolve(fsRoot, rawBase) : standardPath;
+
+    const existingPreferred = await this.robotRepository.findByServerDirectory(preferredPath);
+    if (!existingPreferred || existingPreferred.id === robot.id) {
+      return preferredPath;
+    }
+
+    const existingStandard = await this.robotRepository.findByServerDirectory(standardPath);
+    if (!existingStandard || existingStandard.id === robot.id) {
+      return standardPath;
+    }
+
+    throw new MolirisAppError(
+      ErrorCode.MISSING_ROBOT_PARAMS,
+      `Impossibile riallineare la directory del robot '${robot.id}': collisione rilevata su '${preferredPath}' e '${standardPath}'.`
+    );
+  }
+
+  /**
+   * Riallineamento/rigenerazione controllata della directory server del robot rispetto al MOLIRIS_FS_ROOT corrente.
+   * Riservato agli amministratori (ROBOT_CONFIG_UPDATE). Idempotente e non distruttivo (RNF-FS-001..004).
+   */
+  public async realignServerDirectory(
+    user: UserEntity,
+    robotId: string
+  ): Promise<{
+    robot: RobotDetailDto;
+    pathUpdated: boolean;
+    previousPath: string;
+    currentPath: string;
+    directory: Awaited<ReturnType<ServerFilesystemService["ensureRobotDirectory"]>>;
+  }> {
+    if (!hasPermission(user, AppPermission.ROBOT_CONFIG_UPDATE, robotId, this.roleMapping)) {
+      await this.recordAudit(user.username, AuditOperation.SECURITY_AUTHORIZATION_ERROR, robotId, "FAILURE", {
+        reason: "PERMISSION_DENIED_REALIGN_SERVER_DIRECTORY",
+      });
+      throw new MolirisAppError(
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+        "Operazione non consentita: solo un amministratore può riallineare la directory server del robot."
+      );
+    }
+
+    const robot = await this.robotRepository.findById(robotId);
+    if (!robot) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${robotId}' non trovato.`);
+    }
+    if (robot.anagraphicState === "rimosso") {
+      throw new MolirisAppError(
+        ErrorCode.MISSING_ROBOT_PARAMS,
+        "Impossibile riallineare la directory di un robot rimosso dall'anagrafica attiva."
+      );
+    }
+
+    const previousPath = robot.serverDirectoryPath;
+    const targetPath = await this.resolveRealignedDirectoryPath(robot);
+    const pathUpdated = path.resolve(previousPath || "") !== path.resolve(targetPath);
+
+    let updatedRobot = robot;
+    if (pathUpdated) {
+      updatedRobot = await this.robotRepository.updateServerDirectoryPath(robot.id, targetPath);
+    }
+
+    const directory = await this.serverFsService.ensureRobotDirectory(updatedRobot, {
+      standardSubdirectories:
+        this.config.standardSubdirectories ?? ["upload", "download", "shared", "logs", "configs", "backups"],
+      directoryPermissions: this.config.serverDirectoryPermissions ?? "0750",
+    });
+
+    await this.recordAudit(user.username, AuditOperation.ROBOT_UPDATE, robot.id, "SUCCESS", {
+      action: "REALIGN_SERVER_DIRECTORY",
+      pathUpdated,
+      directoryFolder: path.basename(targetPath),
+      created: directory.created,
+      alreadyExisted: directory.alreadyExisted,
+      standardSubdirectoriesCreated: directory.standardSubdirectoriesCreated,
+    });
+
+    return {
+      robot: toRobotDetailDto(updatedRobot, this.config.staleDataThresholdSeconds),
+      pathUpdated,
+      previousPath,
+      currentPath: targetPath,
+      directory,
     };
   }
 
@@ -1086,7 +1254,13 @@ export class FleetService {
       normPort = val.normalizedPort;
 
       if (!this.destinationValidator.isDestinationAllowed(normHost)) {
-        throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, "Destinazione non ammessa dalle regole di sicurezza configurate (RNF-SEC-006).");
+        const diagnostic = this.destinationValidator.getBlockedDestinationDiagnostic(normHost);
+        this.logger.warn("Aggiornamento configurazione robot rifiutato da MOLIRIS_ALLOWED_DESTINATIONS (RNF-SEC-006)", {
+          robotId: robot.id,
+          host: normHost,
+          denyAll: this.destinationValidator.isDenyAll(),
+        });
+        throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, diagnostic, diagnostic);
       }
 
       if (normHost !== robot.host || normPort !== robot.sshPort) {

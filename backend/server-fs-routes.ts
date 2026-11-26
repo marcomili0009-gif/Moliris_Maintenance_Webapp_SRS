@@ -716,6 +716,7 @@ export function registerServerFsRoutes(
           robotId: it.robotId,
           displayName: it.displayName,
           exists: it.exists,
+          needsRealignment: Boolean(it.needsRealignment),
         }));
 
         return reply.status(200).send({
@@ -727,6 +728,7 @@ export function registerServerFsRoutes(
             scope: it.scope || "general",
             isRobotFolder: it.isRobotFolder ?? (it.scope === "robot" || it.scope === "deleted_robot"),
             isDeletedRobot: Boolean(it.isDeletedRobot || it.scope === "deleted_robot"),
+            needsRealignment: Boolean(it.needsRealignment),
             modifiedAt:
               it.modifiedAt instanceof Date
                 ? it.modifiedAt.toISOString()

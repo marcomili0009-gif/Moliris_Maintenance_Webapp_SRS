@@ -49,6 +49,7 @@ export interface RobotRepository {
   findByHostPortUsername(host: string, sshPort: number, remoteUsername: string): Promise<RobotEntity | null>;
   list(): Promise<RobotEntity[]>;
   updateConfiguration(id: string, update: RobotConfigurationUpdate): Promise<RobotEntity>;
+  updateServerDirectoryPath(id: string, serverDirectoryPath: string): Promise<RobotEntity>;
   updateConnectionState(id: string, connectionState: ConnectionState, outcome?: LastAttemptOutcome): Promise<RobotEntity>;
   updateOperationalState(id: string, operationalState: OperationalState, lastValidUpdateAt: Date): Promise<RobotEntity>;
   updateLastAttempt(id: string, outcome: LastAttemptOutcome): Promise<RobotEntity>;
@@ -186,6 +187,28 @@ export class InMemoryRobotRepository implements RobotRepository {
       delete updated.plantName;
       delete updated.plantId;
     }
+    this.robots.set(id, updated);
+    return structuredClone(updated);
+  }
+
+  async updateServerDirectoryPath(id: string, serverDirectoryPath: string): Promise<RobotEntity> {
+    const existing = this.robots.get(id);
+    if (!existing) {
+      throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot non trovato per id: ${id}`);
+    }
+    for (const other of this.robots.values()) {
+      if (other.id !== id && other.serverDirectoryPath === serverDirectoryPath) {
+        throw new MolirisAppError(
+          ErrorCode.MISSING_ROBOT_PARAMS,
+          `Violazione unicità directory server (§8.2): '${serverDirectoryPath}' già assegnata al robot '${other.id}'.`
+        );
+      }
+    }
+    const updated: RobotEntity = {
+      ...existing,
+      serverDirectoryPath,
+      updatedAt: new Date(),
+    };
     this.robots.set(id, updated);
     return structuredClone(updated);
   }
@@ -453,6 +476,32 @@ export class MongoRobotRepository implements RobotRepository {
       return docs as RobotEntity[];
     } catch (err: any) {
       throw new MolirisAppError(ErrorCode.DB_PERSISTENCE_ERROR, `Errore MongoDB durante list: ${err.message}`);
+    }
+  }
+
+  async updateServerDirectoryPath(id: string, serverDirectoryPath: string): Promise<RobotEntity> {
+    try {
+      const result = await this.collection.findOneAndUpdate(
+        { id },
+        { $set: { serverDirectoryPath, updatedAt: new Date() } },
+        { returnDocument: "after", projection: { _id: 0 } }
+      );
+      if (!result) {
+        throw new MolirisAppError(ErrorCode.MISSING_ROBOT_PARAMS, `Robot non trovato per id: ${id}`);
+      }
+      return result as RobotEntity;
+    } catch (err: any) {
+      if (err instanceof MolirisAppError) throw err;
+      if (err.code === 11000) {
+        throw new MolirisAppError(
+          ErrorCode.MISSING_ROBOT_PARAMS,
+          `Violazione unicità directory server (§8.2): '${serverDirectoryPath}' già assegnata a un altro robot.`
+        );
+      }
+      throw new MolirisAppError(
+        ErrorCode.DB_PERSISTENCE_ERROR,
+        `Errore MongoDB durante updateServerDirectoryPath: ${err.message}`
+      );
     }
   }
 
