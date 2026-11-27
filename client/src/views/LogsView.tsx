@@ -340,18 +340,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
     );
   }, [parsedTransferLogs, transferUserFilter, transferFileFilter, transferOutcomeFilter]);
 
-  if (!isAdmin) {
-    return (
-      <main className="container py-5 text-center">
-        <div className="alert alert-danger shadow-sm">
-          <h4 className="alert-heading fw-bold">Accesso Riservato</h4>
-          <p className="mb-0">
-            La visualizzazione dei log fisici di sistema è consentita esclusivamente agli utenti con ruolo Amministratore.
-          </p>
-        </div>
-      </main>
-    );
-  }
+  if (!isAdmin) return null;
 
   return (
     <main className="container-fluid px-4 py-4" id="logs-view-container">

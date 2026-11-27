@@ -16,6 +16,7 @@ import { InMemoryAuditRepository } from "../storage/audit-repository.ts";
 import { InMemoryUserRepository } from "../backend/auth/user-repository.ts";
 import { hashPassword } from "../backend/auth/user-models.ts";
 import { PhysicalFileLogger } from "../backend/logging/physical-file-logger.ts";
+import type { TerminalService } from "../backend/terminal/terminal-service.ts";
 import { SessionManager } from "../backend/auth/session-manager.ts";
 import { ServerFilesystemService } from "../storage/server-fs.ts";
 import { InMemoryCredentialProvider } from "../backend/connection/credential-provider.ts";
@@ -451,7 +452,9 @@ const pendingCdpReplies = new Map<number, (reply: any) => void>();
 const networkRequestsMade: string[] = [];
 const networkRequestsWithMethod: Array<{ method: string; url: string }> = [];
 const browserJavaScriptErrors: string[] = [];
-const terminalSocketIds = new Set<string>();
+const terminalSocketIds = new Map<string, string>();
+const liveTerminalSockets = new Set<string>();
+const terminalService = (server as typeof server & { terminalService: TerminalService }).terminalService;
 const terminalInputs: string[] = [];
 
 cdpWs.onmessage = (event) => {
@@ -474,10 +477,21 @@ cdpWs.onmessage = (event) => {
       }
     }
     if (data.method === "Network.webSocketCreated" && new URL(data.params.url).pathname.startsWith("/api/terminal/ws/")) {
-      terminalSocketIds.add(data.params.requestId);
+      terminalSocketIds.set(data.params.requestId, new URL(data.params.url).pathname.split("/").at(-1)!);
+      liveTerminalSockets.add(data.params.requestId);
     }
     if (data.method === "Network.webSocketFrameSent" && terminalSocketIds.has(data.params.requestId)) {
-      terminalInputs.push(data.params.response.payloadData);
+      const payload = data.params.response.payloadData;
+      try {
+        const message = JSON.parse(payload);
+        if (message.type === "input") terminalInputs.push(message.data);
+      } catch {
+        terminalInputs.push(payload);
+      }
+    }
+    if (data.method === "Network.webSocketClosed") {
+      liveTerminalSockets.delete(data.params.requestId);
+      terminalSocketIds.delete(data.params.requestId);
     }
     if (data.id && pendingCdpReplies.has(data.id)) {
       const cb = pendingCdpReplies.get(data.id)!;
@@ -583,6 +597,11 @@ async function testTerminalClipboard() {
     await chooseMenu("Copia");
     assert.match(await evaluateInBrowser<string>("navigator.clipboard.readText()"), /ALPHA_LINE\nBETA_LINE\nGAMMA_LINE/);
 
+    const expectTerminalInput = async (after: number, expected: string) => {
+      await waitForCondition(() => terminalInputs.length > after);
+      assert.deepEqual(terminalInputs.slice(after), [expected]);
+    };
+
     const shortcuts = [
       ["v", "KeyV", 86, 2, "PASTE_CTRL_V"],
       ["V", "KeyV", 86, 10, "PASTE_CTRL_SHIFT_V"],
@@ -592,7 +611,7 @@ async function testTerminalClipboard() {
       await evaluateInBrowser(`navigator.clipboard.writeText(${JSON.stringify(marker)})`);
       const before = terminalInputs.length;
       await terminalKey(key, code, virtualCode, modifiers);
-      assert.deepStrictEqual(terminalInputs.slice(before), [`\x1b[200~${marker}\x1b[201~`], marker);
+      await expectTerminalInput(before, `\x1b[200~${marker}\x1b[201~`);
     }
 
     await evaluateInBrowser(String.raw`navigator.clipboard.writeText('PASTE_MENU\r\nRIGA_2\nRIGA_3')`);
@@ -600,7 +619,7 @@ async function testTerminalClipboard() {
     await chooseMenu("Incolla");
     await waitForBrowser(`!document.querySelector('${menu}')`);
     await evaluateInBrowser("navigator.clipboard.readText()");
-    assert.deepStrictEqual(terminalInputs.slice(beforeMenu), ["\x1b[200~PASTE_MENU\rRIGA_2\rRIGA_3\x1b[201~"]);
+    await expectTerminalInput(beforeMenu, "\x1b[200~PASTE_MENU\rRIGA_2\rRIGA_3\x1b[201~");
 
     await evaluateInBrowser("navigator.clipboard.writeText('PASTE_NEGA_PERMESSO')");
     await sendCdpCommand("Browser.setPermission", { origin, permission: { name: "clipboard-read" }, setting: "denied" });
@@ -609,7 +628,7 @@ async function testTerminalClipboard() {
     await waitForBrowser(`document.activeElement.matches('${input}')`);
     assert.strictEqual(terminalInputs.length, beforeFallback, "Il menu deve attendere un incolla esplicito");
     await terminalKey("v", "KeyV", 86, 2);
-    assert.deepStrictEqual(terminalInputs.slice(beforeFallback), ["\x1b[200~PASTE_NEGA_PERMESSO\x1b[201~"]);
+    await expectTerminalInput(beforeFallback, "\x1b[200~PASTE_NEGA_PERMESSO\x1b[201~");
 
     await evaluateInBrowser("Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })");
     try {
@@ -618,17 +637,53 @@ async function testTerminalClipboard() {
       await waitForBrowser(`document.activeElement.matches('${input}')`);
       assert.strictEqual(terminalInputs.length, beforeUnavailable);
       await terminalKey("v", "KeyV", 86, 2);
-      assert.deepStrictEqual(terminalInputs.slice(beforeUnavailable), ["\x1b[200~PASTE_NEGA_PERMESSO\x1b[201~"]);
+      await expectTerminalInput(beforeUnavailable, "\x1b[200~PASTE_NEGA_PERMESSO\x1b[201~");
     } finally {
       await evaluateInBrowser("delete navigator.clipboard");
     }
 
     const beforeInterrupt = terminalInputs.length;
     await terminalKey("c", "KeyC", 67, 2);
-    assert.deepStrictEqual(terminalInputs.slice(beforeInterrupt), ["\x03"]);
+    await expectTerminalInput(beforeInterrupt, "\x03");
   } finally {
     await sendCdpCommand("Browser.resetPermissions");
   }
+}
+
+async function waitForCondition(condition: () => boolean, timeoutMs = 6_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.ok(condition(), "Condizione backend non verificata entro il timeout");
+}
+
+function isLiveProcess(pid: number) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) !== "Z";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function typeTerminalCommand(command: string): Promise<void> {
+  await evaluateInBrowser("document.querySelector('#terminal-container .xterm-helper-textarea').focus()");
+  await sendCdpCommand("Input.insertText", { text: command });
+  await terminalKey("Enter", "Enter", 13, 0);
+}
+
+async function waitForTerminalOutput(expected: string): Promise<void> {
+  await waitForBrowser(`document.querySelector('#terminal-container .xterm-rows')?.textContent.includes(${JSON.stringify(expected)})`);
+}
+
+async function disconnectTerminalInBrowser(): Promise<void> {
+  await evaluateInBrowser("document.querySelector('#btn-terminal-disconnect').click()");
+  await waitForBrowser("Boolean(document.querySelector('#btn-confirm-terminal-disconnect'))");
+  await evaluateInBrowser("document.querySelector('#btn-confirm-terminal-disconnect').click()");
+  await waitForBrowser("!document.querySelector('#modal-terminal')");
 }
 
 async function testRemoteTerminalClipboard() {
@@ -642,11 +697,12 @@ async function testRemoteTerminalClipboard() {
   const { sha256Hex } = computeHostKeyFingerprint(parsedKey.getPublicSSH());
   const password = "TerminalClipboardFixture";
   const sshClients = new Set<ssh2.Connection>();
+  let hiddenRobotOutput = false;
   const sshServer = new ssh2.Server({ hostKeys: [privateKey] }, (client) => {
     sshClients.add(client);
     client.on("close", () => sshClients.delete(client));
     client.on("authentication", (ctx) => {
-      if (ctx.method === "password" && ctx.username === "clipboard_fixture" && ctx.password === password) ctx.accept();
+      if (ctx.method === "password" && ctx.username.startsWith("clipboard_fixture") && ctx.password === password) ctx.accept();
       else ctx.reject();
     });
     client.on("ready", () => client.on("session", (accept) => {
@@ -658,6 +714,16 @@ async function testRemoteTerminalClipboard() {
         stream.write("ALPHA_LINE\r\nBETA_LINE\r\nGAMMA_LINE\r\n\x1b[?2004h$ ");
         stream.on("data", (data: Buffer) => {
           if (data.includes(3)) stream.write("^C\r\n$ ");
+          if (data.includes("RUN_DELAYED_FIXTURE")) {
+            const timer = setTimeout(() => {
+              stream.write("\x1b[6n"); // Richiede a xterm la posizione del cursore.
+            }, 1000);
+            stream.once("close", () => clearTimeout(timer));
+          }
+          if (/\x1b\[\d+;\d+R/.test(data.toString())) {
+            hiddenRobotOutput = true;
+            stream.write("REMOTE_DELAYED_DONE\r\n$ ");
+          }
         });
       });
     }));
@@ -667,34 +733,88 @@ async function testRemoteTerminalClipboard() {
     sshServer.listen(0, "127.0.0.1", resolve);
   });
 
-  const robotId = "robot_clipboard_ssh";
-  const robotButton = `#btn-terminal-${robotId}`;
-  try {
-    const credentialReference = await credentialProvider.store(robotId, { method: "password", password });
-    await robotRepo.create({
-      ...robotReact,
-      id: robotId,
-      displayName: "Robot Clipboard",
-      remoteUsername: "clipboard_fixture",
-      serverDirectoryPath: path.join(serverFsRoot, "clipboard_fixture"),
-      sshPort: (sshServer.address() as { port: number }).port,
-      credentialReference,
-      hostKeyVerification: { fingerprint: sha256Hex, strictHostKeyChecking: true },
-    });
-    await waitForBrowser(`document.querySelector('${robotButton}:enabled') !== null`, 8_000);
-    await evaluateInBrowser(`document.querySelector('${robotButton}').click()`);
+  const robotIds = ["robot_clipboard_ssh", "robot_clipboard_ssh_two"];
+  const activeSessionFor = (target: string) => {
+    for (const requestId of liveTerminalSockets) {
+      const session = terminalService.getSession(terminalSocketIds.get(requestId)!);
+      if (session?.robotId === target) return session;
+    }
+  };
+  const robotButtons = robotIds.map((id) => `#btn-terminal-${id}`);
+  const openRobot = async (index: number) => {
+    await waitForBrowser(`document.querySelector('${robotButtons[index]}:enabled') !== null`, 8_000);
+    await evaluateInBrowser(`document.querySelector('${robotButtons[index]}').click()`);
     await waitForBrowser("document.querySelector('#terminal-session-status')?.textContent === 'Connesso'");
-    await waitForBrowser("document.querySelector('#terminal-container .xterm-rows')?.textContent.includes('BETA_LINE')");
+  };
+  const hide = () => evaluateInBrowser("document.querySelector('#btn-close-terminal').click()");
+  try {
+    for (const [index, robotId] of robotIds.entries()) {
+      const username = `clipboard_fixture_${index}`;
+      await robotRepo.create({
+        ...robotReact,
+        id: robotId,
+        displayName: `Robot Clipboard ${index + 1}`,
+        remoteUsername: username,
+        serverDirectoryPath: path.join(serverFsRoot, username),
+        sshPort: (sshServer.address() as { port: number }).port,
+        credentialReference: await credentialProvider.store(robotId, { method: "password", password }),
+        hostKeyVerification: { fingerprint: sha256Hex, strictHostKeyChecking: true },
+      });
+    }
+    await openRobot(0);
+    await waitForTerminalOutput("BETA_LINE");
     await testTerminalClipboard();
-    await waitForBrowser("document.querySelector('#terminal-container .xterm-rows')?.textContent.includes('^C')");
-    await evaluateInBrowser("document.querySelector('#btn-close-terminal').click()");
+    await waitForTerminalOutput("^C");
+    const firstRobotSession = activeSessionFor(robotIds[0]);
+    assert.ok(firstRobotSession);
+
+    await typeTerminalCommand("RUN_DELAYED_FIXTURE");
+    await hide();
     await waitForBrowser("!document.querySelector('#modal-terminal')");
-    console.log("  PASS: Clipboard Chrome attraverso WSS e sessione PTY SSH del robot con verifica della chiave host.");
+    assert.ok(!hiddenRobotOutput);
+
+    await openRobot(1);
+    const secondRobotSession = activeSessionFor(robotIds[1]);
+    assert.ok(secondRobotSession);
+    assert.equal(terminalService.getActiveSessionCount(), 2);
+    await waitForCondition(() => hiddenRobotOutput && sshClients.size === 2);
+    assert.equal(liveTerminalSockets.size, 2);
+    assert.equal(await evaluateInBrowser("document.querySelector('#terminal-container .xterm-rows').textContent.includes('REMOTE_DELAYED_DONE')"), false);
+    await hide();
+
+    await openRobot(0);
+    await waitForTerminalOutput("REMOTE_DELAYED_DONE");
+    await waitForTerminalOutput("BETA_LINE");
+    assert.strictEqual(terminalService.getSession(firstRobotSession.sessionId), firstRobotSession);
+    await disconnectTerminalInBrowser();
+    await waitForCondition(() => sshClients.size === 1 && liveTerminalSockets.size === 1);
+    assert.equal(terminalService.getActiveSessionCount(), 1);
+    assert.ok(terminalService.getSession(secondRobotSession.sessionId));
+
+    await openRobot(0);
+    const replacementRobotSession = activeSessionFor(robotIds[0]);
+    assert.ok(replacementRobotSession);
+    assert.notEqual(replacementRobotSession.sessionId, firstRobotSession.sessionId);
+    await hide();
+
+    await evaluateInBrowser("document.querySelector('#btn-server-terminal').click()");
+    await waitForBrowser("document.querySelector('#terminal-session-status')?.textContent === 'Connesso'");
+    const localSession = activeSessionFor("server");
+    assert.ok(localSession?.localProcess?.pid);
+    assert.equal(terminalService.getActiveSessionCount(), 3);
+    await hide();
+
+    await evaluateInBrowser("document.querySelector('#btn-logout').click()");
+    await waitForBrowser("Boolean(document.querySelector('#btn-login:not(:disabled)'))");
+    await waitForCondition(() => sshClients.size === 0 && liveTerminalSockets.size === 0 &&
+      !isLiveProcess(localSession.localProcess.pid));
+    assert.equal(terminalService.getActiveSessionCount(), 0);
+    console.log("  PASS: Chrome verifica la persistenza SSH di due robot, il copia-incolla, la disconnessione selettiva e il logout di 3 terminali.");
   } finally {
-    await robotRepo.deleteById(robotId);
+    for (const id of robotIds) await robotRepo.deleteById(id);
     for (const client of sshClients) client.end();
     await new Promise<void>((resolve) => sshServer.close(() => resolve()));
-    await waitForBrowser(`!document.querySelector('${robotButton}')`, 8_000);
+    for (const button of robotButtons) await waitForBrowser(`!document.querySelector('${button}')`, 8_000);
   }
 }
 
@@ -789,6 +909,128 @@ async function loginAgain(): Promise<void> {
   }`);
   await waitForBrowser("Boolean(document.querySelector('#btn-logout'))");
   assert.equal(sessionManager.getActiveSessionsCount("user_admin"), 1);
+}
+
+async function testNavbarRole(role: "admin" | "operatore", label: string): Promise<void> {
+  const readBadge = "document.getElementById('current-roles')?.textContent";
+  assert.equal(await evaluateInBrowser(readBadge), label, `Badge di ${role} dopo il login`);
+
+  await evaluateInBrowser("document.getElementById('nav-files').click()");
+  await waitForBrowser("document.getElementById('nav-files')?.getAttribute('aria-current') === 'page'");
+  assert.equal(await evaluateInBrowser(readBadge), label, `Badge di ${role} in Gestione file`);
+
+  await evaluateInBrowser("document.getElementById('btn-tab-transfers').click()");
+  await waitForBrowser("document.getElementById('btn-tab-transfers')?.getAttribute('aria-selected') === 'true'");
+  assert.equal(await evaluateInBrowser(readBadge), label, `Badge di ${role} in Trasferimenti`);
+
+  if (role === "admin") {
+    await evaluateInBrowser("document.getElementById('nav-logs').click()");
+    await waitForBrowser("Boolean(document.getElementById('logs-view-container'))");
+    assert.equal(await evaluateInBrowser(readBadge), label, `Badge di ${role} in Logs`);
+  } else {
+    assert.equal(await evaluateInBrowser("Boolean(document.getElementById('nav-logs'))"), false);
+  }
+
+  await evaluateInBrowser("document.getElementById('nav-fleet').click()");
+  await sendCdpCommand("Page.reload");
+  await waitForBrowser("document.getElementById('nav-fleet')?.getAttribute('aria-current') === 'page'");
+  assert.equal(await evaluateInBrowser(readBadge), label, `Badge di ${role} dopo il refresh`);
+  assert.deepEqual(
+    await evaluateInBrowser("fetch('/api/auth/me').then(response => response.json()).then(data => data.user.roles)"),
+    [role],
+    "Il profilo API deve mantenere il ruolo tecnico"
+  );
+  console.log(`  PASS: Badge ${label} in Chrome dopo login, cambio vista e refresh.`);
+}
+
+async function testRestrictedLogsNavigation(): Promise<void> {
+  const fleet = "document.getElementById('nav-fleet')?.getAttribute('aria-current') === 'page'";
+  const logs = "Boolean(document.getElementById('logs-view-container'))";
+  const publicLogin = "document.getElementById('btn-login')?.disabled === false";
+  const deniedView = "Boolean(document.querySelector('#nav-logs, #logs-view-container')) || document.body.innerText.includes('Accesso Riservato')";
+  const logRoutes = ["/api/logs/access", "/api/logs/transfers", "/api/logs/download/access", "/api/logs/download/transfers"];
+  const requestLogRoutes = `Promise.all(${JSON.stringify(logRoutes)}.map(async (url) => {
+    const response = await fetch(url);
+    return [response.status, response.headers.get('Content-Disposition')];
+  }))`;
+
+  const click = (id: string) => evaluateInBrowser(`document.getElementById(${JSON.stringify(id)}).click()`);
+  const loginAs = async (username: string): Promise<void> => {
+    await evaluateInBrowser(`{
+      document.getElementById('username').value = ${JSON.stringify(username)};
+      document.getElementById('password').value = 'AdminPassword123!';
+      document.getElementById('btn-login').click();
+    }`);
+    await waitForBrowser(`document.getElementById('current-username')?.textContent === ${JSON.stringify(username)}`);
+  };
+  const refresh = async (ready: string): Promise<void> => {
+    const previousTimeOrigin = await evaluateInBrowser<number>("performance.timeOrigin");
+    await sendCdpCommand("Page.reload");
+    await waitForBrowser(`performance.timeOrigin !== ${previousTimeOrigin} && (${ready})`);
+  };
+
+  await click("nav-logs");
+  await waitForBrowser(logs);
+  await evaluateInBrowser("history.replaceState({ logsHistoryFixture: true }, '')");
+  await click("nav-fleet");
+  await waitForBrowser(fleet);
+  await click("nav-logs");
+  await waitForBrowser(logs);
+  await click("btn-logout");
+  await waitForBrowser(publicLogin);
+
+  await evaluateInBrowser(`{
+    window.sawRestrictedLogs = false;
+    new MutationObserver(() => {
+      if (${deniedView}) window.sawRestrictedLogs = true;
+    }).observe(document.body, { childList: true, subtree: true });
+  }`);
+  const requestsBeforeOperator = networkRequestsMade.length;
+  await loginAs("navbar_operator");
+  assert.equal(await evaluateInBrowser(deniedView), false, "L'operatore eredita la vista Logs dall'admin appena disconnesso");
+  await waitForBrowser(`(${fleet}) && !location.hash`);
+
+  await evaluateInBrowser("history.go(-2)");
+  await waitForBrowser(`history.state?.logsHistoryFixture === true && (${fleet}) && !location.hash`);
+  await evaluateInBrowser("history.forward()");
+  await waitForBrowser(`!history.state?.logsHistoryFixture && (${fleet}) && !location.hash`);
+  assert.equal(await evaluateInBrowser("window.sawRestrictedLogs"), false);
+
+  await sendCdpCommand("Page.navigate", { url: `${serverBaseUrl}/index.html#logs` });
+  const operatorFleet = `location.pathname === '/index.html' && !location.hash && (${fleet})`;
+  await waitForBrowser(operatorFleet);
+  assert.equal(await evaluateInBrowser(deniedView), false);
+  await refresh(operatorFleet);
+  assert.equal(await evaluateInBrowser(deniedView), false);
+  assert.equal(networkRequestsMade.slice(requestsBeforeOperator).some((url) => new URL(url).pathname.startsWith("/api/logs/")), false);
+  assert.deepEqual(await evaluateInBrowser(requestLogRoutes), logRoutes.map(() => [403, null]));
+
+  await click("btn-logout");
+  await waitForBrowser(publicLogin);
+  await sendCdpCommand("Page.navigate", { url: `${serverBaseUrl}/#logs` });
+  await waitForBrowser(`location.hash === '#logs' && (${publicLogin})`);
+  await loginAs("navbar_operator");
+  await waitForBrowser(`(${fleet}) && !location.hash`);
+  assert.equal(await evaluateInBrowser(deniedView), false);
+
+  await click("btn-logout");
+  await waitForBrowser(publicLogin);
+  await sendCdpCommand("Page.navigate", { url: `${serverBaseUrl}/#logs` });
+  await waitForBrowser(`location.hash === '#logs' && (${publicLogin})`);
+  await loginAs("admin");
+  await waitForBrowser(logs);
+  assert.deepEqual(await evaluateInBrowser(requestLogRoutes), [
+    [200, null], [200, null],
+    [200, 'attachment; filename="access.log"'], [200, 'attachment; filename="transfers.log"'],
+  ]);
+  await refresh(`location.hash === '#logs' && ${logs}`);
+  await click("nav-fleet");
+  await waitForBrowser(fleet);
+  await evaluateInBrowser("history.back()");
+  await waitForBrowser(`location.hash === '#logs' && ${logs}`);
+  await evaluateInBrowser("history.forward()");
+  await waitForBrowser(`(${fleet}) && !location.hash`);
+  console.log("  PASS: Navigazione Logs in Chrome con cambio account, URL, cronologia, refresh e controlli HTTP per entrambi i ruoli.");
 }
 
 async function testResponsiveNavigationAndRegistrationFocus(): Promise<void> {
@@ -1111,6 +1353,24 @@ try {
     throw sessionConflictOnlyComplete;
   }
 
+  if (!logoutOnly && !logoutCyclesOnly) {
+    await userRepo.create({
+      ...blockedUser,
+      id: "user_navbar_operator",
+      username: "navbar_operator",
+      passwordHash: adminHash,
+    });
+    await evaluateInBrowser<void>(`{
+      document.getElementById('username').value = 'navbar_operator';
+      document.getElementById('password').value = 'AdminPassword123!';
+      document.getElementById('btn-login').click();
+    }`);
+    await waitForBrowser("document.getElementById('current-username')?.textContent === 'navbar_operator'");
+    await testNavbarRole("operatore", "operatore");
+    await evaluateInBrowser("document.getElementById('btn-logout').click()");
+    await waitForBrowser("document.getElementById('btn-login')?.disabled === false");
+  }
+
   // Login con credenziali admin (CA-AUTH-001)
   console.log("  -> Test CA-AUTH-001: Login riuscito come amministratore su React");
   await evaluateInBrowser<void>(`{
@@ -1149,6 +1409,8 @@ try {
     await testLogout();
     throw logoutOnlyComplete;
   }
+  await testRestrictedLogsNavigation();
+  await testNavbarRole("admin", "amministratore");
 
   // Attesa popolamento flotta
   await new Promise((r) => setTimeout(r, 600));
@@ -1347,7 +1609,7 @@ try {
   // =======================================================================
   // Terminale PTY (Host Locale): regressioni su resize, newline, chiusura X
   // =======================================================================
-  console.log("  -> Test Terminale Server: formato ridotto, espansione senza perdita sessione, newline e chiusura atomica");
+  console.log("  -> Test Terminale Server: formato ridotto, espansione, storico, X e disconnessione");
 
   await evaluateInBrowser<void>(`
     document.querySelector('button[data-view="fleet"]').click();
@@ -1618,37 +1880,65 @@ try {
   assert.ok(capturedSessions.length >= 1 && capturedSessions[0], "Il test deve catturare l'ID della sessione PTY aperta");
   const ptySessionId = capturedSessions[0];
 
-  // Chiusura con la "X": stessa routine atomica del pulsante Disconnetti.
-  await evaluateInBrowser<void>(`
-    document.getElementById('btn-close-terminal').click();
-  `);
-  await new Promise((r) => setTimeout(r, 500));
-  const terminalClosed = await evaluateInBrowser<boolean>(
-    "!Boolean(document.getElementById('modal-terminal'))"
-  );
-  assert.strictEqual(terminalClosed, true, "Il click sulla X deve chiudere il pannello del terminale");
+  const wrapperPid = terminalService.getSession(ptySessionId)?.localProcess?.pid;
+  assert.ok(wrapperPid, "Il terminale deve avere un processo PTY locale");
+  assert.equal(await evaluateInBrowser("document.querySelector('#btn-close-terminal').title"), "Nascondi terminale");
+  assert.equal(await evaluateInBrowser("getComputedStyle(document.querySelector('#btn-close-terminal')).filter"), "invert(1)");
 
-  const issuedDisconnect = networkRequestsWithMethod.some(
-    (req) => req.method === "DELETE" && req.url.includes(`/api/terminal/sessions/${ptySessionId}`)
-  );
-  assert.strictEqual(
-    issuedDisconnect,
-    true,
-    "La X deve inviare la richiesta formale di chiusura sessione PTY (DELETE)"
-  );
+  const hiddenOutputFile = path.join(tmpDir, "terminal-hidden-output");
+  const hiddenCommand = `sleep 2; printf '%s_%s' HIDDEN COMPLETE > '${hiddenOutputFile}'; printf '%s_%s\\n' HIDDEN COMPLETE`;
+  await typeTerminalCommand(hiddenCommand);
+  await evaluateInBrowser("document.getElementById('btn-close-terminal').click()");
+  await waitForBrowser("!document.getElementById('modal-terminal')");
+  assert.ok(!fs.existsSync(hiddenOutputFile), "Il comando deve essere ancora in corso quando si nasconde il terminale");
+  await waitForCondition(() => fs.existsSync(hiddenOutputFile));
+  assert.equal(fs.readFileSync(hiddenOutputFile, "utf8"), "HIDDEN_COMPLETE");
+  assert.ok(terminalService.getSession(ptySessionId), "La X deve conservare la sessione sul backend");
+  assert.equal(liveTerminalSockets.size, 1);
+  assert.ok(!networkRequestsWithMethod.some(
+    ({ method, url }) => method === "DELETE" && url.endsWith(`/api/terminal/sessions/${ptySessionId}`)
+  ), "La X non deve emettere DELETE");
 
-  const deleteAfterClose = await evaluateInBrowser<number>(`(async () => {
-    const res = await fetch('/api/terminal/sessions/${ptySessionId}', { method: 'DELETE' });
-    return res.status;
-  })()`);
-  assert.strictEqual(
-    deleteAfterClose,
-    404,
-    "Dopo la X la sessione PTY non deve più esistere sul backend (nessuna sessione orfana)"
-  );
-  console.log("  PASS: Terminale server ridotto/espanso senza perdita sessione, newline a colonna 0, X con chiusura PTY verificata.");
+  await evaluateInBrowser("document.getElementById('btn-server-terminal').click()");
+  await waitForTerminalOutput("HIDDEN_COMPLETE");
+  assert.equal(await evaluateInBrowser("document.querySelector('#terminal-session-status').textContent"), "Connesso");
+  assert.deepEqual(await evaluateInBrowser("window.__termSessions"), capturedSessions);
+  assert.equal(liveTerminalSockets.size, 1);
+  await sendCdpCommand("Input.dispatchMouseEvent", {
+    type: "mouseWheel", x: 400, y: 300, deltaX: 0, deltaY: -450,
+  });
+  await waitForTerminalOutput("ALPHA_LINE");
 
-  await testRemoteTerminalClipboard();
+  const jobPidFile = path.join(tmpDir, "terminal-job-pid");
+  await typeTerminalCommand(`sleep 30 & printf '%s' "$!" > '${jobPidFile}'`);
+  await waitForCondition(() => fs.existsSync(jobPidFile) && fs.statSync(jobPidFile).size > 0);
+  const jobPid = Number(fs.readFileSync(jobPidFile, "utf8"));
+  assert.ok(isLiveProcess(jobPid), "Il job deve essere vivo prima della disconnessione");
+
+  await evaluateInBrowser("document.getElementById('btn-terminal-disconnect').click()");
+  await waitForBrowser("Boolean(document.querySelector('#modal-confirm-terminal-disconnect'))");
+  await evaluateInBrowser("document.querySelector('#modal-confirm-terminal-disconnect .btn-secondary').click()");
+  await waitForBrowser("!document.querySelector('#modal-confirm-terminal-disconnect')");
+  assert.equal(terminalService.getActiveSessionCount(), 1);
+  await disconnectTerminalInBrowser();
+  await waitForCondition(() => liveTerminalSockets.size === 0 && !isLiveProcess(wrapperPid) && !isLiveProcess(jobPid));
+  assert.equal(terminalService.getActiveSessionCount(), 0);
+  assert.ok(networkRequestsWithMethod.some(
+    ({ method, url }) => method === "DELETE" && url.endsWith(`/api/terminal/sessions/${ptySessionId}`)
+  ));
+  await evaluateInBrowser(`{
+    const button = document.getElementById('btn-server-terminal');
+    button.click();
+    button.click();
+  }`);
+  await waitForBrowser("document.querySelector('#terminal-session-status')?.textContent === 'Connesso'");
+  assert.equal(await evaluateInBrowser("window.__termSessions.length"), capturedSessions.length + 1);
+  const reopenedId = await evaluateInBrowser<string>("window.__termSessions.at(-1)");
+  assert.notEqual(reopenedId, ptySessionId);
+  assert.ok(terminalService.getSession(reopenedId));
+  assert.equal(terminalService.getActiveSessionCount(), 1);
+  await disconnectTerminalInBrowser();
+  console.log("  PASS: Chrome conserva il PTY server, lo storico e il comando mentre è nascosto. Disconnetti rilascia WSS, PTY e job locale.");
 
   // Test Prompt Correttivo #2: Modale «Gestione File» alla selezione di «Invia al Robot»
   console.log("  -> Test Prompt Correttivo #2: Apertura e funzionamento modale Gestione File");
@@ -2139,6 +2429,9 @@ try {
   await testLogoutCycles();
   await testStalledLogout();
   await testLogout();
+  await loginAgain();
+  await evaluateInBrowser("document.querySelector('button[data-view=fleet]').click()");
+  await testRemoteTerminalClipboard();
   console.log("  PASS: Test E2E React completato con successo su Google Chrome!");
 } catch (error) {
   if (error !== sessionConflictOnlyComplete && error !== logoutOnlyComplete && error !== logoutCyclesOnlyComplete) {

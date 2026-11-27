@@ -499,7 +499,29 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
 
   ws.close();
   await terminalService.closeSession(sessionId, "USER_EXPLICIT");
+
+  const expiringUser = { ...opUserAuthorized, id: "user_terminal_expiry" };
+  const expiringSession = sessionManager.createSession(expiringUser);
+  const localOnExpiry = await terminalService.openServerTerminalSession(expiringUser, {}, expiringSession.sessionId);
+  localOnExpiry.hiddenSince = Date.now();
+  const originalNow = Date.now;
+  try {
+    Date.now = () => expiringSession.lastActivityAt.getTime() + 31 * 60_000;
+    assert.equal(sessionManager.validate(expiringSession.sessionId), null);
+  } finally {
+    Date.now = originalNow;
+  }
+  assert.equal(localOnExpiry.closeReason, "USER_SESSION_TERMINATED");
+  await terminalService.closeSession(localOnExpiry.sessionId, "USER_SESSION_TERMINATED");
+  assert.equal(localOnExpiry.state, "closed");
+
+  const localOnShutdown = await terminalService.openServerTerminalSession(opUserAuthorized, {}, userSession.sessionId);
+  localOnShutdown.hiddenSince = Date.now();
   await server.close();
+  assert.equal(localOnShutdown.state, "closed");
+  assert.equal(localOnShutdown.closeReason, "SERVICE_SHUTDOWN");
+  assert.equal(terminalService.getActiveSessionCount(), 0);
+  console.log("  PASS: Scadenza autenticazione e arresto Fastify completano il rilascio del PTY locale.");
   console.log("  PASS: CA-SSH-002 & CA-SSH-003 - Shell interattiva completa, streaming progressivo, Ctrl+C e ridimensionamento.");
 }
 
@@ -1098,6 +1120,36 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   assert.ok(termAuditEvents.some((l) => l.operation === AuditOperation.SESSION_IDLE_WARNING && l.details?.context === "terminale"), "Audit SESSION_IDLE_WARNING terminale");
   assert.ok(termAuditEvents.some((l) => l.operation === AuditOperation.SESSION_TRANSFER_SUSPEND && l.details?.context === "terminale"), "Audit SESSION_TRANSFER_SUSPEND terminale");
   assert.ok(termAuditEvents.some((l) => l.operation === AuditOperation.SESSION_IDLE_TIMEOUT && l.details?.context === "terminale"), "Audit SESSION_IDLE_TIMEOUT terminale");
+
+  // Le transizioni di visibilità non rinnovano l'autenticazione o il terminale.
+  const hiddenTerminal = await termService.openTerminalSession(
+    opUserAuthorized, "robot_idle_test", {}, userSession.sessionId
+  );
+  messageListeners.length = 0;
+  termService.attachWebSocket(hiddenTerminal.sessionId, opUserAuthorized, mockWs);
+  const activityBeforeHide = hiddenTerminal.lastActivityAt.getTime();
+  const authActivityBeforeHide = sessionManager.getSession(userSession.sessionId)?.lastActivityAt.getTime();
+  mockWs.emit("message", JSON.stringify({ type: "visibility", hidden: true }));
+  assert.ok(hiddenTerminal.hiddenSince);
+  mockWs.emit("message", JSON.stringify({ type: "visibility", hidden: false }));
+  assert.equal(hiddenTerminal.hiddenSince, undefined);
+  mockWs.emit("message", JSON.stringify({ type: "visibility", hidden: true }));
+  const hiddenSince = hiddenTerminal.hiddenSince!;
+  mockWs.emit("message", JSON.stringify({ type: "visibility", hidden: true }));
+  mockWs.emit("message", JSON.stringify({ type: "confirm_idle" }));
+  assert.equal(hiddenTerminal.hiddenSince, hiddenSince);
+  assert.equal(hiddenTerminal.lastActivityAt.getTime(), activityBeforeHide);
+  assert.equal(sessionManager.getSession(userSession.sessionId)?.lastActivityAt.getTime(), authActivityBeforeHide);
+
+  activeTransfersRunning = 1;
+  termService.checkIdleSessions(hiddenSince + 15 * 60 * 1000 - 1);
+  assert.equal(termService.getActiveSessionCount(), 1);
+  termService.checkIdleSessions(hiddenSince + 15 * 60 * 1000);
+  await termService.closeSession(hiddenTerminal.sessionId, "IDLE_TIMEOUT");
+  assert.equal(hiddenTerminal.state, "closed");
+  assert.equal(hiddenTerminal.closeReason, "IDLE_TIMEOUT");
+  assert.equal(termService.getActiveSessionCount(), 0);
+  console.log("  PASS: La visibilità non rinnova la sessione. Il limite nascosto vale anche con trasferimenti attivi.");
 
   termService.dispose();
   console.log("  PASS: RF-01 - Timeout inattività terminale 15m, avviso a 5m con countdown 5..1, reset, confirm_idle, sospensione trasferimenti e rilascio ordinato.");

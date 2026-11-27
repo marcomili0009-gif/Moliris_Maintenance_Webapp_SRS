@@ -7,6 +7,7 @@ export interface AppNavbarProps {
   onGoHome?: () => void;
   user?: User | null;
   onLogout?: (context?: "sessione" | "terminale") => Promise<void> | void;
+  canViewLogs?: boolean;
   activeView?: "fleet" | "files" | "logs";
   onViewChange?: (view: "fleet" | "files" | "logs") => void;
 }
@@ -23,6 +24,7 @@ export const AppNavbar: React.FC<AppNavbarProps> = ({
   onGoHome,
   user,
   onLogout,
+  canViewLogs = false,
   activeView = "fleet",
   onViewChange,
 }) => {
@@ -109,7 +111,7 @@ export const AppNavbar: React.FC<AppNavbarProps> = ({
                   Gestione file/trasferimenti
                 </button>
               </li>
-              {user.roles?.some((r) => r.toLowerCase() === "admin") && (
+              {canViewLogs && (
                 <li className="nav-item">
                   <button
                     type="button"
@@ -141,7 +143,7 @@ export const AppNavbar: React.FC<AppNavbarProps> = ({
               </span>
               Ruoli:{" "}
               <span id="current-roles" className="badge text-bg-info">
-                {user.roles.join(", ")}
+                {user.roles.map((role) => role.toLowerCase() === "admin" ? "amministratore" : role).join(", ")}
               </span>
             </div>
             {onLogout && (

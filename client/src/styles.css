@@ -486,6 +486,12 @@ body {
   gap: 0.75rem;
 }
 
+.terminal-modal-header .terminal-hide-button {
+  --bs-btn-close-opacity: 0.9;
+  --bs-btn-close-hover-opacity: 1;
+  filter: invert(1);
+}
+
 /* Area utile del PTY: occupa tutto lo spazio residuo fra header e status bar.
    min-height:0 è indispensabile perché un flex item con contenuto (canvas
    xterm) non imponga la propria altezza minima e sfori sul footer. */

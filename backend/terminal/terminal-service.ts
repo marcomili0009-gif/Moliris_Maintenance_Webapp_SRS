@@ -4,7 +4,8 @@
 
 import crypto from "crypto";
 import { EventEmitter } from "events";
-import { spawn } from "child_process";
+import { spawn, type ChildProcess } from "child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { type SystemConfiguration } from "../../config/configuration.ts";
 import { type RobotRepository } from "../../storage/robot-repository.ts";
 import { type AuditRepository } from "../../storage/audit-repository.ts";
@@ -49,10 +50,11 @@ export interface ProcessPtyModes {
 }
 
 export class ProcessPtyChannel extends EventEmitter {
+  private shellSessionId?: number;
   public readonly modes: { opost: boolean; onlcr: boolean; echo: boolean };
 
   constructor(
-    private proc: any,
+    private proc: ChildProcess,
     modes?: ProcessPtyModes
   ) {
     super();
@@ -74,6 +76,16 @@ export class ProcessPtyChannel extends EventEmitter {
       }
       return chunk;
     };
+
+    const sessionIdPipe = this.proc.stdio[3];
+    if (sessionIdPipe) {
+      let pidText = "";
+      sessionIdPipe.on("data", (chunk: Buffer) => {
+        pidText += chunk.toString("ascii");
+        const match = /^(\d+)\n$/.exec(pidText);
+        if (match) this.shellSessionId = Number(match[1]);
+      });
+    }
 
     // Il prompt può arrivare durante il POST, prima dell'aggancio WebSocket.
     // Conserva l'output nei buffer delle pipe fino a quando c'è un destinatario.
@@ -129,10 +141,41 @@ export class ProcessPtyChannel extends EventEmitter {
     } catch {}
   }
 
-  public destroy(): void {
-    try {
-      this.proc.kill("SIGTERM");
-    } catch {}
+  private signalShellSession(signal: NodeJS.Signals): void {
+    if (!this.shellSessionId || process.platform !== "linux") return;
+    // I job interattivi possono avere un PGID distinto dalla shell, ma condividono il SID.
+    let processIds: string[];
+    try { processIds = readdirSync("/proc"); } catch { return; }
+    for (const name of processIds) {
+      if (!/^\d+$/.test(name)) continue;
+      try {
+        const stat = readFileSync(`/proc/${name}/stat`, "utf8");
+        const [state, , , sessionId] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+        if (state !== "Z" && Number(sessionId) === this.shellSessionId) {
+          process.kill(Number(name), signal);
+        }
+      } catch {
+        // Un processo può terminare fra la scansione e il segnale.
+      }
+    }
+  }
+
+  public async destroy(): Promise<void> {
+    this.signalShellSession("SIGTERM");
+    if (this.proc.pid && this.proc.exitCode === null && this.proc.signalCode === null) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          this.signalShellSession("SIGKILL");
+          this.proc.kill("SIGKILL");
+        }, 2500);
+        this.proc.once("exit", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        this.proc.kill("SIGTERM");
+      });
+    }
+    this.signalShellSession("SIGKILL");
   }
 }
 
@@ -149,6 +192,7 @@ export class TerminalService {
 
   // Sessioni terminale attive tracciate in memoria (RF-SSH-004, §5.4)
   private activeSessions: Map<string, TerminalSession> = new Map();
+  private closingSessions = new Map<string, Promise<void>>();
   private userSessionCounts: Map<string, number> = new Map();
   private robotSessionCounts: Map<string, number> = new Map();
   private pendingOpens = new Map<string, {
@@ -226,12 +270,16 @@ export class TerminalService {
     const warningWindowMs = warningMinutes * 60 * 1000;
 
     for (const session of Array.from(this.activeSessions.values())) {
+      // Una finestra nascosta (o mai agganciata) ha un limite anche durante i trasferimenti.
+      const unattendedSince = session.hiddenSince ?? (session.hasHadSocket ? undefined : session.createdAt.getTime());
+      const unattendedExpired = unattendedSince !== undefined && now - unattendedSince >= timeoutMs;
+
       // Eccezione trasferimenti in corso (Prompt #4): se vi sono trasferimenti attivi, l'inattività viene sospesa
       const activeTransfers = this.activeTransferChecker
         ? this.activeTransferChecker(session.authorizedContext?.sessionId, session.userId)
         : 0;
 
-      if (activeTransfers > 0) {
+      if (activeTransfers > 0 && !unattendedExpired) {
         session.lastActivityAt = new Date(now);
         if ((session as any).lastWarningMinute !== undefined) {
           delete (session as any).lastWarningMinute;
@@ -261,7 +309,7 @@ export class TerminalService {
       const idleMs = now - session.lastActivityAt.getTime();
       const remainingMs = timeoutMs - idleMs;
 
-      if (remainingMs <= 0) {
+      if (remainingMs <= 0 || unattendedExpired) {
         this.auditRepository.record({
           userId: session.username,
           robotId: session.robotId,
@@ -270,7 +318,9 @@ export class TerminalService {
           timestamp: new Date(now),
           details: { context: "terminale", sessionId: session.sessionId, robotId: session.robotId },
         }).catch(() => {});
-        this.closeSessionSafely(session.sessionId, "IDLE_TIMEOUT", "Timeout inattività terminale superato (15 minuti).");
+        this.closeSessionSafely(session.sessionId, "IDLE_TIMEOUT", unattendedExpired
+          ? "Tempo massimo senza una finestra terminale visibile superato."
+          : "Timeout inattività terminale superato.");
       } else if (remainingMs <= warningWindowMs) {
         // RF-01: Notifica pop-up con countdown aggiornato a ogni minuto (5, 4, 3, 2, 1)
         const remainingMinutes = Math.max(1, Math.ceil(remainingMs / 60000));
@@ -650,7 +700,10 @@ export class TerminalService {
     const cols = initialDimensions?.cols || 80;
     const rows = initialDimensions?.rows || 24;
 
-    const proc = spawn("script", ["-q", "-c", "/bin/bash", "/dev/null"], {
+    // Il terzo descrittore comunica il SID della shell prima di eseguire bash.
+    const command = 'printf "%s\\n" "$$" >&3; exec /bin/bash 3>&-';
+    const proc = spawn("script", ["-q", "-c", command, "/dev/null"], {
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
       // ISS-003: niente ereditarietà di process.env (URI DB, percorsi chiavi, segreti).
       // Solo una allowlist minima necessaria a una shell interattiva.
       env: buildServerTerminalEnv(cols, rows),
@@ -820,9 +873,35 @@ export class TerminalService {
 
     // STEP 2 – Input dal WebSocket verso il PTY (comandi, caratteri di controllo, resize)
     socket.on("message", (rawMsg: any) => {
-      if (session.state !== "active" || !this.sessionManager.touchSession(userSessionId)) return;
+      if (session.state !== "active") return;
+      const text = typeof rawMsg === "string" ? rawMsg : rawMsg.toString("utf-8");
+      let parsed;
+      if (text.startsWith("{") && text.endsWith("}")) {
+        try { parsed = JSON.parse(text); } catch {}
+      }
+
+      // Mostrare o nascondere una finestra non rinnova il timeout.
+      if (parsed?.type === "visibility" && typeof parsed.hidden === "boolean") {
+        if (!this.sessionManager.isSessionActive(userSessionId)) return;
+        if (parsed.hidden) session.hiddenSince ??= Date.now();
+        else delete session.hiddenSince;
+        return;
+      }
+      if (parsed?.type === "close") {
+        this.closeSessionSafely(sessionId, "USER_EXPLICIT", "Chiusura sessione richiesta esplicitamente dal client.");
+        return;
+      }
+      if (session.hiddenSince !== undefined) {
+        // xterm può rispondere alle richieste del programma anche a finestra nascosta.
+        if (parsed?.type === "input" && typeof parsed.data === "string" &&
+            this.sessionManager.isSessionActive(userSessionId)) {
+          try { session.ptyChannel.write(parsed.data); } catch {}
+        }
+        return;
+      }
+      if (!this.sessionManager.touchSession(userSessionId)) return;
+
       session.lastActivityAt = new Date();
-      // RF-01: Resetta lo stato di warning all'arrivo di attività utente qualificata
       if ((session as any).lastWarningMinute !== undefined) {
         delete (session as any).lastWarningMinute;
         if (socket.readyState === 1 /* OPEN */) {
@@ -831,64 +910,52 @@ export class TerminalService {
           } catch {}
         }
       }
-      const text = typeof rawMsg === "string" ? rawMsg : rawMsg.toString("utf-8");
-
-      // Riconoscimento messaggi di controllo formattati JSON
-      if (text.startsWith("{") && text.endsWith("}")) {
-        try {
-          const parsed = JSON.parse(text);
-          if (parsed.type === "confirm_idle" || parsed.type === "idle_confirm") {
-            session.lastActivityAt = new Date();
-            delete (session as any).lastWarningMinute;
-            delete (session as any).hasLoggedWarning;
-            if (socket.readyState === 1 /* OPEN */) {
-              try {
-                socket.send(JSON.stringify({ type: "terminal_idle_reset" }));
-              } catch {}
-            }
-            this.auditRepository.record({
-              userId: session.username,
-              robotId: session.robotId,
-              operation: AuditOperation.SESSION_IDLE_CONFIRM,
-              outcome: "SUCCESS",
-              timestamp: new Date(),
-              details: { context: "terminale", action: "CONFIRM", sessionId: session.sessionId },
-            }).catch(() => {});
-            return;
-          }
-          if (parsed.type === "resize") {
-            const cols = Number(parsed.cols);
-            const rows = Number(parsed.rows);
-            if (Number.isFinite(cols) && Number.isFinite(rows) && cols > 0 && rows > 0) {
-              const safeCols = Math.max(1, Math.min(500, Math.floor(cols)));
-              const safeRows = Math.max(1, Math.min(200, Math.floor(rows)));
-              session.cols = safeCols;
-              session.rows = safeRows;
-              try {
-                if (session.ptyChannel && typeof session.ptyChannel.setWindow === "function") {
-                  session.ptyChannel.setWindow(safeRows, safeCols, 0, 0);
-                }
-              } catch (resizeErr) {
-                this.logger.warn("Errore non critico durante setWindow del terminale:", {
-                  sessionId,
-                  error: redactSensitiveData(String(resizeErr)),
-                });
-              }
-            }
-            return;
-          }
-          if (parsed.type === "close") {
-            this.closeSessionSafely(sessionId, "USER_EXPLICIT", "Chiusura sessione richiesta esplicitamente dal client.");
-            return;
-          }
-          if (parsed.type === "input" && typeof parsed.data === "string") {
+      if (parsed) {
+        if (parsed.type === "confirm_idle" || parsed.type === "idle_confirm") {
+          session.lastActivityAt = new Date();
+          delete (session as any).lastWarningMinute;
+          delete (session as any).hasLoggedWarning;
+          if (socket.readyState === 1 /* OPEN */) {
             try {
-              session.ptyChannel.write(parsed.data);
+              socket.send(JSON.stringify({ type: "terminal_idle_reset" }));
             } catch {}
-            return;
           }
-        } catch {
-          // Se non è un comando JSON valido, trasmetti come raw input alla shell
+          this.auditRepository.record({
+            userId: session.username,
+            robotId: session.robotId,
+            operation: AuditOperation.SESSION_IDLE_CONFIRM,
+            outcome: "SUCCESS",
+            timestamp: new Date(),
+            details: { context: "terminale", action: "CONFIRM", sessionId: session.sessionId },
+          }).catch(() => {});
+          return;
+        }
+        if (parsed.type === "resize") {
+          const cols = Number(parsed.cols);
+          const rows = Number(parsed.rows);
+          if (Number.isFinite(cols) && Number.isFinite(rows) && cols > 0 && rows > 0) {
+            const safeCols = Math.max(1, Math.min(500, Math.floor(cols)));
+            const safeRows = Math.max(1, Math.min(200, Math.floor(rows)));
+            session.cols = safeCols;
+            session.rows = safeRows;
+            try {
+              if (session.ptyChannel && typeof session.ptyChannel.setWindow === "function") {
+                session.ptyChannel.setWindow(safeRows, safeCols, 0, 0);
+              }
+            } catch (resizeErr) {
+              this.logger.warn("Errore non critico durante setWindow del terminale:", {
+                sessionId,
+                error: redactSensitiveData(String(resizeErr)),
+              });
+            }
+          }
+          return;
+        }
+        if (parsed.type === "input" && typeof parsed.data === "string") {
+          try {
+            session.ptyChannel.write(parsed.data);
+          } catch {}
+          return;
         }
       }
 
@@ -975,11 +1042,27 @@ export class TerminalService {
     reason: TerminalCloseReason,
     diagnosticMessage?: string
   ): Promise<void> {
-    const session = this.activeSessions.get(sessionId);
-    if (!session || session.state === "closed") {
-      return;
-    }
+    const closing = this.closingSessions.get(sessionId);
+    if (closing) return closing;
 
+    const session = this.activeSessions.get(sessionId);
+    if (!session) return;
+
+    const completion = this.releaseSession(session, reason, diagnosticMessage);
+    this.closingSessions.set(sessionId, completion);
+    try {
+      await completion;
+    } finally {
+      this.closingSessions.delete(sessionId);
+    }
+  }
+
+  private async releaseSession(
+    session: TerminalSession,
+    reason: TerminalCloseReason,
+    diagnosticMessage?: string
+  ): Promise<void> {
+    const { sessionId } = session;
     if (session.pingTimer) {
       clearInterval(session.pingTimer);
       session.pingTimer = undefined;
@@ -1029,29 +1112,14 @@ export class TerminalService {
       } catch {}
     }
 
-    // 2. Chiusura del canale PTY
+    // 2. Chiude la shell locale o il canale PTY e la connessione SSH dedicata.
+    try { session.ptyChannel?.end?.(); } catch {}
     try {
-      if (typeof session.ptyChannel?.end === "function") session.ptyChannel.end();
-      if (typeof session.ptyChannel?.destroy === "function") session.ptyChannel.destroy();
+      if (session.ptyChannel instanceof ProcessPtyChannel) await session.ptyChannel.destroy();
+      else session.ptyChannel?.destroy?.();
     } catch {}
-
-    // 3. Rilascio garantito della connessione gestita SSH (RNF-REL-005) o del processo locale
     try {
-      if (session.managedConnection) {
-        await session.managedConnection.close();
-      }
-      if (session.localProcess) {
-        try {
-          session.localProcess.kill("SIGTERM");
-        } catch {}
-        setTimeout(() => {
-          try {
-            if (session.localProcess && !session.localProcess.killed) {
-              session.localProcess.kill("SIGKILL");
-            }
-          } catch {}
-        }, 500).unref?.();
-      }
+      if (session.managedConnection) await session.managedConnection.close();
     } catch {}
 
     session.state = "closed";
@@ -1144,14 +1212,10 @@ export class TerminalService {
         this.releasePendingOpen(reservationId);
       }
 
-      const sessions = Array.from(this.activeSessions.values());
-      for (const session of sessions) {
-        try {
-          await this.closeSession(session.sessionId, reason, "Arresto ordinato del servizio.");
-        } catch (err) {
-          console.error("closeSession fallita in closeAll", { sessionId: session.sessionId, error: (err as Error).name });
-        }
+      for (const session of Array.from(this.activeSessions.values())) {
+        this.closeSessionSafely(session.sessionId, reason, "Arresto ordinato del servizio.");
       }
+      await Promise.allSettled(this.closingSessions.values());
     } finally {
       this.activeSessions.clear();
       this.userSessionCounts.clear();
