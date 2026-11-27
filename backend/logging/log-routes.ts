@@ -148,4 +148,62 @@ export function registerLogRoutes(
       return reply.send(stream);
     }
   );
+
+  /**
+   * DELETE /api/logs/access
+   * Svuota esclusivamente il registro dei log di accesso (riservato ad admin).
+   */
+  app.delete(
+    "/api/logs/access",
+    { preHandler: [authMiddleware.authenticate.bind(authMiddleware), requireAdmin] },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await fileLogger.clearAccessLogs();
+        req.log.info(
+          { user: req.molirisUser?.username, logType: "access" },
+          "Log di accesso svuotato dall'amministratore"
+        );
+        return reply.status(200).send({
+          success: true,
+          type: "access",
+          message: "Log di accesso svuotato con successo.",
+        });
+      } catch {
+        return reply.status(500).send({
+          code: ErrorCode.SERVER_DIR_INACCESSIBLE,
+          message: "Errore durante l'eliminazione dei log di accesso.",
+          classification: "richiede_intervento_amministrativo",
+        });
+      }
+    }
+  );
+
+  /**
+   * DELETE /api/logs/transfers
+   * Svuota esclusivamente il registro dei log dei trasferimenti (riservato ad admin).
+   */
+  app.delete(
+    "/api/logs/transfers",
+    { preHandler: [authMiddleware.authenticate.bind(authMiddleware), requireAdmin] },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await fileLogger.clearTransferLogs();
+        req.log.info(
+          { user: req.molirisUser?.username, logType: "transfers" },
+          "Log dei trasferimenti svuotato dall'amministratore"
+        );
+        return reply.status(200).send({
+          success: true,
+          type: "transfers",
+          message: "Log dei trasferimenti svuotato con successo.",
+        });
+      } catch {
+        return reply.status(500).send({
+          code: ErrorCode.SERVER_DIR_INACCESSIBLE,
+          message: "Errore durante l'eliminazione dei log dei trasferimenti.",
+          classification: "richiede_intervento_amministrativo",
+        });
+      }
+    }
+  );
 }

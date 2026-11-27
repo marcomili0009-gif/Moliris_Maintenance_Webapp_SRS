@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { Modal } from "../components/common/Modal.tsx";
 import { apiClient } from "../services/api-client.ts";
 import { StateFormatter } from "../services/state-formatter.ts";
 import type { User } from "../types/auth.ts";
 import type { TransferLogRecord } from "../types/transfer.ts";
 import {
+  DIRECTION_LABELS,
   formatSpeed,
+  formatTransferEndpoints,
   isGeneralArchiveTransfer,
 } from "../utils/transfer-format.ts";
 
@@ -126,6 +129,52 @@ interface FormattedLogDetails {
   technical?: string;
 }
 
+function formatCompactLogEndpoint(rawEndpoint?: string): string | null {
+  const value = (rawEndpoint || "").trim();
+  if (!value) return null;
+  const location = value.split("·")[0]?.trim() || value;
+
+  if (/^Computer$/i.test(location)) return "Computer";
+  if (/^Archivio generale$/i.test(location)) return "Archivio Generale Server";
+  if (/^Ricezione temporanea sul server$/i.test(location)) return "Server";
+
+  const sftpRobot = location.match(/^SFTP robot\s+(.+)$/i);
+  if (sftpRobot?.[1]) return `Robot (${sftpRobot[1].trim()})`;
+
+  const serverRobot = location.match(/^Archivio server robot\s+(.+)$/i);
+  if (serverRobot?.[1]) return `Server (${serverRobot[1].trim()})`;
+
+  return null;
+}
+
+function formatLogDirection(
+  item: ParsedTransferLog,
+  recordByTransferId: Map<string, TransferLogRecord>
+): string | null {
+  const srcLabel = formatCompactLogEndpoint(item.source);
+  const dstLabel = formatCompactLogEndpoint(item.destination);
+  if (srcLabel && dstLabel) {
+    return `${srcLabel} → ${dstLabel}`;
+  }
+
+  const transferId =
+    item.transferId || (item.details || "").match(/transferId:\s*([0-9a-f-]{8,})/i)?.[1];
+  const matchedRec = transferId ? recordByTransferId.get(transferId) : undefined;
+  if (matchedRec) {
+    return formatTransferEndpoints({
+      direction: matchedRec.direction,
+      robotId: matchedRec.robotId,
+      sourcePath: matchedRec.sourcePath,
+      destinationPath: matchedRec.destinationPath,
+    }).label;
+  }
+
+  const rawDirection = (item.direction || "").trim().toUpperCase();
+  if (!rawDirection) return null;
+  if (rawDirection === "SERVER_TO_SERVER") return "Server → Server";
+  return DIRECTION_LABELS[rawDirection as keyof typeof DIRECTION_LABELS] || item.direction || null;
+}
+
 function formatCompactTransferLogDetails(
   rawDetails: string | undefined,
   outcome: string | undefined,
@@ -224,6 +273,8 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
   const [transferFileFilter, setTransferFileFilter] = useState<string>("");
   const [transferBatchFilter, setTransferBatchFilter] = useState<string>("");
   const [expandedLogRows, setExpandedLogRows] = useState<Set<number>>(() => new Set());
+  const [confirmClearTarget, setConfirmClearTarget] = useState<"access" | "transfers" | null>(null);
+  const [clearingLogType, setClearingLogType] = useState<"access" | "transfers" | null>(null);
 
   const toggleLogRowTech = useCallback((idx: number) => {
     setExpandedLogRows((prev) => {
@@ -340,6 +391,54 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
     if (isAdmin && activeTab === "transfers") void loadTransferLogs();
     return () => { transferLogRequest.current += 1; };
   }, [isAdmin, activeTab, loadTransferLogs]);
+
+  const handleConfirmClearLogs = useCallback(async () => {
+    if (!confirmClearTarget || clearingLogType) return;
+    const target = confirmClearTarget;
+    setClearingLogType(target);
+    if (target === "access") setAccessError(null);
+    else setTransferError(null);
+
+    try {
+      const res = await apiClient.delete(`/api/logs/${target}`);
+      if (!res.ok) {
+        let serverMessage = "";
+        try {
+          const payload = await res.json();
+          if (payload && typeof payload.message === "string") {
+            serverMessage = payload.message;
+          }
+        } catch {}
+        throw new Error(
+          serverMessage ||
+            (target === "access"
+              ? `Impossibile eliminare il registro Log di Accesso (${res.status}).`
+              : `Impossibile eliminare il registro Log trasferimenti (${res.status}).`)
+        );
+      }
+
+      setConfirmClearTarget(null);
+      if (target === "access") {
+        await loadAccessLogs();
+      } else {
+        setExpandedLogRows(new Set());
+        await loadTransferLogs();
+      }
+    } catch (err: any) {
+      setConfirmClearTarget(null);
+      const fallback =
+        target === "access"
+          ? "Impossibile eliminare il registro Log di Accesso."
+          : "Impossibile eliminare il registro Log trasferimenti.";
+      if (target === "access") {
+        setAccessError(err?.message || fallback);
+      } else {
+        setTransferError(err?.message || fallback);
+      }
+    } finally {
+      setClearingLogType(null);
+    }
+  }, [confirmClearTarget, clearingLogType, loadAccessLogs, loadTransferLogs]);
 
   // Parse and filter Access Logs
   const parsedAccessLogs = useMemo<ParsedAccessLog[]>(() => {
@@ -536,6 +635,15 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
               >
                 Scarica access.log
               </a>
+              <button
+                type="button"
+                id="btn-clear-access-logs"
+                className="btn btn-outline-danger btn-sm"
+                onClick={() => setConfirmClearTarget("access")}
+                disabled={accessLoading || clearingLogType === "access"}
+              >
+                Elimina log
+              </button>
             </>
           ) : (
             <>
@@ -556,6 +664,15 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
               >
                 Scarica transfers.log
               </a>
+              <button
+                type="button"
+                id="btn-clear-transfer-logs"
+                className="btn btn-outline-danger btn-sm"
+                onClick={() => setConfirmClearTarget("transfers")}
+                disabled={transferLoading || clearingLogType === "transfers"}
+              >
+                Elimina log
+              </button>
             </>
           )}
         </div>
@@ -671,7 +788,11 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                   {filteredAccessLogs.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="text-center py-4 text-muted">
-                        {accessLoading ? "Caricamento log in corso..." : "Nessun evento di accesso trovato."}
+                        {accessLoading
+                          ? "Caricamento log in corso..."
+                          : rawAccessLogs.length === 0
+                          ? "Nessun log disponibile"
+                          : "Nessun evento di accesso corrisponde ai filtri selezionati."}
                       </td>
                     </tr>
                   ) : (
@@ -796,11 +917,6 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
           )}
 
           <div className="card shadow-sm border-0">
-            <div className="card-header bg-white py-2">
-              <span className="fw-semibold small">
-                Registro Fisico Su Disco (<code>transfers.log</code> — {filteredTransferLogs.length} righe)
-              </span>
-            </div>
             <div className="table-responsive">
               <table className="table table-hover align-middle mb-0" id="table-transfer-logs">
                 <thead className="table-light small">
@@ -808,7 +924,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                     <th scope="col" style={{ width: "180px" }}>Data / Ora</th>
                     <th scope="col" style={{ width: "220px" }}>File</th>
                     <th scope="col" style={{ width: "140px" }}>Utente</th>
-                    <th scope="col" style={{ width: "160px" }}>Direzione / Tipo</th>
+                    <th scope="col" style={{ width: "220px" }}>Direzione / Tipo</th>
                     <th scope="col" style={{ width: "120px" }}>Esito</th>
                     <th scope="col">Dettagli</th>
                   </tr>
@@ -817,7 +933,11 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                   {filteredTransferLogs.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="text-center py-4 text-muted">
-                        {transferLoading ? "Caricamento log in corso..." : "Nessun log di trasferimento trovato."}
+                        {transferLoading
+                          ? "Caricamento log in corso..."
+                          : rawTransferLogs.length === 0
+                          ? "Nessun log disponibile"
+                          : "Nessun log di trasferimento corrisponde ai filtri selezionati."}
                       </td>
                     </tr>
                   ) : (
@@ -882,6 +1002,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                         recordByTransferId
                       );
                       const isTechExpanded = expandedLogRows.has(idx);
+                      const directionLabel = formatLogDirection(item, recordByTransferId);
                       return (
                         <tr key={idx}>
                           <td className="text-monospace text-secondary">{item.timestamp || "—"}</td>
@@ -895,8 +1016,10 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                           </td>
                           <td>{item.username || "—"}</td>
                           <td>
-                            {item.direction ? (
-                              <span className="badge text-bg-secondary">{item.direction}</span>
+                            {directionLabel ? (
+                              <span className="transfer-direction-badge text-wrap text-start">
+                                {directionLabel}
+                              </span>
                             ) : (
                               "—"
                             )}
@@ -958,6 +1081,46 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
           </div>
         </div>
       )}
+
+      <Modal
+        id="clear-logs-modal"
+        isOpen={confirmClearTarget !== null}
+        onClose={() => {
+          if (!clearingLogType) setConfirmClearTarget(null);
+        }}
+        title="Conferma eliminazione log"
+        role="alertdialog"
+        ariaLabelledBy="clear-logs-modal-title"
+        disableDismiss={clearingLogType !== null}
+        footer={
+          <>
+            <button
+              type="button"
+              id="btn-cancel-clear-logs"
+              className="btn btn-secondary btn-sm"
+              onClick={() => setConfirmClearTarget(null)}
+              disabled={clearingLogType !== null}
+            >
+              Annulla
+            </button>
+            <button
+              type="button"
+              id="btn-confirm-clear-logs"
+              className="btn btn-danger btn-sm"
+              onClick={() => void handleConfirmClearLogs()}
+              disabled={clearingLogType !== null}
+            >
+              {clearingLogType !== null ? "Eliminazione..." : "Elimina"}
+            </button>
+          </>
+        }
+      >
+        <p className="mb-0">
+          {confirmClearTarget === "access"
+            ? "Sei sicuro di voler svuotare il registro Log accessi? Tutti gli eventi di accesso salvati sul server verranno eliminati definitivamente. Il registro Log trasferimenti non verrà modificato."
+            : "Sei sicuro di voler svuotare il registro Log trasferimenti? Tutte le voci del registro trasferimenti salvate sul server verranno eliminate definitivamente. Il registro Log accessi non verrà modificato."}
+        </p>
+      </Modal>
     </main>
   );
 };

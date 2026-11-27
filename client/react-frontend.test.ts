@@ -3,6 +3,7 @@ import assert from "assert";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import net from "node:net";
 import { spawn, execSync, type ChildProcess } from "child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { fileURLToPath } from "url";
@@ -416,7 +417,15 @@ const serverPort = (server.server.address() as any).port;
 const serverBaseUrl = `https://127.0.0.1:${serverPort}`;
 
 console.log("  -> Avvio Google Chrome Headless per test E2E React...");
-const cdpPort = 9445;
+const cdpPort = await new Promise<number>((resolve, reject) => {
+  const probe = net.createServer();
+  probe.once("error", reject);
+  probe.listen(0, "127.0.0.1", () => {
+    const addr = probe.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+    probe.close(() => resolve(port));
+  });
+});
 const chromeUserDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "moliris-react-chrome-"));
 const chromeProcess: ChildProcess = spawn(
   "/usr/bin/google-chrome",
