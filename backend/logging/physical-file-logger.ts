@@ -508,6 +508,85 @@ export class PhysicalFileLogger {
     }
   }
 
+  private async clearLogFiles(
+    primaryPath: string,
+    rotatedPattern: RegExp,
+    onBeforeClear?: () => Promise<void>
+  ): Promise<void> {
+    await this.enqueue(async () => {
+      await this.ensureInitialized();
+      if (onBeforeClear) {
+        await onBeforeClear();
+      }
+
+      await fs.promises.writeFile(primaryPath, "", { encoding: "utf-8", mode: 0o600, flush: true });
+      try {
+        await fs.promises.chmod(primaryPath, 0o600);
+      } catch {}
+
+      const entries = await fs.promises.readdir(this.logDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isFile() && rotatedPattern.test(entry.name)) {
+          await fs.promises.unlink(path.join(this.logDir, entry.name));
+        }
+      }
+
+      const directory = await fs.promises.open(this.logDir, "r");
+      try { await directory.sync(); } finally { await directory.close(); }
+    });
+  }
+
+  /**
+   * Svuota esclusivamente il registro access.log ed eventuali file ruotati/archiviati access.log.*.
+   * Non modifica transfers.log.
+   */
+  public async clearAccessLogs(): Promise<void> {
+    await this.clearLogFiles(
+      this.accessLogPath,
+      /^access\.log\.(?:\d+|archive\.[0-9TZ-]+[a-f0-9-]+)$/
+    );
+    this.logger?.info("Registro log di accesso svuotato dall'amministratore");
+  }
+
+  /**
+   * Svuota esclusivamente il registro transfers.log ed eventuali archivi ruotati transfers.log.*,
+   * marcando come già proiettati eventuali esiti pendenti in journal/spool per evitarne la ricomparsa al riavvio.
+   * Non modifica access.log.
+   */
+  public async clearTransferLogs(): Promise<void> {
+    await this.clearLogFiles(
+      this.transfersLogPath,
+      /^transfers\.log\.(?:\d+|archive\.[0-9TZ-]+[a-f0-9-]+)$/,
+      async () => {
+        if (this.journal) {
+          await this.journal.updateMany(
+            { projectedAt: null },
+            { $set: { projectedAt: new Date() } },
+            { writeConcern: { w: "majority", journal: true }, timeoutMS: 2_000 }
+          );
+        }
+        const spoolDir = path.join(this.logDir, ".transfer-log-pending");
+        const spoolFiles = await fs.promises.readdir(spoolDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+          return [];
+        });
+        let removedSpool = false;
+        for (const entry of spoolFiles) {
+          if (entry.isFile()) {
+            await fs.promises.unlink(path.join(spoolDir, entry.name));
+            removedSpool = true;
+          }
+        }
+        if (removedSpool) {
+          const handle = await fs.promises.open(spoolDir, "r");
+          try { await handle.sync(); } finally { await handle.close(); }
+        }
+      }
+    );
+    this.logger?.info("Registro log trasferimenti svuotato dall'amministratore");
+  }
+
+  // Dall'archivio più recente a quello più vecchio, poi invertiti per il download.
   private async logPaths(filePath: string): Promise<string[]> {
     await this.ensureInitialized();
     const name = path.basename(filePath);
@@ -575,7 +654,7 @@ export class PhysicalFileLogger {
         const user = /(?:^|\|) Utente: (.*?)(?: \||$)/.exec(entry)?.[1];
         const rawOutcome = / \| Esito: ([\p{L}_]+)/u.exec(entry)?.[1]?.toUpperCase();
         const outcome = rawOutcome === "OK" || rawOutcome === "COMPLETED" ? "SUCCESSO"
-          : rawOutcome === "FALLITO" || rawOutcome === "FAILED" ? "FALLIMENTO"
+          : rawOutcome === "FALLITO" || rawOutcome === "FAILED" || rawOutcome === "INTEGRITY_FAILED" || rawOutcome === "PARZIALE" ? "FALLIMENTO"
           : rawOutcome === "CANCELLED" ? "ANNULLATO" : rawOutcome;
         const genuineEntry = /^\[\d{4}-\d{2}-\d{2} |^\[batchId: /.test(entry);
         if (filter?.user && !user?.includes(sanitizeLogText(filter.user))) continue;

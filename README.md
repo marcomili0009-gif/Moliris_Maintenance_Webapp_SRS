@@ -1,158 +1,241 @@
 # Moliris Maintenance Webapp (SRS v1.0)
 
-Web Application centralizzata per la gestione operativa, il monitoraggio dello stato e la manutenzione di una flotta di robot mobili (AMR/AGV), conforme alle specifiche dei requisiti software **SRS v1.0**.
+Web Application centralizzata per la gestione operativa, il monitoraggio dello stato e la manutenzione di una flotta di robot mobili (AMR/AGV), conforme alle specifiche **SRS v1.0**.
 
 ---
 
-## 1. Caratteristiche Principali
+## 1. Funzionalità Principali
 
-- **Autenticazione e Sicurezza Rigorosa (§2.4, §3.1, RNF-SEC-001..009)**:
-  - Accesso esclusivamente cifrato tramite **HTTPS** e **WSS** (rifiuto categorico HTTP in chiaro).
-  - RBAC centralizzato lato server con permessi valutabili globalmente e per singolo robot.
-  - Hashing credenziali `scrypt` con confronto timing-safe anti-timing attack.
-  - **Zero credenziali o chiavi private esposte al browser**: gestione confinata al backend e redazione totale nei log.
-  - Verifica obbligatoria delle chiavi host SSH (`StrictHostKeyChecking`) e blocco attacchi man-in-the-middle.
-  - Protezione totale contro Path Traversal su tutti i percorsi server e remoti.
-
-- **Gestione della Flotta e Registrazione Idempotente (§3.2, §8.1..8.4)**:
-  - Registrazione con verifica di connessione SSH a 5 passi (modalità rigorosa e differita).
-  - Creazione automatica o riutilizzo idempotente della cartella dedicata `/var/lib/moliris/server-fs/<username>`.
-  - Rollback automatico a zero perdite dati in caso di guasto parziale durante la registrazione.
-  - Supporto per dispositivi eterogenei senza modifiche al codice sorgente.
-
-- **Monitoraggio dello Stato della Flotta (§3.3, §10.2, §11.4)**:
-  - Acquisizione periodica (polling configurabile) o manuale on-demand dei file di stato via SFTP/SSH.
-  - Parser polimorfico sostituibile (Key-Value e JSON) isolato dietro interfaccia `StateFileParser`.
-  - **Separazione categorica dei 3 stati**: stato anagrafico, stato di connessione e stato operativo interpretato.
-  - Preservazione assoluta dell'ultimo stato valido acquisito in caso di offline e marcatura `[Non più verificato]`.
-
-- **Terminale Remoto Linux PTY (§3.4, §5.4, §6.4)**:
-  - Shell Linux interattiva completa nel browser tramite `@xterm/xterm` su WebSocket (`/ws/terminal`).
-  - Il browser non apre alcuna connessione SSH diretta verso i dispositivi della flotta.
-  - Chiusura ordinata e rilascio a zero risorse residue per tutte le cause (inattività, disconnessione, logout, stop servizio).
-
-- **Navigazione Filesystem e Trasferimento File > 1 GB (§3.5..3.7, §5.5, §§6.5..6.7)**:
-  - Navigazione filesystem remoto via SFTP in rigorosa sola lettura.
-  - Trasferimenti bidirezionali a 6 direzioni (Computer ↔ Server, Server ↔ Robot, Computer ↔ Robot).
-  - **Streaming a memoria RAM costante (Heap delta < 3 MB) su file superiori a 1 GB** con contropressione nativa dei flussi Node.js.
-  - Avanzamento in tempo reale, verifica integrità opzionale (SHA-256/MD5) e file temporanei protetti.
-
-- **Interfaccia Utente Moderna Bootstrap 5 e Ricerca Flotta (§5.1, RNF-UX-001..004)**:
-  - Single Page Application in **React 19.3.1** e Vite con palette Bootstrap 5 e status badge semantici.
-  - Navbar superiore `sticky-top` con logo Moliris che funge da pulsante di ritorno alla Home (vista Flotta) senza reload.
-  - Barra di ricerca e filtri lato client (`FleetFilterBar`) su Cliente, Impianto, Nome Robot e ID Robot con debounce ~250ms e normalizzazione accenti.
-  - Campi opzionali Cliente e Impianto integrati nella flotta, nella registrazione e nella modifica robot.
+- **Autenticazione e Sicurezza (`RNF-SEC-001..009`)**:
+  - Accesso esclusivamente cifrato via **HTTPS** e **WSS** (blocco categorico HTTP in chiaro).
+  - RBAC centralizzato lato server (`admin` / `operatore`) con permessi per singolo robot e jail sui percorsi autorizzati.
+  - Credenziali cifrate con AES-256 (`master.key` locale `0600`) e password hashate con `scrypt` timing-safe; nessuna credenziale o chiave privata esposta al browser o nei log.
+  - Verifica obbligatoria delle chiavi host SSH (`StrictHostKeyChecking`) e whitelist destinazioni SSH (`MOLIRIS_ALLOWED_DESTINATIONS`, `RNF-SEC-006`).
+- **Gestione Flotta e Registrazione Robot**:
+  - Registrazione in modalità rigorosa o differita con verifica connessione SSH/SFTP, allocazione della cartella dedicata sotto `MOLIRIS_FS_ROOT` e rollback automatico in caso di errore parziale.
+  - Ricerca e filtro flotta per Cliente, Impianto, Nome Robot e ID Robot.
+- **Monitoraggio Telemetria e Stato**:
+  - Polling periodico configurabile e refresh manuale via SFTP con parser modulare (`json` / `keyvalue` / `auto`).
+  - Separazione tra stato anagrafico, stato di connessione e stato operativo, con preservazione dell'ultimo stato valido (`[Non Più Verificato]`).
+- **Terminale Remoto Linux PTY**:
+  - Shell interattiva nel browser tramite `@xterm/xterm` su WebSocket (`/ws/terminal`), mediata esclusivamente dal backend, con chiusura automatica per inattività, disconnessione o logout.
+- **Gestione File e Trasferimenti (> 1 GB)**:
+  - Navigazione Archivio Generale Server, area dedicata per robot e filesystem remoto SFTP in sola lettura.
+  - Trasferimenti bidirezionali e caricamento massivo in streaming a memoria costante, verifica checksum (`sha256`/`md5`) e gestione file temporanei.
 
 ---
 
-## 2. Architettura e Struttura della Codebase
+## 2. Struttura Completa del Progetto
 
+```text
+Moliris_V1.0/
+├── backend/                               # Server HTTPS/WSS Fastify e logica di dominio
+│   ├── auth/                              # Autenticazione, sessioni, RBAC e jail percorsi
+│   │   ├── auth-middleware.ts             # Middleware verifica sessione e permessi
+│   │   ├── auth-routes.ts                 # Endpoint login, logout, stato sessione
+│   │   ├── path-authorization.ts          # Controllo percorsi consentiti per ruolo Operatore
+│   │   ├── permissions.ts                 # Definizioni permessi applicativi
+│   │   ├── roles.ts                       # Ruoli (admin / operatore) e mapping
+│   │   ├── session-manager.ts             # Gestione sessioni attive e timeout inattività
+│   │   ├── user-models.ts                 # Modelli entità utente
+│   │   └── user-repository.ts             # Persistenza utenti (MongoDB)
+│   ├── connection/                        # Livello SSH/SFTP, host key e cifratura credenziali
+│   │   ├── connection-validator.ts        # Whitelist destinazioni (RNF-SEC-006) e rate-limit
+│   │   ├── connection-verifier.ts         # Verifica connessione SSH pre-registrazione
+│   │   ├── credential-provider.ts         # Interfaccia provider credenziali
+│   │   ├── host-key-verifier.ts           # Verifica StrictHostKeyChecking (SHA-256 / known_hosts)
+│   │   ├── master-key.ts                  # Caricamento e validazione master.key AES-256 (32 byte)
+│   │   ├── mongo-credential-provider.ts   # Salvataggio/lettura credenziali cifrate in MongoDB
+│   │   └── robot-connection-manager.ts    # Gestione connessioni SSH/SFTP verso i robot
+│   ├── fleet/                             # Gestione anagrafica e registrazione robot
+│   │   ├── fleet-routes.ts                # API REST flotta (CRUD, clienti/impianti, verifica)
+│   │   ├── fleet-service.ts               # Logica registrazione, modifica, disabilitazione, rollback
+│   │   └── fleet-types.ts                 # Tipi e DTO di dominio flotta
+│   ├── logging/                           # Log fisici di accesso e trasferimenti
+│   │   ├── log-routes.ts                  # API consultazione log di audit/accesso/trasferimenti
+│   │   └── physical-file-logger.ts        # Scrittura file access.log e transfers.log con rotazione
+│   ├── monitoring/                        # Telemetria periodica e parser file di stato
+│   │   ├── monitoring-routes.ts           # API refresh stato manuale e storico telemetria
+│   │   ├── monitoring-service.ts          # Polling periodico e marcatura [Non Più Verificato]
+│   │   ├── robot-reader.ts                # Lettura file di stato remoto via SFTP
+│   │   └── state-file-parser.ts           # Parser modulare (auto / json / keyvalue)
+│   ├── remote-fs/                         # Navigazione filesystem remoto SFTP (sola lettura)
+│   │   ├── remote-fs-models.ts            # Modelli voci filesystem remoto
+│   │   ├── remote-fs-routes.ts            # API navigazione filesystem robot
+│   │   └── remote-fs-service.ts           # Servizio listing SFTP sicuro
+│   ├── terminal/                          # Terminale remoto Linux PTY su WebSocket
+│   │   ├── terminal-limits.ts             # Limiti concorrenza sessioni PTY
+│   │   ├── terminal-models.ts             # Modelli sessioni terminale
+│   │   ├── terminal-routes.ts             # Endpoint WebSocket /ws/terminal
+│   │   └── terminal-service.ts            # Gestione PTY, resize, watchdog e chiusura ordinata
+│   ├── transfer/                          # Motore trasferimenti streaming (> 1 GB) e bulk upload
+│   │   ├── batch-transfer-manager.ts      # Coordinamento lotti massivi multi-target
+│   │   ├── bulk-transfer-models.ts        # Modelli e conflitti caricamento massivo
+│   │   ├── checksum-service.ts            # Calcolo e verifica integrità SHA-256 / MD5
+│   │   ├── transfer-models.ts             # Modelli trasferimenti (6 direzioni)
+│   │   ├── transfer-progress.ts           # Tracking avanzamento in tempo reale
+│   │   ├── transfer-routes.ts             # API upload/download/trasferimenti/preflight
+│   │   └── transfer-service.ts            # Streaming a memoria costante e gestione file .tmp
+│   ├── validation/                        # Validazione input HTTP con Zod
+│   │   ├── request-schemas.ts             # Schemi Zod per body e query
+│   │   └── request-validation.ts          # Helper validazione centralizzata
+│   ├── server-fs-routes.ts                # API Archivio Generale Server e cartelle robot
+│   ├── server.ts                          # Entry point server HTTPS Fastify + WebSocket
+│   └── README.md                          # Note interne modulo backend
+│
+├── client/                                # Frontend SPA React 19 + Vite + Bootstrap 5
+│   ├── index.html                         # Entry HTML applicazione
+│   ├── tsconfig.json                      # Configurazione TypeScript client
+│   ├── vite.config.ts                     # Configurazione Vite (build in dist/frontend)
+│   └── src/
+│       ├── main.tsx                       # Bootstrap React
+│       ├── App.tsx                        # Router principale e stato globale sessione
+│       ├── styles.css                     # Stili applicativi e temi Bootstrap 5
+│       ├── vite-env.d.ts                  # Tipizzazioni ambiente Vite
+│       ├── assets/
+│       │   └── Moliris_white.png          # Logo Moliris navbar
+│       ├── views/                         # Viste principali
+│       │   ├── LoginView.tsx              # Schermata autenticazione
+│       │   ├── DashboardView.tsx          # Dashboard flotta e gestione operativa
+│       │   └── LogsView.tsx               # Consultazione log accessi e trasferimenti
+│       ├── components/
+│       │   ├── fleet/                     # Flotta: FleetTable, FleetFilterBar, RobotRegisterModal,
+│       │   │                              # RobotEditModal, RobotDetailModal, RegistrationOutcomeModal
+│       │   ├── filesystem/                # File & Trasferimenti: FileManagementModal, GeneralFsPanel,
+│       │   │                              # ServerFsPanel, RemoteFsPanel, TransfersPanel, FsTable,
+│       │   │                              # FsBrowserSection, FsBreadcrumb, FsTabBar
+│       │   ├── bulk/                      # Caricamento massivo: BulkUploadModal, BulkConflictsModal
+│       │   ├── terminal/                  # Terminale PTY: TerminalModal (@xterm/xterm)
+│       │   └── common/                    # UI condivisa: AppNavbar, Modal, ConfirmDialog, ErrorModal,
+│       │                                  # IdleWarningModal, FolderPickerModal, NewFolderModal,
+│       │                                  # DeleteFolderModal, DoubleSubmitButton, RobotCombobox,
+│       │                                  # StatusBadge, NotificationBanner, ToastHost
+│       ├── hooks/                         # Custom React hooks (useAuth, useFleet, useFilesystem,
+│       │                                  # useTerminal, useTransfers)
+│       ├── services/                      # api-client.ts, error-presenter.ts, state-formatter.ts
+│       ├── types/                         # Definizioni TypeScript (auth, error, filesystem, fleet,
+│       │                                  # monitoring, transfer)
+│       └── utils/                         # download.ts, filterRobots.ts, transfer-format.ts
+│
+├── config/                                # Configurazione operativa e connessione DB
+│   ├── config.json                        # Parametri applicativi attivi (timeout, limiti, jail)
+│   ├── configuration.ts                   # Validazione fail-closed variabili d'ambiente (.env)
+│   └── mongodb.ts                         # Client MongoDB e controllo credenziali in produzione
+│
+├── src/                                   # Loader configurazione applicativa
+│   └── config/
+│       ├── index.ts                       # Caricamento e merge config.json / env
+│       └── schema.ts                      # Schema validazione config.json
+│
+├── storage/                               # Layer persistenza MongoDB e filesystem server
+│   ├── audit-models.ts                    # Modelli eventi di audit
+│   ├── audit-repository.ts                # Repository audit_events e pending_robot_removals
+│   ├── client-plant-models.ts             # Modelli clienti e impianti
+│   ├── client-plant-repository.ts         # Repository clients / plants
+│   ├── robot-models.ts                    # Modelli entità robot e stati
+│   ├── robot-repository.ts                # Repository robots con indici univoci
+│   ├── telemetry-repository.ts            # Storico telemetria robot_telemetry_history
+│   ├── server-fs.ts                       # Gestione, isolamento e listing MOLIRIS_FS_ROOT
+│   ├── dto/
+│   │   └── robot-dto.ts                   # DTO robot privi di credenziali
+│   └── README.md                          # Note interne modulo storage
+│
+├── errors/
+│   └── app-errors.ts                      # Catalogo errori formale (§9) e codici HTTP
+│
+├── logging/
+│   └── logger.ts                          # Logger JSON strutturato con redazione segreti
+│
+├── scripts/                               # Script operativi e migrazioni (vedi sezione 4)
+│   ├── audit-robot-directories.ts
+│   ├── cleanup-robot-orphans.ts
+│   ├── migrate-database-improvements.ts
+│   ├── migrate-operator-paths.ts
+│   ├── migrate-robot-directories.ts
+│   ├── purge-all-temp-files.sh
+│   ├── purge-all-temp-files.ts
+│   ├── reencrypt-credentials.ts
+│   ├── reset-admin-password.ts
+│   └── seed-users.ts
+│
+├── .env.example                           # Template completo variabili d'ambiente
+├── config.example.json                    # Template di riferimento per config/config.json
+├── moliris.service                        # Unit file systemd per produzione
+├── DEPLOY.md                              # Guida installazione, deploy e migrazione server
+├── README.md                              # Panoramica progetto e guida rapida
+├── package.json                           # Dipendenze e script npm
+├── package-lock.json                      # Lockfile deterministico dipendenze
+├── tsconfig.json                          # Configurazione compilatore TypeScript backend
+├── .gitignore                             # Regole esclusione Git
+└── .gitattributes                         # Normalizzazione fine riga LF
 ```
-Moliris_Maintenance_Webapp_SRS/
-├── backend/
-│   ├── auth/              # Autenticazione, sessioni utente, RBAC e utenti iniziali
-│   ├── connection/        # Livello comune SSH/SFTP, credenziali e verifica chiavi host
-│   ├── fleet/             # Gestione flotta, registrazione, anagrafica e controlli
-│   ├── monitoring/        # Monitoraggio telemetria, reader SFTP e parser di stato
-│   ├── terminal/          # Terminale remoto interattivo PTY e gestione canali WebSocket
-│   ├── remote-fs/         # Navigazione filesystem remoto SFTP in sola lettura
-│   ├── transfer/          # Motore di trasferimento file in streaming (6 direzioni, >1 GB)
-│   ├── server-fs-routes.ts# Endpoint navigazione e download filesystem server
-│   └── server.ts          # Server HTTPS Fastify centrale e configurazione WebSocket
-├── storage/
-│   ├── robot-models.ts    # Modelli entità robot e definizioni stati distinti
-│   ├── robot-repository.ts# Repository robot (in-memory e MongoDB) con indici unicità
-│   ├── audit-repository.ts# Registro immutabile di audit con politica di conservazione
-│   ├── server-fs.ts       # Servizio di allocazione, isolamento e navigazione server-fs
-│   └── dto/robot-dto.ts   # Data Transfer Object rigorosamente privi di credenziali
-├── client/                # Frontend SPA moderno sviluppato in React 19.3.1 e Vite
-│   ├── src/components/    # Componenti UI accessibili (Flotta, Filesystem, Terminale, Bulk)
-│   ├── src/hooks/         # Custom React hooks (useAuth, useFleet, useFilesystem, useTerminal)
-│   ├── src/services/      # Client API, ErrorPresenter (§9) e StateFormatter (3 stati)
-│   ├── src/views/         # Viste applicative (LoginView, DashboardView)
-│   ├── vite.config.ts     # Configurazione Vite (output in dist/frontend)
-│   └── react-frontend.test.ts # Suite E2E Google Chrome CDP per il frontend React
-├── config/                # Validazione configurazione fail-closed e variabili d'ambiente
-├── errors/                # Modello formale errori §9 e classificazione severità
-├── logging/               # Logger strutturato JSON con redazione automatica segreti
-├── scripts/               # Script di provisioning utenti iniziali (seed-users.ts)
-└── tests/
-    ├── security/          # Suite di verifica hardening di sicurezza (RNF-SEC-001..009)
-    ├── reliability-performance/ # Suite affidabilità, riavvio e heap >1 GB su tutte le 6 direzioni
-    └── acceptance/        # Master suite di collaudo dei 35 Criteri §7 e 18 Obiettivi §12
-```
 
 ---
 
-## 3. Prerequisiti e Avvio Rapido
+## 3. Prerequisiti, Build e Avvio
 
-### Prerequisiti di Sistema
-- **Sistema Operativo**: Ubuntu 26.04 LTS (o compatibile Linux x86_64).
-- **Node.js**: v24.x LTS (eseguibile con `node --experimental-strip-types`).
-- **MongoDB**: v6.0+ o v7.0+ attivo sulla porta 27017.
-- **Browser**: Google Chrome (ultima versione stabile, §2.5).
+### Prerequisiti
+- **Linux x86_64** (es. Ubuntu 24.04 / 26.04 LTS)
+- **Node.js** ≥ 20 (consigliato v24 LTS) e `npm`
+- **MongoDB** v6.0+ / v7.0+ raggiungibile tramite `MOLIRIS_MONGODB_URI`
+- **Certificati TLS** (`MOLIRIS_TLS_CERT_PATH`, `MOLIRIS_TLS_KEY_PATH`) e **master key AES-256** da 32 byte raw (`MOLIRIS_MASTER_KEY_FILE`, permessi `0600`)
 
-### Installazione Dipendenze
+### Compilazione e avvio in produzione
 ```bash
-npm install
-```
-
-### Configurazione d'Ambiente
-Copiare il file di template `.env.example` in `.env` e impostare i percorsi:
-```bash
+# 1. Prepara .env (o /etc/moliris/moliris.env in produzione con systemd)
 cp .env.example .env
+chmod 600 .env
+
+# 2. Installazione pulita, build frontend + backend e rimozione devDependencies
+npm ci && npm run build && npm prune --omit=dev
+
+# 3. Avvio del server compilato
+npm start
 ```
 
-### Provisioning Utenti di Test
-```bash
-node --experimental-strip-types scripts/seed-users.ts
-```
+> Per l'installazione completa su server di produzione (utente dedicato `moliris`, autenticazione MongoDB, certificati TLS, `master.key`, `systemd` con `moliris.service` e verifica `/healthz`), segui **[DEPLOY.md](./DEPLOY.md)**.
 
-### Avvio in Sviluppo
+### Avvio in sviluppo locale
 ```bash
+npm ci
 npm run dev
 ```
-L'applicazione è raggiungibile su `https://127.0.0.1:8443`.
-
-### Compilazione e Avvio in Produzione
-```bash
-npm run typecheck  # Controllo statico dei tipi TypeScript
-npm run lint       # Linting del codice
-npm run build      # Compilazione ESM in ./dist
-npm start          # Avvio del server di produzione compilato
-```
 
 ---
 
-## 4. Esecuzione dei Test Automatizzati
+## 4. Script Operativi (`scripts/`)
 
-Il sistema include test completi end-to-end con esecuzione a zero configurazione:
-```bash
-npm test
-```
+> Nota: gli script TypeScript in `scripts/` possono essere eseguiti con `npx tsx scripts/<nome>.ts` (prima di `npm prune --omit=dev`) oppure nella versione compilata con `node --import dotenv/config dist/scripts/<nome>.js`.
 
-La suite esegue sequenzialmente:
-1. `config/configuration.test.ts`: validazione fail-closed configurazione.
-2. `logging/logger.test.ts`: redazione automatica password e chiavi private.
-3. `errors/app-errors.test.ts`: conformità catalogo errori §9 e messaggi opachi.
-4. `backend/server.test.ts`: server HTTPS e blocco certificati mancanti.
-5. `storage/storage.test.ts`: persistenza InMemory e Live MongoDB, sicurezza DTO.
-6. `backend/auth/auth.test.ts`: login, logout, RBAC per robot e scadenza sessione.
-7. `storage/server-fs.test.ts`: isolamento cartelle, idempotenza e rollback selettivo.
-8. `backend/connection/connection.test.ts`: connessione SSH/SFTP, host key e whitelist.
-9. `backend/fleet/fleet.test.ts`: anagrafica flotta, 6 esiti registrazione e disabilitazione.
-10. `backend/monitoring/monitoring.test.ts`: polling periodico, refresh manuale e stale data.
-11. `backend/terminal/terminal.test.ts`: shell PTY, WebSocket, resize e 7 cause chiusura.
-12. `backend/remote-fs/remote-fs.test.ts`: navigazione remota SFTP e sola lettura.
-13. `backend/transfer/transfer.test.ts`: trasferimenti 6 direzioni, integrità e timeout.
-14. `client/react-frontend.test.ts`: test E2E React su Google Chrome Headless via CDP.
-15. `tests/security/security-hardening.test.ts`: verifica hardening (RNF-SEC-001..009).
-16. `tests/reliability-performance/reliability-perf.test.ts`: misurazione reale heap > 1 GB su 6 direzioni, riavvio a zero perdite e multi-device.
-17. `tests/acceptance/acceptance.test.ts`: collaudo formale dei 35 Criteri §7 e 18 Obiettivi §12.
+| Script | Scopo |
+|---|---|
+| `scripts/seed-users.ts` | Provisioning sicuro degli account iniziali (`admin`, `operatore`, consigliato `--password-file`). |
+| `scripts/reset-admin-password.ts` | Reimpostazione della password dell'account amministratore. |
+| `scripts/reencrypt-credentials.ts` | Ricifratura delle credenziali robot in MongoDB in caso di rotazione/cambio `master.key`. |
+| `scripts/migrate-robot-directories.ts` | Riallineamento di `serverDirectoryPath` e creazione cartelle robot su un nuovo `MOLIRIS_FS_ROOT` (`--dry-run` / `--apply`). |
+| `scripts/audit-robot-directories.ts` | Verifica coerenza tra anagrafica robot in MongoDB e directory su disco. |
+| `scripts/cleanup-robot-orphans.ts` | Pulizia controllata di eventuali record/cartelle orfane. |
+| `scripts/purge-all-temp-files.ts` / `.sh` | Rimozione file temporanei residui di trasferimento. |
+| `scripts/migrate-database-improvements.ts` | Migrazione indici e miglioramenti schema MongoDB. |
+| `scripts/migrate-operator-paths.ts` | Migrazione dei percorsi consentiti per gli account operatore. |
 
 ---
 
-## 5. Cosa NON è stato implementato e perché
+## 5. Checklist Post-Migrazione su Nuovo Server
+
+Quando sposti l'applicazione e ripristini il database su un nuovo server:
+1. **Master key**: copia la `master.key` in `/etc/moliris/keys/master.key` (o percorso in `MOLIRIS_MASTER_KEY_FILE`, permessi `0600`), oppure rigenerala (`openssl rand 32 > master.key && chmod 600 master.key`) e aggiorna le credenziali robot (`reencrypt-credentials.ts` o dall'interfaccia).
+2. **Allineamento directory robot (dopo `mongorestore`)**:
+   ```bash
+   npx tsx scripts/migrate-robot-directories.ts --dry-run
+   npx tsx scripts/migrate-robot-directories.ts --apply
+   ```
+3. **Whitelist destinazioni SSH (`.env`)**: imposta `MOLIRIS_ALLOWED_DESTINATIONS` con gli IP/hostname reali dei robot separati da virgola (es. `192.168.32.50,192.168.32.51`).
+4. **MongoDB (`.env`)**: aggiorna `MOLIRIS_MONGODB_URI` con le credenziali e il database del nuovo server.
+
+---
+
+## 6. Funzionalità Intenzionalmente Escluse per Conformità SRS
 
 In stretta aderenza alla regola cardine di non inventare funzionalità o comportamenti non previsti dalla specifica **SRS v1.0**, i seguenti punti sono stati intenzionalmente esclusi o isolati:
 
@@ -171,7 +254,7 @@ In stretta aderenza alla regola cardine di non inventare funzionalità o comport
 
 ---
 
-## 6. Indice della Documentazione di Progetto
+## 7. Indice della Documentazione di Progetto
 
 - **[TRACEABILITY.md](TRACEABILITY.md)**: Matrice completa di tracciabilità Requisito → Modulo → Test per tutti i requisiti RF, RNF e vincoli §2.4.
 - **[COLLAUDO.md](COLLAUDO.md)**: Verbale ufficiale di collaudo con esito dei 35 criteri §7, 18 obiettivi §12 e misurazioni di memoria heap reale.

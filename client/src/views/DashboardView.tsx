@@ -121,6 +121,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const cur = fsRef.current;
     if (cur.serverRobotId) void cur.loadServerDirectory(cur.serverRobotId, cur.serverPath || "/", { silent: true });
     if (cur.remoteRobotId) void cur.loadRemoteDirectory(cur.remoteRobotId, cur.remotePath, { silent: true });
+    void cur.loadGeneralDirectory(cur.generalPath || "/");
     void transfers.syncNow();
     return result;
   };
@@ -339,15 +340,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const handleConfirmBulkOverwrite = async () => {
     if (bulkConflicts) {
-      const result = await handleBulkExecute(bulkConflicts.files, bulkConflicts.destinations, true);
+      const res = await handleBulkExecute(
+        bulkConflicts.files,
+        bulkConflicts.destinations,
+        true
+      );
       setBulkConflicts(null);
-      if (result.success) {
+      if (res.success) {
         setIsBulkUploadOpen(false);
         setGlobalMessage("Caricamento massivo completato con sovrascrittura.");
       } else {
-        const completed = result.results?.filter((item) => item.success).length ?? 0;
-        const failed = result.results?.filter((item) => !item.success).length ?? 0;
-        pushToast("error", result.error?.userMessage ?? `Caricamento massivo incompleto. Invii riusciti: ${completed}. Invii falliti: ${failed}.`);
+        const firstFailure = res.results?.flatMap((r) => r.failedFiles)[0];
+        const completed = res.results?.filter((item) => item.success).length ?? 0;
+        const failed = res.results?.filter((item) => !item.success).length ?? 0;
+        pushToast(
+          "error",
+          res.error?.userMessage ||
+            (firstFailure
+              ? `Sovrascrittura non riuscita (${firstFailure.filename}): ${firstFailure.reason}`
+              : `Caricamento massivo incompleto. Invii riusciti: ${completed}. Invii falliti: ${failed}.`)
+        );
       }
     }
   };
@@ -611,9 +623,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             activeTransfersCount={transfers.activeCount}
             onRefreshTransfers={() => transfers.loadTransfers()}
             onCancelTransfer={transfers.cancelTransfer}
+            onPauseTransfer={transfers.pauseTransfer}
+            onResumeTransfer={transfers.resumeTransfer}
             onCancelBatch={transfers.cancelBatch}
             onRetryTransfer={transfers.retryTransfer}
             onRemoveTransfer={transfers.removeTransfer}
+            onClearTransfers={transfers.clearTransfers}
           />
         </div>
       </main>

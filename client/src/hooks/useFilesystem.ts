@@ -644,7 +644,9 @@ export function useFilesystem() {
   // Delete from Remote SFTP
   const deleteFromRemote = async (fileName: string): Promise<boolean> => {
     if (!remoteRobotId) return false;
-    const filePath = remotePath.endsWith("/") ? `${remotePath}${fileName}` : `${remotePath}/${fileName}`;
+    const filePath = remotePath
+      ? (remotePath.endsWith("/") ? `${remotePath}${fileName}` : `${remotePath}/${fileName}`)
+      : fileName;
     try {
       const res = await apiClient.delete(
         `/api/robots/${encodeURIComponent(remoteRobotId)}/fs/remote/file?path=${encodeURIComponent(filePath)}`
@@ -674,9 +676,9 @@ export function useFilesystem() {
     if (!robotId) return false;
     const targetPath = folderNameOrPath.startsWith("/")
       ? folderNameOrPath
-      : remotePath.endsWith("/")
-      ? `${remotePath}${folderNameOrPath}`
-      : `${remotePath}/${folderNameOrPath}`;
+      : remotePath
+      ? (remotePath.endsWith("/") ? `${remotePath}${folderNameOrPath}` : `${remotePath}/${folderNameOrPath}`)
+      : folderNameOrPath;
     try {
       const res = await apiClient.delete(
         `/api/robots/${encodeURIComponent(robotId)}/fs/remote/folder?path=${encodeURIComponent(targetPath)}&recursive=${recursive ? "true" : "false"}&expectedFileCount=${expectedFileCount}&expectedDirectoryCount=${expectedDirectoryCount}`

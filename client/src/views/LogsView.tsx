@@ -1,6 +1,15 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { Modal } from "../components/common/Modal.tsx";
 import { apiClient } from "../services/api-client.ts";
+import { StateFormatter } from "../services/state-formatter.ts";
 import type { User } from "../types/auth.ts";
+import type { TransferLogRecord } from "../types/transfer.ts";
+import {
+  DIRECTION_LABELS,
+  formatSpeed,
+  formatTransferEndpoints,
+  isGeneralArchiveTransfer,
+} from "../utils/transfer-format.ts";
 
 export interface LogsViewProps {
   user: User;
@@ -102,6 +111,143 @@ function formatLogTime(timestamp: string): string {
   return Number.isNaN(instant.getTime()) ? value : romeLogFormatter.format(instant);
 }
 
+function compactErrorMessage(rawMessage: string): string {
+  const cleaned = rawMessage
+    .replace(/^(?:Fallito|Annullato)\s*\([^)]*\)\s*:\s*/i, "")
+    .trim();
+  const mkdirMatch = cleaned.match(
+    /^Impossibile creare la directory remota '([^']+)' sul robot '([^']+)':\s*(.+)$/i
+  );
+  if (mkdirMatch) {
+    return `Impossibile creare '${mkdirMatch[1]}' su ${mkdirMatch[2]} (permessi o percorso non valido)`;
+  }
+  return cleaned || rawMessage;
+}
+
+interface FormattedLogDetails {
+  summary: string;
+  technical?: string;
+}
+
+function formatCompactLogEndpoint(rawEndpoint?: string): string | null {
+  const value = (rawEndpoint || "").trim();
+  if (!value) return null;
+  const location = value.split("·")[0]?.trim() || value;
+
+  if (/^Computer$/i.test(location)) return "Computer";
+  if (/^Archivio generale$/i.test(location)) return "Archivio Generale Server";
+  if (/^Ricezione temporanea sul server$/i.test(location)) return "Server";
+
+  const sftpRobot = location.match(/^SFTP robot\s+(.+)$/i);
+  if (sftpRobot?.[1]) return `Robot (${sftpRobot[1].trim()})`;
+
+  const serverRobot = location.match(/^Archivio server robot\s+(.+)$/i);
+  if (serverRobot?.[1]) return `Server (${serverRobot[1].trim()})`;
+
+  return null;
+}
+
+function formatLogDirection(
+  item: ParsedTransferLog,
+  recordByTransferId: Map<string, TransferLogRecord>
+): string | null {
+  const srcLabel = formatCompactLogEndpoint(item.source);
+  const dstLabel = formatCompactLogEndpoint(item.destination);
+  if (srcLabel && dstLabel) {
+    return `${srcLabel} → ${dstLabel}`;
+  }
+
+  const transferId =
+    item.transferId || (item.details || "").match(/transferId:\s*([0-9a-f-]{8,})/i)?.[1];
+  const matchedRec = transferId ? recordByTransferId.get(transferId) : undefined;
+  if (matchedRec) {
+    return formatTransferEndpoints({
+      direction: matchedRec.direction,
+      robotId: matchedRec.robotId,
+      sourcePath: matchedRec.sourcePath,
+      destinationPath: matchedRec.destinationPath,
+    }).label;
+  }
+
+  const rawDirection = (item.direction || "").trim().toUpperCase();
+  if (!rawDirection) return null;
+  if (rawDirection === "SERVER_TO_SERVER") return "Server → Server";
+  return DIRECTION_LABELS[rawDirection as keyof typeof DIRECTION_LABELS] || item.direction || null;
+}
+
+function formatCompactTransferLogDetails(
+  rawDetails: string | undefined,
+  outcome: string | undefined,
+  recordByTransferId: Map<string, TransferLogRecord>
+): FormattedLogDetails {
+  const text = (rawDetails || "").trim();
+  if (!text) return { summary: "—" };
+
+  const transferIdMatch = text.match(/transferId:\s*([0-9a-f-]{8,})/i);
+  const batchIdMatch = text.match(/batchId:\s*([0-9a-f-]{8,})/i);
+  const checksumMatch = text.match(/checksum:\s*([0-9a-f]{16,128})/i);
+  const speedMatch = text.match(/media:\s*(\d+(?:\.\d+)?)\s*B\/s/i);
+  const bytesMatch = text.match(/(\d+)(?:\/(\d+))?\s*byte/i);
+
+  const transferId = transferIdMatch?.[1];
+  const batchId = batchIdMatch?.[1];
+  const checksum = checksumMatch?.[1];
+  const matchedRec = transferId ? recordByTransferId.get(transferId) : undefined;
+
+  const techParts: string[] = [];
+  if (transferId) techParts.push(`Transfer ID: ${transferId}`);
+  if (batchId) techParts.push(`Batch ID: ${batchId}`);
+  if (checksum) techParts.push(`SHA-256: ${checksum}`);
+  const technical = techParts.length > 0 ? techParts.join(" | ") : undefined;
+
+  const upperOutcome = (outcome || "").toUpperCase();
+  const isSuccess =
+    upperOutcome === "SUCCESSO" ||
+    upperOutcome === "COMPLETED" ||
+    upperOutcome === "OK" ||
+    /^Completato\b/i.test(text);
+
+  if (isSuccess && (bytesMatch || speedMatch || checksumMatch)) {
+    const parts: string[] = [];
+    if (bytesMatch) {
+      const byteCount = Number(bytesMatch[2] || bytesMatch[1]);
+      if (Number.isFinite(byteCount) && byteCount >= 0) {
+        parts.push(StateFormatter.formatBytes(byteCount));
+      }
+    }
+    if (speedMatch) {
+      const bps = Number(speedMatch[1]);
+      if (Number.isFinite(bps) && bps > 0) {
+        parts.push(formatSpeed(bps));
+      }
+    }
+    if (checksum) {
+      parts.push("Checksum verificato");
+    }
+    if (matchedRec) {
+      const isGeneral = isGeneralArchiveTransfer(matchedRec);
+      if (matchedRec.direction === "CLIENT_TO_ROBOT" || matchedRec.direction === "SERVER_TO_ROBOT" || matchedRec.direction === "ROBOT_TO_ROBOT") {
+        parts.push(`→ ${matchedRec.robotId}`);
+      } else if (matchedRec.direction === "CLIENT_TO_SERVER") {
+        parts.push(isGeneral ? "→ Archivio Generale" : `→ Server (${matchedRec.robotId})`);
+      }
+    }
+    return {
+      summary: parts.length > 0 ? parts.join(" · ") : "Completato",
+      technical,
+    };
+  }
+
+  if (!isSuccess || /^(?:Fallito|Annullato)\b/i.test(text)) {
+    return {
+      summary: compactErrorMessage(text),
+      technical,
+    };
+  }
+
+  return { summary: text, technical };
+}
+
 export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
   const isAdmin = user.roles.some(
     (r) => r.toLowerCase() === "admin"
@@ -119,11 +265,33 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
 
   // Transfer Logs State
   const [rawTransferLogs, setRawTransferLogs] = useState<string[]>([]);
+  const [transferRecords, setTransferRecords] = useState<TransferLogRecord[]>([]);
   const [transferLoading, setTransferLoading] = useState<boolean>(false);
   const [transferError, setTransferError] = useState<string | null>(null);
   const [transferUserFilter, setTransferUserFilter] = useState<string>("");
   const [transferOutcomeFilter, setTransferOutcomeFilter] = useState<string>("ALL");
   const [transferFileFilter, setTransferFileFilter] = useState<string>("");
+  const [transferBatchFilter, setTransferBatchFilter] = useState<string>("");
+  const [expandedLogRows, setExpandedLogRows] = useState<Set<number>>(() => new Set());
+  const [confirmClearTarget, setConfirmClearTarget] = useState<"access" | "transfers" | null>(null);
+  const [clearingLogType, setClearingLogType] = useState<"access" | "transfers" | null>(null);
+
+  const toggleLogRowTech = useCallback((idx: number) => {
+    setExpandedLogRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  }, []);
+
+  const recordByTransferId = useMemo(() => {
+    const map = new Map<string, TransferLogRecord>();
+    for (const rec of transferRecords) {
+      map.set(rec.transferId, rec);
+    }
+    return map;
+  }, [transferRecords]);
 
   const loadAccessLogs = useCallback(async () => {
     setAccessLoading(true);
@@ -177,26 +345,35 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
       }
       const textOrJson = await res.text();
       let lines: string[] = [];
+      let records: TransferLogRecord[] = [];
       try {
         const parsed = JSON.parse(textOrJson);
         if (Array.isArray(parsed)) {
           lines = parsed.map((item) => (typeof item === "string" ? item : JSON.stringify(item)));
-        } else if (parsed && Array.isArray(parsed.logs)) {
-          lines = parsed.logs;
-        } else if (parsed && Array.isArray(parsed.lines)) {
-          lines = parsed.lines;
-        } else if (parsed && Array.isArray(parsed.entries)) {
-          lines = parsed.entries.map((item: any) =>
-            typeof item === "string" ? item : `[${item.timestamp || ""}] File: ${item.filename || ""} | Utente: ${item.user || item.username || ""} | Direzione: ${item.direction || ""} | Esito: ${item.outcome || ""} | Dettagli: ${item.details || ""}`
-          );
         } else {
-          lines = textOrJson.split("\n").filter((l) => l.trim().length > 0);
+          if (parsed && Array.isArray(parsed.records)) {
+            records = parsed.records;
+          }
+          if (parsed && Array.isArray(parsed.logs)) {
+            lines = parsed.logs;
+          } else if (parsed && Array.isArray(parsed.lines)) {
+            lines = parsed.lines;
+          } else if (parsed && Array.isArray(parsed.entries)) {
+            lines = parsed.entries.map((item: any) =>
+              typeof item === "string" ? item : `[${item.timestamp || ""}] File: ${item.filename || ""} | Utente: ${item.user || item.username || ""} | Direzione: ${item.direction || ""} | Esito: ${item.outcome || ""} | Dettagli: ${item.details || ""}`
+            );
+          } else if (!Array.isArray(parsed?.records)) {
+            lines = textOrJson.split("\n").filter((l) => l.trim().length > 0);
+          }
         }
       } catch {
         lines = textOrJson.split("\n").filter((l) => l.trim().length > 0);
       }
       // Ordine cronologico decrescente (i più recenti in cima)
-      if (requestId === transferLogRequest.current) setRawTransferLogs([...lines].reverse());
+      if (requestId === transferLogRequest.current) {
+        setRawTransferLogs([...lines].reverse());
+        setTransferRecords(records);
+      }
     } catch (err: any) {
       if (requestId === transferLogRequest.current) {
         setTransferError(err.message || "Impossibile recuperare i log dei trasferimenti.");
@@ -214,6 +391,54 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
     if (isAdmin && activeTab === "transfers") void loadTransferLogs();
     return () => { transferLogRequest.current += 1; };
   }, [isAdmin, activeTab, loadTransferLogs]);
+
+  const handleConfirmClearLogs = useCallback(async () => {
+    if (!confirmClearTarget || clearingLogType) return;
+    const target = confirmClearTarget;
+    setClearingLogType(target);
+    if (target === "access") setAccessError(null);
+    else setTransferError(null);
+
+    try {
+      const res = await apiClient.delete(`/api/logs/${target}`);
+      if (!res.ok) {
+        let serverMessage = "";
+        try {
+          const payload = await res.json();
+          if (payload && typeof payload.message === "string") {
+            serverMessage = payload.message;
+          }
+        } catch {}
+        throw new Error(
+          serverMessage ||
+            (target === "access"
+              ? `Impossibile eliminare il registro Log di Accesso (${res.status}).`
+              : `Impossibile eliminare il registro Log trasferimenti (${res.status}).`)
+        );
+      }
+
+      setConfirmClearTarget(null);
+      if (target === "access") {
+        await loadAccessLogs();
+      } else {
+        setExpandedLogRows(new Set());
+        await loadTransferLogs();
+      }
+    } catch (err: any) {
+      setConfirmClearTarget(null);
+      const fallback =
+        target === "access"
+          ? "Impossibile eliminare il registro Log di Accesso."
+          : "Impossibile eliminare il registro Log trasferimenti.";
+      if (target === "access") {
+        setAccessError(err?.message || fallback);
+      } else {
+        setTransferError(err?.message || fallback);
+      }
+    } finally {
+      setClearingLogType(null);
+    }
+  }, [confirmClearTarget, clearingLogType, loadAccessLogs, loadTransferLogs]);
 
   // Parse and filter Access Logs
   const parsedAccessLogs = useMemo<ParsedAccessLog[]>(() => {
@@ -267,6 +492,13 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
       }
       const bulkFooterMatch = line.match(BULK_FOOTER_REGEX);
       if (bulkFooterMatch) {
+        const doneCount = bulkFooterMatch[3]?.trim() || "0";
+        const totalCount = bulkFooterMatch[4]?.trim() || "0";
+        const cancelledCount = Number(bulkFooterMatch[5]?.trim() || "0");
+        const failedCount = Number(bulkFooterMatch[6]?.trim() || "0");
+        const summaryParts = [`Completati: ${doneCount}/${totalCount}`];
+        if (cancelledCount > 0) summaryParts.push(`Annullati: ${cancelledCount}`);
+        if (failedCount > 0) summaryParts.push(`Falliti: ${failedCount}`);
         return {
           raw: line,
           isBulkFooter: true,
@@ -276,7 +508,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
           ),
           batchId: bulkFooterMatch[1]?.trim(),
           outcome: bulkFooterMatch[2]?.trim().toUpperCase(),
-          details: `Completati: ${bulkFooterMatch[3]?.trim()}/${bulkFooterMatch[4]?.trim()} (Annullati: ${bulkFooterMatch[5]?.trim()}, Falliti: ${bulkFooterMatch[6]?.trim()})`,
+          details: summaryParts.join(" · "),
           timestamp: formatLogTime(`${bulkFooterMatch[7].trim()} ${bulkFooterMatch[8].trim()}`),
         };
       }
@@ -330,15 +562,47 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
   }, [rawTransferLogs]);
 
   const filteredTransferLogs = useMemo(() => {
-    const user = transferUserFilter.trim().toLowerCase();
-    const file = transferFileFilter.trim().toLowerCase();
-    return parsedTransferLogs.filter((entry) =>
-      (!user || entry.username?.toLowerCase().includes(user))
-      && (!file || entry.filename?.toLowerCase().includes(file))
-      && (transferOutcomeFilter === "ALL" ||
-        (!entry.isBulkHeader && !entry.isBulkFooter && entry.outcome === transferOutcomeFilter))
-    );
-  }, [parsedTransferLogs, transferUserFilter, transferFileFilter, transferOutcomeFilter]);
+    const userNeedle = transferUserFilter.trim().toLowerCase();
+    const fileNeedle = transferFileFilter.trim().toLowerCase();
+    const batchNeedle = transferBatchFilter.trim().toLowerCase();
+    return parsedTransferLogs.filter((entry) => {
+      if (userNeedle && !entry.username?.toLowerCase().includes(userNeedle)) {
+        return false;
+      }
+      if (fileNeedle && !entry.filename?.toLowerCase().includes(fileNeedle)) {
+        return false;
+      }
+      if (batchNeedle) {
+        if (!(entry.batchId || "").toLowerCase().includes(batchNeedle) && !entry.raw.toLowerCase().includes(batchNeedle)) {
+          return false;
+        }
+      }
+      if (transferOutcomeFilter !== "ALL") {
+        if (entry.isBulkHeader || entry.isBulkFooter || !entry.outcome) {
+          return false;
+        }
+        const up = entry.outcome.toUpperCase();
+        if (transferOutcomeFilter === "SUCCESSO" || transferOutcomeFilter === "COMPLETED") {
+          if (up !== "SUCCESSO" && up !== "COMPLETED" && up !== "OK") return false;
+        } else if (transferOutcomeFilter === "FALLIMENTO" || transferOutcomeFilter === "FAILED") {
+          if (
+            !up.includes("FALLIMENT") &&
+            !up.includes("FALLIT") &&
+            !up.includes("FAIL") &&
+            !up.includes("PARZIAL") &&
+            !up.includes("ERRORE")
+          ) {
+            return false;
+          }
+        } else if (transferOutcomeFilter === "ANNULLATO" || transferOutcomeFilter === "CANCELLED") {
+          if (!up.includes("ANNULLAT") && !up.includes("CANCEL")) return false;
+        } else if (!up.includes(transferOutcomeFilter)) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [parsedTransferLogs, transferUserFilter, transferFileFilter, transferBatchFilter, transferOutcomeFilter]);
 
   if (!isAdmin) return null;
 
@@ -371,6 +635,15 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
               >
                 Scarica access.log
               </a>
+              <button
+                type="button"
+                id="btn-clear-access-logs"
+                className="btn btn-outline-danger btn-sm"
+                onClick={() => setConfirmClearTarget("access")}
+                disabled={accessLoading || clearingLogType === "access"}
+              >
+                Elimina log
+              </button>
             </>
           ) : (
             <>
@@ -391,6 +664,15 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
               >
                 Scarica transfers.log
               </a>
+              <button
+                type="button"
+                id="btn-clear-transfer-logs"
+                className="btn btn-outline-danger btn-sm"
+                onClick={() => setConfirmClearTarget("transfers")}
+                disabled={transferLoading || clearingLogType === "transfers"}
+              >
+                Elimina log
+              </button>
             </>
           )}
         </div>
@@ -506,7 +788,11 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                   {filteredAccessLogs.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="text-center py-4 text-muted">
-                        {accessLoading ? "Caricamento log in corso..." : "Nessun evento di accesso trovato."}
+                        {accessLoading
+                          ? "Caricamento log in corso..."
+                          : rawAccessLogs.length === 0
+                          ? "Nessun log disponibile"
+                          : "Nessun evento di accesso corrisponde ai filtri selezionati."}
                       </td>
                     </tr>
                   ) : (
@@ -563,7 +849,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
           <div className="card shadow-sm mb-3 border-0 bg-light">
             <div className="card-body py-2">
               <div className="row g-2 align-items-center">
-                <div className="col-12 col-md-4">
+                <div className="col-12 col-md-2">
                   <input
                     type="text"
                     id="filter-transfer-user"
@@ -583,7 +869,17 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                     onChange={(e) => setTransferFileFilter(e.target.value)}
                   />
                 </div>
-                <div className="col-6 col-md-3">
+                <div className="col-12 col-md-3">
+                  <input
+                    type="text"
+                    id="filter-transfer-batch"
+                    className="form-control form-control-sm"
+                    placeholder="Filtra per Batch ID..."
+                    value={transferBatchFilter}
+                    onChange={(e) => setTransferBatchFilter(e.target.value)}
+                  />
+                </div>
+                <div className="col-6 col-md-2">
                   <select
                     id="filter-transfer-outcome"
                     className="form-select form-select-sm"
@@ -603,6 +899,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                     onClick={() => {
                       setTransferUserFilter("");
                       setTransferFileFilter("");
+                      setTransferBatchFilter("");
                       setTransferOutcomeFilter("ALL");
                     }}
                   >
@@ -627,7 +924,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                     <th scope="col" style={{ width: "180px" }}>Data / Ora</th>
                     <th scope="col" style={{ width: "220px" }}>File</th>
                     <th scope="col" style={{ width: "140px" }}>Utente</th>
-                    <th scope="col" style={{ width: "160px" }}>Direzione / Tipo</th>
+                    <th scope="col" style={{ width: "220px" }}>Direzione / Tipo</th>
                     <th scope="col" style={{ width: "120px" }}>Esito</th>
                     <th scope="col">Dettagli</th>
                   </tr>
@@ -636,7 +933,11 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                   {filteredTransferLogs.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="text-center py-4 text-muted">
-                        {transferLoading ? "Caricamento log in corso..." : "Nessun log di trasferimento trovato."}
+                        {transferLoading
+                          ? "Caricamento log in corso..."
+                          : rawTransferLogs.length === 0
+                          ? "Nessun log disponibile"
+                          : "Nessun log di trasferimento corrisponde ai filtri selezionati."}
                       </td>
                     </tr>
                   ) : (
@@ -657,22 +958,51 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                         );
                       }
                       if (item.isBulkFooter) {
+                        const footerOutcome = (item.outcome || "").toUpperCase();
+                        const footerSuccess = footerOutcome === "SUCCESSO" || footerOutcome === "COMPLETED";
+                        const footerPartial = footerOutcome.includes("PARZIAL");
+                        const footerCancelled = footerOutcome.includes("ANNULLAT") || footerOutcome.includes("CANCEL");
+                        const footerBadgeClass = footerSuccess
+                          ? "text-bg-success"
+                          : footerPartial
+                          ? "text-bg-warning text-dark"
+                          : footerCancelled
+                          ? "text-bg-secondary"
+                          : "text-bg-danger";
+                        const footerLabel = footerSuccess
+                          ? "Completato"
+                          : footerPartial
+                          ? "Parziale"
+                          : footerCancelled
+                          ? "Annullato"
+                          : "Fallito";
                         return (
-                          <tr key={idx} className="table-secondary fw-semibold">
+                          <tr key={idx} className={footerSuccess ? "table-secondary fw-semibold" : "table-danger fw-semibold"}>
                             <td className="text-monospace">{item.timestamp || "—"}</td>
                             <td colSpan={3}>
                               <span className="badge text-bg-dark me-2">Fine Caricamento Massivo</span>
                               Batch ID: <code>{item.batchId}</code>
                             </td>
                             <td>
-                              {item.bulkSummary && (
+                              {item.bulkSummary ? (
                                 <span className={`badge ${item.bulkSummary.badgeClass}`}>{item.bulkSummary.label}</span>
+                              ) : (
+                                <span className={`badge ${footerBadgeClass}`}>{footerLabel}</span>
                               )}
                             </td>
                             <td>{item.details}</td>
                           </tr>
                         );
                       }
+                      const entryOutcome = (item.outcome || "").toUpperCase();
+                      const isSuccessEntry = entryOutcome === "SUCCESSO" || entryOutcome === "COMPLETED" || entryOutcome === "OK";
+                      const formattedDetails = formatCompactTransferLogDetails(
+                        item.details || item.raw,
+                        item.outcome,
+                        recordByTransferId
+                      );
+                      const isTechExpanded = expandedLogRows.has(idx);
+                      const directionLabel = formatLogDirection(item, recordByTransferId);
                       return (
                         <tr key={idx}>
                           <td className="text-monospace text-secondary">{item.timestamp || "—"}</td>
@@ -686,17 +1016,19 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                           </td>
                           <td>{item.username || "—"}</td>
                           <td>
-                            {item.direction ? (
-                              <span className="badge text-bg-secondary">{item.direction}</span>
+                            {directionLabel ? (
+                              <span className="transfer-direction-badge text-wrap text-start">
+                                {directionLabel}
+                              </span>
                             ) : (
-                              item.details || "—"
+                              "—"
                             )}
                           </td>
                           <td>
                             {item.outcome ? (
                               <span
                                 className={`badge ${
-                                  transferOutcomeBadgeClasses[item.outcome] ?? "text-bg-danger"
+                                  transferOutcomeBadgeClasses[item.outcome] ?? (isSuccessEntry ? "text-bg-success" : "text-bg-danger")
                                 }`}
                               >
                                 {item.outcome}
@@ -705,14 +1037,39 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                               "—"
                             )}
                           </td>
-                          <td className="text-break">
+                          <td className="text-break" title={formattedDetails.technical}>
                             {(item.source || item.destination) && (
-                              <div className="small text-secondary">{item.source || "—"} → {item.destination || "—"}</div>
+                              <div className="small text-secondary">
+                                {item.source || "—"} → {item.destination || "—"}
+                              </div>
                             )}
                             {item.batchId && (
-                              <div className="small text-secondary">Batch ID: <code>{item.batchId}</code></div>
+                              <div className="small text-secondary">
+                                Batch ID: <code>{item.batchId}</code>
+                              </div>
                             )}
-                            {item.details || item.raw}
+                            <span className={entryOutcome === "FALLIMENTO" ? "text-danger fw-semibold" : ""}>
+                              {formattedDetails.summary}
+                            </span>
+                            {formattedDetails.technical && (
+                              <>
+                                {" "}
+                                <button
+                                  type="button"
+                                  className="btn btn-link btn-sm p-0 align-baseline text-secondary text-decoration-none"
+                                  style={{ fontSize: "11px" }}
+                                  onClick={() => toggleLogRowTech(idx)}
+                                  aria-expanded={isTechExpanded}
+                                >
+                                  {isTechExpanded ? "[nascondi]" : "[dettagli]"}
+                                </button>
+                                {isTechExpanded && (
+                                  <div className="text-muted font-monospace mt-1" style={{ fontSize: "11px" }}>
+                                    {formattedDetails.technical}
+                                  </div>
+                                )}
+                              </>
+                            )}
                           </td>
                         </tr>
                       );
@@ -724,6 +1081,46 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
           </div>
         </div>
       )}
+
+      <Modal
+        id="clear-logs-modal"
+        isOpen={confirmClearTarget !== null}
+        onClose={() => {
+          if (!clearingLogType) setConfirmClearTarget(null);
+        }}
+        title="Conferma eliminazione log"
+        role="alertdialog"
+        ariaLabelledBy="clear-logs-modal-title"
+        disableDismiss={clearingLogType !== null}
+        footer={
+          <>
+            <button
+              type="button"
+              id="btn-cancel-clear-logs"
+              className="btn btn-secondary btn-sm"
+              onClick={() => setConfirmClearTarget(null)}
+              disabled={clearingLogType !== null}
+            >
+              Annulla
+            </button>
+            <button
+              type="button"
+              id="btn-confirm-clear-logs"
+              className="btn btn-danger btn-sm"
+              onClick={() => void handleConfirmClearLogs()}
+              disabled={clearingLogType !== null}
+            >
+              {clearingLogType !== null ? "Eliminazione..." : "Elimina"}
+            </button>
+          </>
+        }
+      >
+        <p className="mb-0">
+          {confirmClearTarget === "access"
+            ? "Sei sicuro di voler svuotare il registro Log accessi? Tutti gli eventi di accesso salvati sul server verranno eliminati definitivamente. Il registro Log trasferimenti non verrà modificato."
+            : "Sei sicuro di voler svuotare il registro Log trasferimenti? Tutte le voci del registro trasferimenti salvate sul server verranno eliminate definitivamente. Il registro Log accessi non verrà modificato."}
+        </p>
+      </Modal>
     </main>
   );
 };

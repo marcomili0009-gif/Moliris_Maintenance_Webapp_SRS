@@ -403,25 +403,61 @@ export class RemoteFilesystemService {
 
     let targetPath = (rawPath || "").trim();
 
+    const resolveRemoteHomeDir = async (): Promise<string> => {
+      if (sftpClient) {
+        try {
+          const resolved = await new Promise<string>((resolve, reject) => {
+            sftpClient.realpath(".", (err, rp) => {
+              if (err) return reject(err);
+              resolve(rp || "/");
+            });
+          });
+          if (resolved && resolved.startsWith("/")) {
+            return resolved;
+          }
+        } catch {
+          // Fallback sotto se realpath(".") non disponibile
+        }
+      }
+      if (robot.remoteUsername && robot.remoteUsername.trim()) {
+        const u = robot.remoteUsername.trim();
+        return u === "root" ? "/root" : `/home/${u}`;
+      }
+      return "/";
+    };
+
     // 2. Determinazione del punto di partenza se il percorso è vuoto o omesso (Step 3, §11.6)
     if (!targetPath) {
       if (this.config.remoteFsInitialPath && this.config.remoteFsInitialPath.trim() !== "") {
         targetPath = this.config.remoteFsInitialPath.trim();
-      } else if (sftpClient) {
-        // Risoluzione del punto di partenza naturale tramite il protocollo SFTP per l'account configurato
-        try {
-          targetPath = await new Promise<string>((resolve, reject) => {
-            sftpClient.realpath(".", (err, resolved) => {
-              if (err) return reject(err);
-              resolve(resolved || "/");
-            });
-          });
-        } catch {
-          targetPath = "/";
-        }
       } else {
-        targetPath = "/";
+        targetPath = await resolveRemoteHomeDir();
       }
+    }
+
+    // 2b. Supporto percorsi relativi alla home remota del singolo robot (es. "TEST", "~/TEST", "~")
+    if (targetPath === "~" || targetPath.startsWith("~/") || !targetPath.startsWith("/")) {
+      if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(targetPath) || /%2e%2e/i.test(targetPath)) {
+        await this.recordSecurityViolation(
+          context.username,
+          robot.id,
+          "PATH_TRAVERSAL_ATTEMPT",
+          { rawPath: redactSensitiveData(rawPath || "") }
+        );
+        throw new MolirisAppError(
+          ErrorCode.REMOTE_FS_ERROR,
+          `Attraversamento directory ('..') non consentito nel percorso relativo: ${redactSensitiveData(targetPath)}`,
+          "Percorso non consentito: attraversamento directory ('..') rifiutato."
+        );
+      }
+      const homeDir = await resolveRemoteHomeDir();
+      const relativePart =
+        targetPath === "~"
+          ? ""
+          : targetPath.startsWith("~/")
+          ? targetPath.slice(2)
+          : targetPath;
+      targetPath = relativePart ? path.posix.join(homeDir, relativePart) : homeDir;
     }
 
     // 3. Normalizzazione POSIX standard
@@ -1325,14 +1361,13 @@ export class RemoteFilesystemService {
       const sftp = await managedConn.getSftpClient();
       const targetPath = await this.resolveAndValidatePath(remotePath, context, robot, sftp);
 
-      const stats = await new Promise<any>((resolve, reject) => {
-        sftp.stat(targetPath, (err, res) => {
-          if (err) return reject(this.mapSftpError(err, targetPath, robot.id));
-          resolve(res);
-        });
-      });
+      const stats = await this.sftpLstat(sftp, targetPath, robot.id);
 
-      if (stats.isDirectory()) {
+      const isDir =
+        typeof stats?.isDirectory === "function"
+          ? stats.isDirectory()
+          : Boolean(stats?.mode && (stats.mode & 0o170000) === 0o040000);
+      if (isDir) {
         throw new MolirisAppError(
           ErrorCode.REMOTE_FS_ERROR,
           `Impossibile eliminare una directory: ${targetPath}`,
@@ -1514,9 +1549,14 @@ export class RemoteFilesystemService {
     let directoryCount = 0;
 
     for (const entry of entries) {
+      if (!entry?.filename || entry.filename === "." || entry.filename === "..") continue;
       const childPath = path.posix.join(directoryPath, entry.filename);
       const attrs = await this.sftpLstat(sftp, childPath, robotId);
-      if (attrs.isDirectory()) {
+      const isDir =
+        typeof attrs?.isDirectory === "function"
+          ? attrs.isDirectory()
+          : Boolean(attrs?.mode && (attrs.mode & 0o170000) === 0o040000);
+      if (isDir) {
         directoryCount++;
         const nested = await this.countRemoteFolder(sftp, childPath, robotId);
         fileCount += nested.fileCount;
@@ -1536,9 +1576,14 @@ export class RemoteFilesystemService {
   ): Promise<void> {
     const entries = await this.sftpReaddir(sftp, directoryPath, robotId);
     for (const entry of entries) {
+      if (!entry?.filename || entry.filename === "." || entry.filename === "..") continue;
       const childPath = path.posix.join(directoryPath, entry.filename);
       const attrs = await this.sftpLstat(sftp, childPath, robotId);
-      if (attrs.isDirectory()) {
+      const isDir =
+        typeof attrs?.isDirectory === "function"
+          ? attrs.isDirectory()
+          : Boolean(attrs?.mode && (attrs.mode & 0o170000) === 0o040000);
+      if (isDir) {
         await this.deleteRemoteFolderRecursive(sftp, childPath, robotId);
       } else {
         await this.sftpUnlink(sftp, childPath, robotId);

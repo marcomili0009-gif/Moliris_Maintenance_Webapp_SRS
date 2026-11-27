@@ -3,10 +3,11 @@ import type { TransferProgress } from "../../types/transfer.ts";
 import {
   DIRECTION_LABELS,
   STATUS_LABELS,
-  describeRoute,
+  formatDurationMs,
   formatEta,
   formatProgressBytes,
-  formatSpeed,
+  formatSpeedWithArrow,
+  formatTransferEndpoints,
   isActiveStatus,
   isErrorStatus,
   isRetryableDirection,
@@ -39,9 +40,62 @@ interface TransfersPanelProps {
   loading: boolean;
   onRefresh: () => void;
   onCancelTransfer: (transferId: string) => void | Promise<unknown>;
+  onPauseTransfer?: (transferId: string) => void | Promise<unknown>;
+  onResumeTransfer?: (transferId: string) => void | Promise<unknown>;
   onCancelBatch?: (batchId: string) => void | Promise<unknown>;
   onRetryTransfer?: (transferId: string) => void | Promise<unknown>;
   onRemoveTransfer?: (transferId: string) => void | Promise<unknown>;
+  onClearTransfers?: () => void | Promise<unknown>;
+}
+
+function renderSpeedCell(trf: TransferProgress): React.ReactNode {
+  const currentSpeed = trf.currentSpeedBps ?? trf.speedBps;
+  const averageSpeed = trf.averageSpeedBps ?? (trf.status === "COMPLETED" ? trf.speedBps : null);
+
+  if (trf.status === "IN_PROGRESS") {
+    if (currentSpeed && currentSpeed > 0) {
+      const speedLabel = formatSpeedWithArrow(trf.direction, currentSpeed);
+      const etaLabel = formatEta(trf.etaSeconds);
+      return (
+        <span className="fw-semibold text-nowrap" title="Velocità istantanea e tempo residuo stimato">
+          {etaLabel !== "—" ? `${speedLabel} · ETA ${etaLabel}` : speedLabel}
+        </span>
+      );
+    }
+    return <span className="text-muted">—</span>;
+  }
+
+  if (trf.status === "COMPLETED") {
+    if (averageSpeed && averageSpeed > 0) {
+      return (
+        <span className="fw-semibold text-nowrap" title="Velocità media reale del trasferimento">
+          {formatSpeedWithArrow(trf.direction, averageSpeed)}
+        </span>
+      );
+    }
+    return <span className="text-muted">—</span>;
+  }
+
+  if (trf.status === "QUEUED") {
+    return <span className="text-muted">In attesa di uno slot</span>;
+  }
+
+  if (trf.status === "PAUSED") {
+    return <span className="text-muted">In pausa</span>;
+  }
+
+  if (trf.status === "INTEGRITY_CHECKING") {
+    return <span className="text-muted">Verifica in corso</span>;
+  }
+
+  if (averageSpeed && averageSpeed > 0) {
+    return (
+      <span className="text-muted text-nowrap" title="Velocità media raggiunta prima dell'interruzione">
+        {formatSpeedWithArrow(trf.direction, averageSpeed)}
+      </span>
+    );
+  }
+  return <span className="text-muted">—</span>;
 }
 
 export const TransfersPanel: React.FC<TransfersPanelProps> = ({
@@ -49,13 +103,17 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
   loading,
   onRefresh,
   onCancelTransfer,
+  onPauseTransfer,
+  onResumeTransfer,
   onCancelBatch,
   onRetryTransfer,
   onRemoveTransfer,
+  onClearTransfers,
 }) => {
   const [filter, setFilter] = useState<TransferFilter>("all");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [pending, setPending] = useState<Set<string>>(() => new Set());
+  const [clearingList, setClearingList] = useState<boolean>(false);
 
   const counts = useMemo(() => {
     const result: Record<TransferFilter, number> = { all: transfers.length, active: 0, completed: 0, errors: 0 };
@@ -69,27 +127,40 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
 
   const visible = useMemo(() => transfers.filter((trf) => matchesFilter(trf, filter)), [transfers, filter]);
 
-  // Separazione e raggruppamento per batchId (REQUISITO #9)
+  // Separazione e raggruppamento rigoroso per batchId (REQUISITO #9)
+  // Tutti i trasferimenti con lo stesso batchId restano contenuti dentro la stessa card Caricamento Massivo.
   const { batchGroups, individualTransfers } = useMemo(() => {
     const batches = new Map<string, TransferProgress[]>();
     const individuals: TransferProgress[] = [];
 
     for (const trf of transfers) {
-      if (trf.batchId && !trf.isBulkStaging) {
-        const existing = batches.get(trf.batchId) || [];
+      const normalizedBatchId = trf.batchId?.trim();
+      if (normalizedBatchId && !trf.isBulkStaging) {
+        const existing = batches.get(normalizedBatchId) || [];
         existing.push(trf);
-        batches.set(trf.batchId, existing);
+        batches.set(normalizedBatchId, existing);
       } else if (matchesFilter(trf, filter)) {
         individuals.push(trf);
       }
     }
 
     return {
-      batchGroups: Array.from(batches.entries()).map(([batchId, items]) => ({
-        batchId,
-        items,
-        visibleItems: items.filter((item) => matchesFilter(item, filter)),
-      })).filter(({ visibleItems }) => visibleItems.length > 0),
+      batchGroups: Array.from(batches.entries())
+        .map(([batchId, items]) => {
+          const sortedItems = [...items].sort((a, b) => {
+            const byName = a.filename.localeCompare(b.filename);
+            if (byName !== 0) return byName;
+            const byEndpoint = formatTransferEndpoints(a).label.localeCompare(formatTransferEndpoints(b).label);
+            if (byEndpoint !== 0) return byEndpoint;
+            return a.transferId.localeCompare(b.transferId);
+          });
+          return {
+            batchId,
+            items: sortedItems,
+            visibleItems: sortedItems.filter((item) => matchesFilter(item, filter)),
+          };
+        })
+        .filter(({ visibleItems }) => visibleItems.length > 0),
       individualTransfers: individuals,
     };
   }, [transfers, filter]);
@@ -120,6 +191,21 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
     []
   );
 
+  const removableCount = useMemo(
+    () => transfers.filter((trf) => !isActiveStatus(trf.status)).length,
+    [transfers]
+  );
+
+  const handleClearList = useCallback(async () => {
+    if (!onClearTransfers || clearingList || removableCount === 0) return;
+    setClearingList(true);
+    try {
+      await onClearTransfers();
+    } finally {
+      setClearingList(false);
+    }
+  }, [onClearTransfers, clearingList, removableCount]);
+
   return (
     <div id="fs-panel-transfers" className="fs-panel">
       <div className="fs-header d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
@@ -135,10 +221,22 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
             id="btn-refresh-transfers"
             className="btn btn-outline-primary btn-sm"
             onClick={onRefresh}
-            disabled={loading}
+            disabled={loading || clearingList}
           >
             {loading ? "Aggiornamento..." : "Aggiorna Lista"}
           </button>
+          {onClearTransfers && (
+            <button
+              type="button"
+              id="btn-clear-transfers-list"
+              className="btn btn-outline-danger btn-sm"
+              onClick={() => void handleClearList()}
+              disabled={loading || clearingList || removableCount === 0}
+              title="Rimuove tutti i trasferimenti conclusi dalla lista senza eliminare alcun file trasferito"
+            >
+              {clearingList ? "Eliminazione..." : "Elimina lista"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -181,12 +279,21 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                       items.reduce((sum, item) => sum + (Number(item.percentage) || 0), 0) / totalItems
                     );
 
+              const completedCount = items.filter((trf) => trf.status === "COMPLETED").length;
+              const failedCount = items.filter((trf) => isErrorStatus(trf.status)).length;
+              const cancelledCount = items.filter((trf) => trf.status === "CANCELLED").length;
               const isBatchActive = batch?.status
                 ? batch.status === "QUEUED" || batch.status === "IN_PROGRESS"
                 : items.some((trf) => isActiveStatus(trf.status));
-              const isBatchCompleted = batch?.status ? batch.status === "COMPLETED" : items.every((trf) => trf.status === "COMPLETED");
-              const isBatchCancelled = batch?.status ? batch.status === "CANCELLED" : items.every((trf) => trf.status === "CANCELLED");
-              const isBatchFailed = batch?.status ? batch.status === "FAILED" : !isBatchActive && items.some((trf) => isErrorStatus(trf.status));
+              const isBatchCompleted = batch?.status
+                ? batch.status === "COMPLETED"
+                : items.length > 0 && completedCount === items.length;
+              const isBatchCancelled = batch?.status
+                ? batch.status === "CANCELLED"
+                : items.length > 0 && cancelledCount === items.length;
+              const isBatchFailed = batch?.status
+                ? batch.status === "FAILED"
+                : !isBatchActive && failedCount > 0;
 
               const batchStatusLabel = isBatchActive
                 ? "In corso"
@@ -215,10 +322,14 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                   id={`batch-card-${batchId}`}
                 >
                   <div className="card-header bg-light d-flex justify-content-between align-items-center flex-wrap gap-2 py-2">
-                    <div className="d-flex align-items-center gap-2">
+                    <div className="d-flex align-items-center flex-wrap gap-2">
                       <span className="badge text-bg-primary">Caricamento Massivo</span>
-                      <span className="fw-bold">Batch ID: {batchId}</span>
-                      <span className="text-secondary small">({totalItems} invii)</span>
+                      <span className="fw-bold small">Batch ID: <code>{batchId}</code></span>
+                      <span className="text-secondary small">
+                        ({totalItems} invii · {completedCount} completati
+                        {failedCount > 0 ? ` · ${failedCount} falliti` : ""}
+                        {cancelledCount > 0 ? ` · ${cancelledCount} annullati` : ""})
+                      </span>
                     </div>
                     <div className="d-flex align-items-center gap-2">
                       <span className={`badge-status ${batchStatusClass}`}>{batchStatusLabel}</span>
@@ -272,15 +383,21 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                       </div>
                     </div>
 
-                    {/* Elenco file del batch SENZA pulsanti individuali di annullamento */}
-                    <div className="table-responsive">
-                      <table className="table table-sm align-middle mb-0">
+                    {/* Elenco completo e contenuto dei file del batch con intestazione fissa e scorrimento interno */}
+                    <div className="batch-transfer-table-wrap border rounded bg-white">
+                      <table className="table table-sm table-hover align-middle mb-0 batch-transfer-table">
+                        <colgroup>
+                          <col style={{ width: "42%" }} />
+                          <col style={{ width: "26%" }} />
+                          <col style={{ width: "18%" }} />
+                          <col style={{ width: "14%" }} />
+                        </colgroup>
                         <thead className="table-light small">
                           <tr>
-                            <th scope="col" style={{ width: "40%" }}>File</th>
-                            <th scope="col" style={{ width: "30%" }}>Avanzamento</th>
-                            <th scope="col" style={{ width: "15%" }}>Velocità</th>
-                            <th scope="col" style={{ width: "15%" }}>Stato</th>
+                            <th scope="col">File</th>
+                            <th scope="col">Avanzamento</th>
+                            <th scope="col">Velocità</th>
+                            <th scope="col">Stato</th>
                           </tr>
                         </thead>
                         <tbody className="small">
@@ -289,6 +406,7 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                             const itemCompleted = trf.status === "COMPLETED";
                             const itemFailed = isErrorStatus(trf.status);
                             const itemCancelled = trf.status === "CANCELLED";
+                            const endpoint = formatTransferEndpoints(trf);
                             const itemStatusClass = itemCompleted
                               ? "badge-attivo"
                               : itemFailed
@@ -300,17 +418,24 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                             return (
                               <tr key={trf.transferId} data-transfer-id={trf.transferId} data-status={trf.status}>
                                 <td>
-                                  <div className="fw-semibold text-break">{trf.filename}</div>
-                                  <small className="text-muted">
-                                    {describeRoute(trf).source} → {describeRoute(trf).destination}
+                                  <div className="fw-semibold text-break" title={trf.filename}>
+                                    {trf.filename}
+                                  </div>
+                                  <small className="text-muted d-block batch-transfer-endpoint">
+                                    {endpoint.label}
                                   </small>
+                                  {(itemFailed || itemCancelled) && trf.errorMessage && (
+                                    <small className="text-danger d-block mt-1 text-break">
+                                      {trf.errorMessage}
+                                    </small>
+                                  )}
                                 </td>
                                 <td>
                                   <div className="d-flex justify-content-between small text-muted">
                                     <span>{formatProgressBytes(trf)}</span>
-                                    <span>{Math.floor(itemPercent)}%</span>
+                                    <span className="fw-semibold">{itemPercent.toFixed(itemPercent % 1 === 0 ? 0 : 1)}%</span>
                                   </div>
-                                  <div className="progress" style={{ height: "4px" }}>
+                                  <div className="progress mt-1" style={{ height: "5px" }}>
                                     <div
                                       className={`progress-bar ${
                                         itemCompleted
@@ -325,20 +450,13 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                                     />
                                   </div>
                                 </td>
-                                <td>
-                                  {trf.status === "IN_PROGRESS" && trf.speedBps > 0 ? (
-                                    <span className="fw-semibold">{formatSpeed(trf.speedBps)}</span>
-                                  ) : (
-                                    <span className="text-muted">—</span>
-                                  )}
+                                <td className="transfers-cell-speed">
+                                  {renderSpeedCell(trf)}
                                 </td>
                                 <td>
                                   <span className={`badge-status ${itemStatusClass}`}>
                                     {STATUS_LABELS[trf.status] || trf.status}
                                   </span>
-                                  {itemFailed && trf.errorMessage && (
-                                    <div className="small text-danger text-break mt-1">{trf.errorMessage}</div>
-                                  )}
                                 </td>
                               </tr>
                             );
@@ -379,9 +497,8 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                       const failed = isErrorStatus(trf.status);
                       const cancelled = trf.status === "CANCELLED";
                       const completed = trf.status === "COMPLETED";
-                      const queued = trf.status === "QUEUED";
                       const busy = pending.has(trf.transferId);
-                      const route = describeRoute(trf);
+                      const endpoint = formatTransferEndpoints(trf);
                       const directionLabel = DIRECTION_LABELS[trf.direction] || trf.direction;
                       const percent = Math.min(100, Math.max(0, Number(trf.percentage) || 0));
                       const isExpanded = expanded.has(trf.transferId);
@@ -395,18 +512,7 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                         ? "badge-nodata"
                         : "badge-avviso";
 
-                      const speedCell =
-                        trf.status === "IN_PROGRESS" && trf.speedBps > 0 ? (
-                          <span className="fw-semibold">
-                            {formatSpeed(trf.speedBps)} • {formatEta(trf.etaSeconds)}
-                          </span>
-                        ) : queued ? (
-                          <span className="text-muted">In attesa di uno slot</span>
-                        ) : trf.status === "INTEGRITY_CHECKING" ? (
-                          <span className="text-muted">Verifica in corso</span>
-                        ) : (
-                          <span className="text-muted">—</span>
-                        );
+                      const speedCell = renderSpeedCell(trf);
 
                       return (
                         <React.Fragment key={trf.transferId}>
@@ -420,8 +526,8 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                                   {trf.isBulkStaging ? "Ricezione dal browser" : directionLabel}
                                 </span>
                               </div>
-                              <div className="transfers-route" title={`${route.source} → ${route.destination}`}>
-                                {route.source} <span aria-hidden="true">→</span> {route.destination}
+                              <div className="transfers-route">
+                                {endpoint.label}
                               </div>
                             </td>
 
@@ -464,6 +570,26 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                             </td>
 
                             <td className="transfers-cell-actions">
+                              {trf.status === "IN_PROGRESS" && onPauseTransfer && (
+                                <button
+                                  type="button"
+                                  className="btn btn-outline-warning btn-sm"
+                                  onClick={() => void runAction(trf.transferId, onPauseTransfer)}
+                                  disabled={busy}
+                                >
+                                  Pausa
+                                </button>
+                              )}
+                              {trf.status === "PAUSED" && onResumeTransfer && (
+                                <button
+                                  type="button"
+                                  className="btn btn-outline-primary btn-sm"
+                                  onClick={() => void runAction(trf.transferId, onResumeTransfer)}
+                                  disabled={busy}
+                                >
+                                  Riprendi
+                                </button>
+                              )}
                               {active && (
                                 <button
                                   type="button"
@@ -510,15 +636,23 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
                                     {trf.errorMessage || "Nessun messaggio diagnostico fornito dal backend."}
                                   </div>
                                   <div>
-                                    <strong>Sorgente:</strong> {route.source}
+                                    <strong>Origine:</strong> {endpoint.source}
                                   </div>
                                   <div>
-                                    <strong>Destinazione:</strong> {route.destination}
+                                    <strong>Destinazione:</strong> {endpoint.destination || "—"}
                                   </div>
                                   <div>
                                     <strong>Integrità:</strong> {trf.integrityLabel || "non verificata"}
                                   </div>
-                                  <div className="text-muted">ID trasferimento: {trf.transferId}</div>
+                                  {trf.durationMs !== null && trf.durationMs !== undefined && (
+                                    <div>
+                                      <strong>Durata attiva:</strong> {formatDurationMs(trf.durationMs)}
+                                    </div>
+                                  )}
+                                  <div className="text-muted">
+                                    ID trasferimento: {trf.transferId}
+                                    {trf.batchId ? ` · Batch ID: ${trf.batchId}` : ""}
+                                  </div>
                                 </div>
                               </td>
                             </tr>

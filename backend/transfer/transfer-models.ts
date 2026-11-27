@@ -31,6 +31,7 @@ export type TransferDirection = (typeof TransferDirection)[keyof typeof Transfer
 export const TransferStatus = {
   QUEUED: "QUEUED",                         // In attesa se limitata dalla concorrenza (RF-TRF-012)
   IN_PROGRESS: "IN_PROGRESS",               // In corso di trasferimento (RF-TRF-006)
+  PAUSED: "PAUSED",                         // In pausa su richiesta utente (riprendibile)
   INTEGRITY_CHECKING: "INTEGRITY_CHECKING", // Verifica di integrità in corso (RF-TRF-008)
   COMPLETED: "COMPLETED",                   // Completata con successo (RF-TRF-006)
   FAILED: "FAILED",                         // Interrotta o fallita con errore (RF-TRF-006, RF-TRF-007)
@@ -42,11 +43,12 @@ export type TransferStatus = (typeof TransferStatus)[keyof typeof TransferStatus
 
 /**
  * Stati "attivi" (non terminali) che devono essere sempre visibili nella pagina
- * Gestione Trasferimenti: coda, trasferimento in corso e verifica di integrità.
+ * Gestione Trasferimenti: coda, trasferimento in corso, in pausa e verifica di integrità.
  */
 export const ACTIVE_TRANSFER_STATUSES: ReadonlySet<TransferStatus> = new Set<TransferStatus>([
   TransferStatus.QUEUED,
   TransferStatus.IN_PROGRESS,
+  TransferStatus.PAUSED,
   TransferStatus.INTEGRITY_CHECKING,
 ]);
 
@@ -92,6 +94,7 @@ export interface TransferDto {
   bulkBatch?: BulkTransferTotals & { status?: import("./batch-transfer-manager.ts").BatchRecord["status"] };
   failurePhase?: string;
   userId: string;
+  username?: string;
   robotId: string;
   direction: TransferDirection;
   filename: string;
@@ -101,9 +104,12 @@ export interface TransferDto {
   transferredBytes: number;
   percent: number | null;
   speedBytesPerSec: number | null;
+  currentSpeedBytesPerSec?: number | null;
+  averageSpeedBytesPerSec?: number | null;
   etaSeconds: number | null;
   status: TransferStatus;
   error: string | null;
+  errorCode?: string;
   checksum: string | null;
   checksumAlgorithm: string | null;
   integrityLabel?: string;
@@ -114,11 +120,15 @@ export interface TransferDto {
     details?: string;
   };
   startedAt: string; // ISO 8601
+  activeStartedAt?: string | null; // ISO 8601
   completedAt: string | null; // ISO 8601
+  durationMs?: number | null;
   sourceFile?: string;
   targetFile?: string;
   percentage?: number;
   speedBps?: number;
+  currentSpeedBps?: number | null;
+  averageSpeedBps?: number | null;
   errorMessage?: string;
 }
 
@@ -132,6 +142,7 @@ export interface TransferRecord {
   bulkBatch?: BulkTransferTotals;
   failurePhase?: string;
   userId: string;
+  username?: string;
   userSessionId: string;
   robotId: string;
   direction: TransferDirection;
@@ -142,6 +153,8 @@ export interface TransferRecord {
   totalBytes: number | null;
   transferredBytes: number;
   speedBytesPerSec: number | null;
+  currentSpeedBytesPerSec?: number | null;
+  averageSpeedBytesPerSec?: number | null;
   etaSeconds: number | null;
   status: TransferStatus;
   error: string | null;
@@ -158,10 +171,19 @@ export interface TransferRecord {
     details?: string;
   };
   startedAt: Date;
+  activeStartedAt?: Date;
+  activeStartedPerfMs?: number;
+  pausedAtMs?: number | null;
+  pausedDurationMs?: number;
+  durationMs?: number | null;
   completedAt?: Date;
   lastProgressUpdateAt: number;
   lastBytesAtUpdate: number;
   abortController: AbortController;
+  pauseController?: {
+    pause: () => void;
+    resume: () => void;
+  };
   cleanupHandlers: (() => Promise<void>)[];
   /** Richiesta originale (solo Server ↔ Robot) per consentire Riprova/Riprendi (RF-TRF-010). */
   originalRequest?: Omit<StartServerRobotTransferRequest, "onAccepted" | "onQueued">;

@@ -47,6 +47,7 @@ import { RemoteFilesystemService } from "./remote-fs/remote-fs-service.ts";
 import { registerRemoteFsRoutes } from "./remote-fs/remote-fs-routes.ts";
 import { TransferService } from "./transfer/transfer-service.ts";
 import { registerTransferRoutes } from "./transfer/transfer-routes.ts";
+import { type TransferRepository, InMemoryTransferRepository, MongoTransferRepository } from "../storage/transfer-repository.ts";
 import { type TelemetryRepository, MongoTelemetryRepository, InMemoryTelemetryRepository } from "../storage/telemetry-repository.ts";
 import { setPathAuthorizationAuditRepository } from "./auth/path-authorization.ts";
 import { PhysicalFileLogger } from "./logging/physical-file-logger.ts";
@@ -83,6 +84,7 @@ export interface ServerDependencies {
   terminalService?: TerminalService;
   remoteFsService?: RemoteFilesystemService;
   transferService?: TransferService;
+  transferRepository?: TransferRepository;
   telemetryRepository?: TelemetryRepository;
   physicalFileLogger?: PhysicalFileLogger;
   batchTransferManager?: BatchTransferManager;
@@ -443,6 +445,8 @@ export function createServer(
   );
 
   // Servizio di trasferimento file (Prompt 10, RF-TRF-001..014, §5.5, §6.5..6.7)
+  const transferRepository =
+    deps.transferRepository || (deps.db ? new MongoTransferRepository(deps.db) : new InMemoryTransferRepository());
   const transferService = deps.transferService || new TransferService(
     config,
     robotRepository,
@@ -456,9 +460,13 @@ export function createServer(
     connectionManager
   );
 
-  // Collegamento verificatore trasferimenti attivi per terminalService e sessionManager (Prompt #4, Requisito #4)
+  // Collegamento persistenza trasferimenti, file logger e verificatore trasferimenti attivi
+  transferService.setTransferRepository(transferRepository);
   transferService.setPhysicalFileLogger(physicalFileLogger);
   transferService.setBatchTransferManager(batchTransferManager);
+  app.addHook("onReady", async () => {
+    void transferService.hydrateFromRepository();
+  });
   sessionManager.setActiveTransfersProvider((userId) => transferService.countActiveTransfersForUser(userId));
 
   terminalService.setActiveTransferChecker((sessionId, userId) => {
@@ -500,8 +508,8 @@ export function createServer(
     physicalFileLogger
   );
 
-  // Registrazione endpoint di consultazione e download log su file fisico (Requisito #8)
-  registerLogRoutes(app, physicalFileLogger, authMiddleware);
+  // Registrazione endpoint di consultazione e download log su file fisico e storico trasferimenti (Requisito #8)
+  registerLogRoutes(app, physicalFileLogger, authMiddleware, transferService);
 
   // Registrazione endpoint filesystem server (RF-SRVFS-002, RF-SRVFS-005)
   registerServerFsRoutes(

@@ -1,6 +1,7 @@
 // Requisiti soddisfatti: RF-TRF-004, RF-TRF-005, RF-TRF-006, RF-TRF-013, CA-TRF-002, RNF-PERF-001, RNF-PERF-002
 
 import { Transform, type TransformCallback } from "stream";
+import { performance } from "perf_hooks";
 import { type TransferProgressSnapshot } from "./transfer-models.ts";
 
 export interface ProgressTrackerOptions {
@@ -18,11 +19,14 @@ export interface ProgressTrackerOptions {
  */
 export class ProgressTrackerStream extends Transform {
   private totalBytes: number | null;
+  private initialBytes: number = 0;
   private transferredBytes: number = 0;
-  private startTime: number;
-  private lastUpdateTime: number;
+  private startPerfMs: number;
+  private lastUpdatePerfMs: number;
   private lastBytesAtUpdate: number = 0;
   private currentSpeed: number | null = null;
+  private pausedAtPerfMs: number | null = null;
+  private pausedDurationMs: number = 0;
   private onProgressCallback?: (snapshot: TransferProgressSnapshot) => void;
   private onIdleTimeoutCallback?: () => void;
   private idleTimeoutMs?: number;
@@ -32,22 +36,52 @@ export class ProgressTrackerStream extends Transform {
   constructor(options: ProgressTrackerOptions) {
     super({ highWaterMark: options.highWaterMark || 2 * 1024 * 1024 });
     this.totalBytes = options.totalBytes;
-    this.transferredBytes = options.initialBytes || 0;
+    this.initialBytes = options.initialBytes || 0;
+    this.transferredBytes = this.initialBytes;
     this.lastBytesAtUpdate = this.transferredBytes;
     this.onProgressCallback = options.onProgress;
     this.onIdleTimeoutCallback = options.onIdleTimeout;
     this.idleTimeoutMs = options.idleTimeoutMs;
-    this.startTime = Date.now();
-    this.lastUpdateTime = this.startTime;
-    this.lastActivityTime = this.startTime;
+    this.startPerfMs = performance.now();
+    this.lastUpdatePerfMs = this.startPerfMs;
+    this.lastActivityTime = Date.now();
 
     this.startWatchdog();
+  }
+
+  public markPaused(): void {
+    if (this.pausedAtPerfMs === null) {
+      this.pausedAtPerfMs = performance.now();
+      this.stopWatchdog();
+    }
+  }
+
+  public markResumed(): void {
+    if (this.pausedAtPerfMs !== null) {
+      const nowPerf = performance.now();
+      this.pausedDurationMs += Math.max(0, nowPerf - this.pausedAtPerfMs);
+      this.pausedAtPerfMs = null;
+      this.lastUpdatePerfMs = nowPerf;
+      this.lastBytesAtUpdate = this.transferredBytes;
+      this.lastActivityTime = Date.now();
+      this.startWatchdog();
+    }
+  }
+
+  public getActiveDurationMs(): number {
+    const nowPerf = this.pausedAtPerfMs !== null ? this.pausedAtPerfMs : performance.now();
+    return Math.max(1, nowPerf - this.startPerfMs - this.pausedDurationMs);
+  }
+
+  public getPausedDurationMs(): number {
+    return Math.round(this.pausedDurationMs);
   }
 
   private startWatchdog(): void {
     if (this.idleTimeoutMs && this.idleTimeoutMs > 0 && !this.watchdogTimer) {
       const checkIntervalMs = Math.min(1000, Math.max(200, Math.floor(this.idleTimeoutMs / 4)));
       this.watchdogTimer = setInterval(() => {
+        if (this.pausedAtPerfMs !== null) return;
         const idleElapsed = Date.now() - this.lastActivityTime;
         if (idleElapsed >= this.idleTimeoutMs!) {
           this.stopWatchdog();
@@ -72,18 +106,19 @@ export class ProgressTrackerStream extends Transform {
     this.transferredBytes += len;
     this.lastActivityTime = Date.now();
 
-    const now = this.lastActivityTime;
-    const elapsedSinceLastUpdate = now - this.lastUpdateTime;
+    const nowPerf = performance.now();
+    const elapsedSinceLastUpdate = nowPerf - this.lastUpdatePerfMs;
 
-    // Aggiornamento periodico dei parametri di velocità ed ETA ogni 200ms
+    // Aggiornamento periodico dei parametri di velocità ed ETA ogni 200ms (o al completamento)
     if (elapsedSinceLastUpdate >= 200 || (this.totalBytes && this.transferredBytes >= this.totalBytes)) {
       const bytesDelta = this.transferredBytes - this.lastBytesAtUpdate;
-      const speed = elapsedSinceLastUpdate > 0 ? (bytesDelta / elapsedSinceLastUpdate) * 1000 : 0;
-      
-      // Media mobile ponderata (EWMA) per stabilizzare la velocità istantanea
-      this.currentSpeed = this.currentSpeed === null ? speed : Math.round(this.currentSpeed * 0.7 + speed * 0.3);
+      const effectiveElapsedMs = Math.max(1, elapsedSinceLastUpdate);
+      const speed = (bytesDelta / effectiveElapsedMs) * 1000;
 
-      this.lastUpdateTime = now;
+      // Media mobile ponderata (EWMA) per stabilizzare la velocità istantanea
+      this.currentSpeed = this.currentSpeed === null ? Math.round(speed) : Math.round(this.currentSpeed * 0.7 + speed * 0.3);
+
+      this.lastUpdatePerfMs = nowPerf;
       this.lastBytesAtUpdate = this.transferredBytes;
 
       this.emitProgressSnapshot();
@@ -95,9 +130,11 @@ export class ProgressTrackerStream extends Transform {
 
   public _flush(callback: TransformCallback): void {
     this.stopWatchdog();
-    const totalElapsedSec = (Date.now() - this.startTime) / 1000;
-    if (totalElapsedSec > 0 && this.transferredBytes > 0) {
-      this.currentSpeed = Math.round(this.transferredBytes / totalElapsedSec);
+    const activeSec = this.getActiveDurationMs() / 1000;
+    const sessionBytes = Math.max(0, this.transferredBytes - this.initialBytes);
+    const bytesForSpeed = sessionBytes > 0 ? sessionBytes : this.transferredBytes;
+    if (activeSec > 0 && bytesForSpeed > 0) {
+      this.currentSpeed = Math.round(bytesForSpeed / activeSec);
     }
     this.emitProgressSnapshot();
     callback();

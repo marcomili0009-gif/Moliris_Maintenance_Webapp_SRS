@@ -79,9 +79,12 @@ interface FsBrowserSectionProps {
   activeTransfersCount: number;
   onRefreshTransfers: () => void;
   onCancelTransfer: (id: string) => void | Promise<unknown>;
+  onPauseTransfer?: (id: string) => void | Promise<unknown>;
+  onResumeTransfer?: (id: string) => void | Promise<unknown>;
   onCancelBatch?: (batchId: string) => void | Promise<unknown>;
   onRetryTransfer?: (id: string) => void | Promise<unknown>;
   onRemoveTransfer?: (id: string) => void | Promise<unknown>;
+  onClearTransfers?: () => void | Promise<unknown>;
 }
 
 export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
@@ -148,9 +151,12 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
   activeTransfersCount,
   onRefreshTransfers,
   onCancelTransfer,
+  onPauseTransfer,
+  onResumeTransfer,
   onCancelBatch,
   onRetryTransfer,
   onRemoveTransfer,
+  onClearTransfers,
 }) => {
   const [internalTab, setInternalTab] = useState<FsSubTab>("server");
   const currentTab = activeSubTab ?? internalTab;
@@ -280,9 +286,12 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
           loading={transfersLoading}
           onRefresh={onRefreshTransfers}
           onCancelTransfer={onCancelTransfer}
+          onPauseTransfer={onPauseTransfer}
+          onResumeTransfer={onResumeTransfer}
           onCancelBatch={onCancelBatch}
           onRetryTransfer={onRetryTransfer}
           onRemoveTransfer={onRemoveTransfer}
+          onClearTransfers={onClearTransfers}
         />
       </div>
     </section>

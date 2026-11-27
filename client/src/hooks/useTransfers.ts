@@ -30,11 +30,38 @@ export function normalizeTransfer(dto: any): TransferProgress {
       ? Number(rawPercent)
       : totalBytes > 0
       ? Math.min(100, Math.round((transferredBytes / totalBytes) * 10000) / 100)
+      : dto.status === "COMPLETED" && totalBytes === 0 && transferredBytes === 0
+      ? 100
       : 0;
   const filename = String(dto.filename || dto.sourceFile || "Trasferimento");
+  const rawCurrentSpeed = dto.currentSpeedBps ?? dto.currentSpeedBytesPerSec;
+  const rawAverageSpeed = dto.averageSpeedBps ?? dto.averageSpeedBytesPerSec;
+  const currentSpeedBps =
+    rawCurrentSpeed !== undefined && rawCurrentSpeed !== null && Number.isFinite(Number(rawCurrentSpeed))
+      ? Number(rawCurrentSpeed)
+      : null;
+  const averageSpeedBps =
+    rawAverageSpeed !== undefined && rawAverageSpeed !== null && Number.isFinite(Number(rawAverageSpeed))
+      ? Number(rawAverageSpeed)
+      : null;
+  const fallbackSpeed = Number(dto.speedBps ?? dto.speedBytesPerSec ?? 0);
+  const speedBps =
+    dto.status === "COMPLETED"
+      ? (averageSpeedBps ?? fallbackSpeed)
+      : dto.status === "IN_PROGRESS"
+      ? (currentSpeedBps ?? fallbackSpeed)
+      : (averageSpeedBps ?? fallbackSpeed);
+  const rawDuration = dto.durationMs;
+  const durationMs =
+    rawDuration !== undefined && rawDuration !== null && Number.isFinite(Number(rawDuration))
+      ? Number(rawDuration)
+      : null;
+
   return {
     transferId: String(dto.transferId),
     batchId: dto.batchId ? String(dto.batchId) : undefined,
+    userId: dto.userId ? String(dto.userId) : undefined,
+    username: dto.username ? String(dto.username) : undefined,
     isBulkStaging: dto.isBulkStaging === true,
     bulkBatch: dto.bulkBatch,
     robotId: dto.robotId,
@@ -48,12 +75,17 @@ export function normalizeTransfer(dto: any): TransferProgress {
     transferredBytes,
     totalBytes,
     percentage,
-    speedBps: Number(dto.speedBps ?? dto.speedBytesPerSec ?? 0),
+    speedBps,
+    currentSpeedBps,
+    averageSpeedBps,
+    durationMs,
     etaSeconds: dto.etaSeconds ?? null,
     errorMessage: dto.errorMessage || dto.error || undefined,
+    errorCode: dto.errorCode || undefined,
     integrityLabel: dto.integrityLabel || undefined,
     checksum: dto.checksum || undefined,
     startedAt: dto.startedAt || new Date().toISOString(),
+    activeStartedAt: dto.activeStartedAt || null,
     completedAt: dto.completedAt || undefined,
   };
 }
@@ -113,13 +145,58 @@ export function useTransfers(isAuthenticated: boolean) {
     try {
       const res = await apiClient.post(`/api/transfers/${encodeURIComponent(transferId)}/cancel`, {});
       if (res.ok) {
+        const dto = await res.json().catch(() => null);
         setTransfers((prev) =>
           prev.map((t) =>
             t.transferId === transferId
-              ? { ...t, status: "CANCELLED", speedBps: 0, etaSeconds: null }
+              ? dto
+                ? normalizeTransfer(dto)
+                : { ...t, status: "CANCELLED", etaSeconds: null }
               : t
           )
         );
+        void syncNow();
+        return true;
+      }
+      const errData = await res.json().catch(() => ({}));
+      setError(ErrorPresenter.formatError(errData));
+      return false;
+    } catch (err) {
+      setError(ErrorPresenter.formatError(err));
+      return false;
+    }
+  }, [syncNow]);
+
+  const pauseTransfer = useCallback(async (transferId: string): Promise<boolean> => {
+    try {
+      const res = await apiClient.post(`/api/transfers/${encodeURIComponent(transferId)}/pause`, {});
+      if (res.ok) {
+        const dto = await res.json().catch(() => null);
+        if (dto) {
+          const normalized = normalizeTransfer(dto);
+          setTransfers((prev) => prev.map((t) => (t.transferId === transferId ? normalized : t)));
+        }
+        void syncNow();
+        return true;
+      }
+      const errData = await res.json().catch(() => ({}));
+      setError(ErrorPresenter.formatError(errData));
+      return false;
+    } catch (err) {
+      setError(ErrorPresenter.formatError(err));
+      return false;
+    }
+  }, [syncNow]);
+
+  const resumeTransfer = useCallback(async (transferId: string): Promise<boolean> => {
+    try {
+      const res = await apiClient.post(`/api/transfers/${encodeURIComponent(transferId)}/resume`, {});
+      if (res.ok) {
+        const dto = await res.json().catch(() => null);
+        if (dto) {
+          const normalized = normalizeTransfer(dto);
+          setTransfers((prev) => prev.map((t) => (t.transferId === transferId ? normalized : t)));
+        }
         void syncNow();
         return true;
       }
@@ -182,6 +259,32 @@ export function useTransfers(isAuthenticated: boolean) {
       return false;
     }
   }, []);
+
+  /** Svuota tutti i trasferimenti conclusi dalla lista Recenti (non elimina alcun file trasferito). */
+  const clearTransfers = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await apiClient.delete("/api/transfers");
+      if (res.ok) {
+        setTransfers((prev) =>
+          prev.filter(
+            (t) =>
+              t.status === "QUEUED" ||
+              t.status === "IN_PROGRESS" ||
+              t.status === "PAUSED" ||
+              t.status === "INTEGRITY_CHECKING"
+          )
+        );
+        void syncNow();
+        return true;
+      }
+      const errData = await res.json().catch(() => ({}));
+      setError(ErrorPresenter.formatError(errData));
+      return false;
+    } catch (err) {
+      setError(ErrorPresenter.formatError(err));
+      return false;
+    }
+  }, [syncNow]);
 
   const cleanupAllTemp = async (): Promise<boolean> => {
     try {
@@ -347,7 +450,11 @@ export function useTransfers(isAuthenticated: boolean) {
   const activeCount = useMemo(
     () =>
       transfers.filter(
-        (t) => t.status === "QUEUED" || t.status === "IN_PROGRESS" || t.status === "INTEGRITY_CHECKING"
+        (t) =>
+          t.status === "QUEUED" ||
+          t.status === "IN_PROGRESS" ||
+          t.status === "PAUSED" ||
+          t.status === "INTEGRITY_CHECKING"
       ).length,
     [transfers]
   );
@@ -361,9 +468,12 @@ export function useTransfers(isAuthenticated: boolean) {
     refresh: loadTransfers,
     syncNow,
     cancelTransfer,
+    pauseTransfer,
+    resumeTransfer,
     cancelBatch,
     retryTransfer,
     removeTransfer,
+    clearTransfers,
     cleanupAllTemp,
     preCheckBulkUpload,
     executeBulkUpload,
