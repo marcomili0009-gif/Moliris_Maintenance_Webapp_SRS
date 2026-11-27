@@ -2462,6 +2462,28 @@ export class TransferService {
   }
 
   /**
+   * Rimuove tutti i trasferimenti conclusi dell'utente dalla lista Recenti
+   * (non elimina alcun file trasferito e preserva intatto lo storico nei LOG).
+   */
+  public clearTransferList(requestedByUserId: string): { removedCount: number; skippedActiveCount: number } {
+    let removedCount = 0;
+    let skippedActiveCount = 0;
+
+    for (const [transferId, record] of Array.from(this.transfers.entries())) {
+      if (record.userId !== requestedByUserId) continue;
+      if (!TransferService.TERMINAL_STATUSES.has(record.status)) {
+        skippedActiveCount++;
+        continue;
+      }
+      this.transfers.delete(transferId);
+      this.transferRepository.markHiddenFromRecent(transferId).catch(() => {});
+      removedCount++;
+    }
+
+    return { removedCount, skippedActiveCount };
+  }
+
+  /**
    * Annulla tutti i trasferimenti attivi associati a un utente (es. a chiusura/scadenza sessione).
    */
   public cancelTransfersForUser(userId: string, reason: string): void {

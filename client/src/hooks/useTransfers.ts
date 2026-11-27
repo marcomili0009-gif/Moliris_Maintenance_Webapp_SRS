@@ -260,6 +260,32 @@ export function useTransfers(isAuthenticated: boolean) {
     }
   }, []);
 
+  /** Svuota tutti i trasferimenti conclusi dalla lista Recenti (non elimina alcun file trasferito). */
+  const clearTransfers = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await apiClient.delete("/api/transfers");
+      if (res.ok) {
+        setTransfers((prev) =>
+          prev.filter(
+            (t) =>
+              t.status === "QUEUED" ||
+              t.status === "IN_PROGRESS" ||
+              t.status === "PAUSED" ||
+              t.status === "INTEGRITY_CHECKING"
+          )
+        );
+        void syncNow();
+        return true;
+      }
+      const errData = await res.json().catch(() => ({}));
+      setError(ErrorPresenter.formatError(errData));
+      return false;
+    } catch (err) {
+      setError(ErrorPresenter.formatError(err));
+      return false;
+    }
+  }, [syncNow]);
+
   const cleanupAllTemp = async (): Promise<boolean> => {
     try {
       const res = await apiClient.post("/api/fs/cleanup-temp-all", {});
@@ -447,6 +473,7 @@ export function useTransfers(isAuthenticated: boolean) {
     cancelBatch,
     retryTransfer,
     removeTransfer,
+    clearTransfers,
     cleanupAllTemp,
     preCheckBulkUpload,
     executeBulkUpload,

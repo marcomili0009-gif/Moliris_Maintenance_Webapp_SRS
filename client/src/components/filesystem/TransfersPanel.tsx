@@ -45,6 +45,7 @@ interface TransfersPanelProps {
   onCancelBatch?: (batchId: string) => void | Promise<unknown>;
   onRetryTransfer?: (transferId: string) => void | Promise<unknown>;
   onRemoveTransfer?: (transferId: string) => void | Promise<unknown>;
+  onClearTransfers?: () => void | Promise<unknown>;
 }
 
 function renderSpeedCell(trf: TransferProgress): React.ReactNode {
@@ -107,10 +108,12 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
   onCancelBatch,
   onRetryTransfer,
   onRemoveTransfer,
+  onClearTransfers,
 }) => {
   const [filter, setFilter] = useState<TransferFilter>("all");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [pending, setPending] = useState<Set<string>>(() => new Set());
+  const [clearingList, setClearingList] = useState<boolean>(false);
 
   const counts = useMemo(() => {
     const result: Record<TransferFilter, number> = { all: transfers.length, active: 0, completed: 0, errors: 0 };
@@ -188,6 +191,21 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
     []
   );
 
+  const removableCount = useMemo(
+    () => transfers.filter((trf) => !isActiveStatus(trf.status)).length,
+    [transfers]
+  );
+
+  const handleClearList = useCallback(async () => {
+    if (!onClearTransfers || clearingList || removableCount === 0) return;
+    setClearingList(true);
+    try {
+      await onClearTransfers();
+    } finally {
+      setClearingList(false);
+    }
+  }, [onClearTransfers, clearingList, removableCount]);
+
   return (
     <div id="fs-panel-transfers" className="fs-panel">
       <div className="fs-header d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
@@ -203,10 +221,22 @@ export const TransfersPanel: React.FC<TransfersPanelProps> = ({
             id="btn-refresh-transfers"
             className="btn btn-outline-primary btn-sm"
             onClick={onRefresh}
-            disabled={loading}
+            disabled={loading || clearingList}
           >
             {loading ? "Aggiornamento..." : "Aggiorna Lista"}
           </button>
+          {onClearTransfers && (
+            <button
+              type="button"
+              id="btn-clear-transfers-list"
+              className="btn btn-outline-danger btn-sm"
+              onClick={() => void handleClearList()}
+              disabled={loading || clearingList || removableCount === 0}
+              title="Rimuove tutti i trasferimenti conclusi dalla lista senza eliminare alcun file trasferito"
+            >
+              {clearingList ? "Eliminazione..." : "Elimina lista"}
+            </button>
+          )}
         </div>
       </div>
 

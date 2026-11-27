@@ -811,6 +811,25 @@ export function registerTransferRoutes(
   );
 
   app.delete(
+    "/api/transfers",
+    {
+      preHandler: [authMiddleware.authenticate.bind(authMiddleware)],
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const result = transferService.clearTransferList(req.molirisUser!.id);
+        return reply.status(200).send({
+          cleared: true,
+          removedCount: result.removedCount,
+          skippedActiveCount: result.skippedActiveCount,
+        });
+      } catch (err: any) {
+        return handleRouteError(reply, err);
+      }
+    }
+  );
+
+  app.delete(
     "/api/transfers/:transferId",
     {
       preHandler: [(req, reply) => authMiddleware.authenticate(req, reply)],

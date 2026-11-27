@@ -630,6 +630,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             onCancelBatch={transfers.cancelBatch}
             onRetryTransfer={transfers.retryTransfer}
             onRemoveTransfer={transfers.removeTransfer}
+            onClearTransfers={transfers.clearTransfers}
           />
         </div>
       </main>

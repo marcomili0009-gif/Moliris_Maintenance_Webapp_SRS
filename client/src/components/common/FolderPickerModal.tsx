@@ -41,6 +41,7 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
   const [folders, setFolders] = useState<FolderItem[]>([]);
   const [filterQuery, setFilterQuery] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
+  const [hasLoaded, setHasLoaded] = useState<boolean>(false);
   const [error, setError] = useState<FormattedError | null>(null);
 
   // Creazione cartella inline
@@ -68,6 +69,10 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
 
       const res = await apiClient.get(endpoint);
       const data = await res.json();
+      if (res.ok && allowFallback && data.exists === false && path && path !== "/") {
+        await fetchDirectory(scope === "remote" ? "" : "/", false);
+        return;
+      }
       if (res.ok) {
         const rawEntries: any[] = Array.isArray(data.entries)
           ? data.entries
@@ -82,6 +87,7 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
           .map((e) => ({ name: e.name, type: "directory" }));
         setFolders(dirList);
         setCurrentPath(data.path || data.currentPath || path || "/");
+        setHasLoaded(true);
       } else if (allowFallback && res.status !== 403 && path && path !== "/") {
         // Se la directory iniziale suggerita non esiste (es. /upload su un robot Linux),
         // ricade sulla directory naturale di partenza (home SFTP o root archivio).
@@ -90,10 +96,12 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
       } else {
         setError(ErrorPresenter.formatError(data));
         setFolders([]);
+        setHasLoaded(true);
       }
     } catch (err) {
       setError(ErrorPresenter.formatError(err));
       setFolders([]);
+      setHasLoaded(true);
     } finally {
       setLoading(false);
     }
@@ -102,6 +110,7 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       const startPath = initialPath || (scope === "remote" ? "" : "/");
+      setHasLoaded(false);
       setCurrentPath(startPath || "/");
       setFilterQuery("");
       setIsCreatingFolder(false);
@@ -135,6 +144,14 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
       setCreateError("Il nome della cartella non può essere vuoto.");
       return;
     }
+    if (trimmed.length > 255) {
+      setCreateError("Il nome della cartella non può superare i 255 caratteri.");
+      return;
+    }
+    if (trimmed === "." || trimmed === "..") {
+      setCreateError("Nome cartella non valido.");
+      return;
+    }
     if (/[/\\:\0*?"<>|]/.test(trimmed)) {
       setCreateError("Il nome contiene caratteri non validi (/ \\ : * ? \" < > |).");
       return;
@@ -147,12 +164,17 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
       if (scope === "general") {
         res = await apiClient.post("/api/fs/general/mkdir", { name: trimmed, path: currentPath });
       } else if (scope === "server") {
-        res = await apiClient.post(`/api/robots/${encodeURIComponent(robotId!)}/fs/server/mkdir`, {
+        if (!robotId) throw new Error("Robot non specificato per archivio server.");
+        res = await apiClient.post(`/api/robots/${encodeURIComponent(robotId)}/fs/server/mkdir`, {
           name: trimmed,
           path: currentPath,
         });
       } else {
-        throw new Error("Creazione cartella remota non supportata da questo selettore.");
+        if (!robotId) throw new Error("Robot non specificato per filesystem remoto.");
+        res = await apiClient.post(`/api/robots/${encodeURIComponent(robotId)}/fs/remote/mkdir`, {
+          name: trimmed,
+          path: currentPath,
+        });
       }
 
       if (res.ok) {
@@ -189,6 +211,7 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
 
   return (
     <Modal
+      id="modal-folder-picker"
       isOpen={isOpen}
       onClose={onClose}
       title={title}
@@ -234,11 +257,12 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
             <span className="text-secondary">Ambito destinazione:</span>{" "}
             <strong>{scopeLabel}</strong>
           </div>
-          {canCreateFolder && scope !== "remote" && (
+          {canCreateFolder && (
             <button
               type="button"
+              id="btn-folder-picker-new-folder"
               className="btn btn-outline-primary btn-sm py-0"
-              disabled={!canSelectCurrentPath}
+              disabled={loading || !hasLoaded || !canSelectCurrentPath}
               title={!canSelectCurrentPath ? "Creazione non consentita in questo percorso per l'operatore" : undefined}
               onClick={() => {
                 setIsCreatingFolder(!isCreatingFolder);
@@ -257,6 +281,7 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
             <div className="d-flex gap-2">
               <input
                 type="text"
+                id="input-folder-picker-new-name"
                 className="form-control form-control-sm"
                 placeholder="Nome nuova cartella"
                 value={newFolderName}
@@ -266,6 +291,7 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
               />
               <button
                 type="submit"
+                id="btn-folder-picker-create"
                 className="btn btn-primary btn-sm"
                 disabled={creating || !newFolderName.trim()}
               >
