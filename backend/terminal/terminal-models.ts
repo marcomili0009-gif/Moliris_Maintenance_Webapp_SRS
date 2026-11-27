@@ -49,6 +49,7 @@ export interface TerminalSession {
   localProcess?: any;
   webSocket?: any; // Instanza WebSocket (@fastify/websocket o ws)
   hasHadSocket?: boolean;
+  hiddenSince?: number;
   onPtyData?: (chunk: Buffer | string) => void;
   drainIntervals?: Set<NodeJS.Timeout>;
   pingTimer?: NodeJS.Timeout;

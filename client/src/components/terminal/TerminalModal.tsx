@@ -2,24 +2,32 @@ import React, { useEffect, useRef, useState } from "react";
 import type { TerminalState } from "../../hooks/useTerminal.ts";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
+import { ConfirmDialog } from "../common/ConfirmDialog.tsx";
 import { TerminalClipboard } from "./TerminalClipboard.tsx";
 
 interface TerminalModalProps {
   terminalState: TerminalState;
-  onClose: () => void;
+  isOpen: boolean;
+  onHide: () => void;
+  onDisconnect: (target: string) => Promise<void>;
+  onLoadError: (target: string) => void;
   onAttachWebSocket: (
+    target: string,
     sessionId: string,
     onData: (data: string | Uint8Array) => void,
     onClose: () => void,
-    onError: (err: Event) => void
+    onError: () => void
   ) => void;
-  onSendInput: (data: string) => void;
-  onResize: (cols: number, rows: number) => void;
+  onSendInput: (target: string, data: string) => void;
+  onResize: (target: string, cols: number, rows: number) => void;
 }
 
 export const TerminalModal: React.FC<TerminalModalProps> = ({
   terminalState,
-  onClose,
+  isOpen,
+  onHide,
+  onDisconnect,
+  onLoadError,
   onAttachWebSocket,
   onSendInput,
   onResize,
@@ -29,25 +37,28 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const fitRef = useRef<() => void>(() => {});
   const lastSentSizeRef = useRef<{ cols: number; rows: number } | null>(null);
-  const [failedSession, setFailedSession] = useState<string | null>(null);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const visibleRef = useRef(isOpen);
+  visibleRef.current = isOpen;
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
   const [clipboardSession, setClipboardSession] = useState<{ id: string; terminal: Terminal } | null>(null);
 
-  const { isOpen, robotId, robotName, sessionId, status, error, cols, rows } = terminalState;
+  const { target, robotId, robotName, sessionId, status, error, cols, rows } = terminalState;
 
   // I callback del parent vengono letti da un ref mutabile: il terminale e il
   // WebSocket devono essere creati UNA SOLA VOLTA per sessione, non a ogni
   // render o resize (altrimenti il PTY viene chiuso e la sessione va persa).
-  const callbacksRef = useRef({ onAttachWebSocket, onSendInput, onResize });
-  callbacksRef.current = { onAttachWebSocket, onSendInput, onResize };
+  const callbacksRef = useRef({ onAttachWebSocket, onSendInput, onResize, onLoadError });
+  callbacksRef.current = { onAttachWebSocket, onSendInput, onResize, onLoadError };
 
   // Ogni nuova sessione (e ogni chiusura) riparte sempre in modalità ridotta.
   useEffect(() => {
     setIsExpanded(false);
+    setConfirmDisconnect(false);
   }, [isOpen, sessionId]);
 
   useEffect(() => {
-    if (!isOpen || !sessionId || !containerRef.current) return;
+    if (!sessionId || !containerRef.current) return;
 
     const container = containerRef.current;
     let cancelled = false;
@@ -104,13 +115,13 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
 
       container.replaceChildren();
       term.open(container);
-      term.focus();
+      if (visibleRef.current) term.focus();
       setClipboardSession({ id: sessionId, terminal: term });
 
       // Adatta il PTY alle dimensioni reali del contenitore. Invia il resize
       // solo quando righe/colonne cambiano davvero, per evitare raffiche inutili.
       const performFit = () => {
-        if (!fitAddonRef.current || !termInstanceRef.current) return;
+        if (!visibleRef.current || !fitAddonRef.current || !termInstanceRef.current) return;
         try {
           fitAddonRef.current.fit();
           const newCols = termInstanceRef.current.cols;
@@ -118,7 +129,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
           const previous = lastSentSizeRef.current;
           if (newCols && newRows && (previous?.cols !== newCols || previous?.rows !== newRows)) {
             lastSentSizeRef.current = { cols: newCols, rows: newRows };
-            callbacksRef.current.onResize(newCols, newRows);
+            callbacksRef.current.onResize(target, newCols, newRows);
           }
         } catch {}
       };
@@ -137,6 +148,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
       // le dimensioni iniziali vengono accodate dal hook se la socket non è
       // ancora aperta, e inviate appena possibile.
       callbacksRef.current.onAttachWebSocket(
+        target,
         sessionId,
         (data: string | Uint8Array) => {
           term.write(data);
@@ -157,7 +169,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
       resizeObserver.observe(container);
 
       term.onData((data: string) => {
-        callbacksRef.current.onSendInput(data);
+        callbacksRef.current.onSendInput(target, data);
       });
 
       const handleWindowResize = () => {
@@ -179,7 +191,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
         lastSentSizeRef.current = null;
       };
     }).catch(() => {
-      if (!cancelled) setFailedSession(sessionId);
+      if (!cancelled) callbacksRef.current.onLoadError(target);
     });
     return () => {
       cancelled = true;
@@ -188,7 +200,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
     // Volutamente NON dipendente da cols/rows né dai callback del parent:
     // questo effetto governa il ciclo di vita della sessione terminale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, sessionId]);
+  }, [target, sessionId]);
 
   // Il toggle di layout ridimensiona solo il contenitore: la sessione PTY,
   // il WebSocket e l'istanza xterm restano invariati. Il fit avviene dopo il
@@ -201,17 +213,17 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
     return () => cancelAnimationFrame(raf);
   }, [isExpanded, isOpen]);
 
-  if (!isOpen) return null;
+  useEffect(() => {
+    if (isOpen) termInstanceRef.current?.focus();
+  }, [isOpen]);
 
   let statusBadgeClass = "badge-non_verificato";
   let statusText = "Connessione in corso...";
-  const emulatorFailed = sessionId !== null && failedSession === sessionId;
-  if (emulatorFailed) {
-    statusBadgeClass = "badge-errore";
-    statusText = "Errore caricamento";
-  } else if (status === "connected") {
+  if (status === "connected") {
     statusBadgeClass = "badge-attivo";
     statusText = "Connesso";
+  } else if (status === "disconnecting") {
+    statusText = "Disconnessione in corso...";
   } else if (status === "disconnected") {
     statusBadgeClass = "badge-disabilitato";
     statusText = "Disconnesso";
@@ -221,14 +233,14 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
   }
 
   return (
-    <div id="modal-terminal" className="modal" role="dialog" aria-modal="true">
+    <div id={isOpen ? "modal-terminal" : undefined} className={isOpen ? "modal" : "modal hidden"} role="dialog" aria-modal={isOpen || undefined} inert={!isOpen}>
       <div className={`modal-content modal-terminal-window ${isExpanded ? "terminal-expanded" : ""}`}>
         <div className="modal-header terminal-modal-header">
           <div className="terminal-title-container flex items-center gap-2">
-            <h3 id="terminal-robot-title">
-              {robotId === "server" ? "Terminale Server: Host Locale" : `Terminale Remoto: ${robotName}`}
+            <h3 id={isOpen ? "terminal-robot-title" : undefined}>
+              {robotId === null ? "Terminale Server: Host Locale" : `Terminale Remoto: ${robotName}`}
             </h3>
-            <span id="terminal-session-status" className={`badge-status ${statusBadgeClass}`}>
+            <span id={isOpen ? "terminal-session-status" : undefined} className={`badge-status ${statusBadgeClass}`}>
               {statusText}
             </span>
           </div>
@@ -236,7 +248,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
             <button
               type="button"
               className="btn btn-outline-light btn-sm"
-              id="btn-terminal-expand"
+              id={isOpen ? "btn-terminal-expand" : undefined}
               title={isExpanded ? "Ripristina dimensioni normali" : "Espandi a finestra intera"}
               aria-pressed={isExpanded}
               onClick={() => setIsExpanded((current) => !current)}
@@ -246,17 +258,22 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
             <button
               type="button"
               className="btn btn-danger btn-sm"
-              id="btn-terminal-disconnect"
-              onClick={onClose}
+              id={isOpen ? "btn-terminal-disconnect" : undefined}
+              disabled={status === "disconnecting"}
+              onClick={() => {
+                if (status === "connected" || status === "connecting") setConfirmDisconnect(true);
+                else void onDisconnect(target);
+              }}
             >
               Disconnetti
             </button>
             <button
               type="button"
-              className="btn-close"
-              id="btn-close-terminal"
-              onClick={onClose}
-              aria-label="Chiudi e chiudi la sessione terminale"
+              className="btn-close terminal-hide-button"
+              id={isOpen ? "btn-close-terminal" : undefined}
+              onClick={onHide}
+              title="Nascondi terminale"
+              aria-label="Nascondi terminale"
             />
           </div>
         </div>
@@ -267,26 +284,32 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({
           </div>
         )}
 
-        {emulatorFailed && (
-          <div className="error-message m-2" role="alert">
-            Impossibile caricare il terminale. Chiudi la finestra e riprova.
-          </div>
-        )}
-
-        <div className="terminal-body" id="terminal-container" ref={containerRef} />
-        {clipboardSession && clipboardSession.id === sessionId && (
+        <div className="terminal-body" id={isOpen ? "terminal-container" : undefined} ref={containerRef} />
+        {isOpen && clipboardSession && clipboardSession.id === sessionId && (
           <TerminalClipboard key={sessionId} terminal={clipboardSession.terminal} />
         )}
 
         <div className="terminal-footer flex justify-between items-center text-xs text-gray-400 p-2">
-          <span id="terminal-footer-info">
+          <span id={isOpen ? "terminal-footer-info" : undefined}>
             Connessione PTY interattiva bidirezionale
           </span>
-          <span id="terminal-footer-dims" className="badge bg-secondary">
+          <span id={isOpen ? "terminal-footer-dims" : undefined} className="badge bg-secondary">
             {cols} x {rows}
           </span>
         </div>
       </div>
+      {isOpen && (
+        <ConfirmDialog
+          id="modal-confirm-terminal-disconnect"
+          isOpen={confirmDisconnect}
+          onClose={() => setConfirmDisconnect(false)}
+          onConfirm={() => onDisconnect(target)}
+          title="Disconnettere il terminale?"
+          warningNote="La disconnessione termina la sessione e può interrompere i comandi in esecuzione."
+          confirmText="Disconnetti"
+          confirmBtnId="btn-confirm-terminal-disconnect"
+        />
+      )}
     </div>
   );
 };

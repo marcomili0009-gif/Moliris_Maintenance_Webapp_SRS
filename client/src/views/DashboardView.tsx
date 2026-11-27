@@ -372,7 +372,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   };
 
   const handleLogoutTerminalIdle = async (): Promise<void> => {
-    terminal.disconnectTerminal();
     await onLogout("terminale");
   };
 
@@ -393,7 +392,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       <IdleWarningModal
         isOpen={!isSessionWarningOpen && Boolean(terminal.terminalIdleWarning)}
         context="terminale"
-        targetName={terminal.terminalState.robotName || terminal.terminalState.robotId || undefined}
+        targetName={terminal.activeTerminal?.robotName}
         remainingSeconds={terminal.terminalIdleWarning?.remainingSeconds ?? 300}
         message={terminal.terminalIdleWarning?.message}
         onConfirm={handleConfirmTerminalIdle}
@@ -677,13 +676,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       />
 
       {/* Modal Terminale PTY */}
-      <TerminalModal
-        terminalState={terminal.terminalState}
-        onClose={terminal.closeTerminal}
-        onAttachWebSocket={terminal.attachWebSocket}
-        onSendInput={terminal.sendInput}
-        onResize={terminal.resize}
-      />
+      {terminal.terminals.map((session) => (
+        <TerminalModal
+          key={session.target}
+          terminalState={session}
+          isOpen={terminal.activeTerminal?.target === session.target}
+          onHide={terminal.hideTerminal}
+          onDisconnect={terminal.disconnectTerminal}
+          onLoadError={terminal.handleLoadError}
+          onAttachWebSocket={terminal.attachWebSocket}
+          onSendInput={terminal.sendInput}
+          onResize={terminal.resize}
+        />
+      ))}
 
       {/* Modal Conferma Sovrascrittura */}
       <ConfirmDialog
