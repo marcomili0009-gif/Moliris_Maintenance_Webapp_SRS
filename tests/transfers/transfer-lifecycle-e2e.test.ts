@@ -1158,6 +1158,8 @@ async function runTests() {
     };
     await userRepo.create(operatorUser);
     const opSession = sessionManager.createSession(operatorUser);
+    const accessContentBeforeDenied = fs.readFileSync(physicalFileLogger.getAccessLogFilePath(), "utf-8");
+    const transferContentBeforeDenied = fs.readFileSync(physicalFileLogger.getTransferLogFilePath(), "utf-8");
     for (const logType of ["access", "transfers"] as const) {
       const deniedRes = await fetch(`${baseUrl}/api/logs/${logType}`, {
         method: "DELETE",
@@ -1168,6 +1170,16 @@ async function runTests() {
       });
       assert.strictEqual(deniedRes.status, 403, `DELETE /api/logs/${logType} deve essere 403 per non-admin`);
     }
+    assert.strictEqual(
+      fs.readFileSync(physicalFileLogger.getAccessLogFilePath(), "utf-8"),
+      accessContentBeforeDenied,
+      "DELETE 403 da operatore non deve modificare access.log"
+    );
+    assert.strictEqual(
+      fs.readFileSync(physicalFileLogger.getTransferLogFilePath(), "utf-8"),
+      transferContentBeforeDenied,
+      "DELETE 403 da operatore non deve modificare transfers.log"
+    );
 
     // Assicura almeno una voce in access.log per verificare l'isolamento tra i due registri
     await physicalFileLogger.logAccess({
@@ -1290,14 +1302,25 @@ async function runTests() {
     ws.close();
     console.log("✔ TUTTI I 14 SCENARI + REGRESSIONE BATCH + ELIMINAZIONE LOG + CHROME E2E SUPERATI CON SUCCESSO!");
   } finally {
-    if (chromeProc) {
-      try { chromeProc.kill("SIGKILL"); } catch {}
+    const chrome = chromeProc;
+    try {
+      if (chrome && chrome.exitCode === null && chrome.signalCode === null) {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error("Chrome non ha terminato il teardown.")), 5_000);
+          chrome.once("exit", () => {
+            clearTimeout(timeout);
+            resolve();
+          });
+          chrome.kill("SIGTERM");
+        });
+      }
+    } finally {
+      await app.close().catch(() => {});
+      sftp1.server.close();
+      sftp2.server.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      await fs.promises.rm(chromeUserDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
-    await app.close().catch(() => {});
-    sftp1.server.close();
-    sftp2.server.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-    fs.rmSync(chromeUserDataDir, { recursive: true, force: true });
   }
 }
 

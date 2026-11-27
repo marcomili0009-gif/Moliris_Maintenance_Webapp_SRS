@@ -167,9 +167,38 @@ export function sanitizeAndValidateAllowedRoots(rawRoots: string[]): string[] {
 }
 
 let globalAuditRepo: AuditRepository | null = null;
+let globalDefaultOperatorAllowedPaths: string[] | undefined = undefined;
 
 export function setPathAuthorizationAuditRepository(repo: AuditRepository): void {
   globalAuditRepo = repo;
+}
+
+export function setPathAuthorizationDefaultOperatorAllowedPaths(paths?: string[]): void {
+  globalDefaultOperatorAllowedPaths = Array.isArray(paths) ? [...paths] : undefined;
+}
+
+export function getPathAuthorizationDefaultOperatorAllowedPaths(): string[] | undefined {
+  return globalDefaultOperatorAllowedPaths ? [...globalDefaultOperatorAllowedPaths] : undefined;
+}
+
+/**
+ * Risolve i percorsi autorizzati effettivi per un utente non-admin:
+ * - Se `allowedPaths` sull'utente/contesto è un array (anche esplicitamente vuoto `[]`), lo usa senza fallback.
+ * - Se `allowedPaths` è assente (`undefined`/`null`), ricade sui percorsi predefiniti di configurazione.
+ * - Se entrambi sono assenti, restituisce `[]` (fail-closed).
+ */
+export function resolveEffectiveOperatorAllowedPaths(
+  userOrContext: { allowedPaths?: string[] | null } | null | undefined,
+  fallbackDefaults?: string[]
+): string[] {
+  const explicit = userOrContext?.allowedPaths;
+  if (Array.isArray(explicit)) {
+    return explicit;
+  }
+  const defaults = Array.isArray(fallbackDefaults)
+    ? fallbackDefaults
+    : globalDefaultOperatorAllowedPaths;
+  return Array.isArray(defaults) ? defaults : [];
 }
 
 /**
@@ -209,8 +238,8 @@ export async function authorizeOperatorPath(
   // ISS-002: fail-closed. Qualsiasi ruolo non-admin (operatore o sconosciuto) è soggetto alla jail.
   void isOperator;
 
-  const allowedPaths = (user as any).allowedPaths;
-  const hasAllowedRoots = Array.isArray(allowedPaths) && allowedPaths.length > 0;
+  const allowedPaths = resolveEffectiveOperatorAllowedPaths(user as any);
+  const hasAllowedRoots = allowedPaths.length > 0;
   const isRootListing = Boolean(options?.isListingRootAllowed && (normalized === "/" || normalized === ""));
 
   const isAllowed =
@@ -277,10 +306,10 @@ export async function assertPathAuthorized(
     return;
   }
 
-  const allowedPaths = context.allowedPaths;
+  const allowedPaths = resolveEffectiveOperatorAllowedPaths(context);
 
   // Politica fail-closed: se l'operatore non ha radici autorizzate o l'elenco è vuoto, nessun percorso è accessibile
-  const isAllowed = allowedPaths && allowedPaths.length > 0 && isPathAllowedByComponents(requestedPath, allowedPaths);
+  const isAllowed = allowedPaths.length > 0 && isPathAllowedByComponents(requestedPath, allowedPaths);
 
   if (!isAllowed) {
     const canonicalReq = toCanonicalPosixPath(requestedPath);

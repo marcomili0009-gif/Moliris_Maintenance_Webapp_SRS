@@ -3,6 +3,7 @@ import { Modal } from "./Modal.tsx";
 import { apiClient } from "../../services/api-client.ts";
 import { ErrorPresenter } from "../../services/error-presenter.ts";
 import type { FormattedError } from "../../types/error.ts";
+import { canPerformOperatorPathAction } from "../../utils/path-authorization.ts";
 
 export interface FolderPickerModalProps {
   isOpen: boolean;
@@ -14,6 +15,8 @@ export interface FolderPickerModalProps {
   onClose: () => void;
   onSelectFolder: (selectedPath: string) => void;
   canCreateFolder?: boolean;
+  isOperator?: boolean;
+  allowedPaths?: string[];
 }
 
 interface FolderItem {
@@ -31,6 +34,8 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
   onClose,
   onSelectFolder,
   canCreateFolder = true,
+  isOperator = false,
+  allowedPaths,
 }) => {
   const [currentPath, setCurrentPath] = useState<string>(initialPath || "/");
   const [folders, setFolders] = useState<FolderItem[]>([]);
@@ -200,6 +205,8 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
       ? `Archivio Server Robot (${robotName || robotId})`
       : `Filesystem Remoto SFTP (${robotName || robotId})`;
 
+  const canSelectCurrentPath = canPerformOperatorPathAction(currentPath || "/", isOperator, allowedPaths);
+
   if (!isOpen) return null;
 
   return (
@@ -226,11 +233,16 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
               type="button"
               id="btn-confirm-select-folder"
               className="btn btn-primary btn-sm"
+              title={
+                !canSelectCurrentPath
+                  ? "Cartella esterna ai percorsi autorizzati per l'operatore"
+                  : "Conferma la cartella selezionata"
+              }
               onClick={() => {
                 onSelectFolder(currentPath || "/");
                 onClose();
               }}
-              disabled={loading}
+              disabled={loading || !canSelectCurrentPath}
             >
               Seleziona questa cartella
             </button>
@@ -250,7 +262,8 @@ export const FolderPickerModal: React.FC<FolderPickerModalProps> = ({
               type="button"
               id="btn-folder-picker-new-folder"
               className="btn btn-outline-primary btn-sm py-0"
-              disabled={loading || !hasLoaded}
+              disabled={loading || !hasLoaded || !canSelectCurrentPath}
+              title={!canSelectCurrentPath ? "Creazione non consentita in questo percorso per l'operatore" : undefined}
               onClick={() => {
                 setIsCreatingFolder(!isCreatingFolder);
                 setCreateError(null);

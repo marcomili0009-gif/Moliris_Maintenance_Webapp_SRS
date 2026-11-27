@@ -13,6 +13,7 @@ import { DoubleSubmitButton } from "../common/DoubleSubmitButton.tsx";
 import { FolderPickerModal } from "../common/FolderPickerModal.tsx";
 import { apiClient } from "../../services/api-client.ts";
 import { ErrorPresenter } from "../../services/error-presenter.ts";
+import { isPathAllowedForOperator } from "../../utils/path-authorization.ts";
 
 export type BulkSourceType = "computer" | "general" | "server_robot" | "remote_robot";
 export type BulkDestType = "general" | "server_robots" | "remote_robots";
@@ -22,6 +23,8 @@ interface BulkUploadModalProps {
   isOpen: boolean;
   onClose: () => void;
   robots: RobotSummaryDto[];
+  isOperator?: boolean;
+  allowedPaths?: string[];
   onPreCheck: (
     files: string[],
     destinations: BulkDestinations
@@ -49,6 +52,8 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
   isOpen,
   onClose,
   robots,
+  isOperator = false,
+  allowedPaths,
   onPreCheck,
   onExecuteUpload,
   onConflictsDetected,
@@ -93,8 +98,11 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
   const [folderPickerTargetRobotId, setFolderPickerTargetRobotId] = useState<string | undefined>(undefined);
   const [folderPickerIndividual, setFolderPickerIndividual] = useState(false);
 
+  const defaultOperatorDir =
+    isOperator && Array.isArray(allowedPaths) && allowedPaths.length > 0 ? allowedPaths[0] : undefined;
   const folderFor = (scope: RobotFolderScope, robotId: string) =>
-    individualDirectories[scope][robotId] ?? (scope === "server" ? commonServerDirectory : "/upload");
+    individualDirectories[scope][robotId] ??
+    (scope === "server" ? commonServerDirectory : (defaultOperatorDir ?? "/upload"));
   const setRobotFolder = (scope: RobotFolderScope, robotId: string, directory: string) => {
     setIndividualDirectories((prev) => ({ ...prev, [scope]: { ...prev[scope], [robotId]: directory } }));
   };
@@ -156,8 +164,8 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
       setSelectedDestTypes(["remote_robots"]);
       setRobotSearchFilter("");
       setSelectedTargetRobotIds([]);
-      setCommonServerDirectory("/upload");
-      setGeneralDirectory("/");
+      setCommonServerDirectory(defaultOperatorDir ?? "/upload");
+      setGeneralDirectory(defaultOperatorDir ?? "/");
       setIndividualDirectories({ server: {}, remote: {} });
       setIsMove(false);
       setMoveConfirmation(false);
@@ -349,6 +357,30 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
           }))
         : undefined,
     };
+
+    if (isOperator) {
+      const pathsToCheck: string[] = [];
+      if (sourceType !== "computer") {
+        pathsToCheck.push(...selectedServerFiles);
+      }
+      if (destinations.general?.subPath !== undefined) {
+        pathsToCheck.push(destinations.general.subPath);
+      }
+      if (destinations.servers) {
+        pathsToCheck.push(...destinations.servers.map((s) => s.subPath));
+      }
+      if (destinations.robots) {
+        pathsToCheck.push(...destinations.robots.map((r) => r.remotePath));
+      }
+      const unauthorized = pathsToCheck.find((p) => !isPathAllowedForOperator(p, allowedPaths));
+      if (unauthorized !== undefined) {
+        setIsTransferring(false);
+        setError(
+          `Accesso non consentito: il percorso '${unauthorized || "/"}' è esterno ai percorsi autorizzati per l'operatore.`
+        );
+        return;
+      }
+    }
 
     try {
       // Flusso A: File dal computer (ISS-010: supporta combinazione Robot + Server Robot + Archivio Generale)
@@ -1325,6 +1357,8 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
         isOpen={isFolderPickerOpen}
         scope={folderPickerScope}
         robotId={folderPickerTargetRobotId}
+        isOperator={isOperator}
+        allowedPaths={allowedPaths}
         robotName={folderPickerTargetRobotId}
         initialPath={folderPickerScope === "general"
           ? generalDirectory

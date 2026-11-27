@@ -5,6 +5,7 @@ import { ErrorPresenter } from "../../services/error-presenter.ts";
 import { StateFormatter } from "../../services/state-formatter.ts";
 import type { DirectoryItem, PathVerificationResult } from "../../types/filesystem.ts";
 import type { TransferStartResult } from "../../types/transfer.ts";
+import { isPathAllowedForOperator, normalizeClientPath } from "../../utils/path-authorization.ts";
 
 export interface FileManagementModalProps {
   user?: User | null;
@@ -24,27 +25,8 @@ export interface FileManagementModalProps {
   allowedPaths?: string[];
 }
 
-// Confronto componenti percorso per controllo client-side operatore
-const isPathAllowedForUser = (candidate: string, allowedRoots: string[]): boolean => {
-  const normCandidate = "/" + candidate.replace(/^[/\\]+/, "").replace(/\/+$/, "");
-  const candSegs = normCandidate.split("/").filter(Boolean);
-  return allowedRoots.some((root) => {
-    const normRoot = "/" + root.replace(/^[/\\]+/, "").replace(/\/+$/, "");
-    const rootSegs = normRoot.split("/").filter(Boolean);
-    if (rootSegs.length === 0) return true;
-    if (candSegs.length < rootSegs.length) return false;
-    return rootSegs.every((seg, i) => candSegs[i] === seg);
-  });
-};
-
-const normalizeClientPath = (raw: string): string => {
-  let p = (raw || "").trim().replace(/\\/g, "/");
-  if (!p) return "/";
-  if (!p.startsWith("/")) p = "/" + p;
-  p = p.replace(/\/\.(?=\/|$)/g, "").replace(/\/+/g, "/");
-  if (p.length > 1) p = p.replace(/\/+$/, "");
-  return p || "/";
-};
+const isPathAllowedForUser = (candidate: string, allowedRoots: string[]): boolean =>
+  isPathAllowedForOperator(candidate, allowedRoots);
 
 export const FileManagementModal: React.FC<FileManagementModalProps> = ({
   user,
@@ -104,11 +86,11 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
       return "Attraversamento directory ('..') non consentito.";
     }
     const roots = operatorRootsRef.current;
-    if (roots && roots.length > 0 && !isPathAllowedForUser(p, roots)) {
+    if (effectiveIsOperator && (!roots || roots.length === 0 || !isPathAllowedForUser(p, roots))) {
       return "Accesso non consentito: la cartella richiesta è esterna ai percorsi autorizzati per l'operatore.";
     }
     return null;
-  }, []);
+  }, [effectiveIsOperator]);
 
   /** Verifica esistenza, tipo e permessi di scrittura reali (SFTP stat / probe di scrittura). */
   const verifyPath = useCallback(
@@ -566,9 +548,18 @@ export const FileManagementModal: React.FC<FileManagementModalProps> = ({
                 type="button"
                 id="btn-select-current-dir"
                 className="btn btn-outline-primary btn-sm"
-                title="Seleziona la cartella attualmente visualizzata nel browser"
+                title={
+                  effectiveIsOperator && !isPathAllowedForOperator(currentBrowserPath, effectiveAllowedPaths)
+                    ? "Cartella esterna ai percorsi autorizzati per l'operatore"
+                    : "Seleziona la cartella attualmente visualizzata nel browser"
+                }
                 onClick={handleSelectCurrentDir}
-                disabled={isSubmitting || isLoadingDirs || !currentBrowserPath}
+                disabled={
+                  isSubmitting ||
+                  isLoadingDirs ||
+                  !currentBrowserPath ||
+                  (effectiveIsOperator && !isPathAllowedForOperator(currentBrowserPath, effectiveAllowedPaths))
+                }
               >
                 Seleziona questa cartella
               </button>

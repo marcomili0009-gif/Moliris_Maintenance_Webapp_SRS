@@ -95,13 +95,19 @@ export async function verifyPassword(password: string, storedHash: string): Prom
 /**
  * Converte l'entità utente nel DTO sicuro (RNF-SEC-002)
  */
-export function toUserProfileDto(user: UserEntity): UserProfileDto {
+export function toUserProfileDto(user: UserEntity, defaultOperatorAllowedPaths?: string[]): UserProfileDto {
+  const isAdmin = user.roles.some((r) => (r || "").toLowerCase() === "admin");
+  const effectiveAllowedPaths = Array.isArray(user.allowedPaths)
+    ? [...user.allowedPaths]
+    : !isAdmin && Array.isArray(defaultOperatorAllowedPaths)
+      ? [...defaultOperatorAllowedPaths]
+      : undefined;
   return {
     id: user.id,
     username: user.username,
     roles: [...user.roles],
     permissions: user.permissions ? [...user.permissions] : [],
     robotPermissions: user.robotPermissions ? { ...user.robotPermissions } : {},
-    allowedPaths: user.allowedPaths ? [...user.allowedPaths] : undefined,
+    allowedPaths: effectiveAllowedPaths,
   };
 }

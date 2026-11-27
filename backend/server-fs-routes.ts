@@ -708,6 +708,7 @@ export function registerServerFsRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "server", undefined, rawPath || "/", undefined, { isListingRootAllowed: true });
         const robots = await robotRepository.list();
         const resolvedCheckPath = await serverFsService.resolveGeneralPath(subPath || undefined);
         const pathExists = fs.existsSync(resolvedCheckPath);

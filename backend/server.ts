@@ -49,7 +49,10 @@ import { TransferService } from "./transfer/transfer-service.ts";
 import { registerTransferRoutes } from "./transfer/transfer-routes.ts";
 import { type TransferRepository, InMemoryTransferRepository, MongoTransferRepository } from "../storage/transfer-repository.ts";
 import { type TelemetryRepository, MongoTelemetryRepository, InMemoryTelemetryRepository } from "../storage/telemetry-repository.ts";
-import { setPathAuthorizationAuditRepository } from "./auth/path-authorization.ts";
+import {
+  setPathAuthorizationAuditRepository,
+  setPathAuthorizationDefaultOperatorAllowedPaths,
+} from "./auth/path-authorization.ts";
 import { PhysicalFileLogger } from "./logging/physical-file-logger.ts";
 import { registerLogRoutes } from "./logging/log-routes.ts";
 import { BatchTransferManager } from "./transfer/batch-transfer-manager.ts";
@@ -311,8 +314,9 @@ export function createServer(
   const auditRepository = deps.auditRepository || new InMemoryAuditRepository();
   const roleMapping = deps.roleMapping || DEFAULT_ROLE_PERMISSIONS;
 
-  // Inizializzazione guardia percorsi operatore con repository di audit (Requisito #3)
+  // Inizializzazione guardia percorsi operatore con repository di audit e default (Requisito #3)
   setPathAuthorizationAuditRepository(auditRepository);
+  setPathAuthorizationDefaultOperatorAllowedPaths(config.defaultOperatorAllowedPaths);
 
   // Servizio di logging su file fisico (Requisito #8) e gestore batch trasferimenti (Requisito #9)
   const physicalFileLogger = deps.physicalFileLogger || new PhysicalFileLogger(process.env.MOLIRIS_LOGS_DIR, { logger });
@@ -446,7 +450,7 @@ export function createServer(
 
   // Servizio di trasferimento file (Prompt 10, RF-TRF-001..014, §5.5, §6.5..6.7)
   const transferRepository =
-    deps.transferRepository || (deps.db ? new MongoTransferRepository(deps.db) : new InMemoryTransferRepository());
+    deps.transferRepository || new InMemoryTransferRepository();
   const transferService = deps.transferService || new TransferService(
     config,
     robotRepository,
@@ -598,6 +602,7 @@ export function createServer(
   });
   app.addHook("onClose", async () => {
     await transferService.waitForBackgroundTransfers();
+    await transferService.flushTransferHistory();
     await physicalFileLogger.flush();
   });
 
@@ -823,6 +828,7 @@ export async function startServer(): Promise<void> {
       connectionManager,
       db,
       physicalFileLogger: new PhysicalFileLogger(process.env.MOLIRIS_LOGS_DIR, { db, logger }),
+      transferRepository: new MongoTransferRepository(db),
       appConfig,
     });
 

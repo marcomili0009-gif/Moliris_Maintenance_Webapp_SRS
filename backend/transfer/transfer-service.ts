@@ -118,6 +118,7 @@ export class TransferService {
   private readonly terminalLogWrites = new WeakMap<TransferRecord, Promise<void>>();
   private batchTransferManager?: BatchTransferManager;
   private transferRepository: TransferRepository = new InMemoryTransferRepository();
+  private readonly historyWrites = new Map<string, Promise<void>>();
   private readonly failureLoggedRecords = new WeakSet<TransferRecord>();
 
   public setPhysicalFileLogger(logger: PhysicalFileLogger): void {
@@ -240,12 +241,22 @@ export class TransferService {
   }
 
   private persistRecord(record: TransferRecord): void {
-    this.transferRepository.upsert(this.toHistoryDocument(record)).catch((err) => {
+    const snapshot = this.toHistoryDocument(record);
+    const previous = this.historyWrites.get(record.transferId) ?? Promise.resolve();
+    const queued = previous.then(() => this.transferRepository.upsert(snapshot)).catch((error) => {
       this.logger.warn("Errore persistenza record trasferimento", {
         transferId: record.transferId,
-        error: err?.message || String(err),
+        error: error?.message || String(error),
       });
     });
+    this.historyWrites.set(record.transferId, queued);
+    void queued.finally(() => {
+      if (this.historyWrites.get(record.transferId) === queued) this.historyWrites.delete(record.transferId);
+    });
+  }
+
+  public async flushTransferHistory(): Promise<void> {
+    await Promise.all(this.historyWrites.values());
   }
 
   private markTransferActive(record: TransferRecord): void {

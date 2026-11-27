@@ -13,6 +13,7 @@ import { type AuditRepository } from "../../storage/audit-repository.ts";
 import { AuditOperation } from "../../storage/audit-models.ts";
 import { type AuthMiddleware } from "./auth-middleware.ts";
 import { hashPassword, verifyPassword, toUserProfileDto } from "./user-models.ts";
+import { getPathAuthorizationDefaultOperatorAllowedPaths } from "./path-authorization.ts";
 import { AppPermission } from "./permissions.ts";
 import { ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
@@ -300,7 +301,7 @@ export function registerAuthRoutes(
     // Il token resta esclusivamente nel cookie HttpOnly: non esporlo al JavaScript
     // del browser riduce l'impatto di eventuali vulnerabilità XSS.
     return reply.status(200).send({
-      user: toUserProfileDto(user),
+      user: toUserProfileDto(user, getPathAuthorizationDefaultOperatorAllowedPaths()),
     });
   });
 
@@ -428,7 +429,7 @@ export function registerAuthRoutes(
    */
   app.get("/api/auth/me", { preHandler: [authMiddleware.authenticate.bind(authMiddleware)] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const user = req.molirisUser!;
-    const profile = toUserProfileDto(user);
+    const profile = toUserProfileDto(user, getPathAuthorizationDefaultOperatorAllowedPaths());
     reply.header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
     reply.header("Pragma", "no-cache");
     reply.header("Expires", "0");

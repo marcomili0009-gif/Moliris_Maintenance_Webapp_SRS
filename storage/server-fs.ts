@@ -139,16 +139,19 @@ export class ServerFilesystemService {
    * Confronto per componenti di percorso (segmenti), mai per prefisso di stringa parziale.
    */
   public isPathAllowedForOperator(relativeSubPath?: string, customAllowed?: string[]): boolean {
-    const allowed = customAllowed && customAllowed.length > 0 ? customAllowed : this.operatorAllowedPaths;
-    if (!allowed || allowed.length === 0) {
+    const allowed = Array.isArray(customAllowed) ? customAllowed : this.operatorAllowedPaths;
+    if (allowed === undefined) {
       return true;
     }
-    if (!relativeSubPath || relativeSubPath.trim() === "" || relativeSubPath.trim() === ".") {
+    if (allowed.length === 0) {
       return false;
+    }
+    if (!relativeSubPath || relativeSubPath.trim() === "" || relativeSubPath.trim() === ".") {
+      return isPathAllowedByComponents("/", allowed);
     }
     const norm = relativeSubPath.trim().replace(/^[/\\]+/, "");
     if (norm === "" || norm === ".") {
-      return false;
+      return isPathAllowedByComponents("/", allowed);
     }
     return isPathAllowedByComponents(norm, allowed);
   }
@@ -162,8 +165,8 @@ export class ServerFilesystemService {
     operation: string = "Accesso"
   ): void {
     if (this.isOperator(context)) {
-      const allowed = context.allowedPaths && context.allowedPaths.length > 0 ? context.allowedPaths : this.operatorAllowedPaths;
-      if (allowed && allowed.length > 0) {
+      const allowed = Array.isArray(context.allowedPaths) ? context.allowedPaths : this.operatorAllowedPaths;
+      if (allowed !== undefined) {
         if (!this.isPathAllowedForOperator(relativeSubPath, allowed)) {
           this.logger.warn(`Accesso negato per ruolo operatore al percorso server: ${relativeSubPath}`, {
             userId: context.userId,
@@ -584,9 +587,16 @@ export class ServerFilesystemService {
    * Elenco file e cartelle nell'Archivio Generale del server (§3).
    */
   public async listGeneralDirectory(
-    _context: AuthorizedContext,
+    context: AuthorizedContext,
     relativeSubPath?: string
   ): Promise<ServerFileItem[]> {
+    const isOp = this.isOperator(context);
+    const trimmedSub = (relativeSubPath ?? "").trim();
+    const isRoot = !trimmedSub || trimmedSub === "." || trimmedSub === "/" || trimmedSub === "\\";
+    if (isOp && !isRoot) {
+      this.assertOperatorAccess(context, relativeSubPath, "LIST_GENERAL");
+    }
+
     const targetDir = await this.resolveGeneralPath(relativeSubPath);
 
     if (!fs.existsSync(targetDir)) {
@@ -604,9 +614,19 @@ export class ServerFilesystemService {
 
     const dirents = await fs.promises.readdir(targetDir, { withFileTypes: true });
     const items: ServerFileItem[] = [];
+    const effectiveAllowed = Array.isArray(context.allowedPaths) ? context.allowedPaths : this.operatorAllowedPaths;
 
     for (const ent of dirents) {
       if (ent.name === ".tmp" || ent.name === ".moliris_tmp") continue;
+      if (isOp && isRoot && effectiveAllowed !== undefined) {
+        const isAllowed = effectiveAllowed.some((root) => {
+          const rootSegs = root.split("/").filter(Boolean);
+          return rootSegs.length === 0 || rootSegs[0] === ent.name;
+        });
+        if (!isAllowed) {
+          continue;
+        }
+      }
       const fullPath = path.join(targetDir, ent.name);
       try {
         const stat = await fs.promises.stat(fullPath);
@@ -1024,8 +1044,8 @@ export class ServerFilesystemService {
         }
 
         // Se l'utente è un operatore che visualizza la root e le restrizioni sono attive, filtra mostrando SOLO le cartelle consentite
-        const effectiveAllowed = context.allowedPaths && context.allowedPaths.length > 0 ? context.allowedPaths : this.operatorAllowedPaths;
-        if (isOp && isRoot && effectiveAllowed && effectiveAllowed.length > 0) {
+        const effectiveAllowed = Array.isArray(context.allowedPaths) ? context.allowedPaths : this.operatorAllowedPaths;
+        if (isOp && isRoot && effectiveAllowed !== undefined) {
           const isAllowed = effectiveAllowed.some((root) => {
             const rootSegs = root.split("/").filter(Boolean);
             return rootSegs.length === 0 || rootSegs[0] === entry.name;
@@ -1113,8 +1133,8 @@ export class ServerFilesystemService {
 
       if (entry.isDirectory()) {
         const entryRelative = cleanSub ? path.posix.join(cleanSub, entry.name) : entry.name;
-        const effectiveAllowed = context.allowedPaths && context.allowedPaths.length > 0 ? context.allowedPaths : this.operatorAllowedPaths;
-        if (isOp && isRoot && effectiveAllowed && effectiveAllowed.length > 0) {
+        const effectiveAllowed = Array.isArray(context.allowedPaths) ? context.allowedPaths : this.operatorAllowedPaths;
+        if (isOp && isRoot && effectiveAllowed !== undefined) {
           const isAllowed = effectiveAllowed.some((root) => {
             const rootSegs = root.split("/").filter(Boolean);
             return rootSegs.length === 0 || rootSegs[0] === entry.name;
@@ -1244,8 +1264,8 @@ export class ServerFilesystemService {
     const subPath = norm === "/" ? "" : norm.replace(/^[/\\]+/, "");
 
     // Controllo restrizioni operatore
-    const effectiveAllowed = context.allowedPaths && context.allowedPaths.length > 0 ? context.allowedPaths : this.operatorAllowedPaths;
-    if (this.isOperator(context) && subPath && !this.isPathAllowedForOperator(subPath, effectiveAllowed)) {
+    const effectiveAllowed = Array.isArray(context.allowedPaths) ? context.allowedPaths : this.operatorAllowedPaths;
+    if (this.isOperator(context) && effectiveAllowed !== undefined && !this.isPathAllowedForOperator(subPath || "/", effectiveAllowed)) {
       return {
         valid: false,
         exists: false,
@@ -1912,14 +1932,13 @@ export class ServerFilesystemService {
 
     const entries = await fs.promises.readdir(targetPath, { withFileTypes: true });
     const items: ServerFileItem[] = [];
-    const effectiveAllowed =
-      context.allowedPaths && context.allowedPaths.length > 0 ? context.allowedPaths : this.operatorAllowedPaths;
+    const effectiveAllowed = Array.isArray(context.allowedPaths) ? context.allowedPaths : this.operatorAllowedPaths;
 
     for (const entry of entries) {
       if (entry.name === ".tmp" || entry.name === ".moliris_tmp" || entry.name.startsWith(".")) {
         continue;
       }
-      if (isOp && isRoot && effectiveAllowed && effectiveAllowed.length > 0) {
+      if (isOp && isRoot && effectiveAllowed !== undefined) {
         const isAllowed = effectiveAllowed.some((root) => {
           const rootSegs = root.split("/").filter(Boolean);
           return rootSegs.length === 0 || rootSegs[0] === entry.name;

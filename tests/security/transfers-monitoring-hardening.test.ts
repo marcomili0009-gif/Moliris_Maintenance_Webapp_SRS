@@ -187,7 +187,8 @@ class MockSftpClient {
   }
 
   public realpath(p: string, callback: (err: any, res?: string) => void) {
-    callback(null, path.resolve(p));
+    // REALPATH resolves relative paths against the remote home, not this process cwd.
+    callback(null, path.posix.resolve("/remote", p));
   }
 
   public openFiles = new Map<string, { path: string; chunks: Buffer[] }>();
@@ -310,7 +311,7 @@ console.log("  -> Test A1: Verifica discrepanza dimensione genera INTEGRITY_CHEC
   // Il file temporaneo deve essere stato cancellato e il file di destinazione non deve esistere
   const tempFiles = Array.from(corruptSftp.files.keys()).filter(k => k.includes(".tmp_moliris_"));
   assert.strictEqual(tempFiles.length, 0, "I file temporanei orfani devono essere eliminati su fallimento integrità");
-  assert.strictEqual(corruptSftp.files.has("dest.bin"), false, "Il file di destinazione non deve essere promosso su discrepanza");
+  assert.strictEqual(corruptSftp.files.has("/remote/dest.bin"), false, "Il file di destinazione non deve essere promosso su discrepanza");
   console.log("  PASS: A1 - Discrepanza dimensione genera INTEGRITY_CHECK_FAILED e pulisce i temporanei.");
 }
 
@@ -381,7 +382,7 @@ console.log("  -> Test A2: Sostituzione atomica, posix-rename e opzione robotNon
 {
   const validSftp = new MockSftpClient();
   // Il robot ha già un file valido
-  validSftp.files.set("existing.bin", { content: Buffer.from("VERSIONE_ORIGINALE_VALIDA"), mode: 0o100644 });
+  validSftp.files.set("/remote/existing.bin", { content: Buffer.from("VERSIONE_ORIGINALE_VALIDA"), mode: 0o100644 });
   // Rimuoviamo il supporto posix-rename@openssh.com
   delete validSftp._extensions["posix-rename@openssh.com"];
   mockSftp = validSftp;
@@ -417,7 +418,7 @@ console.log("  -> Test A2: Sostituzione atomica, posix-rename e opzione robotNon
   );
 
   // Verifica: il file originale esistente sul robot deve essere intatto al 100%
-  const preserved = validSftp.files.get("existing.bin")?.content.toString("utf-8");
+  const preserved = validSftp.files.get("/remote/existing.bin")?.content.toString("utf-8");
   assert.strictEqual(preserved, "VERSIONE_ORIGINALE_VALIDA", "Il file preesistente deve rimanere intatto su rifiuto");
   console.log("  PASS: A2 - Senza posix-rename e robotNonAtomicReplace=false, rifiuta e preserva il file valido.");
 
@@ -439,7 +440,7 @@ console.log("  -> Test A2: Sostituzione atomica, posix-rename e opzione robotNon
     remotePath: "existing.bin",
     overwrite: true,
   });
-  const replaced = validSftp.files.get("existing.bin")?.content.toString("utf-8");
+  const replaced = validSftp.files.get("/remote/existing.bin")?.content.toString("utf-8");
   assert.strictEqual(replaced, "NUOVA_VERSIONE_DA_CARICARE", "Con flag abilitato, il file deve essere sostituito");
   console.log("  PASS: A2 - Con robotNonAtomicReplace=true, sostituisce ed emette warning.");
 }
@@ -458,7 +459,7 @@ console.log("  -> Test A3: Controllo anti-corsa TOCTOU");
     const entry = toctouSftp.openFiles.get(handle?.toString());
     if (entry) {
       toctouSftp.files.set(entry.path, { content: Buffer.from("DATI_TOCTOU"), mode: 0o100644 });
-      toctouSftp.files.set("toctou_dest.bin", { content: Buffer.from("FILE_CREATO_DA_ALTRO"), mode: 0o100644 });
+      toctouSftp.files.set("/remote/toctou_dest.bin", { content: Buffer.from("FILE_CREATO_DA_ALTRO"), mode: 0o100644 });
       toctouSftp.openFiles.delete(handle?.toString());
     }
     if (typeof callback === "function") callback(null);
@@ -471,7 +472,7 @@ console.log("  -> Test A3: Controllo anti-corsa TOCTOU");
       // Scrive il temp
       toctouSftp.files.set(targetPath, { content: Buffer.from("DATI_TOCTOU"), mode: 0o100644 });
       // UN ALTRO PROCESSO CREA IL TARGET 'toctou_dest.bin' PRIMA DELLA PROMOZIONE!
-      toctouSftp.files.set("toctou_dest.bin", { content: Buffer.from("FILE_CREATO_DA_ALTRO"), mode: 0o100644 });
+      toctouSftp.files.set("/remote/toctou_dest.bin", { content: Buffer.from("FILE_CREATO_DA_ALTRO"), mode: 0o100644 });
     });
     return stream;
   };
@@ -504,7 +505,7 @@ console.log("  -> Test A3: Controllo anti-corsa TOCTOU");
   );
 
   // Il file apparso durante la corsa non deve essere stato sovrascritto
-  assert.strictEqual(toctouSftp.files.get("toctou_dest.bin")?.content.toString("utf-8"), "FILE_CREATO_DA_ALTRO");
+  assert.strictEqual(toctouSftp.files.get("/remote/toctou_dest.bin")?.content.toString("utf-8"), "FILE_CREATO_DA_ALTRO");
   console.log("  PASS: A3 - Corsa TOCTOU intercettata prima della promozione, target preservato.");
 }
 

@@ -472,14 +472,13 @@ export class RemoteFilesystemService {
 
     if (!isAdmin) {
       // Ruolo Operatore: limitato rigorosamente alle sole cartelle consentite (Prompt Correttivo #3)
-      const allowedPaths =
-        context.allowedPaths && context.allowedPaths.length > 0
-          ? context.allowedPaths
-          : this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0
-          ? this.config.remoteFsAllowedPaths
-          : this.config.defaultOperatorAllowedPaths;
+      const allowedPaths = Array.isArray(context.allowedPaths)
+        ? context.allowedPaths
+        : this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0
+        ? this.config.remoteFsAllowedPaths
+        : this.config.defaultOperatorAllowedPaths;
 
-      if (allowedPaths && allowedPaths.length > 0) {
+      if (allowedPaths !== undefined) {
         const isAllowed = isPathAllowedByComponents(normalized, allowedPaths);
 
         if (!isAllowed) {
@@ -714,12 +713,11 @@ export class RemoteFilesystemService {
         const lower = r.toLowerCase();
         return lower === "admin";
       });
-      const effectiveAllowed =
-        context.allowedPaths && context.allowedPaths.length > 0
-          ? context.allowedPaths
-          : this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0
-          ? this.config.remoteFsAllowedPaths
-          : this.config.defaultOperatorAllowedPaths;
+      const effectiveAllowed = Array.isArray(context.allowedPaths)
+        ? context.allowedPaths
+        : this.config.remoteFsAllowedPaths && this.config.remoteFsAllowedPaths.length > 0
+        ? this.config.remoteFsAllowedPaths
+        : this.config.defaultOperatorAllowedPaths;
 
       const directories: Array<{ name: string; path: string }> = [];
       for (const entry of rawEntries) {
@@ -737,7 +735,7 @@ export class RemoteFilesystemService {
         if (isDir) {
           const entryPath = path.posix.join(targetPath, entry.filename);
           // Per operatore, includi solo se consentito o antenato di un percorso consentito
-          if (!isAdmin && effectiveAllowed && effectiveAllowed.length > 0) {
+          if (!isAdmin && effectiveAllowed !== undefined) {
             const isDirectlyAllowed = isPathAllowedByComponents(entryPath, effectiveAllowed);
             const isAncestorOfAllowed = effectiveAllowed.some((root) => {
               const rootNorm = path.posix.normalize(root);
@@ -1062,10 +1060,9 @@ export class RemoteFilesystemService {
                   });
 
                   const normResolved = path.posix.normalize(resolvedTarget);
-                  const effectiveSymlinkAllowed =
-                    context.allowedPaths && context.allowedPaths.length > 0
-                      ? context.allowedPaths
-                      : this.config.remoteFsAllowedPaths;
+                  const effectiveSymlinkAllowed = Array.isArray(context.allowedPaths)
+                    ? context.allowedPaths
+                    : this.config.remoteFsAllowedPaths;
                   const isAllowed = isPathAllowedByComponents(normResolved, effectiveSymlinkAllowed);
 
                   if (!isAllowed) {

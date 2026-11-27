@@ -14,6 +14,8 @@ export type { FsSubTab };
 interface FsBrowserSectionProps {
   robots?: RobotSummaryDto[];
   isAdmin?: boolean;
+  isOperator?: boolean;
+  allowedPaths?: string[];
   activeSubTab?: FsSubTab;
   onSubTabChange?: (tab: FsSubTab) => void;
   onOpenBulkUpload?: () => void;
@@ -90,6 +92,8 @@ interface FsBrowserSectionProps {
 export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
   robots = [],
   isAdmin = false,
+  isOperator = false,
+  allowedPaths,
   activeSubTab,
   onSubTabChange,
   onOpenBulkUpload,
@@ -206,6 +210,9 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
           robotId={serverRobotId}
           onRobotIdChange={onServerRobotIdChange}
           robots={robots}
+          isAdmin={isAdmin}
+          isOperator={isOperator}
+          allowedPaths={allowedPaths}
           currentPath={serverPath}
           listing={serverListing}
           loading={serverLoading}
@@ -234,6 +241,8 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
           loading={generalLoading}
           error={generalError}
           isAdmin={isAdmin}
+          isOperator={isOperator}
+          allowedPaths={allowedPaths}
           deletedRobotFolder={deletedRobotFolder}
           onLoad={onLoadGeneral}
           onUp={onGeneralUp}
@@ -259,6 +268,9 @@ export const FsBrowserSection: React.FC<FsBrowserSectionProps> = ({
           robotId={remoteRobotId}
           onRobotIdChange={onRemoteRobotIdChange}
           robots={robots}
+          isAdmin={isAdmin}
+          isOperator={isOperator}
+          allowedPaths={allowedPaths}
           currentPath={remotePath}
           listing={remoteListing}
           loading={remoteLoading}
