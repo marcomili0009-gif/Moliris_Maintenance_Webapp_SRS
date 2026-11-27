@@ -78,7 +78,7 @@ Tutti i parametri di runtime del sistema sono centralizzati nelle variabili d'am
 | `MOLIRIS_DEFAULT_OPERATOR_ALLOWED_PATHS` | string | `"/upload,/shared,/logs,/backups"` | Variabile d'ambiente | Opzionale. Percorsi/pattern consentiti per il ruolo Operatore sul filesystem server e remoto (jail RBAC fail-closed). | RF-AUTH-005, RF-SRVFS-005, RNF-SEC-004, RNF-SEC-005 |
 | `MOLIRIS_LOGS_DIR` | string | `undefined` | Variabile d'ambiente | Opzionale. Percorso assoluto della directory per i file di log fisici su disco (`access.log` e `transfers.log`). Se non specificata, utilizza la sottodirectory `logs/` della configurazione. | §10.4, RNF-SEC-009, Requisito #8 |
 | `MOLIRIS_LOG_MAX_BYTES` | number | `10485760` | Variabile d'ambiente | Opzionale. Dimensione massima in byte dei file di log (`access.log`, `transfers.log`) prima della rotazione automatica con permessi `0600`. | §10.4, RNF-SEC-005, Requisito #8 |
-| `MOLIRIS_LOG_MAX_FILES` | number | `5` | Variabile d'ambiente | Opzionale. Numero massimo di file ruotati conservati per ciascun file di log (max 20). | §10.4, RNF-SEC-005, Requisito #8 |
+| Archivi dei log fisici | — | Conservati | Policy aziendale | Nessuna cancellazione automatica. La vecchia impostazione `MOLIRIS_LOG_MAX_FILES` non limita gli archivi del prodotto. | §10.4, RNF-SEC-005, Requisito #8 |
 | `MOLIRIS_HTTP_REDIRECT_PORT` | number | `undefined` | Variabile d'ambiente | Opzionale. Porta HTTP facoltativa su cui avviare un listener di redirect 301 permanente verso la porta HTTPS `MOLIRIS_SERVER_PORT`. | RNF-SEC-001, §5.1 |
 
 ---

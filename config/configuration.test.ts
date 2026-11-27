@@ -264,11 +264,12 @@ try {
       }),
     /auditLogRetentionDays/
   );
+  assert.equal(loadAndValidateConfig({ ...validEnv, MOLIRIS_POLLING_INTERVAL_SEC: "0" }).pollingIntervalSeconds, 0);
   assert.throws(
     () =>
       loadAndValidateConfig({
         ...validEnv,
-        MOLIRIS_POLLING_INTERVAL_SEC: "0",
+        MOLIRIS_POLLING_INTERVAL_SEC: "-1",
       }),
     /pollingIntervalSeconds/
   );

@@ -89,6 +89,10 @@ export class TransferService {
 
   // Registro pulizie in sospeso per robot temporaneamente irraggiungibili (Problema A2 punto d)
   private pendingCleanups: Array<{ robotId: string; remoteTempPath: string; createdAt: Date }> = [];
+  private startupCleanupTimer: NodeJS.Timeout | null = null;
+  private shuttingDown = false;
+  private readonly backgroundTransfers = new Set<Promise<unknown>>();
+  private readonly pendingCancellations = new Set<Promise<TransferDto>>();
   private hourlyCleanupTimer: NodeJS.Timeout | null = null;
   private recordEvictionTimer: NodeJS.Timeout | null = null;
 
@@ -157,7 +161,8 @@ export class TransferService {
 
     // Task per la pulizia dei file temporanei orfani sul server (Problema A2 punto e, RF-TRF-009, RNF-REL-004)
     // 1. Bonifica immediata all'avvio per recupero da crash o riavvii
-    setTimeout(() => {
+    this.startupCleanupTimer = setTimeout(() => {
+      this.startupCleanupTimer = null;
       this.cleanupServerOrphanTempFiles().catch((err) => {
         this.logger.error("Errore pulizia iniziale temporanei server all'avvio", err?.message);
       });
@@ -180,6 +185,11 @@ export class TransferService {
   }
 
   public stopCleanupTask(): void {
+    if (this.startupCleanupTimer) {
+      clearTimeout(this.startupCleanupTimer);
+      this.startupCleanupTimer = null;
+    }
+
     if (this.recordEvictionTimer) {
       clearInterval(this.recordEvictionTimer);
       this.recordEvictionTimer = null;
@@ -188,6 +198,40 @@ export class TransferService {
       clearInterval(this.hourlyCleanupTimer);
       this.hourlyCleanupTimer = null;
     }
+  }
+
+  public async shutdown(): Promise<void> {
+    this.shuttingDown = true;
+    this.stopCleanupTask();
+    for (const record of this.transfers.values()) {
+      if (!TransferService.TERMINAL_STATUSES.has(record.status) && (!record.batchId || record.isBulkStaging)) {
+        this.cancelTrackedTransfer(record, "SERVICE_SHUTDOWN");
+      }
+    }
+    await Promise.allSettled([
+      ...this.pendingCancellations,
+      this.batchTransferManager?.shutdown(),
+    ]);
+  }
+
+  public trackBackgroundTransfer<T>(running: Promise<T>): Promise<T> {
+    this.backgroundTransfers.add(running);
+    void running.finally(() => this.backgroundTransfers.delete(running)).catch(() => {});
+    return running;
+  }
+
+  public async waitForBackgroundTransfers(): Promise<void> {
+    await Promise.allSettled(this.backgroundTransfers);
+  }
+
+  private cancelTrackedTransfer(record: TransferRecord, reason: string): void {
+    const cancellation = this.cancelTransfer(record.transferId, record.userId, reason);
+    this.pendingCancellations.add(cancellation);
+    void cancellation.catch((error) => {
+      this.logger.error("Annullamento trasferimento non completato", error?.message, {
+        transferId: record.transferId, reason,
+      });
+    }).finally(() => this.pendingCancellations.delete(cancellation));
   }
 
   public getConfig(): SystemConfiguration {
@@ -253,6 +297,7 @@ export class TransferService {
   }
 
   private registerTransfer(record: TransferRecord): void {
+    if (this.shuttingDown) throw new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Servizio in arresto.");
     this.assertActiveSession(record.userSessionId);
     this.transfers.set(record.transferId, record);
     const username = this.sessionManager.getSession(record.userSessionId)?.username;
@@ -569,64 +614,74 @@ export class TransferService {
       if (settled) return;
       settled = true;
       removeAbortListener();
-      const expectedTotal = record.totalBytes;
-      if (expectedTotal !== null && expectedTotal !== undefined && record.transferredBytes !== expectedTotal) {
-        record.status = TransferStatus.INTEGRITY_FAILED;
-        await this.handleTransferFailure(
-          record,
-          new MolirisAppError(
-            ErrorCode.INTEGRITY_CHECK_FAILED,
-            `Download incompleto: ricevuti ${record.transferredBytes} byte su ${expectedTotal}`,
-            "Verifica di integrità del file trasferito fallita."
-          )
-        );
-      } else {
-        record.computedChecksum = checksumStream.getDigest() || undefined;
-        record.integrityLabel = integrityLabel;
-        record.integrityVerification = {
-          verified: true,
-          mode: "stream",
-          label: integrityLabel,
-        };
-        record.status = TransferStatus.COMPLETED;
-        record.completedAt = new Date();
-        await this.recordAuditSuccess(record);
+      try {
+        const expectedTotal = record.totalBytes;
+        if (expectedTotal !== null && expectedTotal !== undefined && record.transferredBytes !== expectedTotal) {
+          record.status = TransferStatus.INTEGRITY_FAILED;
+          await this.handleTransferFailure(
+            record,
+            new MolirisAppError(
+              ErrorCode.INTEGRITY_CHECK_FAILED,
+              `Download incompleto: ricevuti ${record.transferredBytes} byte su ${expectedTotal}`,
+              "Verifica di integrità del file trasferito fallita."
+            )
+          );
+        } else {
+          record.computedChecksum = checksumStream.getDigest() || undefined;
+          record.integrityLabel = integrityLabel;
+          record.integrityVerification = {
+            verified: true,
+            mode: "stream",
+            label: integrityLabel,
+          };
+          record.status = TransferStatus.COMPLETED;
+          record.completedAt = new Date();
+          await this.recordAuditSuccess(record);
+        }
+      } finally {
+        try { await cleanupSource(); } finally { releaseOnce(); }
       }
-      await cleanupSource();
-      releaseOnce();
     };
 
     const finishFailure = async (err: any) => {
       if (settled) return;
       settled = true;
       removeAbortListener();
-      await this.handleTransferFailure(record, err);
-      await cleanupSource();
-      releaseOnce();
+      try {
+        await this.handleTransferFailure(record, err);
+      } finally {
+        try { await cleanupSource(); } finally { releaseOnce(); }
+      }
+    };
+
+    const trackFinalization = (operation: Promise<void>) => {
+      void this.trackBackgroundTransfer(operation).catch((error) => {
+        this.logger.error("Finalizzazione download non completata", error?.message, {
+          transferId: record.transferId,
+        });
+      });
     };
 
     pipeline(sourceStream, progressTracker, checksumStream, outStream, (err) => {
       if (err) {
-        void finishFailure(err);
-      } else {
-        void finishSuccess();
+        trackFinalization(finishFailure(err));
       }
     });
 
     // Il consumo completo dello stream da parte del client è il segnale più
     // affidabile di successo; 'close' può arrivare subito dopo 'end'.
     outStream.once("end", () => {
-      void finishSuccess();
+      trackFinalization(finishSuccess());
     });
 
     outStream.once("close", () => {
       if (!settled && !outStream.readableEnded) {
-        void finishFailure(
+        trackFinalization(finishFailure(
           new MolirisAppError(
             ErrorCode.TRANSFER_INTERRUPTED,
             "Download interrotto prima del completamento (client disconnesso)."
           )
-        );
+        ));
       }
     });
 
@@ -1976,7 +2031,9 @@ export class TransferService {
 
     record.status = TransferStatus.CANCELLED;
     record.completedAt = new Date();
-    record.error = reason === "SESSION_TERMINATED_EXPIRED"
+    record.error = reason === "SERVICE_SHUTDOWN"
+      ? "Trasferimento interrotto per arresto del servizio."
+      : reason === "SESSION_TERMINATED_EXPIRED"
       ? "Trasferimento interrotto perché la sessione è scaduta."
       : "Trasferimento annullato dall'utente.";
     record.integrityLabel = "integrità non verificata";
@@ -2104,7 +2161,7 @@ export class TransferService {
   public cancelTransfersForUser(userId: string, reason: string): void {
     for (const record of Array.from(this.transfers.values())) {
       if (record.userId === userId && !TransferService.TERMINAL_STATUSES.has(record.status)) {
-        this.cancelTransfer(record.transferId, userId, reason).catch(() => {});
+        this.cancelTrackedTransfer(record, reason);
       }
     }
   }
@@ -2123,7 +2180,7 @@ export class TransferService {
         record.userSessionId === sessionId &&
         !TransferService.TERMINAL_STATUSES.has(record.status)
       ) {
-        this.cancelTransfer(record.transferId, userId, reason).catch(() => {});
+        this.cancelTrackedTransfer(record, reason);
       }
     }
   }
@@ -3702,6 +3759,7 @@ export class TransferService {
       }>;
     }
   ): Promise<BulkUploadResponse> {
+    if (this.shuttingDown) throw new MolirisAppError(ErrorCode.TRANSFER_INTERRUPTED, "Servizio in arresto.");
     const { targets, overwrite, stagedFiles } = options;
     const filenames = stagedFiles.map(({ filename }) => filename);
     const batchId = options.batchId || crypto.randomUUID();

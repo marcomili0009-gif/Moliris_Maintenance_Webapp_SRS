@@ -2,6 +2,9 @@
 
 import fs from "fs";
 import path from "path";
+import { createHash, randomUUID } from "node:crypto";
+import type { Collection, Db } from "mongodb";
+import type { MolirisLogger } from "../../logging/logger.ts";
 import { Readable } from "node:stream";
 import { redactSensitiveData } from "../../logging/logger.ts";
 
@@ -121,6 +124,13 @@ export function normalizeRoleForLog(roleOrRoles?: string | string[]): string {
   return "—";
 }
 
+interface PendingLogEntry {
+  _id: string;
+  line: string;
+  createdAt: Date;
+  projectedAt: Date | null;
+}
+
 /**
  * PhysicalFileLogger scrive direttamente su disco fisico su access.log e transfers.log
  * applicando rigorosamente permessi 0700 alla directory e 0600 ai file (RNF-SEC-005, Requisito #8).
@@ -130,29 +140,33 @@ export class PhysicalFileLogger {
   private accessLogPath: string;
   private transfersLogPath: string;
   private maxFileSizeBytes: number;
-  private maxRotatedFiles: number;
+  private readonly journal?: Collection<PendingLogEntry>;
+  private readonly logger?: MolirisLogger;
+  private writes: Promise<unknown> = Promise.resolve();
+  private retryTimer?: NodeJS.Timeout;
+  private retrying = false;
+  private journalIndexed = false;
+  private lastArchiveTime = 0;
+  private lastQueuedTime = 0;
+  private persistenceFailure = false;
   private initialized = false;
 
-  constructor(logDir?: string, options?: { maxFileSizeBytes?: number; maxRotatedFiles?: number }) {
+  constructor(logDir?: string, options?: { maxFileSizeBytes?: number; maxRotatedFiles?: number; db?: Db; logger?: MolirisLogger }) {
     this.logDir = logDir
       ? path.resolve(logDir)
       : path.resolve(process.cwd(), "logs");
     this.accessLogPath = path.join(this.logDir, "access.log");
     this.transfersLogPath = path.join(this.logDir, "transfers.log");
     const envMaxBytes = Number(process.env["MOLIRIS_LOG_MAX_BYTES"]);
-    const envMaxFiles = Number(process.env["MOLIRIS_LOG_MAX_FILES"]);
+    this.journal = options?.db?.collection<PendingLogEntry>("transfer_log_outcomes");
+    this.logger = options?.logger;
     this.maxFileSizeBytes =
       options?.maxFileSizeBytes && options.maxFileSizeBytes > 0
         ? options.maxFileSizeBytes
         : Number.isFinite(envMaxBytes) && envMaxBytes > 0
         ? envMaxBytes
         : 10 * 1024 * 1024; // 10 MB predefinito
-    this.maxRotatedFiles =
-      options?.maxRotatedFiles && options.maxRotatedFiles > 0
-        ? options.maxRotatedFiles
-        : Number.isFinite(envMaxFiles) && envMaxFiles > 0
-        ? Math.min(envMaxFiles, 20)
-        : 5;
+
   }
 
   public getLogDir(): string {
@@ -192,41 +206,191 @@ export class PhysicalFileLogger {
     this.initialized = true;
   }
 
-  private async rotateIfNeeded(filePath: string, incomingBytes: number): Promise<void> {
-    try {
-      const stat = await fs.promises.stat(filePath);
-      if (stat.size + incomingBytes <= this.maxFileSizeBytes) return;
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const pending = this.writes.then(operation);
+    this.writes = pending.catch(() => {});
+    return pending;
+  }
 
-      for (let i = this.maxRotatedFiles; i >= 1; i--) {
-        const src = i === 1 ? filePath : `${filePath}.${i - 1}`;
-        const dst = `${filePath}.${i}`;
-        if (!fs.existsSync(src)) continue;
-        if (i === this.maxRotatedFiles && fs.existsSync(dst)) {
-          await fs.promises.unlink(dst).catch(() => {});
+  public async startRecovery(): Promise<void> {
+    if (!this.journal || this.retryTimer) return;
+    const recover = () => {
+      if (this.retrying) return;
+      this.retrying = true;
+      void this.enqueue(async () => {
+        const journal = this.journal!;
+        if (!this.journalIndexed) {
+          await journal.createIndex({ projectedAt: 1, createdAt: 1 }, { timeoutMS: 2_000 });
+          this.journalIndexed = true;
         }
-        await fs.promises.rename(src, dst);
-        await fs.promises.chmod(dst, 0o600).catch(() => {});
-      }
+        await this.recoverLocalSpool();
+        for await (const entry of journal.find({ projectedAt: null }, { timeoutMS: 2_000 }).sort({ createdAt: 1 }).limit(200)) {
+          await this.project(entry, true);
+        }
+      }).catch((error: unknown) => {
+        this.reportWriteFailure("Proiezione degli esiti in sospeso non disponibile", error);
+      }).finally(() => { this.retrying = false; });
+    };
+    this.retryTimer = setInterval(recover, 5_000);
+    this.retryTimer.unref();
+    recover();
+  }
 
-      await fs.promises.writeFile(filePath, "", { mode: 0o600 });
-      await fs.promises.chmod(filePath, 0o600).catch(() => {});
-    } catch {
-      // Se il file non esiste ancora, appendFile lo creerà con mode 0600
-    }
+  public stopRecovery(): void {
+    clearInterval(this.retryTimer);
+    this.retryTimer = undefined;
+  }
+
+  public async flush(): Promise<void> {
+    await this.writes;
+  }
+
+  public isPersistenceHealthy(): boolean {
+    return !this.persistenceFailure;
+  }
+
+  private reportWriteFailure(message: string, error: unknown, id?: string): void {
+    const context = { eventId: id, code: (error as NodeJS.ErrnoException)?.code };
+    if (this.logger) this.logger.error(message, undefined, context);
+    else console.error(message, context);
+  }
+
+  private async rotateIfNeeded(filePath: string, incomingBytes: number): Promise<void> {
+    const stat = await fs.promises.stat(filePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+      return undefined;
+    });
+    if (!stat?.size || stat.size + incomingBytes <= this.maxFileSizeBytes) return;
+    this.lastArchiveTime = Math.max(Date.now(), this.lastArchiveTime + 1);
+    const timestamp = new Date(this.lastArchiveTime).toISOString().replace(/[:.]/g, "-");
+    await fs.promises.rename(filePath, `${filePath}.archive.${timestamp}-${randomUUID()}`);
+    const directory = await fs.promises.open(this.logDir, "r");
+    try { await directory.sync(); } finally { await directory.close(); }
   }
 
   private async append(filePath: string, line: string): Promise<void> {
     await this.ensureInitialized();
     const payload = line + "\n";
-    // Lo storico dei trasferimenti è append-only. Manteniamo leggibili anche le
-    // copie numerate prodotte dalla politica precedente.
-    if (filePath !== this.transfersLogPath) {
-      await this.rotateIfNeeded(filePath, Buffer.byteLength(payload, "utf-8"));
+    await this.rotateIfNeeded(filePath, Buffer.byteLength(payload));
+    await fs.promises.appendFile(filePath, payload, { encoding: "utf-8", mode: 0o600, flush: true });
+    const directory = await fs.promises.open(this.logDir, "r");
+    try { await directory.sync(); } finally { await directory.close(); }
+  }
+
+  private async project(entry: PendingLogEntry, checkExisting: boolean): Promise<void> {
+    if (entry.projectedAt) return;
+    if (!checkExisting || !await this.hasExactLine(entry.line)) {
+      await this.append(this.transfersLogPath, entry.line);
     }
-    await fs.promises.appendFile(filePath, payload, { encoding: "utf-8", mode: 0o600 });
+    await this.journal!.updateOne(
+      { _id: entry._id }, { $set: { projectedAt: new Date() } },
+      { writeConcern: { w: "majority", journal: true }, timeoutMS: 2_000 },
+    );
+  }
+
+  private async hasExactLine(expected: string): Promise<boolean> {
+    for (const file of await this.logPaths(this.transfersLogPath)) {
+      try {
+        for await (const text of readLogLinesBackwards(file)) {
+          if (text === expected) return true;
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    return false;
+  }
+
+  private async writeJournal(id: string, line: string, createdAt?: Date) {
+    this.lastQueuedTime = Math.max(createdAt?.getTime() || Date.now(), this.lastQueuedTime + 1);
+    const journalTime = new Date(this.lastQueuedTime);
+    const result = await this.journal!.findOneAndUpdate(
+      { _id: id }, { $setOnInsert: { line, createdAt: journalTime, projectedAt: null } },
+      { upsert: true, returnDocument: "after", includeResultMetadata: true,
+        writeConcern: { w: "majority", journal: true }, timeoutMS: 2_000 },
+    );
+    if (!result.value) throw new Error("Registrazione journal non confermata.");
+    return { entry: result.value, duplicate: result.lastErrorObject?.updatedExisting === true };
+  }
+
+  private async spoolLocally(id: string, line: string): Promise<void> {
+    const directory = path.join(this.logDir, ".transfer-log-pending");
+    await fs.promises.mkdir(directory, { recursive: true, mode: 0o700 });
+    const digest = createHash("sha256").update(id).digest("hex");
+    const file = path.join(directory, digest + ".json");
+    const temporary = file + "." + randomUUID() + ".tmp";
     try {
-      await fs.promises.chmod(filePath, 0o600);
-    } catch {}
+      await fs.promises.writeFile(temporary, JSON.stringify({ id, line, createdAt: new Date() }), {
+        flag: "wx", flush: true, mode: 0o600,
+      });
+      try {
+        await fs.promises.link(temporary, file);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      for (const dir of [directory, this.logDir]) {
+        const handle = await fs.promises.open(dir, "r");
+        try { await handle.sync(); } finally { await handle.close(); }
+      }
+    } finally {
+      await fs.promises.unlink(temporary).catch(() => {});
+    }
+  }
+
+  private async recoverLocalSpool(): Promise<void> {
+    const directory = path.join(this.logDir, ".transfer-log-pending");
+    const files = await fs.promises.readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+      return [];
+    });
+    for (const file of files.filter((entry) => entry.isFile() && /^[a-f0-9]{64}\.json$/.test(entry.name)).slice(0, 200)) {
+      const pathname = path.join(directory, file.name);
+      const record = JSON.parse(await fs.promises.readFile(pathname, "utf8"));
+      if (typeof record.id !== "string" || typeof record.line !== "string" || /[\r\n]/.test(record.line)) {
+        this.reportWriteFailure("Spool trasferimenti con record non valido", undefined, file.name);
+        continue;
+      }
+      await this.writeJournal(record.id, record.line, new Date(record.createdAt));
+      await fs.promises.unlink(pathname);
+    }
+  }
+
+  private writeTransferLine(id: string, line: string): Promise<string> {
+    return this.enqueue(async () => {
+      let entry: PendingLogEntry | null = null;
+      let duplicate = false;
+      if (this.journal) {
+        try {
+          ({ entry, duplicate } = await this.writeJournal(id, line));
+        } catch (error) {
+          try {
+            await this.spoolLocally(id, line);
+          } catch (spoolError) {
+            this.persistenceFailure = true;
+            this.reportWriteFailure("Esito trasferimento non persistito in journal né in spool", spoolError, id);
+            throw spoolError;
+          }
+          this.reportWriteFailure("Journal MongoDB non disponibile, esito durevole in spool locale", error, id);
+          return line;
+        }
+      }
+      if (!entry) {
+        try {
+          await this.append(this.transfersLogPath, line);
+        } catch (error) {
+          this.persistenceFailure = true;
+          this.reportWriteFailure("Esito trasferimento non persistito", error, id);
+          throw error;
+        }
+        return line;
+      }
+      try {
+        await this.project(entry, duplicate);
+      } catch (error) {
+        this.reportWriteFailure("Esito durevole su MongoDB, proiezione su file in sospeso", error, id);
+      }
+      return entry.line;
+    });
   }
 
   /**
@@ -241,7 +405,7 @@ export class PhysicalFileLogger {
     const username = sanitizeLogText(entry.username);
     const outcome = sanitizeLogText(entry.outcome);
     const line = `[${ts}] EVENT: ${event} | Utente: ${username} | Ruolo: ${role} | Esito: ${outcome} | Dettagli: ${details}`;
-    await this.append(this.accessLogPath, line);
+    await this.enqueue(() => this.append(this.accessLogPath, line));
     return line;
   }
 
@@ -261,8 +425,7 @@ export class PhysicalFileLogger {
     ].filter(Boolean);
     const extra = metadata.length ? ` | ${metadata.join(" | ")}` : "";
     const line = `[${ts}] File: ${field(entry.filename)} | Utente: ${field(entry.username)} | Direzione: ${field(entry.direction)} | Esito: ${entry.outcome}${extra} | Dettagli: ${details}`;
-    await this.append(this.transfersLogPath, line);
-    return line;
+    return this.writeTransferLine(entry.transferId ? `transfer:${entry.transferId}` : randomUUID(), line);
   }
 
   /**
@@ -277,8 +440,7 @@ export class PhysicalFileLogger {
     const safeBatchId = sanitizeLogText(batchId);
     const safeUsername = sanitizeLogText(username);
     const line = `=== INIZIO CARICAMENTO MASSIVO === [batchId: ${safeBatchId}] (${totalFiles} file) Utente: ${safeUsername} | Data: ${ts.slice(0, 10)} | Ora: ${ts.slice(11)} ===`;
-    await this.append(this.transfersLogPath, line);
-    return line;
+    return this.writeTransferLine(`batch:${batchId}:start`, line);
   }
 
   /**
@@ -302,8 +464,7 @@ export class PhysicalFileLogger {
     const outcome = sanitizeLogText(entry.outcome);
     const failedReason = outcome === "FALLIMENTO" && details && details !== "N/A" ? ` (${details})` : "";
     const line = `[batchId: ${safeBatchId}] [FILE ${k}/${totalFiles}] File ${k}: ${filename} | Esito: ${outcome}${failedReason} | Direzione: ${direction} | Dettagli: ${details}`;
-    await this.append(this.transfersLogPath, line);
-    return line;
+    return this.writeTransferLine(`batch:${batchId}:file:${k}`, line);
   }
 
   /**
@@ -317,8 +478,7 @@ export class PhysicalFileLogger {
     const safeBatchId = sanitizeLogText(batchId);
     const safeOutcome = sanitizeLogText(outcome);
     const line = `=== CARICAMENTO MASSIVO TERMINATO === [batchId: ${safeBatchId}] - Esito: ${safeOutcome} (Completati: ${summary.completed}/${summary.totalFiles}, Annullati: ${summary.cancelled}, Falliti: ${summary.failed}) | Data: ${ts.slice(0, 10)} | Ora: ${ts.slice(11)} ===`;
-    await this.append(this.transfersLogPath, line);
-    return line;
+    return this.writeTransferLine(`batch:${batchId}:end`, line);
   }
 
   /**
@@ -326,37 +486,66 @@ export class PhysicalFileLogger {
    */
   public async getAccessLogs(filter?: { user?: string; event?: string; limit?: number }): Promise<string[]> {
     await this.ensureInitialized();
-    if (!fs.existsSync(this.accessLogPath)) return [];
-
-    const content = await fs.promises.readFile(this.accessLogPath, "utf-8");
-    let lines = content.split(/\r?\n/).filter((l) => l.trim().length > 0);
-
-    if (filter?.user) {
-      const userTarget = `Utente: ${filter.user}`;
-      lines = lines.filter((l) => l.includes(userTarget));
-    }
-    if (filter?.event) {
-      const eventTarget = `EVENT: ${filter.event}`;
-      lines = lines.filter((l) => l.includes(eventTarget));
-    }
-
+    const lines: string[] = [];
     const limit = filter?.limit && filter.limit > 0 ? Math.min(filter.limit, 1000) : 100;
-    return lines.slice(-limit);
+    for (const file of await this.logPaths(this.accessLogPath)) {
+      for await (const line of this.readExistingLog(file)) {
+        if (!line.trim()) continue;
+        if (filter?.user && !line.includes(`Utente: ${filter.user}`)) continue;
+        if (filter?.event && !line.includes(`EVENT: ${filter.event}`)) continue;
+        lines.push(line);
+        if (lines.length >= limit) return lines.reverse();
+      }
+    }
+    return lines.reverse();
   }
 
-  // Dall'archivio più recente a quello più vecchio, poi invertiti per il download.
-  private async transferLogPaths(): Promise<string[]> {
+  private async *readExistingLog(file: string): AsyncGenerator<string> {
+    try {
+      yield* readLogLinesBackwards(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+
+  private async logPaths(filePath: string): Promise<string[]> {
     await this.ensureInitialized();
+    const name = path.basename(filePath);
     const entries = await fs.promises.readdir(this.logDir, { withFileTypes: true });
-    const archives = entries
-      .filter((entry) => entry.isFile() && /^transfers\.log\.\d+$/.test(entry.name))
-      .sort((a, b) => Number(a.name.slice(14)) - Number(b.name.slice(14)));
-    return [this.transfersLogPath, ...archives.map((entry) => path.join(this.logDir, entry.name))];
+    const copies = entries.filter((entry) => entry.isFile() && entry.name.startsWith(name + "."));
+    const archives = copies
+      .filter((entry) => /^archive\.[0-9TZ-]+[a-f0-9-]+$/.test(entry.name.slice(name.length + 1)))
+      .map((entry) => entry.name).sort().reverse();
+    const legacy = copies
+      .filter((entry) => /^\d+$/.test(entry.name.slice(name.length + 1)))
+      .sort((a, b) => Number(a.name.slice(name.length + 1)) - Number(b.name.slice(name.length + 1)))
+      .map((entry) => entry.name);
+    return [filePath, ...archives.concat(legacy).map((entry) => path.join(this.logDir, entry))];
   }
 
   public async openTransferLogDownload(): Promise<Readable> {
-    const paths = (await this.transferLogPaths()).reverse();
-    return Readable.from((async function* () {
+    return this.openLogDownload(this.transfersLogPath);
+  }
+
+  public async openAccessLogDownload(): Promise<Readable> {
+    return this.openLogDownload(this.accessLogPath);
+  }
+
+  private async openLogDownload(file: string): Promise<Readable> {
+    const { paths, activeFile, activeLength } = await this.enqueue(async () => {
+      const paths = (await this.logPaths(file)).reverse();
+      const activeFile = await fs.promises.open(paths.pop()!, "r").catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        return undefined;
+      });
+      try {
+        return { paths, activeFile, activeLength: activeFile ? (await activeFile.stat()).size : 0 };
+      } catch (error) {
+        await activeFile?.close();
+        throw error;
+      }
+    });
+    const result = Readable.from((async function* () {
       let needsSeparator = false;
       for (const filePath of paths) {
         let firstChunk = true;
@@ -367,14 +556,20 @@ export class PhysicalFileLogger {
           firstChunk = false;
         }
       }
+      if (activeFile && activeLength > 0) {
+        if (needsSeparator) yield "\n";
+        yield* activeFile.createReadStream({ end: activeLength - 1, autoClose: false });
+      }
     })());
+    result.once("close", () => { void activeFile?.close().catch(() => {}); });
+    return result;
   }
 
   public async getTransferLogs(filter?: { user?: string; outcome?: string; limit?: number }): Promise<string[]> {
     const limit = filter?.limit && filter.limit > 0 ? Math.min(filter.limit, 1000) : 100;
     const lines: string[] = [];
-    for (const filePath of await this.transferLogPaths()) {
-      for await (const line of readLogLinesBackwards(filePath)) {
+    for (const filePath of await this.logPaths(this.transfersLogPath)) {
+      for await (const line of this.readExistingLog(filePath)) {
         if (!line.trim()) continue;
         const entry = line.split(" | Dettagli:")[0];
         const user = /(?:^|\|) Utente: (.*?)(?: \||$)/.exec(entry)?.[1];

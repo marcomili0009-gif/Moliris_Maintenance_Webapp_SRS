@@ -8,7 +8,7 @@ PROJECT_DIR="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 APP_DIR=/opt/moliris/Moliris_Maintenance_Webapp_SRS
 DATA_DIR=/var/lib/moliris
 CONFIG_DIR=/etc/moliris
-LOG_DIR=/var/log/moliris
+MONGO_LOG_DIR=/var/log/moliris-mongodb
 STAGE_DIR=
 die() { printf 'ERRORE: %s\n' "$*" >&2; exit 1; }
 cleanup() { if [[ -n "$STAGE_DIR" && -d "$STAGE_DIR" ]]; then rm -rf -- "$STAGE_DIR"; fi; }
@@ -24,8 +24,8 @@ CALLER_HOME="$(getent passwd "$CALLER_UID" | cut -d: -f6)"
 [[ -x /usr/bin/mongod && -x /usr/bin/node && -x /usr/bin/curl && -x /usr/bin/openssl ]] || die "Mancano mongod, node, curl o openssl."
 [[ -d "$PROJECT_DIR/node_modules/dotenv" ]] || die "Dipendenza dotenv assente."
 getent passwd mongodb >/dev/null || die "Utente mongodb non trovato."
-for target in "$APP_DIR" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" /etc/mongod-moliris.conf \
-  /etc/systemd/system/moliris-mongodb.service /etc/systemd/system/moliris.service.d \
+for target in "$APP_DIR" "$CONFIG_DIR" "$DATA_DIR" "$MONGO_LOG_DIR" /etc/mongod-moliris.conf \
+  /var/log/moliris /etc/systemd/system/moliris-mongodb.service /etc/systemd/system/moliris.service.d \
   "$CALLER_HOME/.moliris-local-credentials.txt"; do
   [[ ! -e "$target" ]] || die "Percorso già esistente: $target. Non sovrascrivo."
 done
@@ -79,7 +79,7 @@ mv -- "$STAGE_DIR" "$APP_DIR"
 STAGE_DIR=
 chown -R root:root "$APP_DIR"
 install -d -o moliris -g moliris -m 0750 "$DATA_DIR/server-fs"
-install -d -o mongodb -g mongodb -m 0750 "$DATA_DIR/mongodb" "$LOG_DIR"
+install -d -o mongodb -g mongodb -m 0750 "$DATA_DIR/mongodb" "$MONGO_LOG_DIR"
 install -d -o root -g moliris -m 0750 "$CONFIG_DIR" "$CONFIG_DIR/certs" "$CONFIG_DIR/keys"
 install -o root -g moliris -m 0644 "$TLS_CERT_SOURCE" "$CONFIG_DIR/certs/cert.pem"
 install -o root -g moliris -m 0640 "$TLS_KEY_SOURCE" "$CONFIG_DIR/certs/key.pem"
@@ -89,7 +89,7 @@ cat > /etc/mongod-moliris.conf <<'YAML'
 systemLog:
   destination: file
   logAppend: true
-  path: /var/log/moliris/mongod.log
+  path: /var/log/moliris-mongodb/mongod.log
 storage:
   dbPath: /var/lib/moliris/mongodb
 net:
@@ -122,7 +122,7 @@ PrivateDevices=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-ReadWritePaths=/var/lib/moliris/mongodb /var/log/moliris
+ReadWritePaths=/var/lib/moliris/mongodb /var/log/moliris-mongodb
 RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
 SystemCallArchitectures=native
 StandardOutput=journal

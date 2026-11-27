@@ -34,6 +34,8 @@ export class MonitoringService {
 
   // Tracciamento dei cicli di polling attivi per robot per evitare sovrapposizioni (RNF-PERF-004)
   private activePolls: Set<string> = new Set();
+  private pollingCycle?: Promise<void>;
+  private shuttingDown = false;
   private pollingTimer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -76,9 +78,10 @@ export class MonitoringService {
     this.logger.info(`Avvio del servizio di polling periodico con intervallo di ${interval} secondi.`);
 
     this.pollingTimer = setInterval(() => {
-      this.pollAllRobots().catch((err) => {
+      if (this.pollingCycle) return;
+      this.pollingCycle = this.pollAllRobots().catch((err) => {
         this.logger.error("Errore non gestito durante il ciclo di polling periodico", err);
-      });
+      }).finally(() => { this.pollingCycle = undefined; });
     }, interval * 1000);
 
     return true;
@@ -93,6 +96,22 @@ export class MonitoringService {
       this.pollingTimer = null;
       this.logger.info("Servizio di polling periodico arrestato.");
     }
+  }
+
+  public shutdown(): Promise<void> {
+    this.shuttingDown = true;
+    this.stopPolling();
+    return this.pollingCycle ?? Promise.resolve();
+  }
+
+  private async pollInParallel(robots: RobotEntity[], poll: (robot: RobotEntity) => Promise<void>): Promise<void> {
+    const slots = Math.min(robots.length, this.config.maxConcurrentTransfersPerUser, this.config.maxConcurrentTransfersServer);
+    let index = 0;
+    await Promise.all(Array.from({ length: slots }, async () => {
+      while (!this.shuttingDown && index < robots.length) {
+        await poll(robots[index++]);
+      }
+    }));
   }
 
   public isPollingActive(): boolean {
@@ -113,19 +132,13 @@ export class MonitoringService {
         r.registrationState !== "ssh_non_verificata"
     );
 
-    const promises = eligible.map(async (robot) => {
-      // Divieto di cicli di polling sovrapposti sullo stesso robot (RNF-PERF-004)
-      if (this.activePolls.has(robot.id)) {
-        return;
-      }
+    await this.pollInParallel(eligible, async (robot) => {
       try {
         await this.pollSingleRobot(robot.id, "system_monitor");
-      } catch (err: any) {
-  this.logger.error(`Errore durante il polling del robot '${robot.id}': ${err?.message || String(err)}`);
+      } catch (error: any) {
+        this.logger.error(`Errore durante il polling del robot '${robot.id}'`, error?.message);
       }
     });
-
-    await Promise.allSettled(promises);
   }
 
   /**
@@ -142,16 +155,14 @@ export class MonitoringService {
     const errors: Record<string, string> = {};
     let updatedCount = 0;
 
-    await Promise.allSettled(
-      eligible.map(async (r) => {
-        try {
-          await this.pollSingleRobot(r.id, user.username);
-          updatedCount++;
-        } catch (err: any) {
-          errors[r.id] = err?.message || String(err);
-        }
-      })
-    );
+    await this.pollInParallel(eligible, async (robot) => {
+      try {
+        await this.pollSingleRobot(robot.id, user.username);
+        updatedCount++;
+      } catch (error: any) {
+        errors[robot.id] = error?.message || String(error);
+      }
+    });
 
     return { updatedCount, errors };
   }
@@ -164,7 +175,7 @@ export class MonitoringService {
    * - Nessun enum fittizio (offline, spento) scritto nello stato operativo.
    */
   public async pollSingleRobot(robotId: string, actorUserId: string): Promise<RobotEntity | null> {
-    if (this.activePolls.has(robotId)) {
+    if (this.shuttingDown || this.activePolls.has(robotId)) {
       return null;
     }
 

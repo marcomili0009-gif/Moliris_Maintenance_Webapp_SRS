@@ -313,7 +313,9 @@ export function createServer(
   setPathAuthorizationAuditRepository(auditRepository);
 
   // Servizio di logging su file fisico (Requisito #8) e gestore batch trasferimenti (Requisito #9)
-  const physicalFileLogger = deps.physicalFileLogger || new PhysicalFileLogger(process.env.MOLIRIS_LOGS_DIR);
+  const physicalFileLogger = deps.physicalFileLogger || new PhysicalFileLogger(process.env.MOLIRIS_LOGS_DIR, { logger });
+  app.addHook("onReady", () => physicalFileLogger.startRecovery());
+  app.addHook("preClose", async () => physicalFileLogger.stopRecovery());
   const batchTransferManager = deps.batchTransferManager || new BatchTransferManager(physicalFileLogger);
 
   const authMiddleware = new AuthMiddleware(
@@ -566,12 +568,29 @@ export function createServer(
   app.decorate("transferService", transferService);
   app.decorate("physicalFileLogger", physicalFileLogger);
   app.decorate("batchTransferManager", batchTransferManager);
-  app.addHook("onClose", async () => {
+  app.addHook("preClose", async () => {
     removalRecovery.abort();
-    monitoringService.stopPolling();
-    transferService.stopCleanupTask();
-    await terminalService.closeAll("SERVICE_SHUTDOWN");
-    await connectionManager.closeAll();
+    const polling = monitoringService.shutdown();
+    sessionManager.dispose();
+    // Let transfer cancellation clean temporary files over existing SFTP
+    // channels before tearing down the shared SSH connections.
+    const transfers = transferService.shutdown();
+    const terminals = terminalService.closeAll("SERVICE_SHUTDOWN");
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        transfers,
+        new Promise<void>((resolve) => { deadline = setTimeout(resolve, 3_000); }),
+      ]);
+    } finally {
+      clearTimeout(deadline);
+      await connectionManager.closeAll();
+    }
+    await Promise.all([transfers, terminals, polling]);
+  });
+  app.addHook("onClose", async () => {
+    await transferService.waitForBackgroundTransfers();
+    await physicalFileLogger.flush();
   });
 
   // La liveness dipende solo dal processo; la readiness richiede anche MongoDB.
@@ -584,6 +603,9 @@ export function createServer(
 
   app.get("/healthz", async (_request, reply) => {
     reply.header("Cache-Control", "no-store");
+    if (!physicalFileLogger.isPersistenceHealthy()) {
+      return reply.status(503).send({ status: "UNAVAILABLE", timestamp: new Date().toISOString() });
+    }
     if (deps.db) {
       try {
         await deps.db.command({ ping: 1 }, { signal: AbortSignal.timeout(1_000) });
@@ -690,7 +712,11 @@ export async function startServer(): Promise<void> {
     const appConfig = loadConfig();
     logger.info(`[CONFIG] File di configurazione applicativo caricato: ${appConfig.loadedConfigPath || "valori predefiniti"}`);
     logger.info(`[CONFIG] Parametri attivi: maxConcurrentWebUsers=${appConfig.maxConcurrentWebUsers}, maxSessionsPerAccount=${appConfig.maxSessionsPerAccount ?? appConfig.futureExtensions?.maxSessionsPerAccount ?? 1}, maxConcurrentTerminalsPerRobot=${appConfig.maxConcurrentTerminalsPerRobot}, sessionTimeout=${appConfig.sessionInactivityTimeoutMinutes}m, sessionWarning=${appConfig.sessionInactivityWarningMinutes}m`);
-    const config = loadAndValidateConfig(process.env);
+    const config = loadAndValidateConfig({
+      ...process.env,
+      MOLIRIS_POLLING_INTERVAL_SEC: process.env.MOLIRIS_POLLING_INTERVAL_SEC?.trim()
+        || String(appConfig.fleetPollingIntervalSeconds),
+    });
 
     // Sincronizza i parametri vincolanti di config.json su SystemConfiguration
     if (appConfig.fleetPollingIntervalSeconds !== undefined && (!process.env["MOLIRIS_POLLING_INTERVAL_SEC"])) {
@@ -788,11 +814,8 @@ export async function startServer(): Promise<void> {
       userRepository,
       connectionManager,
       db,
+      physicalFileLogger: new PhysicalFileLogger(process.env.MOLIRIS_LOGS_DIR, { db, logger }),
       appConfig,
-    });
-
-    server.addHook("onClose", async () => {
-      await mongoClient?.close();
     });
 
     const port = Number(process.env["MOLIRIS_SERVER_PORT"]) || 8443;
@@ -828,21 +851,31 @@ export async function startServer(): Promise<void> {
       if (shuttingDown) return;
       shuttingDown = true;
       logger.info(`Ricevuto segnale ${signal}: avvio chiusura ordinata (RNF-REL-005)...`);
-      try {
-        if (httpRedirectServer) {
-          await new Promise<void>((resolve) => httpRedirectServer!.close(() => resolve()));
-        }
-        await server.close();
-        (server as any).terminalService?.closeAll("SERVICE_SHUTDOWN");
-        connectionManager.closeAll();
-        if (mongoClient) {
-          await mongoClient.close();
-        }
-        logger.info("Chiusura ordinata delle risorse completata con successo.");
-        process.exit(0);
-      } catch (err: any) {
-        logger.error("Errore durante la chiusura ordinata", err?.message);
+      const drainDeadline = setTimeout(() => {
+        logger.warn("Scaduto il tempo di drenaggio HTTP. Chiusura delle connessioni residue.");
+        server.server.closeAllConnections();
+        httpRedirectServer?.closeAllConnections();
+      }, 7_000);
+      const processDeadline = setTimeout(() => {
+        logger.error("Arresto incompleto entro il budget applicativo.");
         process.exit(1);
+      }, 13_000);
+      try {
+        await Promise.all([
+          server.close(),
+          httpRedirectServer && new Promise<void>((resolve) => httpRedirectServer!.close(() => resolve())),
+        ]);
+        await mongoClient?.close();
+        logger.info("Chiusura ordinata delle risorse completata con successo.");
+        process.exitCode = 0;
+      } catch (err: any) {
+        await mongoClient?.close().catch(() => {});
+        logger.error("Errore durante la chiusura ordinata", err?.message);
+        process.exitCode = 1;
+      } finally {
+        clearTimeout(drainDeadline);
+        // Keep a bounded exit even if a library leaves an active handle.
+        processDeadline.unref();
       }
     };
 

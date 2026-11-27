@@ -173,10 +173,12 @@ In stretta aderenza alla regola cardine di non inventare funzionalità o comport
 
 ## 6. Indice della Documentazione di Progetto
 
-- **[TRACEABILITY.md](file:///home/mmilitello/Scrivania/Moliris_Maintenance_Webapp_SRS/TRACEABILITY.md)**: Matrice completa di tracciabilità Requisito → Modulo → Test per tutti i requisiti RF, RNF e vincoli §2.4.
-- **[COLLAUDO.md](file:///home/mmilitello/Scrivania/Moliris_Maintenance_Webapp_SRS/COLLAUDO.md)**: Verbale ufficiale di collaudo con esito dei 35 criteri §7, 18 obiettivi §12 e misurazioni di memoria heap reale.
-- **[DEPLOY.md](file:///home/mmilitello/Scrivania/Moliris_Maintenance_Webapp_SRS/DEPLOY.md)**: Guida operativa di installazione in produzione su Ubuntu 26.04 con servizio systemd (`moliris.service`).
-- **[DECISIONS.md](file:///home/mmilitello/Scrivania/Moliris_Maintenance_Webapp_SRS/DECISIONS.md)**: Registro delle decisioni architetturali e dei punti aperti della Sezione 11 (isolati e configurabili).
-- **[DIAGNOSTICS.md](file:///home/mmilitello/Scrivania/Moliris_Maintenance_Webapp_SRS/DIAGNOSTICS.md)**: Manuale di diagnostica, logging, audit trail e catalogo errori §9 (recuperabili vs intervento amministrativo).
-- **[STATUS_FILE_FORMAT.md](file:///home/mmilitello/Scrivania/Moliris_Maintenance_Webapp_SRS/STATUS_FILE_FORMAT.md)**: Specifiche del formato dei file di stato (Key-Value e JSON) e regole di interpretazione.
-- **[ARCHITECTURE.md](file:///home/mmilitello/Scrivania/Moliris_Maintenance_Webapp_SRS/ARCHITECTURE.md)**: Dettaglio dell'architettura a moduli disaccoppiati e flussi di comunicazione.
+- **[TRACEABILITY.md](TRACEABILITY.md)**: Matrice completa di tracciabilità Requisito → Modulo → Test per tutti i requisiti RF, RNF e vincoli §2.4.
+- **[COLLAUDO.md](COLLAUDO.md)**: Verbale ufficiale di collaudo con esito dei 35 criteri §7, 18 obiettivi §12 e misurazioni di memoria heap reale.
+- **[DEPLOY.md](DEPLOY.md)**: Guida operativa di installazione in produzione su Ubuntu 26.04 con servizio systemd (`moliris.service`).
+- **[DECISIONS.md](DECISIONS.md)**: Registro delle decisioni architetturali e dei punti aperti della Sezione 11 (isolati e configurabili).
+- **[DIAGNOSTICS.md](DIAGNOSTICS.md)**: Manuale di diagnostica, logging, audit trail e catalogo errori §9 (recuperabili vs intervento amministrativo).
+- **[Aggiornamento manuale NEANTE](docs/NEANTE-MANUAL-UPDATE.md)**: verifica del runtime, attivazione manuale e rollback.
+- **[Backup e ripristino](docs/BACKUP-RESTORE.md)**: acquisizione coordinata e verifica isolata dei dati.
+- **[STATUS_FILE_FORMAT.md](STATUS_FILE_FORMAT.md)**: Specifiche del formato dei file di stato (Key-Value e JSON) e regole di interpretazione.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)**: Dettaglio dell'architettura a moduli disaccoppiati e flussi di comunicazione.

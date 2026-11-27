@@ -42,6 +42,7 @@ console.log("--> Esecuzione test unitari Modulo di Configurazione (SRS §2)...")
   assert.deepStrictEqual(config.futureExtensions.customSettings, {}, "Default customSettings deve essere un oggetto vuoto");
 
   assert.strictEqual(config.fleetPollingIntervalSeconds, 5, "Default fleetPollingIntervalSeconds deve essere 5");
+  assert.strictEqual(loadConfig({ env: { MOLIRIS_POLLING_INTERVAL_SEC: "0" } }).fleetPollingIntervalSeconds, 0);
   assert.strictEqual(config.maxConcurrentTransfers, 5, "Default maxConcurrentTransfers deve essere 5");
   assert.strictEqual(config.sshConnectTimeoutSeconds, 15, "Default sshConnectTimeoutSeconds deve essere 15");
   assert.strictEqual(config.transferTimeoutMinutes, 30, "Default transferTimeoutMinutes deve essere 30");

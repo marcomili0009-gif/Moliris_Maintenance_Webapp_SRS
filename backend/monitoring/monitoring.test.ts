@@ -665,6 +665,51 @@ function createTestRobot(id: string, statePath: string, host = "127.0.0.1", port
   console.log("  PASS: Endpoint REST /api/robots/:robotId/status e refresh verificati con RBAC.");
 }
 
+// Verifica la schedulazione con la taglia nominale della flotta su SSH reale di prova.
+{
+  const robots = new InMemoryRobotRepository();
+  const audit = new InMemoryAuditRepository();
+  const reader = new RemoteRobotReader(connectionManager, testConfig.sshConnectionTimeoutMs, logger);
+  const service = new MonitoringService(testConfig, robots, audit, reader, new MolirisStateFileParser(), testRoleMapping, logger);
+  for (let n = 0; n < 100; n++) {
+    await robots.create(createTestRobot(`capacity-${n}`, "/opt/moliris/status/valid_kv.txt"));
+  }
+  const rssStart = process.memoryUsage.rss();
+  const heapStart = process.memoryUsage().heapUsed;
+  let rssPeak = rssStart;
+  let heapPeak = heapStart;
+  let peakConnections = 0;
+  const sample = setInterval(() => {
+    const memory = process.memoryUsage();
+    rssPeak = Math.max(rssPeak, memory.rss);
+    heapPeak = Math.max(heapPeak, memory.heapUsed);
+    peakConnections = Math.max(peakConnections, connectionManager.getActiveConnectionCount());
+  }, 5);
+  try {
+    for (let run = 1; run <= 2; run++) {
+      const cpuStart = process.cpuUsage();
+      const dateStart = Date.now();
+      const startedAt = performance.now();
+      await service.pollAllRobots();
+      const durationMs = performance.now() - startedAt;
+      const cpu = process.cpuUsage(cpuStart);
+      const failures = (await robots.list()).filter((robot) =>
+        !robot.lastAttemptOutcome?.success || robot.lastAttemptOutcome.timestamp.getTime() < dateStart);
+      assert.equal(failures.length, 0, "Tutti i 100 robot devono essere interrogati a ogni ciclo");
+      assert.equal(connectionManager.getActiveConnectionCount(), 0);
+      console.log("POLL_100", JSON.stringify({
+        run, robots: 100, durationMs: Math.round(durationMs), cpuMs: Math.round((cpu.user + cpu.system) / 1000),
+        cpuPercentOneCore: Math.round((cpu.user + cpu.system) / (durationMs * 10)),
+        rssStart, rssPeak, heapStart, heapPeak, peakConnections, errors: failures.length,
+      }));
+    }
+    assert.ok(peakConnections > 0 && peakConnections <= testConfig.maxConcurrentTransfersPerUser);
+  } finally {
+    clearInterval(sample);
+    await service.shutdown();
+  }
+}
+
 // Chiusura test server SSH e pulizia file temporanei
 await new Promise<void>((resolve) => {
   testServer.close(() => resolve());

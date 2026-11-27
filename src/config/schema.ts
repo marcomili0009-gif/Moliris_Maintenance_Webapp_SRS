@@ -178,7 +178,7 @@ export const AppConfigSchema = z.object({
   fleetPollingIntervalSeconds: z
     .number({ message: "fleetPollingIntervalSeconds deve essere un numero" })
     .int("fleetPollingIntervalSeconds deve essere un intero")
-    .min(1, "fleetPollingIntervalSeconds deve essere almeno 1 secondo")
+    .min(0, "fleetPollingIntervalSeconds deve essere almeno 0 (polling disattivato)")
     .max(3600, "fleetPollingIntervalSeconds non può superare 3600 secondi")
     .default(5),
 

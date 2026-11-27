@@ -127,7 +127,7 @@ export interface SystemConfiguration {
  */
 export const SystemConfigSchema = z.object({
   serverFilesystemRoot: z.string().min(1, "serverFilesystemRoot non può essere vuoto"),
-  pollingIntervalSeconds: z.number().int().min(1, "pollingIntervalSeconds deve essere un intero >= 1"),
+  pollingIntervalSeconds: z.number().int().min(0, "pollingIntervalSeconds deve essere un intero >= 0"),
   sshConnectionTimeoutMs: z.number().int().min(100, "sshConnectionTimeoutMs deve essere >= 100 ms"),
   maxConcurrentTransfersPerUser: z.number().int().min(1, "maxConcurrentTransfersPerUser deve essere >= 1"),
   maxConcurrentTransfersPerRobot: z.number().int().min(1, "maxConcurrentTransfersPerRobot deve essere >= 1"),
