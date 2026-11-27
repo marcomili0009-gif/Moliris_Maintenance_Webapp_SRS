@@ -240,6 +240,8 @@ export class TerminalService {
         customLimits?.maxConcurrentPerRobot ?? config.maxConcurrentTerminalSessionsPerRobot ?? DEFAULT_TERMINAL_LIMITS.maxConcurrentPerRobot,
       sessionTimeoutMinutes:
         customLimits?.sessionTimeoutMinutes ?? config.terminalSessionTimeoutMinutes ?? DEFAULT_TERMINAL_LIMITS.sessionTimeoutMinutes,
+      sessionWarningMinutes:
+        customLimits?.sessionWarningMinutes ?? config.terminalSessionWarningMinutes ?? 5,
       maxBufferedBytes: customLimits?.maxBufferedBytes ?? DEFAULT_TERMINAL_LIMITS.maxBufferedBytes,
     };
 
@@ -266,7 +268,7 @@ export class TerminalService {
 
   public checkIdleSessions(now: number = Date.now()): void {
     const timeoutMs = this.limits.sessionTimeoutMinutes * 60 * 1000;
-    const warningMinutes = this.config.terminalSessionWarningMinutes ?? 5;
+    const warningMinutes = this.limits.sessionWarningMinutes ?? this.config.terminalSessionWarningMinutes ?? 5;
     const warningWindowMs = warningMinutes * 60 * 1000;
 
     for (const session of Array.from(this.activeSessions.values())) {
@@ -550,7 +552,7 @@ export class TerminalService {
     try {
       const validSession = this.assertPendingOpenValid(reservationId, user, userSessionId, robot.id);
 
-      managedConn = await this.connectionManager.acquireConnection(user.username, robot);
+      managedConn = await this.connectionManager.acquireConnection(user.username, robot, { category: "terminal" });
       this.assertPendingOpenValid(reservationId, user, userSessionId, robot.id);
 
       const cols = Math.max(10, Math.min(300, initialDimensions.cols || 80));

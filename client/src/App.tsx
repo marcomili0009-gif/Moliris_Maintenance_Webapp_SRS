@@ -41,6 +41,8 @@ export const App: React.FC = () => {
     idleWarningInfo,
     isIdleWarningOpen,
     idleRemainingMinutes,
+    sessionWarningMinutes,
+    terminalWarningMinutes,
     login,
     logout,
     retryLogout,
@@ -136,6 +138,7 @@ export const App: React.FC = () => {
           user={currentUser}
           onLogout={logout}
           isSessionWarningOpen={isSessionWarningOpen}
+          terminalWarningMinutes={terminalWarningMinutes}
           onConfirmSession={confirmActivity || confirmSession}
           setActiveTransfersCount={setActiveTransfersCount}
           goHomeTrigger={goHomeTrigger}
@@ -151,6 +154,7 @@ export const App: React.FC = () => {
           remainingSeconds={
             idleWarningInfo?.remainingSeconds ?? (idleRemainingMinutes * 60)
           }
+          warningWindowSeconds={sessionWarningMinutes * 60}
           message={idleWarningInfo?.message || idleWarning || undefined}
           onConfirm={confirmActivity || confirmSession}
           onLogout={logout}

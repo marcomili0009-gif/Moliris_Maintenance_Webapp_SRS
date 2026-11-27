@@ -45,14 +45,11 @@
     "_comment_maxFleetRobots": "Numero massimo di robot mobili gestibili contemporaneamente nell'anagrafica della flotta.",
     "maxFleetRobots": 100,
 
-    "_comment_maxSessionsPerAccount": "Numero massimo di sessioni contemporanee permesse per singolo account (valore 1: un solo utente attivo per account; PDF Tecnico §2, RF-AUTH-004).",
-    "maxSessionsPerAccount": 1,
-
-    "_comment_customSettings": "Spazio per impostazioni personalizzate o sperimentali aggiuntive.",
+    "_comment_customSettings": "Spazio per impostazioni personalizzate o sperimentali aggiuntive (non esposto su /api/config/public).",
     "customSettings": {}
   },
 
-  "_comment_fleetPollingIntervalSeconds": "Intervallo (in secondi) con cui il backend interroga in background lo stato di connessione e la telemetria di tutti i robot (RF-MON-003, RNF-PERF-004, §11.4).",
+  "_comment_fleetPollingIntervalSeconds": "Intervallo (in secondi) con cui il backend interroga in background lo stato di connessione e la telemetria di tutti i robot e con cui il frontend aggiorna la flotta (RF-MON-003, RNF-PERF-004, §11.4).",
   "fleetPollingIntervalSeconds": 5,
 
   "_comment_maxConcurrentTransfers": "Numero massimo di trasferimenti SFTP simultanei ammessi globalmente sul server (RF-TRF-012, RNF-PERF-003, §11.5).",
@@ -61,9 +58,9 @@
   "_comment_sshConnectTimeoutSeconds": "Timeout massimo (in secondi) per l'handshake e la connessione SSH/SFTP verso un robot prima di considerarlo irraggiungibile (RF-TRF-013, RNF-MNT-001, §11.2).",
   "sshConnectTimeoutSeconds": 15,
 
-  "_comment_transferTimeoutMinutes": "Timeout massimo complessivo (in minuti) concesso a un singolo trasferimento file prima dell'interruzione forzata e pulizia file parziali (RF-TRF-013, §11.5).",
+  "_comment_transferTimeoutMinutes": "Timeout di inattività (idle timeout, in minuti) per singolo trasferimento file: se non transitano dati/conferme SFTP per questa durata, il trasferimento viene interrotto e ripulito (RF-TRF-013, §11.5).",
   "transferTimeoutMinutes": 30,
 
-  "_comment_transferResumeEnabled": "Abilita la ripresa (resume) dei trasferimenti Server <-> Robot interrotti, falliti o annullati riutilizzando il file temporaneo parziale (RF-TRF-010). Default: true (era disattivato in sviluppo).",
+  "_comment_transferResumeEnabled": "Abilita la ripresa (resume) dei trasferimenti Server <-> Robot interrotti, falliti o annullati riutilizzando il file temporaneo parziale (RF-TRF-010). Default: true.",
   "transferResumeEnabled": true
 }

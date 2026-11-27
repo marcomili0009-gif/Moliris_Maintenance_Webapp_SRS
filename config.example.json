@@ -19,11 +19,11 @@
   "maxFileUploadBytes": 3221225472,
   "futureExtensions": {
     "maxFleetRobots": 100,
-    "maxSessionsPerAccount": 1,
     "customSettings": {}
   },
   "fleetPollingIntervalSeconds": 5,
   "maxConcurrentTransfers": 5,
   "sshConnectTimeoutSeconds": 15,
-  "transferTimeoutMinutes": 30
+  "transferTimeoutMinutes": 30,
+  "transferResumeEnabled": true
 }

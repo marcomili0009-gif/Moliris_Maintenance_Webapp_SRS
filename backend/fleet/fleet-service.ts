@@ -507,6 +507,25 @@ export class FleetService {
     if (this.robotRemovals.has(id) || this.robotRegistrations.has(id)) {
       return registrationBusy;
     }
+    if (this.config.maxFleetRobots !== undefined && this.config.maxFleetRobots > 0) {
+      const existingRobots = await this.robotRepository.list();
+      const activeFleetCount = existingRobots.filter((r) => r.anagraphicState !== "rimosso").length;
+      if (activeFleetCount + this.robotRegistrations.size >= this.config.maxFleetRobots) {
+        skippedActions.push("verifica_connessione_ssh", "creazione_directory", "persistenza_database");
+        await this.recordAudit(user.username, AuditOperation.ROBOT_REGISTRATION, id, "FAILURE", {
+          reason: "MAX_FLEET_ROBOTS_REACHED",
+          maxFleetRobots: this.config.maxFleetRobots,
+          activeFleetCount,
+        });
+        return {
+          outcome: "registrazione_rifiutata",
+          performedActions,
+          skippedActions,
+          message: `Limite massimo di robot nella flotta raggiunto (${this.config.maxFleetRobots}).`,
+          recoveryPath: "Rimuovere un robot esistente o aumentare futureExtensions.maxFleetRobots in config/config.json.",
+        };
+      }
+    }
     this.robotRegistrations.add(id);
     try {
       if (await this.auditRepository.findRobotRemoval(id)) return registrationBusy;

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { flushSync } from "react-dom";
 import { apiClient } from "../services/api-client.ts";
+import { fetchPublicConfig } from "../services/public-config.ts";
 import { ErrorPresenter } from "../services/error-presenter.ts";
 import type { User, IdleWarningInfo } from "../types/auth.ts";
 
@@ -34,6 +35,7 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
   const [idleRemainingMinutes, setIdleRemainingMinutes] = useState<number>(5);
   const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(30);
   const [sessionWarningMinutes, setSessionWarningMinutes] = useState(5);
+  const [terminalWarningMinutes, setTerminalWarningMinutes] = useState(5);
   const [internalActiveTransfers, setInternalActiveTransfers] = useState<number>(initialTransfersCount);
 
   const activeTransfersRef = useRef<number>(initialTransfersCount);
@@ -416,28 +418,14 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
 
     const loadPublicConfig = async () => {
       try {
-        const response = await apiClient.get("/api/config/public");
-        if (!response.ok) {
-          throw new Error(`Il server ha rifiutato la configurazione pubblica (${response.status}).`);
-        }
-
-        const config: unknown = await response.json();
-        if (
-          typeof config !== "object" ||
-          config === null ||
-          !("sessionInactivityTimeoutMinutes" in config) ||
-          typeof (config as any).sessionInactivityTimeoutMinutes !== "number" ||
-          !Number.isInteger((config as any).sessionInactivityTimeoutMinutes) ||
-          (config as any).sessionInactivityTimeoutMinutes < 1
-        ) {
-          throw new Error("La configurazione pubblica contiene un timeout sessione non valido.");
-        }
-
+        const cfg = await fetchPublicConfig();
         if (!cancelled) {
-          const cfg = config as any;
           setSessionTimeoutMinutes(cfg.sessionInactivityTimeoutMinutes);
           if (typeof cfg.sessionInactivityWarningMinutes === "number" && cfg.sessionInactivityWarningMinutes > 0) {
             setSessionWarningMinutes(cfg.sessionInactivityWarningMinutes);
+          }
+          if (typeof cfg.terminalSessionWarningMinutes === "number" && cfg.terminalSessionWarningMinutes > 0) {
+            setTerminalWarningMinutes(cfg.terminalSessionWarningMinutes);
           }
         }
       } catch (error) {
@@ -551,6 +539,8 @@ export function useAuth(activeTransfersOrOptions: number | { activeTransfersCoun
     idleWarningInfo,
     isIdleWarningOpen,
     idleRemainingMinutes,
+    sessionWarningMinutes,
+    terminalWarningMinutes,
     isAdmin,
     isOperator,
     login,

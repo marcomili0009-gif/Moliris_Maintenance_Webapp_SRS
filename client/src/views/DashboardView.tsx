@@ -29,6 +29,7 @@ interface DashboardViewProps {
   user: User;
   onLogout: (context?: "sessione" | "terminale") => Promise<void>;
   isSessionWarningOpen: boolean;
+  terminalWarningMinutes?: number;
   onConfirmSession?: () => Promise<void>;
   setActiveTransfersCount?: (count: number) => void;
   goHomeTrigger?: number;
@@ -41,6 +42,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   user,
   onLogout,
   isSessionWarningOpen,
+  terminalWarningMinutes = 5,
   onConfirmSession,
   setActiveTransfersCount,
   goHomeTrigger,
@@ -393,7 +395,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         isOpen={!isSessionWarningOpen && Boolean(terminal.terminalIdleWarning)}
         context="terminale"
         targetName={terminal.activeTerminal?.robotName}
-        remainingSeconds={terminal.terminalIdleWarning?.remainingSeconds ?? 300}
+        remainingSeconds={terminal.terminalIdleWarning?.remainingSeconds ?? (terminalWarningMinutes * 60)}
+        warningWindowSeconds={terminalWarningMinutes * 60}
         message={terminal.terminalIdleWarning?.message}
         onConfirm={handleConfirmTerminalIdle}
         onLogout={handleLogoutTerminalIdle}

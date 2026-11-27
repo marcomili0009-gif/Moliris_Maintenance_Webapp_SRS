@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { apiClient } from "../services/api-client.ts";
+import { fetchPublicConfig } from "../services/public-config.ts";
 import { ErrorPresenter } from "../services/error-presenter.ts";
 import type {
   RobotSummaryDto,
@@ -20,6 +21,7 @@ export function useFleet(isAuthenticated: boolean) {
   selectedRobotRef.current = selectedRobot;
 
   const [loadingDetail, setLoadingDetail] = useState<boolean>(false);
+  const [pollIntervalMs, setPollIntervalMs] = useState<number>(5000);
 
   const loadFleet = useCallback(async () => {
     if (!isAuthenticated) return;
@@ -281,6 +283,22 @@ export function useFleet(isAuthenticated: boolean) {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    fetchPublicConfig()
+      .then((cfg) => {
+        if (cancelled) return;
+        const sec = cfg.fleetPollingIntervalSeconds;
+        if (typeof sec === "number" && Number.isFinite(sec) && sec >= 0) {
+          setPollIntervalMs(sec === 0 ? 0 : Math.max(1000, Math.round(sec * 1000)));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!isAuthenticated) {
       setRobots([]);
       setSelectedRobot(null);
@@ -288,9 +306,13 @@ export function useFleet(isAuthenticated: boolean) {
     }
 
     loadFleet();
+  }, [isAuthenticated, loadFleet]);
 
-    // Polling automatico della flotta ogni 5 secondi (§16)
-    const pollIntervalMs = 5000;
+  useEffect(() => {
+    if (!isAuthenticated || pollIntervalMs <= 0) {
+      return;
+    }
+
     const timer = setInterval(() => {
       // Aggiornamento silenzioso dei dati senza flickering dello spinner
       apiClient
@@ -305,7 +327,7 @@ export function useFleet(isAuthenticated: boolean) {
     }, pollIntervalMs);
 
     return () => clearInterval(timer);
-  }, [isAuthenticated, loadFleet]);
+  }, [isAuthenticated, pollIntervalMs]);
 
   return useMemo(
     () => ({

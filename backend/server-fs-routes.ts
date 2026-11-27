@@ -663,11 +663,25 @@ export function registerServerFsRoutes(
         });
       } catch (err: any) {
         if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
-          const status = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : err.userMessage?.toLowerCase().includes("esiste già") ? 409 : 400;
+          const status =
+            err.statusCode === 413
+              ? 413
+              : err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+              ? 403
+              : err.userMessage?.toLowerCase().includes("esiste già")
+              ? 409
+              : 400;
           return reply.status(status).send({
             code: err.code,
             message: err.userMessage,
             classification: err.classification,
+          });
+        }
+        if (err?.code === "FST_REQ_FILE_TOO_LARGE" || err?.statusCode === 413) {
+          return reply.status(413).send({
+            code: ErrorCode.INSUFFICIENT_STORAGE,
+            message: "Il file supera la dimensione massima consentita dalla configurazione di sistema.",
+            classification: "recuperabile",
           });
         }
         return reply.status(500).send({
@@ -818,11 +832,25 @@ export function registerServerFsRoutes(
         });
       } catch (err: any) {
         if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
-          const status = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : err.userMessage?.toLowerCase().includes("esiste già") ? 409 : 400;
+          const status =
+            err.statusCode === 413
+              ? 413
+              : err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+              ? 403
+              : err.userMessage?.toLowerCase().includes("esiste già")
+              ? 409
+              : 400;
           return reply.status(status).send({
             code: err.code,
             message: err.userMessage,
             classification: err.classification,
+          });
+        }
+        if (err?.code === "FST_REQ_FILE_TOO_LARGE" || err?.statusCode === 413) {
+          return reply.status(413).send({
+            code: ErrorCode.INSUFFICIENT_STORAGE,
+            message: "Il file supera la dimensione massima consentita dalla configurazione di sistema.",
+            classification: "recuperabile",
           });
         }
         return reply.status(500).send({
@@ -976,6 +1004,17 @@ export function registerServerFsRoutes(
             writeStream.on("finish", resolve);
             writeStream.on("error", reject);
           });
+          if (data.file.truncated) {
+            try {
+              const resolvedTruncated = await serverFsService.resolveGeneralPath(filePath);
+              if (fs.existsSync(resolvedTruncated)) await fs.promises.unlink(resolvedTruncated);
+            } catch {}
+            return reply.status(413).send({
+              code: ErrorCode.INSUFFICIENT_STORAGE,
+              message: "Il file supera la dimensione massima consentita dalla configurazione di sistema.",
+              classification: "recuperabile",
+            });
+          }
           return reply.status(200).send({
             success: true,
             message: `File '${filename}' caricato con successo nell'archivio generale.`,
@@ -1034,11 +1073,25 @@ export function registerServerFsRoutes(
           ), err
         );
         if (err instanceof MolirisAppError || err?.name === "MolirisAppError") {
-          const status = err.code === ErrorCode.INSUFFICIENT_PERMISSIONS ? 403 : err.userMessage?.toLowerCase().includes("esiste già") ? 409 : 400;
+          const status =
+            err.statusCode === 413
+              ? 413
+              : err.code === ErrorCode.INSUFFICIENT_PERMISSIONS
+              ? 403
+              : err.userMessage?.toLowerCase().includes("esiste già")
+              ? 409
+              : 400;
           return reply.status(status).send({
             code: err.code,
             message: err.userMessage,
             classification: err.classification,
+          });
+        }
+        if (err?.code === "FST_REQ_FILE_TOO_LARGE" || err?.statusCode === 413) {
+          return reply.status(413).send({
+            code: ErrorCode.INSUFFICIENT_STORAGE,
+            message: "Il file supera la dimensione massima consentita dalla configurazione di sistema.",
+            classification: "recuperabile",
           });
         }
         return reply.status(500).send({

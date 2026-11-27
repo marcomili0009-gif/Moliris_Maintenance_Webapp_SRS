@@ -12,7 +12,20 @@ import type { FormattedError } from "../../types/error.ts";
 import { DoubleSubmitButton } from "../common/DoubleSubmitButton.tsx";
 import { FolderPickerModal } from "../common/FolderPickerModal.tsx";
 import { apiClient } from "../../services/api-client.ts";
+import { fetchPublicConfig } from "../../services/public-config.ts";
 import { ErrorPresenter } from "../../services/error-presenter.ts";
+
+function formatByteLimit(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) {
+    const gb = bytes / (1024 * 1024 * 1024);
+    return `${Number.isInteger(gb) ? gb : gb.toFixed(1)} GB`;
+  }
+  if (bytes >= 1024 * 1024) {
+    const mb = bytes / (1024 * 1024);
+    return `${Number.isInteger(mb) ? mb : mb.toFixed(1)} MB`;
+  }
+  return `${Math.round(bytes / 1024)} KB`;
+}
 import { isPathAllowedForOperator } from "../../utils/path-authorization.ts";
 
 export type BulkSourceType = "computer" | "general" | "server_robot" | "remote_robot";
@@ -117,6 +130,8 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<BulkUploadTargetResult[] | null>(null);
   const [robotToRobotSummary, setRobotToRobotSummary] = useState<any | null>(null);
+  const [maxConcurrentFiles, setMaxConcurrentFiles] = useState<number>(20);
+  const [maxFileUploadBytes, setMaxFileUploadBytes] = useState<number>(3 * 1024 * 1024 * 1024);
   const [hoveredRobot, setHoveredRobot] = useState<{
     robot: RobotSummaryDto;
     x: number;
@@ -183,6 +198,26 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
   useEffect(() => {
     setHoveredRobot(null);
   }, [step, isFolderPickerOpen, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    fetchPublicConfig()
+      .then((cfg) => {
+        if (cancelled) return;
+        const cfgMaxFiles = cfg.bulkUploadConfig?.maxConcurrentFiles;
+        if (typeof cfgMaxFiles === "number" && cfgMaxFiles >= 1) {
+          setMaxConcurrentFiles(cfgMaxFiles);
+        }
+        if (typeof cfg.maxFileUploadBytes === "number" && cfg.maxFileUploadBytes >= 1) {
+          setMaxFileUploadBytes(cfg.maxFileUploadBytes);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
 
   // Il robot predefinito è inizializzato solo se manca; non sovrascrive una scelta utente.
   useEffect(() => {
@@ -279,12 +314,33 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
     return matchId || matchName || matchCustomer || matchPlant;
   });
 
+  const getUploadLimitViolation = (files: File[], serverCount: number): string | null => {
+    if (sourceType === "computer") {
+      if (files.length > maxConcurrentFiles) {
+        return `Selezionati ${files.length} file: il limite massimo consentito è ${maxConcurrentFiles} file per caricamento massivo.`;
+      }
+      let totalBytes = 0;
+      for (const f of files) {
+        if (f.size > maxFileUploadBytes) {
+          return `Il file '${f.name}' supera la dimensione massima consentita (${formatByteLimit(maxFileUploadBytes)}).`;
+        }
+        totalBytes += f.size;
+      }
+      if (totalBytes > maxFileUploadBytes) {
+        return `La dimensione totale dei file selezionati (${formatByteLimit(totalBytes)}) supera il limite massimo consentito (${formatByteLimit(maxFileUploadBytes)}).`;
+      }
+    } else if (serverCount > maxConcurrentFiles) {
+      return `Selezionati ${serverCount} file: il limite massimo consentito è ${maxConcurrentFiles} file per caricamento massivo.`;
+    }
+    return null;
+  };
+
+  const step1LimitViolation = getUploadLimitViolation(computerFiles, selectedServerFiles.length);
+
   // Validazione prima di avanzare di passo
-  const canProceedFromStep1 = hasBulkSourceSelection(
-    sourceType,
-    computerFiles,
-    selectedServerFiles
-  );
+  const canProceedFromStep1 =
+    hasBulkSourceSelection(sourceType, computerFiles, selectedServerFiles) &&
+    !step1LimitViolation;
 
   const canProceedFromStep2 = selectedDestTypes.length > 0;
 
@@ -299,6 +355,10 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
 
   const handleNext = () => {
     setError(null);
+    if (step === 1 && step1LimitViolation) {
+      setError(step1LimitViolation);
+      return;
+    }
     if (step === 1 && !canProceedFromStep1) {
       setError("Selezionare almeno un file sorgente per continuare.");
       return;
@@ -607,15 +667,16 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                     onChange={(e) => {
                       if (e.target.files && e.target.files.length > 0) {
                         const newFiles = Array.from(e.target.files);
-                        setComputerFiles((prev) => {
-                          const existing = new Set(prev.map((f) => f.name));
-                          const filtered = newFiles.filter((f) => !existing.has(f.name));
-                          return [...prev, ...filtered];
-                        });
-                        setError(null);
+                        const existing = new Set(computerFiles.map((f) => f.name));
+                        const merged = [...computerFiles, ...newFiles.filter((f) => !existing.has(f.name))];
+                        setComputerFiles(merged);
+                        setError(getUploadLimitViolation(merged, selectedServerFiles.length));
                       }
                     }}
                   />
+                  <div className="small text-muted mt-1" id="bulk-upload-limits-hint">
+                    Limite configurato: massimo {maxConcurrentFiles} file per lotto · dimensione massima {formatByteLimit(maxFileUploadBytes)}.
+                  </div>
                   <div className="small text-secondary mt-2">
                     {computerFiles.length === 0
                       ? "Nessun file selezionato."
@@ -635,7 +696,9 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                               className="btn btn-sm btn-link text-danger p-0 ms-1"
                               title="Rimuovi file"
                               onClick={() => {
-                                setComputerFiles((prev) => prev.filter((_, idx) => idx !== i));
+                                const nextFiles = computerFiles.filter((_, idx) => idx !== i);
+                                setComputerFiles(nextFiles);
+                                setError(getUploadLimitViolation(nextFiles, selectedServerFiles.length));
                               }}
                             >
                               <Trash2 size={14} />

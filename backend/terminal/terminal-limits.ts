@@ -5,6 +5,7 @@ export interface TerminalConcurrencyLimits {
   maxConcurrentPerUser: number;
   maxConcurrentPerRobot: number;
   sessionTimeoutMinutes: number;
+  sessionWarningMinutes?: number;
   maxBufferedBytes: number;
 }
 

@@ -203,7 +203,7 @@ export const AppConfigSchema = z.object({
     .default(15),
 
   /**
-   * 11. Timeout massimo per singola operazione di trasferimento in minuti (SRS §2, RF-TRF-013)
+   * 11. Timeout di inattività (idle timeout) per singola operazione di trasferimento in minuti (SRS §2, RF-TRF-013)
    */
   transferTimeoutMinutes: z
     .number({ message: "transferTimeoutMinutes deve essere un numero" })
@@ -211,6 +211,13 @@ export const AppConfigSchema = z.object({
     .min(1, "transferTimeoutMinutes deve essere almeno 1 minuto")
     .max(1440, "transferTimeoutMinutes non può superare 1440 minuti")
     .default(30),
+
+  /**
+   * 12. Abilita la ripresa (resume) dei trasferimenti Server <-> Robot interrotti (RF-TRF-010)
+   */
+  transferResumeEnabled: z
+    .boolean({ message: "transferResumeEnabled deve essere un booleano (true/false)" })
+    .default(true),
 
   /**
    * Percorso del file da cui è stata caricata la configurazione (metadato informativo)

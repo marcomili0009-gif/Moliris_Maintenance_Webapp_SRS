@@ -46,6 +46,18 @@ console.log("--> Esecuzione test unitari Modulo di Configurazione (SRS §2)...")
   assert.strictEqual(config.maxConcurrentTransfers, 5, "Default maxConcurrentTransfers deve essere 5");
   assert.strictEqual(config.sshConnectTimeoutSeconds, 15, "Default sshConnectTimeoutSeconds deve essere 15");
   assert.strictEqual(config.transferTimeoutMinutes, 30, "Default transferTimeoutMinutes deve essere 30");
+  assert.strictEqual(config.transferResumeEnabled, true, "Default transferResumeEnabled deve essere true");
+
+  assert.strictEqual(
+    loadConfig({ env: { MOLIRIS_TRANSFER_RESUME_ENABLED: "false" }, cwd: defaultsDir }).transferResumeEnabled,
+    false,
+    "MOLIRIS_TRANSFER_RESUME_ENABLED='false' deve disabilitare il resume"
+  );
+  assert.strictEqual(
+    loadConfig({ env: {}, overrides: { transferResumeEnabled: false }, cwd: defaultsDir }).transferResumeEnabled,
+    false,
+    "transferResumeEnabled=false deve essere preservato dallo schema"
+  );
 
   assert(Object.isFrozen(config), "L'oggetto configurazione deve essere immutabile (frozen)");
 

@@ -30,11 +30,22 @@ export interface ConnectionLimits {
   connectionTimeoutMs: number;
 }
 
+export type ConnectionCategory = "transfer" | "terminal";
+
+export interface AcquireConnectionOptions {
+  /**
+   * "transfer" (default): soggetta ai limiti di concorrenza trasferimenti (maxConcurrentTransfers).
+   * "terminal": sessione SSH PTY gestita dai propri limiti in TerminalService (maxConcurrentTerminalsPerRobot).
+   */
+  category?: ConnectionCategory;
+}
+
 export class RobotConnectionManager {
-  private activeConnections: Map<string, { client: Client; robotId: string; userId: string }> = new Map();
+  private activeConnections: Map<string, { client: Client; robotId: string; userId: string; category: ConnectionCategory }> = new Map();
   private pendingConnections = new Map<string, {
     robotId: string;
     userId: string;
+    category: ConnectionCategory;
     robotGeneration: number;
     serverGeneration: number;
     client?: Client;
@@ -43,6 +54,7 @@ export class RobotConnectionManager {
   private serverGeneration = 0;
   private userConnectionCounts: Map<string, number> = new Map();
   private robotConnectionCounts: Map<string, number> = new Map();
+  private activeTransferCount = 0;
 
   private credentialProvider: CredentialProvider;
   private hostKeyVerifier: HostKeyVerifier;
@@ -79,7 +91,10 @@ export class RobotConnectionManager {
     return this.robotConnectionCounts.get(robotId) || 0;
   }
 
-  private releaseConnectionCounts(userId: string, robotId: string): void {
+  private releaseConnectionCounts(userId: string, robotId: string, category: ConnectionCategory = "transfer"): void {
+    if (category !== "transfer") return;
+    this.activeTransferCount = Math.max(0, this.activeTransferCount - 1);
+
     const userCount = this.getUserConnectionCount(userId);
     if (userCount <= 1) this.userConnectionCounts.delete(userId);
     else this.userConnectionCounts.set(userId, userCount - 1);
@@ -110,8 +125,10 @@ export class RobotConnectionManager {
    */
   public async acquireConnection(
     userId: string,
-    robot: RobotEntity
+    robot: RobotEntity,
+    options?: AcquireConnectionOptions
   ): Promise<ManagedRobotConnection> {
+    const category: ConnectionCategory = options?.category ?? "transfer";
     // 1. Verifica stato anagrafico del robot (§6.3 punto 2, §8.4)
     if (robot.anagraphicState === "disabilitato" || robot.anagraphicState === "rimosso") {
       throw new MolirisAppError(
@@ -131,28 +148,35 @@ export class RobotConnectionManager {
       throw new MolirisAppError(ErrorCode.HOST_UNREACHABLE, diagnostic, diagnostic);
     }
 
-    // 2. Controllo e applicazione limiti di concorrenza (RNF-PERF-003, RF-TRF-012)
-    if (this.activeConnections.size + this.pendingConnections.size >= this.limits.maxConcurrentServer) {
-      throw new MolirisAppError(
-        ErrorCode.CONNECTION_LIMIT_REACHED,
-        "Limite massimo di connessioni contemporanee sul server raggiunto. Riprovare a breve."
-      );
-    }
+    // 2. Controllo e applicazione limiti di concorrenza trasferimenti (RNF-PERF-003, RF-TRF-012).
+    // Le sessioni terminale SSH PTY sono governate dai propri limiti dedicati in TerminalService.
+    if (category === "transfer") {
+      if (this.activeTransferCount >= this.limits.maxConcurrentServer) {
+        throw new MolirisAppError(
+          ErrorCode.CONNECTION_LIMIT_REACHED,
+          "Limite massimo di connessioni contemporanee sul server raggiunto. Riprovare a breve."
+        );
+      }
 
-    const currentForUser = this.getUserConnectionCount(userId);
-    if (currentForUser >= this.limits.maxConcurrentPerUser) {
-      throw new MolirisAppError(
-        ErrorCode.CONNECTION_LIMIT_REACHED,
-        "Limite massimo di connessioni simultanee per utente raggiunto."
-      );
-    }
+      const currentForUser = this.getUserConnectionCount(userId);
+      if (currentForUser >= this.limits.maxConcurrentPerUser) {
+        throw new MolirisAppError(
+          ErrorCode.CONNECTION_LIMIT_REACHED,
+          "Limite massimo di connessioni simultanee per utente raggiunto."
+        );
+      }
 
-    const currentForRobot = this.getRobotConnectionCount(robot.id);
-    if (currentForRobot >= this.limits.maxConcurrentPerRobot) {
-      throw new MolirisAppError(
-        ErrorCode.CONNECTION_LIMIT_REACHED,
-        "Limite massimo di connessioni simultanee per questo robot raggiunto."
-      );
+      const currentForRobot = this.getRobotConnectionCount(robot.id);
+      if (currentForRobot >= this.limits.maxConcurrentPerRobot) {
+        throw new MolirisAppError(
+          ErrorCode.CONNECTION_LIMIT_REACHED,
+          "Limite massimo di connessioni simultanee per questo robot raggiunto."
+        );
+      }
+
+      this.activeTransferCount += 1;
+      this.userConnectionCounts.set(userId, currentForUser + 1);
+      this.robotConnectionCounts.set(robot.id, currentForRobot + 1);
     }
 
     // Prenotazione sincrona: impedisce ad aperture contemporanee di superare i limiti.
@@ -160,11 +184,10 @@ export class RobotConnectionManager {
     this.pendingConnections.set(connectionId, {
       robotId: robot.id,
       userId,
+      category,
       robotGeneration: this.robotGenerations.get(robot.id) || 0,
       serverGeneration: this.serverGeneration,
     });
-    this.userConnectionCounts.set(userId, currentForUser + 1);
-    this.robotConnectionCounts.set(robot.id, currentForRobot + 1);
 
     try {
     // 3. Recupero materiale di autenticazione protetto (Vincoli 2.4 punti 1-2, RNF-SEC-002)
@@ -336,7 +359,7 @@ export class RobotConnectionManager {
     this.assertPendingConnectionValid(connectionId);
 
     // La prenotazione diventa una connessione attiva senza incrementare nuovamente i contatori.
-    this.activeConnections.set(connectionId, { client, robotId: robot.id, userId });
+    this.activeConnections.set(connectionId, { client, robotId: robot.id, userId, category });
     this.pendingConnections.delete(connectionId);
 
     let released = false;
@@ -346,7 +369,7 @@ export class RobotConnectionManager {
       const active = this.activeConnections.get(connectionId);
       if (active) {
         this.activeConnections.delete(connectionId);
-        this.releaseConnectionCounts(userId, robot.id);
+        this.releaseConnectionCounts(userId, robot.id, active.category);
 
         try {
           active.client.end();
@@ -423,8 +446,9 @@ export class RobotConnectionManager {
 
     return managed;
     } catch (err) {
+      const removedPending = this.pendingConnections.get(connectionId);
       if (this.pendingConnections.delete(connectionId)) {
-        this.releaseConnectionCounts(userId, robot.id);
+        this.releaseConnectionCounts(userId, robot.id, removedPending?.category ?? category);
       }
       throw err;
     }
@@ -446,14 +470,14 @@ export class RobotConnectionManager {
           } catch {}
         }
         this.pendingConnections.delete(connId);
-        this.releaseConnectionCounts(pending.userId, pending.robotId);
+        this.releaseConnectionCounts(pending.userId, pending.robotId, pending.category);
       }
     }
 
     for (const [connId, entry] of this.activeConnections.entries()) {
       if (entry.robotId === robotId) {
         this.activeConnections.delete(connId);
-        this.releaseConnectionCounts(entry.userId, entry.robotId);
+        this.releaseConnectionCounts(entry.userId, entry.robotId, entry.category);
         try {
           entry.client.end();
           entry.client.destroy();
@@ -474,12 +498,12 @@ export class RobotConnectionManager {
         } catch {}
       }
       this.pendingConnections.delete(connId);
-      this.releaseConnectionCounts(pending.userId, pending.robotId);
+      this.releaseConnectionCounts(pending.userId, pending.robotId, pending.category);
     }
 
     for (const [connId, entry] of this.activeConnections.entries()) {
       this.activeConnections.delete(connId);
-      this.releaseConnectionCounts(entry.userId, entry.robotId);
+      this.releaseConnectionCounts(entry.userId, entry.robotId, entry.category);
       try {
         entry.client.end();
         entry.client.destroy();

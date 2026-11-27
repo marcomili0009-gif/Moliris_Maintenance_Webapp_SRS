@@ -219,6 +219,19 @@ function extractEnvConfig(env: Record<string, string | undefined>): Record<strin
     result.transferTimeoutMinutes = isNaN(n) ? rawTrfTimeout : n;
   }
 
+  // 12. transferResumeEnabled
+  const rawResume = env["MOLIRIS_TRANSFER_RESUME_ENABLED"] ?? env["TRANSFER_RESUME_ENABLED"];
+  if (rawResume !== undefined && rawResume.trim() !== "") {
+    const normalized = rawResume.trim().toLowerCase();
+    if (normalized === "true") {
+      result.transferResumeEnabled = true;
+    } else if (normalized === "false") {
+      result.transferResumeEnabled = false;
+    } else {
+      result.transferResumeEnabled = rawResume;
+    }
+  }
+
   return result;
 }
 

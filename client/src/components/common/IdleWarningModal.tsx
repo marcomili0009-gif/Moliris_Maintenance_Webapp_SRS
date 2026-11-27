@@ -6,6 +6,7 @@ export interface IdleWarningModalProps {
   context: "sessione" | "terminale";
   targetName?: string;
   remainingSeconds: number;
+  warningWindowSeconds?: number;
   message?: string;
   onConfirm: () => void | Promise<void>;
   onLogout: () => void | Promise<void>;
@@ -16,6 +17,7 @@ export const IdleWarningModal: React.FC<IdleWarningModalProps> = ({
   context,
   targetName,
   remainingSeconds,
+  warningWindowSeconds,
   message,
   onConfirm,
   onLogout,
@@ -42,7 +44,8 @@ export const IdleWarningModal: React.FC<IdleWarningModalProps> = ({
   const minutes = Math.floor(safeRemaining / 60);
   const seconds = safeRemaining % 60;
   const formattedCountdown = `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-  const warningWindowTotalSeconds = 300;
+  const warningWindowTotalSeconds =
+    warningWindowSeconds && warningWindowSeconds > 0 ? warningWindowSeconds : 300;
   const progressPercent = Math.min(100, Math.max(0, Math.round((safeRemaining / warningWindowTotalSeconds) * 100)));
   const isCritical = safeRemaining <= 60;
 

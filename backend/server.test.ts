@@ -100,6 +100,8 @@ assert.strictEqual(publicConfig.allowedPaths, undefined, "I path ammessi non dev
 assert.strictEqual(publicConfig.bulkUploadConfig.allowedSubPaths, undefined, "I path bulk non devono essere pubblici");
 assert.strictEqual(publicConfig.bulkUploadConfig.maxConcurrentFiles, 20);
 assert.strictEqual(publicConfig.customSettings, undefined, "Le impostazioni estese non devono essere esposte pubblicamente");
+assert.strictEqual(publicConfig.futureExtensions?.customSettings, undefined, "futureExtensions.customSettings non deve essere esposto pubblicamente");
+assert.strictEqual(publicConfig.transferResumeEnabled, true, "transferResumeEnabled deve riflettere config.json");
 
 const frontendResponse = await server.inject({ method: "GET", url: "/" });
 assert.strictEqual(frontendResponse.statusCode, 200, "La route root deve servire la build React");

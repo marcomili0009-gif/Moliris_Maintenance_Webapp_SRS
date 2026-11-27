@@ -5,16 +5,35 @@ import { loadAndValidateConfig } from "./configuration.ts";
 
 console.log("--> Esecuzione test validazione configurazione...");
 
-// Test 1: Fallimento se mancano parametri obbligatori
+// Test 1: Fallimento se mancano parametri obbligatori infrastrutturali
 try {
   loadAndValidateConfig({});
   assert.fail("Avrebbe dovuto fallire per parametri mancanti");
 } catch (err: any) {
   assert(err.message.includes("Inizializzazione fallita. Parametri di configurazione obbligatori mancanti"));
   assert(err.message.includes("MOLIRIS_FS_ROOT"));
-  assert(err.message.includes("MOLIRIS_POLLING_INTERVAL_SEC"));
-  assert(err.message.includes("MOLIRIS_SSH_TIMEOUT_MS"));
+  assert(err.message.includes("MOLIRIS_TLS_CERT_PATH"));
+  assert(err.message.includes("MOLIRIS_TLS_KEY_PATH"));
   assert(err.message.includes("MOLIRIS_REGISTRATION_MODE"));
+}
+
+// Test 1b: Successo su server remoto senza le variabili opzionali gestite da config/config.json
+{
+  const minimalRemoteEnv: Record<string, string> = {
+    MOLIRIS_FS_ROOT: "/var/lib/moliris/server-fs",
+    MOLIRIS_TEMP_RETENTION_MIN: "60",
+    MOLIRIS_STATE_FILE_PATHS: "/tmp/status.txt",
+    MOLIRIS_TLS_CERT_PATH: "/certs/cert.pem",
+    MOLIRIS_TLS_KEY_PATH: "/certs/key.pem",
+    MOLIRIS_REGISTRATION_MODE: "rigorosa",
+    MOLIRIS_AUDIT_RETENTION_DAYS: "365",
+    MOLIRIS_MASTER_KEY_FILE: "/certs/master.key",
+  };
+  const remoteConfig = loadAndValidateConfig(minimalRemoteEnv);
+  assert.strictEqual(remoteConfig.pollingIntervalSeconds, 5);
+  assert.strictEqual(remoteConfig.sshConnectionTimeoutMs, 15000);
+  assert.strictEqual(remoteConfig.maxConcurrentTransfersServer, 5);
+  assert.strictEqual(remoteConfig.inactiveSessionTimeoutMinutes, 30);
 }
 
 // Test 2: Fallimento per modalità di registrazione non valida

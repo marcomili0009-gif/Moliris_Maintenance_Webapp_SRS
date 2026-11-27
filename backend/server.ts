@@ -4,7 +4,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply }
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { type SystemConfiguration, loadAndValidateConfig } from "../config/configuration.ts";
+import { type SystemConfiguration, loadAndValidateConfig, getExplicitEnvFields } from "../config/configuration.ts";
 import { loadConfig, registerAppConfig, type AppConfig } from "../src/config/index.ts";
 import { assertMongoCredentialsInProduction, resolveMongoConfig } from "../config/mongodb.ts";
 import { MolirisLogger } from "../logging/logger.ts";
@@ -96,6 +96,65 @@ export interface ServerDependencies {
   appConfig?: AppConfig;
 }
 
+/**
+ * Sincronizza i parametri operativi di config/config.json (appConfig) su SystemConfiguration.
+ * - Se `config` proviene da loadAndValidateConfig(env), `config/config.json` prevale sempre sui default
+ *   di SystemConfiguration; una variabile d'ambiente vince solo se esplicitamente valorizzata.
+ * - Se `config` è un oggetto creato manualmente (es. nei test), popola solo i campi non valorizzati.
+ */
+export function syncAppConfigToSystemConfig(appConfig: AppConfig, config: SystemConfiguration): void {
+  const explicitEnvFields = getExplicitEnvFields(config);
+  const shouldSync = (field: keyof SystemConfiguration): boolean => {
+    if (explicitEnvFields) {
+      return !explicitEnvFields.has(field as string);
+    }
+    return config[field] === undefined;
+  };
+
+  if (appConfig.fleetPollingIntervalSeconds !== undefined && shouldSync("pollingIntervalSeconds")) {
+    config.pollingIntervalSeconds = appConfig.fleetPollingIntervalSeconds;
+  }
+  if (appConfig.maxConcurrentTransfers !== undefined && shouldSync("maxConcurrentTransfersServer")) {
+    config.maxConcurrentTransfersServer = appConfig.maxConcurrentTransfers;
+  }
+  if (appConfig.sshConnectTimeoutSeconds !== undefined && shouldSync("sshConnectionTimeoutMs")) {
+    config.sshConnectionTimeoutMs = appConfig.sshConnectTimeoutSeconds * 1000;
+  }
+  if (appConfig.transferTimeoutMinutes !== undefined && shouldSync("transferIdleTimeoutMs")) {
+    config.transferIdleTimeoutMs = appConfig.transferTimeoutMinutes * 60 * 1000;
+  }
+  if (appConfig.sessionInactivityTimeoutMinutes !== undefined && shouldSync("inactiveSessionTimeoutMinutes")) {
+    config.inactiveSessionTimeoutMinutes = appConfig.sessionInactivityTimeoutMinutes;
+  }
+  if (appConfig.sessionInactivityWarningMinutes !== undefined && shouldSync("sessionInactivityWarningMinutes")) {
+    config.sessionInactivityWarningMinutes = appConfig.sessionInactivityWarningMinutes;
+  }
+  if (appConfig.sshTerminalActiveTimeoutMinutes !== undefined && shouldSync("terminalSessionTimeoutMinutes")) {
+    config.terminalSessionTimeoutMinutes = appConfig.sshTerminalActiveTimeoutMinutes;
+  }
+  if (appConfig.sshTerminalWarningMinutes !== undefined && shouldSync("terminalSessionWarningMinutes")) {
+    config.terminalSessionWarningMinutes = appConfig.sshTerminalWarningMinutes;
+  }
+  if (appConfig.bulkUploadConfig?.maxConcurrentFiles !== undefined && shouldSync("maxBulkUploadFiles")) {
+    config.maxBulkUploadFiles = appConfig.bulkUploadConfig.maxConcurrentFiles;
+  }
+  if (appConfig.bulkUploadConfig?.allowedSubPaths !== undefined && shouldSync("defaultOperatorAllowedPaths")) {
+    config.defaultOperatorAllowedPaths = appConfig.bulkUploadConfig.allowedSubPaths;
+  }
+  if (appConfig.bulkUploadConfig?.chunkSizeBytes !== undefined && shouldSync("transferChunkSizeBytes")) {
+    config.transferChunkSizeBytes = appConfig.bulkUploadConfig.chunkSizeBytes;
+  }
+  if (appConfig.maxFileUploadBytes !== undefined && shouldSync("maxFileSizeBytes")) {
+    config.maxFileSizeBytes = appConfig.maxFileUploadBytes;
+  }
+  if (appConfig.transferResumeEnabled !== undefined && shouldSync("transferResumeEnabled")) {
+    config.transferResumeEnabled = appConfig.transferResumeEnabled;
+  }
+  if (appConfig.futureExtensions?.maxFleetRobots !== undefined && shouldSync("maxFleetRobots")) {
+    config.maxFleetRobots = appConfig.futureExtensions.maxFleetRobots;
+  }
+}
+
 export function createServer(
   config: SystemConfiguration,
   logger: MolirisLogger,
@@ -163,73 +222,44 @@ export function createServer(
   const appConfig = deps.appConfig || loadConfig();
   registerAppConfig(app, appConfig);
 
-  // Sincronizza i parametri vincolanti di config.json su SystemConfiguration se non già valorizzati esplicitamente (SRS §2)
-  if (config.pollingIntervalSeconds === undefined && appConfig.fleetPollingIntervalSeconds !== undefined) {
-    config.pollingIntervalSeconds = appConfig.fleetPollingIntervalSeconds;
-  }
-  if (config.maxConcurrentTransfersServer === undefined && appConfig.maxConcurrentTransfers !== undefined) {
-    config.maxConcurrentTransfersServer = appConfig.maxConcurrentTransfers;
-  }
-  if (config.sshConnectionTimeoutMs === undefined && appConfig.sshConnectTimeoutSeconds !== undefined) {
-    config.sshConnectionTimeoutMs = appConfig.sshConnectTimeoutSeconds * 1000;
-  }
-  if (config.transferIdleTimeoutMs === undefined && appConfig.transferTimeoutMinutes !== undefined) {
-    config.transferIdleTimeoutMs = appConfig.transferTimeoutMinutes * 60 * 1000;
-  }
-  if (config.inactiveSessionTimeoutMinutes === undefined && appConfig.sessionInactivityTimeoutMinutes !== undefined) {
-    config.inactiveSessionTimeoutMinutes = appConfig.sessionInactivityTimeoutMinutes;
-  }
-  if (config.sessionInactivityWarningMinutes === undefined && appConfig.sessionInactivityWarningMinutes !== undefined) {
-    config.sessionInactivityWarningMinutes = appConfig.sessionInactivityWarningMinutes;
-  }
-  if (config.terminalSessionTimeoutMinutes === undefined && appConfig.sshTerminalActiveTimeoutMinutes !== undefined) {
-    config.terminalSessionTimeoutMinutes = appConfig.sshTerminalActiveTimeoutMinutes;
-  }
-  if (config.maxBulkUploadFiles === undefined && appConfig.bulkUploadConfig?.maxConcurrentFiles !== undefined) {
-    config.maxBulkUploadFiles = appConfig.bulkUploadConfig.maxConcurrentFiles;
-  }
-  if (config.defaultOperatorAllowedPaths === undefined && appConfig.bulkUploadConfig?.allowedSubPaths !== undefined) {
-    config.defaultOperatorAllowedPaths = appConfig.bulkUploadConfig.allowedSubPaths;
-  }
-  if (config.transferChunkSizeBytes === undefined && appConfig.bulkUploadConfig?.chunkSizeBytes !== undefined) {
-    config.transferChunkSizeBytes = appConfig.bulkUploadConfig.chunkSizeBytes;
-  }
-  if (config.maxFileSizeBytes === undefined && appConfig.maxFileUploadBytes !== undefined) {
-    config.maxFileSizeBytes = appConfig.maxFileUploadBytes;
-  }
+  // Sincronizza i parametri vincolanti di config.json su SystemConfiguration (SRS §2)
+  syncAppConfigToSystemConfig(appConfig, config);
 
   app.get("/api/config/public", async (_request, reply) => {
+    const effectiveMaxSessions =
+      appConfig.maxSessionsPerAccount ?? appConfig.futureExtensions?.maxSessionsPerAccount ?? 1;
     return reply.status(200).send({
       sessionInactivityTimeoutMinutes:
-        (config as any)?.inactiveSessionTimeoutMinutes ??
-        (appConfig as any)?.sessionInactivityTimeoutMinutes ??
-        (appConfig as any)?.inactiveSessionTimeoutMinutes ??
+        config.inactiveSessionTimeoutMinutes ??
+        appConfig.sessionInactivityTimeoutMinutes ??
         30,
       sessionInactivityWarningMinutes:
-        (config as any)?.sessionInactivityWarningMinutes ??
-        (appConfig as any)?.sessionInactivityWarningMinutes ??
+        config.sessionInactivityWarningMinutes ??
+        appConfig.sessionInactivityWarningMinutes ??
         5,
       sshTerminalActiveTimeoutMinutes:
-        (appConfig as any)?.sshTerminalActiveTimeoutMinutes ?? 15,
+        appConfig.sshTerminalActiveTimeoutMinutes ?? 15,
       terminalSessionWarningMinutes:
-        (config as any)?.sshTerminalWarningMinutes ??
-        (appConfig as any)?.sshTerminalWarningMinutes ??
-        (appConfig as any)?.terminalSessionWarningMinutes ??
+        config.terminalSessionWarningMinutes ??
+        appConfig.sshTerminalWarningMinutes ??
         5,
-      maxConcurrentWebUsers: (appConfig as any).maxConcurrentWebUsers ?? 10,
-      maxConcurrentTerminalsPerRobot: (appConfig as any).maxConcurrentTerminalsPerRobot ?? 1,
-      maxSessionsPerAccount: (appConfig as any).maxSessionsPerAccount ?? (appConfig as any).futureExtensions?.maxSessionsPerAccount ?? 1,
+      maxConcurrentWebUsers: appConfig.maxConcurrentWebUsers ?? 10,
+      maxConcurrentTerminalsPerRobot: appConfig.maxConcurrentTerminalsPerRobot ?? 1,
+      maxSessionsPerAccount: effectiveMaxSessions,
       fleetPollingIntervalSeconds: appConfig.fleetPollingIntervalSeconds ?? 5,
       maxConcurrentTransfers: appConfig.maxConcurrentTransfers ?? 5,
       sshConnectTimeoutSeconds: appConfig.sshConnectTimeoutSeconds ?? 15,
       transferTimeoutMinutes: appConfig.transferTimeoutMinutes ?? 30,
       maxFileUploadBytes: appConfig.maxFileUploadBytes,
       transferResumeEnabled:
-        (appConfig as typeof appConfig & { transferResumeEnabled?: boolean }).transferResumeEnabled ?? true,
-      futureExtensions: appConfig.futureExtensions,
+        config.transferResumeEnabled ?? appConfig.transferResumeEnabled,
+      futureExtensions: {
+        maxFleetRobots: appConfig.futureExtensions.maxFleetRobots,
+        maxSessionsPerAccount: effectiveMaxSessions,
+      },
       bulkUploadConfig: {
-        maxConcurrentFiles: (appConfig as any).bulkUploadConfig?.maxConcurrentFiles ?? 20,
-        chunkSizeBytes: (appConfig as any).bulkUploadConfig?.chunkSizeBytes ?? 1024 * 1024,
+        maxConcurrentFiles: appConfig.bulkUploadConfig?.maxConcurrentFiles ?? 20,
+        chunkSizeBytes: appConfig.bulkUploadConfig?.chunkSizeBytes ?? 2 * 1024 * 1024,
       },
     });
   });
@@ -397,6 +427,7 @@ export function createServer(
     {
       maxConcurrentPerRobot: appConfig.maxConcurrentTerminalsPerRobot,
       sessionTimeoutMinutes: appConfig.sshTerminalActiveTimeoutMinutes,
+      sessionWarningMinutes: config.terminalSessionWarningMinutes ?? appConfig.sshTerminalWarningMinutes,
     }
   );
 
@@ -725,46 +756,10 @@ export async function startServer(): Promise<void> {
     const appConfig = loadConfig();
     logger.info(`[CONFIG] File di configurazione applicativo caricato: ${appConfig.loadedConfigPath || "valori predefiniti"}`);
     logger.info(`[CONFIG] Parametri attivi: maxConcurrentWebUsers=${appConfig.maxConcurrentWebUsers}, maxSessionsPerAccount=${appConfig.maxSessionsPerAccount ?? appConfig.futureExtensions?.maxSessionsPerAccount ?? 1}, maxConcurrentTerminalsPerRobot=${appConfig.maxConcurrentTerminalsPerRobot}, sessionTimeout=${appConfig.sessionInactivityTimeoutMinutes}m, sessionWarning=${appConfig.sessionInactivityWarningMinutes}m`);
-    const config = loadAndValidateConfig({
-      ...process.env,
-      MOLIRIS_POLLING_INTERVAL_SEC: process.env.MOLIRIS_POLLING_INTERVAL_SEC?.trim()
-        || String(appConfig.fleetPollingIntervalSeconds),
-    });
+    const config = loadAndValidateConfig(process.env);
 
     // Sincronizza i parametri vincolanti di config.json su SystemConfiguration
-    if (appConfig.fleetPollingIntervalSeconds !== undefined && (!process.env["MOLIRIS_POLLING_INTERVAL_SEC"])) {
-      config.pollingIntervalSeconds = appConfig.fleetPollingIntervalSeconds;
-    }
-    if (appConfig.maxConcurrentTransfers !== undefined && (!process.env["MOLIRIS_MAX_TRF_SERVER"])) {
-      config.maxConcurrentTransfersServer = appConfig.maxConcurrentTransfers;
-    }
-    if (appConfig.sshConnectTimeoutSeconds !== undefined && (!process.env["MOLIRIS_SSH_CONNECTION_TIMEOUT_MS"] && !process.env["MOLIRIS_SSH_TIMEOUT_MS"])) {
-      config.sshConnectionTimeoutMs = appConfig.sshConnectTimeoutSeconds * 1000;
-    }
-    if (appConfig.transferTimeoutMinutes !== undefined && (!process.env["MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS"])) {
-      config.transferIdleTimeoutMs = appConfig.transferTimeoutMinutes * 60 * 1000;
-    }
-    if (appConfig.sessionInactivityTimeoutMinutes !== undefined && (!process.env["MOLIRIS_SESSION_TIMEOUT_MIN"])) {
-      config.inactiveSessionTimeoutMinutes = appConfig.sessionInactivityTimeoutMinutes;
-    }
-    if (appConfig.sessionInactivityWarningMinutes !== undefined && (!process.env["MOLIRIS_SESSION_WARNING_MIN"])) {
-      config.sessionInactivityWarningMinutes = appConfig.sessionInactivityWarningMinutes;
-    }
-    if (appConfig.sshTerminalActiveTimeoutMinutes !== undefined && (!process.env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"])) {
-      config.terminalSessionTimeoutMinutes = appConfig.sshTerminalActiveTimeoutMinutes;
-    }
-    if (appConfig.bulkUploadConfig?.maxConcurrentFiles !== undefined) {
-      config.maxBulkUploadFiles = appConfig.bulkUploadConfig.maxConcurrentFiles;
-    }
-    if (appConfig.bulkUploadConfig?.allowedSubPaths !== undefined) {
-      config.defaultOperatorAllowedPaths = appConfig.bulkUploadConfig.allowedSubPaths;
-    }
-    if (appConfig.bulkUploadConfig?.chunkSizeBytes !== undefined) {
-      config.transferChunkSizeBytes = appConfig.bulkUploadConfig.chunkSizeBytes;
-    }
-    if (appConfig.maxFileUploadBytes !== undefined) {
-      config.maxFileSizeBytes = appConfig.maxFileUploadBytes;
-    }
+    syncAppConfigToSystemConfig(appConfig, config);
     const mongoConfig = resolveMongoConfig();
     assertMongoCredentialsInProduction(mongoConfig.uri);
     mongoClient = new MongoClient(mongoConfig.uri);

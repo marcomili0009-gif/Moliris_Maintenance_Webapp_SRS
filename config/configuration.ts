@@ -102,6 +102,9 @@ export interface SystemConfiguration {
   maxBulkUploadFiles?: number;
   defaultOperatorAllowedPaths?: string[];
 
+  // 23. Limite massimo di robot gestibili nella flotta (SRS §2, futureExtensions.maxFleetRobots)
+  maxFleetRobots?: number;
+
   // Modalità verifica integrità trasferimenti (Problema A1, default baseline: stream)
   transferVerifyMode?: "stream" | "readback";
 
@@ -179,12 +182,25 @@ export const SystemConfigSchema = z.object({
   defaultSshPort: z.number().int().min(1).max(65535),
   maxBulkUploadFiles: z.number().int().min(1).optional(),
   defaultOperatorAllowedPaths: z.array(z.string()).optional(),
+  maxFleetRobots: z.number().int().min(1).optional(),
   maxFileSizeBytes: z.number().int().min(1).optional(),
   quotaPerRobotBytes: z.number().int().min(1).optional(),
 });
 
+const explicitEnvFieldsRegistry = new WeakMap<SystemConfiguration, ReadonlySet<string>>();
+
+/**
+ * Restituisce l'insieme dei campi di SystemConfiguration effettivamente valorizzati da variabili d'ambiente
+ * durante loadAndValidateConfig(). Se la configurazione non proviene da loadAndValidateConfig() (es. oggetto
+ * creato manualmente nei test), restituisce undefined.
+ */
+export function getExplicitEnvFields(config: SystemConfiguration): ReadonlySet<string> | undefined {
+  return explicitEnvFieldsRegistry.get(config);
+}
+
 export function loadAndValidateConfig(env: Record<string, string | undefined>): SystemConfiguration {
   const missing: string[] = [];
+  const explicitEnvFields = new Set<string>();
 
   function requireString(key: string): string {
     const val = env[key];
@@ -204,21 +220,36 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     return Number(val);
   }
 
+  function optionalNumber(key: string, fieldName: string, defaultValue: number): number {
+    const val = env[key];
+    if (val === undefined || val.trim() === "") {
+      return defaultValue;
+    }
+    const parsed = Number(val);
+    if (isNaN(parsed)) {
+      throw new Error(`Valore non valido per ${key}: deve essere un numero valido.`);
+    }
+    explicitEnvFields.add(fieldName);
+    return parsed;
+  }
+
   const serverFilesystemRoot = requireString("MOLIRIS_FS_ROOT");
-  const pollingIntervalSeconds = requireNumber("MOLIRIS_POLLING_INTERVAL_SEC");
-  const sshConnectionTimeoutMs = env["MOLIRIS_SSH_CONNECTION_TIMEOUT_MS"]
-    ? requireNumber("MOLIRIS_SSH_CONNECTION_TIMEOUT_MS")
-    : requireNumber("MOLIRIS_SSH_TIMEOUT_MS");
-  const maxConcurrentTransfersPerUser = requireNumber("MOLIRIS_MAX_TRF_PER_USER");
-  const maxConcurrentTransfersPerRobot = requireNumber("MOLIRIS_MAX_TRF_PER_ROBOT");
-  const maxConcurrentTransfersServer = requireNumber("MOLIRIS_MAX_TRF_SERVER");
+  const pollingIntervalSeconds = optionalNumber("MOLIRIS_POLLING_INTERVAL_SEC", "pollingIntervalSeconds", 5);
+  const sshConnectionTimeoutMs = env["MOLIRIS_SSH_CONNECTION_TIMEOUT_MS"] !== undefined && env["MOLIRIS_SSH_CONNECTION_TIMEOUT_MS"].trim() !== ""
+    ? optionalNumber("MOLIRIS_SSH_CONNECTION_TIMEOUT_MS", "sshConnectionTimeoutMs", 15000)
+    : optionalNumber("MOLIRIS_SSH_TIMEOUT_MS", "sshConnectionTimeoutMs", 15000);
+  const maxConcurrentTransfersPerUser = optionalNumber("MOLIRIS_MAX_TRF_PER_USER", "maxConcurrentTransfersPerUser", 3);
+  const maxConcurrentTransfersPerRobot = optionalNumber("MOLIRIS_MAX_TRF_PER_ROBOT", "maxConcurrentTransfersPerRobot", 2);
+  const maxConcurrentTransfersServer = optionalNumber("MOLIRIS_MAX_TRF_SERVER", "maxConcurrentTransfersServer", 5);
   const tempFileRetentionMinutes = requireNumber("MOLIRIS_TEMP_RETENTION_MIN");
 
   const rawStatePaths = requireString("MOLIRIS_STATE_FILE_PATHS");
   const stateFilePaths = rawStatePaths ? rawStatePaths.split(",").map(p => p.trim()).filter(Boolean) : [];
 
-  const inactiveSessionTimeoutMinutes = requireNumber("MOLIRIS_SESSION_TIMEOUT_MIN");
-  const sessionInactivityWarningMinutes = env["MOLIRIS_SESSION_WARNING_MIN"] && !isNaN(Number(env["MOLIRIS_SESSION_WARNING_MIN"]))
+  const inactiveSessionTimeoutMinutes = optionalNumber("MOLIRIS_SESSION_TIMEOUT_MIN", "inactiveSessionTimeoutMinutes", 30);
+  const hasExplicitSessionWarning = env["MOLIRIS_SESSION_WARNING_MIN"] !== undefined && env["MOLIRIS_SESSION_WARNING_MIN"].trim() !== "" && !isNaN(Number(env["MOLIRIS_SESSION_WARNING_MIN"]));
+  if (hasExplicitSessionWarning) explicitEnvFields.add("sessionInactivityWarningMinutes");
+  const sessionInactivityWarningMinutes = hasExplicitSessionWarning
     ? Number(env["MOLIRIS_SESSION_WARNING_MIN"])
     : 5;
   const tlsCertPath = requireString("MOLIRIS_TLS_CERT_PATH");
@@ -277,7 +308,9 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
   }
 
   // Parametri opzionali
-  const maxFileSizeBytes = env["MOLIRIS_MAX_FILE_SIZE_BYTES"] && !isNaN(Number(env["MOLIRIS_MAX_FILE_SIZE_BYTES"]))
+  const hasExplicitMaxFileSize = Boolean(env["MOLIRIS_MAX_FILE_SIZE_BYTES"] && !isNaN(Number(env["MOLIRIS_MAX_FILE_SIZE_BYTES"])));
+  if (hasExplicitMaxFileSize) explicitEnvFields.add("maxFileSizeBytes");
+  const maxFileSizeBytes = hasExplicitMaxFileSize
     ? Number(env["MOLIRIS_MAX_FILE_SIZE_BYTES"])
     : undefined;
 
@@ -428,7 +461,9 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
     : undefined;
 
   // Parametri opzionali Trasferimento File (§5.5, §11.5, §11.7, RF-TRF-001..014)
-  const transferChunkSizeBytes = env["MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES"] && !isNaN(Number(env["MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES"]))
+  const hasExplicitChunkSize = Boolean(env["MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES"] && !isNaN(Number(env["MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES"])));
+  if (hasExplicitChunkSize) explicitEnvFields.add("transferChunkSizeBytes");
+  const transferChunkSizeBytes = hasExplicitChunkSize
     ? Number(env["MOLIRIS_TRANSFER_CHUNK_SIZE_BYTES"])
     : 2 * 1024 * 1024; // Default ottimizzato a 2MB ad alte prestazioni
 
@@ -470,13 +505,16 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
 
   const rawResume = env["MOLIRIS_TRANSFER_RESUME_ENABLED"]?.trim().toLowerCase();
   const transferResumeEnabled = rawResume === "true" ? true : rawResume === "false" ? false : undefined;
+  if (transferResumeEnabled !== undefined) explicitEnvFields.add("transferResumeEnabled");
 
   const rawQueuePolicy = env["MOLIRIS_TRANSFER_CONCURRENCY_POLICY"]?.trim().toLowerCase();
   const transferConcurrencyQueuePolicy = (rawQueuePolicy === "rifiuta" || rawQueuePolicy === "coda")
     ? (rawQueuePolicy as "rifiuta" | "coda")
     : undefined;
 
-  const transferIdleTimeoutMs = env["MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS"] && !isNaN(Number(env["MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS"]))
+  const hasExplicitTransferIdle = Boolean(env["MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS"] && !isNaN(Number(env["MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS"])));
+  if (hasExplicitTransferIdle) explicitEnvFields.add("transferIdleTimeoutMs");
+  const transferIdleTimeoutMs = hasExplicitTransferIdle
     ? Number(env["MOLIRIS_TRANSFER_IDLE_TIMEOUT_MS"])
     : undefined;
 
@@ -489,14 +527,24 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
   if (rawMaxBulk !== undefined && (isNaN(Number(rawMaxBulk)) || Number(rawMaxBulk) < 1)) {
     throw new Error("Valore non valido per MOLIRIS_MAX_BULK_UPLOAD_FILES: deve essere un intero positivo >= 1.");
   }
-  const maxBulkUploadFiles = rawMaxBulk && !isNaN(Number(rawMaxBulk)) && Number(rawMaxBulk) >= 1
+  const hasExplicitMaxBulk = Boolean(rawMaxBulk && !isNaN(Number(rawMaxBulk)) && Number(rawMaxBulk) >= 1);
+  if (hasExplicitMaxBulk) explicitEnvFields.add("maxBulkUploadFiles");
+  const maxBulkUploadFiles = hasExplicitMaxBulk
     ? Math.floor(Number(rawMaxBulk))
     : 20;
 
   const rawOperatorAllowed = env["MOLIRIS_DEFAULT_OPERATOR_ALLOWED_PATHS"] ?? env["DEFAULT_OPERATOR_ALLOWED_PATHS"];
+  if (rawOperatorAllowed && rawOperatorAllowed.trim() !== "") explicitEnvFields.add("defaultOperatorAllowedPaths");
   const defaultOperatorAllowedPaths = rawOperatorAllowed
     ? rawOperatorAllowed.split(",").map(p => p.trim()).filter(Boolean)
     : ["upload", "shared", "logs", "backups", "configs"];
+
+  if (env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"] !== undefined && env["MOLIRIS_TERMINAL_SESSION_TIMEOUT_MIN"].trim() !== "") {
+    explicitEnvFields.add("terminalSessionTimeoutMinutes");
+  }
+  if (env["MOLIRIS_TERMINAL_WARNING_MIN"] !== undefined && env["MOLIRIS_TERMINAL_WARNING_MIN"].trim() !== "") {
+    explicitEnvFields.add("terminalSessionWarningMinutes");
+  }
 
   const rawConfig: SystemConfiguration = {
     serverFilesystemRoot,
@@ -557,7 +605,9 @@ export function loadAndValidateConfig(env: Record<string, string | undefined>): 
   };
 
   try {
-    return SystemConfigSchema.parse(rawConfig) as SystemConfiguration;
+    const parsed = SystemConfigSchema.parse(rawConfig) as SystemConfiguration;
+    explicitEnvFieldsRegistry.set(parsed, explicitEnvFields);
+    return parsed;
   } catch (err: any) {
     if (err instanceof z.ZodError) {
       const details = err.issues.map((i) => `[${i.path.join(".") || "config"}]: ${i.message}`).join(", ");

@@ -1935,6 +1935,17 @@ export class TransferService {
         options?.expectedChecksum
       );
 
+      if ((incomingStream as any).truncated || (this.config.maxFileSizeBytes && record.transferredBytes > this.config.maxFileSizeBytes)) {
+        throw Object.assign(
+          new MolirisAppError(
+            ErrorCode.INSUFFICIENT_STORAGE,
+            `Dimensione file supera il limite massimo configurato (${this.config.maxFileSizeBytes ?? "limite multipart"})`,
+            "Il file supera la dimensione massima consentita dalla configurazione di sistema."
+          ),
+          { statusCode: 413 }
+        );
+      }
+
       const finalStat = await fs.promises.stat(tempFilePath);
       if (finalStat.size !== record.transferredBytes) {
         try { await fs.promises.unlink(tempFilePath); } catch {}
@@ -4543,8 +4554,9 @@ export class TransferService {
             const startPerfMs = genRecord.activeStartedPerfMs ?? performance.now();
             const hash = crypto.createHash("sha256");
             let writtenBytes = 0;
-            const readStream = fs.createReadStream(staged.stagingPath);
-            const writeStream = fs.createWriteStream(tempPartPath, { mode: 0o600, flags: "wx" });
+            const chunkSize = this.getChunkSize();
+            const readStream = fs.createReadStream(staged.stagingPath, { highWaterMark: chunkSize });
+            const writeStream = fs.createWriteStream(tempPartPath, { mode: 0o600, flags: "wx", highWaterMark: chunkSize });
 
             readStream.on("data", (chunk: Buffer | string) => {
               const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -4758,8 +4770,9 @@ export class TransferService {
             const startPerfMs = serverRecord.activeStartedPerfMs ?? performance.now();
             const hash = crypto.createHash("sha256");
             let writtenBytes = 0;
-            const readStream = fs.createReadStream(staged.stagingPath);
-            const writeStream = fs.createWriteStream(tempPartPath, { mode: 0o600, flags: "wx" });
+            const chunkSize = this.getChunkSize();
+            const readStream = fs.createReadStream(staged.stagingPath, { highWaterMark: chunkSize });
+            const writeStream = fs.createWriteStream(tempPartPath, { mode: 0o600, flags: "wx", highWaterMark: chunkSize });
 
             readStream.on("data", (chunk: Buffer | string) => {
               const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -4997,12 +5010,14 @@ export class TransferService {
             const startPerfMs = targetRecord.activeStartedPerfMs ?? performance.now();
             const hash = crypto.createHash("sha256");
             let writtenBytes = 0;
-            const readStream = fs.createReadStream(staged.stagingPath);
+            const chunkSize = this.getChunkSize();
+            const readStream = fs.createReadStream(staged.stagingPath, { highWaterMark: chunkSize });
             readStream.once("error", (err) => { sourceError = err; });
             readStream.on("data", (chunk) => { hash.update(chunk); });
             const remoteWriteStream = new PipelinedSftpWriteStream(channel, tempRemotePartPath, {
               flags: "wx",
               mode: 0o600,
+              highWaterMark: chunkSize,
               onWriteAcknowledged: (bytes) => {
                 resetIdleTimer();
                 writtenBytes += bytes;
