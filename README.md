@@ -237,3 +237,36 @@ Quando sposti l'applicazione e ripristini il database su un nuovo server:
 
 - [Aggiornamento manuale NEANTE](docs/NEANTE-MANUAL-UPDATE.md)
 - [Backup e ripristino](docs/BACKUP-RESTORE.md)
+
+---
+
+## 6. Funzionalità Intenzionalmente Escluse per Conformità SRS
+
+In stretta aderenza alla regola cardine di non inventare funzionalità o comportamenti non previsti dalla specifica **SRS v1.0**, i seguenti punti sono stati intenzionalmente esclusi o isolati:
+
+1. **Eliminazione fisica dei dati sul server alla rimozione del robot (`FS_SERVER_DELETE`)**:
+   - *Motivazione*: L'SRS §8.4 punto 2 recita testualmente *"se implementata"*. L'eliminazione automatica dei dati sul server è lasciata non implementata per prevenire cancellazioni irreversibili di cartelle storiche di log e configurazioni della flotta. La preservazione assoluta dei dati preesistenti è garantita da RNF-FS-003 e verificata dal criterio CA-ROB-011.
+2. **Modifica o cancellazione di file sul filesystem remoto del robot**:
+   - *Motivazione*: La specifica SRS §5.5 e RF-FS-007 prescrivono un livello di navigazione remota SFTP rigorosamente in **sola lettura**. Non sono previste nella SRS v1.0 API o funzionalità di scrittura, modifica o cancellazione di file sul robot.
+3. **Macchina a stati o enum rigidi per lo stato operativo del robot**:
+   - *Motivazione*: La SRS non definisce un insieme chiuso di stati operativi o transizioni di stato del firmware robot. I contenuti estratti dal file di stato vengono trattati come record opaco (`Record<string, unknown>`) dal parser isolato `StateFileParser`, evitando deduzioni arbitrarie (RF-MON-002, RF-MON-005).
+4. **Allarmi sonori o feedback acustici**:
+   - *Motivazione*: Il §2.5 cita l'altoparlante nella configurazione minima del client utente, ma la specifica SRS v1.0 non richiede alcuna emissione acustica né feedback sonoro. Nessun audio è stato inserito.
+5. **Autenticazione a più fattori (MFA)**:
+   - *Motivazione*: Lasciata come scelta aperta in §11.6, non descritta nei requisiti funzionali della SRS v1.0. L'architettura modulare di autenticazione è predisposta per accogliere provider MFA futuri.
+6. **Condivisione e supervisione delle sessioni terminale (RF-SSH-006)**:
+   - *Motivazione*: La SRS prescrive il divieto di accedere alla sessione di un altro utente senza esplicita autorizzazione, senza però definire le modalità di delega o supervisione. È adottata la politica prudente fail-closed `DefaultDenyTerminalSessionSharingPolicy` che nega categoricamente ogni accesso cross-sessione.
+
+---
+
+## 7. Indice della Documentazione di Progetto
+
+- **[TRACEABILITY.md](TRACEABILITY.md)**: Matrice completa di tracciabilità Requisito → Modulo → Test per tutti i requisiti RF, RNF e vincoli §2.4.
+- **[COLLAUDO.md](COLLAUDO.md)**: Verbale ufficiale di collaudo con esito dei 35 criteri §7, 18 obiettivi §12 e misurazioni di memoria heap reale.
+- **[DEPLOY.md](DEPLOY.md)**: Guida operativa di installazione in produzione su Ubuntu 26.04 con servizio systemd (`moliris.service`).
+- **[DECISIONS.md](DECISIONS.md)**: Registro delle decisioni architetturali e dei punti aperti della Sezione 11 (isolati e configurabili).
+- **[DIAGNOSTICS.md](DIAGNOSTICS.md)**: Manuale di diagnostica, logging, audit trail e catalogo errori §9 (recuperabili vs intervento amministrativo).
+- **[Aggiornamento manuale NEANTE](docs/NEANTE-MANUAL-UPDATE.md)**: verifica del runtime, attivazione manuale e rollback.
+- **[Backup e ripristino](docs/BACKUP-RESTORE.md)**: acquisizione coordinata e verifica isolata dei dati.
+- **[STATUS_FILE_FORMAT.md](STATUS_FILE_FORMAT.md)**: Specifiche del formato dei file di stato (Key-Value e JSON) e regole di interpretazione.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)**: Dettaglio dell'architettura a moduli disaccoppiati e flussi di comunicazione.
