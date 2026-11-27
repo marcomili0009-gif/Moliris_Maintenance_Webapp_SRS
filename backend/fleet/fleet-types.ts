@@ -7,7 +7,7 @@ import {
   type SftpParameters,
   type RegistrationState,
 } from "../../storage/robot-models.ts";
-import { type RobotDetailDto, type RobotSummaryDto } from "../../storage/dto/robot-dto.ts";
+import { type RobotDetailDto } from "../../storage/dto/robot-dto.ts";
 
 /**
  * Funzionalità disponibili per un utente su uno specifico robot (RF-ROB-011, CA-ROB-010).

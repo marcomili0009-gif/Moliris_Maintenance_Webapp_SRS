@@ -1,7 +1,6 @@
 // Requisiti soddisfatti: RF-SSH-004, RF-SSH-005, RF-SSH-006, RF-SSH-008,
 // RNF-SEC-004, RNF-SEC-007, RNF-REL-005, SRS §5.4, §6.4 passi 4-7, §11.6
 
-import { type ClientChannel } from "ssh2";
 import { type ManagedRobotConnection } from "../connection/robot-connection-manager.ts";
 import { type AuthorizedContext } from "../auth/session-manager.ts";
 import { type UserEntity } from "../auth/user-models.ts";

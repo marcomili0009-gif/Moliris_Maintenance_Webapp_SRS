@@ -8,7 +8,6 @@ import { execSync } from "node:child_process";
 import { once } from "node:events";
 import { PassThrough, Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
-import Fastify from "fastify";
 import https from "node:https";
 import WebSocket from "ws";
 import { createServer } from "../../backend/server.ts";

@@ -8,7 +8,7 @@ import { type SFTPWrapper } from "ssh2";
 import { type SystemConfiguration } from "../../config/configuration.ts";
 import { type RobotEntity } from "../../storage/robot-models.ts";
 import { type AuthorizedContext } from "../auth/session-manager.ts";
-import { AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS, hasPermission } from "../auth/permissions.ts";
+import { AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "../auth/permissions.ts";
 import { type RobotConnectionManager } from "../connection/robot-connection-manager.ts";
 import { type AuditRepository } from "../../storage/audit-repository.ts";
 import { AuditOperation } from "../../storage/audit-models.ts";
@@ -224,7 +224,7 @@ export class PipelinedSftpReadStream extends Readable {
     });
   }
 
-  _read(size: number): void {
+  _read(_size: number): void {
     if (this.ended) return;
     if (!this.handle) {
       if (this.openError) {
@@ -338,7 +338,6 @@ export class RemoteFilesystemService {
   private config: SystemConfiguration;
   private connectionManager: RobotConnectionManager;
   private auditRepository: AuditRepository;
-  private roleMapping: RolePermissionMapping;
   private logger: MolirisLogger;
 
   constructor(
@@ -346,12 +345,11 @@ export class RemoteFilesystemService {
     connectionManager: RobotConnectionManager,
     auditRepository: AuditRepository,
     logger: MolirisLogger,
-    roleMapping: RolePermissionMapping = DEFAULT_ROLE_PERMISSIONS
+    _roleMapping: RolePermissionMapping = DEFAULT_ROLE_PERMISSIONS
   ) {
     this.config = config;
     this.connectionManager = connectionManager;
     this.auditRepository = auditRepository;
-    this.roleMapping = roleMapping;
     this.logger = logger;
   }
 

@@ -152,7 +152,6 @@ Moliris_V1.0/
 │   ├── migrate-database-improvements.ts
 │   ├── migrate-operator-paths.ts
 │   ├── migrate-robot-directories.ts
-│   ├── purge-all-temp-files.sh
 │   ├── purge-all-temp-files.ts
 │   ├── reencrypt-credentials.ts
 │   ├── reset-admin-password.ts

@@ -29,7 +29,6 @@ import {
   downloadQuerySchema,
   robotToRobotBodySchema,
   serverRobotTransferBodySchema,
-  transferBodySchema,
   transferListQuerySchema,
   uploadQuerySchema,
 } from "../validation/request-schemas.ts";
@@ -47,7 +46,7 @@ export function registerTransferRoutes(
   try {
     app.addContentTypeParser(
       ["application/octet-stream", "application/x-binary"],
-      (req, payload, done) => {
+      (_req, payload, done) => {
         done(null, payload);
       }
     );
@@ -85,140 +84,6 @@ export function registerTransferRoutes(
 
       try {
         return await runServerRobotTransfer(reply, transferService, context, robot, body, body.background === true);
-      } catch (err: any) {
-        return handleRouteError(reply, err);
-      }
-    }
-  );
-
-  // Alias per trasferimento Robot → Server (RF-TRF-002, §6.6)
-  app.post(
-    "/api/robots/:robotId/transfers/robot-server",
-    {
-      preHandler: [
-        authMiddleware.requirePermission(
-          AppPermission.TRANSFER_SERVER_ROBOT,
-          (req) => (req.params as any).robotId
-        ),
-      ],
-    },
-    async (req: FastifyRequest, reply: FastifyReply) => {
-      const { robotId } = req.params as { robotId: string };
-      const body = parseRequestInput(transferBodySchema, req.body, reply, "body");
-      if (!body) return reply;
-
-      const robot = await robotRepository.findById(robotId);
-      if (!robot) {
-        return sendErrorReply(reply, 404, ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${robotId}' non trovato.`);
-      }
-
-      const context = sessionManager.createAuthorizedContext(
-        req.molirisSession!,
-        req.molirisUser!,
-        robot.id,
-        roleMapping
-      );
-
-      const reqBody: StartServerRobotTransferRequest = {
-        direction: "ROBOT_TO_SERVER",
-        serverRelativePath: body.serverRelativePath || body.targetPath || "",
-        remotePath: body.remotePath || body.sourcePath || "",
-        overwrite: body.overwrite,
-        confirmed: body.confirmed,
-        expectedChecksum: body.expectedChecksum,
-      };
-
-      try {
-        return await runServerRobotTransfer(reply, transferService, context, robot, reqBody, body.background === true);
-      } catch (err: any) {
-        return handleRouteError(reply, err);
-      }
-    }
-  );
-
-  // Alias retrocompatibili per chiamate dirette dal pannello filesystem (RF-TRF-002)
-  app.post(
-    "/api/robots/:robotId/fs/transfer-to-remote",
-    {
-      preHandler: [
-        authMiddleware.requirePermission(
-          AppPermission.TRANSFER_SERVER_ROBOT,
-          (req) => (req.params as any).robotId
-        ),
-      ],
-    },
-    async (req: FastifyRequest, reply: FastifyReply) => {
-      const { robotId } = req.params as { robotId: string };
-      const body = parseRequestInput(transferBodySchema, req.body, reply, "body");
-      if (!body) return reply;
-
-      const robot = await robotRepository.findById(robotId);
-      if (!robot) {
-        return sendErrorReply(reply, 404, ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${robotId}' non trovato.`);
-      }
-
-      const context = sessionManager.createAuthorizedContext(
-        req.molirisSession!,
-        req.molirisUser!,
-        robot.id,
-        roleMapping
-      );
-
-      const reqBody: StartServerRobotTransferRequest = {
-        direction: "SERVER_TO_ROBOT",
-        serverRelativePath: body.serverRelativePath || body.sourcePath || "",
-        remotePath: body.remotePath || body.targetPath || "",
-        overwrite: body.overwrite,
-        confirmed: body.confirmed,
-        expectedChecksum: body.expectedChecksum,
-      };
-
-      try {
-        return await runServerRobotTransfer(reply, transferService, context, robot, reqBody, body.background === true);
-      } catch (err: any) {
-        return handleRouteError(reply, err);
-      }
-    }
-  );
-
-  app.post(
-    "/api/robots/:robotId/fs/transfer-to-server",
-    {
-      preHandler: [
-        authMiddleware.requirePermission(
-          AppPermission.TRANSFER_SERVER_ROBOT,
-          (req) => (req.params as any).robotId
-        ),
-      ],
-    },
-    async (req: FastifyRequest, reply: FastifyReply) => {
-      const { robotId } = req.params as { robotId: string };
-      const body = parseRequestInput(transferBodySchema, req.body, reply, "body");
-      if (!body) return reply;
-
-      const robot = await robotRepository.findById(robotId);
-      if (!robot) {
-        return sendErrorReply(reply, 404, ErrorCode.MISSING_ROBOT_PARAMS, `Robot '${robotId}' non trovato.`);
-      }
-
-      const context = sessionManager.createAuthorizedContext(
-        req.molirisSession!,
-        req.molirisUser!,
-        robot.id,
-        roleMapping
-      );
-
-      const reqBody: StartServerRobotTransferRequest = {
-        direction: "ROBOT_TO_SERVER",
-        serverRelativePath: body.serverRelativePath || body.targetPath || "",
-        remotePath: body.remotePath || body.sourcePath || "",
-        overwrite: body.overwrite,
-        confirmed: body.confirmed,
-        expectedChecksum: body.expectedChecksum,
-      };
-
-      try {
-        return await runServerRobotTransfer(reply, transferService, context, robot, reqBody, body.background === true);
       } catch (err: any) {
         return handleRouteError(reply, err);
       }

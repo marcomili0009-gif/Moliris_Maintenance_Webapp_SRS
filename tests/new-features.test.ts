@@ -10,8 +10,7 @@ import { InMemoryRobotRepository } from "../storage/robot-repository.ts";
 import { InMemoryAuditRepository } from "../storage/audit-repository.ts";
 import { InMemoryUserRepository } from "../backend/auth/user-repository.ts";
 import { SessionManager } from "../backend/auth/session-manager.ts";
-import { AppPermission, DEFAULT_ROLE_PERMISSIONS } from "../backend/auth/permissions.ts";
-import { ServerFilesystemService } from "../storage/server-fs.ts";
+import { AppPermission } from "../backend/auth/permissions.ts";
 import { type RobotEntity } from "../storage/robot-models.ts";
 import { type UserEntity } from "../backend/auth/user-models.ts";
 

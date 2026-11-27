@@ -8,14 +8,10 @@ import os from "node:os";
 import { PhysicalFileLogger, formatLogTimestamp, normalizeRoleForLog } from "../backend/logging/physical-file-logger.ts";
 import { BatchTransferManager } from "../backend/transfer/batch-transfer-manager.ts";
 import { SessionManager } from "../backend/auth/session-manager.ts";
-import { InMemoryUserRepository } from "../backend/auth/user-repository.ts";
 import { InMemoryAuditRepository } from "../storage/audit-repository.ts";
 import { AuditOperation } from "../storage/audit-models.ts";
 import { authorizeOperatorPath } from "../backend/auth/path-authorization.ts";
-import { ErrorCode, MolirisAppError } from "../errors/app-errors.ts";
-import { createServer } from "../backend/server.ts";
-import { MolirisLogger } from "../logging/logger.ts";
-import { AppPermission } from "../backend/auth/permissions.ts";
+import { ErrorCode } from "../errors/app-errors.ts";
 
 console.log("--> Esecuzione test suite FASE 1 Backend...");
 

@@ -11,7 +11,6 @@ import {
   ConfigError,
   ConfigValidationError,
   configPlugin,
-  registerAppConfig,
 } from "./index.ts";
 
 console.log("--> Esecuzione test unitari Modulo di Configurazione (SRS §2)...");

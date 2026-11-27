@@ -18,7 +18,6 @@ import { InMemoryRobotRepository } from "../../storage/robot-repository.ts";
 import { InMemoryAuditRepository } from "../../storage/audit-repository.ts";
 import { InMemoryUserRepository } from "../auth/user-repository.ts";
 import { SessionManager } from "../auth/session-manager.ts";
-import { AuthMiddleware } from "../auth/auth-middleware.ts";
 import { AppPermission, DEFAULT_ROLE_PERMISSIONS } from "../auth/permissions.ts";
 import { type UserEntity } from "../auth/user-models.ts";
 import { type RobotEntity } from "../../storage/robot-models.ts";
@@ -251,7 +250,7 @@ const testSshServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, 
           sftp.data(reqid, chunk);
         });
 
-        sftp.on("WRITE", (reqid: number, handle: Buffer, offset: number, data: Buffer) => {
+        sftp.on("WRITE", (reqid: number, _handle: Buffer, _offset: number, data: Buffer) => {
           mutationAttempts.push(`DATA_WRITE:len=${data.length}`);
           sftp.status(reqid, 0 /* OK */);
         });

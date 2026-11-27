@@ -27,7 +27,7 @@ import { DefaultHostKeyVerifier, computeHostKeyFingerprint } from "../connection
 import { RobotConnectionManager } from "../connection/robot-connection-manager.ts";
 import { TerminalService } from "./terminal-service.ts";
 import { createServer } from "../server.ts";
-import { ErrorCode, MolirisAppError } from "../../errors/app-errors.ts";
+import { ErrorCode } from "../../errors/app-errors.ts";
 
 console.log("--> Esecuzione test suite Servizio Terminale Remoto PTY (CA-SSH-001..005)...");
 
@@ -621,7 +621,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
 
   // Causa 4: Disabilitazione robot con chiusura immediata (ADMIN_DISABLED)
   {
-    const term = await terminalService.openTerminalSession(opUserAuthorized, "robot_ssh_04", { cols: 80, rows: 24 }, userSession.sessionId);
+    await terminalService.openTerminalSession(opUserAuthorized, "robot_ssh_04", { cols: 80, rows: 24 }, userSession.sessionId);
     assert.strictEqual(terminalService.getActiveSessionCount(), 1);
     await terminalService.closeSessionsForRobot("robot_ssh_04", "ADMIN_DISABLED");
     assert.strictEqual(terminalService.getActiveSessionCount(), 0);
@@ -630,7 +630,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
 
   // Causa 5: Arresto ordinato del servizio (SERVICE_SHUTDOWN)
   {
-    const term = await terminalService.openTerminalSession(opUserAuthorized, "robot_ssh_04", { cols: 80, rows: 24 }, userSession.sessionId);
+    await terminalService.openTerminalSession(opUserAuthorized, "robot_ssh_04", { cols: 80, rows: 24 }, userSession.sessionId);
     assert.strictEqual(terminalService.getActiveSessionCount(), 1);
     await terminalService.closeAll("SERVICE_SHUTDOWN");
     assert.strictEqual(terminalService.getActiveSessionCount(), 0);
@@ -697,7 +697,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   const { sessionId } = JSON.parse(legitimateRes.body);
 
   // 3. Rifiuto WebSocket con Origin esterno o assente
-  const externalOriginStatus = await new Promise<number>((resolve, reject) => {
+  const externalOriginStatus = await new Promise<number>((resolve, _reject) => {
     const ws = new WebSocket(
       `wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`,
       {
@@ -718,7 +718,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
 
   assert.strictEqual(externalOriginStatus, 403, "Un Origin esterno deve ricevere HTTP 403");
 
-  const missingOriginStatus = await new Promise<number>((resolve, reject) => {
+  const missingOriginStatus = await new Promise<number>((resolve, _reject) => {
     const ws = new WebSocket(
       `wss://127.0.0.1:${serverPort}/api/terminal/ws/${sessionId}`,
       {
@@ -1025,8 +1025,6 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
   // Mock WebSocket per verificare notifiche, countdown e reset
   const sentMessages: any[] = [];
   const messageListeners: ((msg: any) => void)[] = [];
-  let wsClosed = false;
-  let wsCloseReason = "";
 
   const mockWs: any = {
     readyState: 1, // OPEN
@@ -1038,10 +1036,7 @@ function createRobot(id: string, opts: Partial<RobotEntity> = {}): RobotEntity {
         sentMessages.push(payload.toString());
       }
     },
-    close: (_code?: number, reason?: string) => {
-      wsClosed = true;
-      wsCloseReason = reason || "";
-    },
+    close: () => {},
     on: (evt: string, fn: any) => {
       if (evt === "message") messageListeners.push(fn);
     },

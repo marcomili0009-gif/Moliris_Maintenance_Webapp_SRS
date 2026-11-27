@@ -30,7 +30,6 @@ import { TransferService } from "./transfer-service.ts";
 import { TransferDirection, TransferStatus } from "./transfer-models.ts";
 import { createServer } from "../server.ts";
 import { AppPermission, DEFAULT_ROLE_PERMISSIONS } from "../auth/permissions.ts";
-import { type RobotEntity } from "../../storage/robot-models.ts";
 import { type UserEntity } from "../auth/user-models.ts";
 import { ErrorCode } from "../../errors/app-errors.ts";
 
@@ -205,7 +204,7 @@ const testSshServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, 
           sftp.data(reqid, chunk);
         });
 
-        sftp.on("WRITE", (reqid: number, handle: Buffer, offset: number, data: Buffer) => {
+        sftp.on("WRITE", (reqid: number, handle: Buffer, _offset: number, data: Buffer) => {
           const h = openSftpHandles.get(handle.toString());
           if (!h) return sftp.status(reqid, 4);
           // Appende i dati nel buffer in memoria del mock
@@ -676,7 +675,6 @@ fs.writeFileSync(validPreexistingServerPath, "VALID_SERVER_PREEXISTING_DATA_ORIG
 {
   const total = 50000;
   const stream = Readable.from(Buffer.alloc(total, 0x5a));
-  const snapList: any[] = [];
 
   const trf = await transferService.uploadClientToServer(
     contextAuth,

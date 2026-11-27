@@ -15,7 +15,7 @@ import { InMemoryAuditRepository } from "../../storage/audit-repository.ts";
 import { SessionManager } from "../../backend/auth/session-manager.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
 import { type SystemConfiguration } from "../../config/configuration.ts";
-import { type RobotEntity, type HostKeyVerificationParams } from "../../storage/robot-models.ts";
+import { type RobotEntity } from "../../storage/robot-models.ts";
 
 console.log("--> Esecuzione test suite di Hardening Trasferimenti e Filesystem (Problemi A1..A5, C1)...");
 
@@ -179,7 +179,7 @@ class MockSftpClient {
     callback(null);
   }
 
-  public ext_openssh_statvfs(targetDir: string, callback: (err: any, stats?: any) => void) {
+  public ext_openssh_statvfs(_targetDir: string, callback: (err: any, stats?: any) => void) {
     callback(null, {
       f_bavail: Math.floor(this.availableSpaceBytes / 4096),
       f_bsize: 4096,
@@ -216,7 +216,7 @@ class MockSftpClient {
     if (typeof cb === "function") cb(null);
   }
 
-  public open(p: string, flags: string, ...rest: any[]) {
+  public open(p: string, _flags: string, ...rest: any[]) {
     const cb = rest[rest.length - 1];
     const handle = Buffer.from("mock_handle_" + Math.random());
     this.openFiles.set(handle.toString(), { path: p, chunks: [] });

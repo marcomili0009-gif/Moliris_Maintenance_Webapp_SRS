@@ -4,7 +4,6 @@
 // RNF-SEC-009, RNF-PERF-001, RNF-PERF-002, RNF-PERF-003, RNF-REL-001, RNF-REL-004, RNF-REL-005,
 // SRS §1.2, §2.4, §5.5, §6.5, §6.6, §6.7, §9, §10.3, §11.1, §11.5, §11.7
 
-import { type Readable, type Writable } from "stream";
 
 /**
  * Tutte le 6 direzioni bidirezionali prescritte da RF-TRF-001, RF-TRF-002, RF-TRF-003:

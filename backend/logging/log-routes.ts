@@ -89,6 +89,8 @@ export function registerLogRoutes(
       const batchId = typeof query.batchId === "string" ? query.batchId.trim() : undefined;
       const file = typeof query.file === "string" ? query.file.trim() : undefined;
 
+      // `records` (storico strutturato dei trasferimenti) è ancora consumato da LogsView (parsed.records)
+      // e verificato da tests/transfers/transfer-lifecycle-e2e.test.ts: non rimuovere senza aggiornarli.
       try {
         const [logs, records] = await Promise.all([
           fileLogger.getTransferLogs({ limit, user, outcome }),

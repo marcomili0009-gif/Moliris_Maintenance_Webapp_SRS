@@ -197,6 +197,9 @@ export function createServer(
   if (config.maxFileSizeBytes === undefined && appConfig.maxFileUploadBytes !== undefined) {
     config.maxFileSizeBytes = appConfig.maxFileUploadBytes;
   }
+  if (config.transferResumeEnabled === undefined) {
+    config.transferResumeEnabled = appConfig.transferResumeEnabled;
+  }
 
   app.get("/api/config/public", async (_request, reply) => {
     return reply.status(200).send({
@@ -224,9 +227,12 @@ export function createServer(
       sshConnectTimeoutSeconds: appConfig.sshConnectTimeoutSeconds ?? 15,
       transferTimeoutMinutes: appConfig.transferTimeoutMinutes ?? 30,
       maxFileUploadBytes: appConfig.maxFileUploadBytes,
-      transferResumeEnabled:
-        (appConfig as typeof appConfig & { transferResumeEnabled?: boolean }).transferResumeEnabled ?? true,
-      futureExtensions: appConfig.futureExtensions,
+      transferResumeEnabled: config.transferResumeEnabled ?? appConfig.transferResumeEnabled,
+      // customSettings non va esposto pubblicamente: solo i limiti operativi necessari alla UI.
+      futureExtensions: {
+        maxFleetRobots: appConfig.futureExtensions?.maxFleetRobots,
+        maxSessionsPerAccount: appConfig.futureExtensions?.maxSessionsPerAccount,
+      },
       bulkUploadConfig: {
         maxConcurrentFiles: (appConfig as any).bulkUploadConfig?.maxConcurrentFiles ?? 20,
         chunkSizeBytes: (appConfig as any).bulkUploadConfig?.chunkSizeBytes ?? 1024 * 1024,
@@ -658,10 +664,6 @@ export function createServer(
   app.get("/", serveIndex);
   app.get("/index.html", serveIndex);
 
-  app.get("/react", async (_request, reply) => {
-    return reply.redirect("/");
-  });
-
   app.get("/assets/:filename", async (request, reply) => {
     const { filename } = request.params as { filename: string };
     // Rifiuto rigoroso di traversal, caratteri nulli, separatori o directory speciali (RNF-SEC-004, RNF-FS-002)
@@ -727,8 +729,17 @@ export async function startServer(): Promise<void> {
     logger.info(`[CONFIG] Parametri attivi: maxConcurrentWebUsers=${appConfig.maxConcurrentWebUsers}, maxSessionsPerAccount=${appConfig.maxSessionsPerAccount ?? appConfig.futureExtensions?.maxSessionsPerAccount ?? 1}, maxConcurrentTerminalsPerRobot=${appConfig.maxConcurrentTerminalsPerRobot}, sessionTimeout=${appConfig.sessionInactivityTimeoutMinutes}m, sessionWarning=${appConfig.sessionInactivityWarningMinutes}m`);
     const config = loadAndValidateConfig({
       ...process.env,
+      // Precedenza: variabile d'ambiente > config/config.json > default dello schema.
+      // I parametri obbligatori per loadAndValidateConfig sono derivati da config.json se assenti in .env.
       MOLIRIS_POLLING_INTERVAL_SEC: process.env.MOLIRIS_POLLING_INTERVAL_SEC?.trim()
         || String(appConfig.fleetPollingIntervalSeconds),
+      MOLIRIS_SESSION_TIMEOUT_MIN: process.env.MOLIRIS_SESSION_TIMEOUT_MIN?.trim()
+        || String(appConfig.sessionInactivityTimeoutMinutes),
+      MOLIRIS_MAX_TRF_SERVER: process.env.MOLIRIS_MAX_TRF_SERVER?.trim()
+        || String(appConfig.maxConcurrentTransfers),
+      ...(process.env.MOLIRIS_SSH_CONNECTION_TIMEOUT_MS?.trim() || process.env.MOLIRIS_SSH_TIMEOUT_MS?.trim()
+        ? {}
+        : { MOLIRIS_SSH_CONNECTION_TIMEOUT_MS: String(appConfig.sshConnectTimeoutSeconds * 1000) }),
     });
 
     // Sincronizza i parametri vincolanti di config.json su SystemConfiguration
@@ -765,6 +776,8 @@ export async function startServer(): Promise<void> {
     if (appConfig.maxFileUploadBytes !== undefined) {
       config.maxFileSizeBytes = appConfig.maxFileUploadBytes;
     }
+    // appConfig include già l'eventuale override MOLIRIS_TRANSFER_RESUME_ENABLED (precedenza env > config.json)
+    config.transferResumeEnabled = appConfig.transferResumeEnabled;
     const mongoConfig = resolveMongoConfig();
     assertMongoCredentialsInProduction(mongoConfig.uri);
     mongoClient = new MongoClient(mongoConfig.uri);

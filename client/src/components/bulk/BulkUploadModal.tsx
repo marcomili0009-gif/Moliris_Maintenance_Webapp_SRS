@@ -12,7 +12,6 @@ import type { FormattedError } from "../../types/error.ts";
 import { DoubleSubmitButton } from "../common/DoubleSubmitButton.tsx";
 import { FolderPickerModal } from "../common/FolderPickerModal.tsx";
 import { apiClient } from "../../services/api-client.ts";
-import { ErrorPresenter } from "../../services/error-presenter.ts";
 import { isPathAllowedForOperator } from "../../utils/path-authorization.ts";
 
 export type BulkSourceType = "computer" | "general" | "server_robot" | "remote_robot";

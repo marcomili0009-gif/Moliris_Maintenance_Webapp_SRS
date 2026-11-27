@@ -24,7 +24,7 @@ import { ServerFilesystemService } from "../../storage/server-fs.ts";
 import { RemoteFilesystemService } from "../../backend/remote-fs/remote-fs-service.ts";
 import { TransferService } from "../../backend/transfer/transfer-service.ts";
 import { TransferDirection } from "../../backend/transfer/transfer-models.ts";
-import { AppPermission, DEFAULT_ROLE_PERMISSIONS } from "../../backend/auth/permissions.ts";
+import { DEFAULT_ROLE_PERMISSIONS } from "../../backend/auth/permissions.ts";
 import { type RobotEntity } from "../../storage/robot-models.ts";
 import { type UserEntity } from "../../backend/auth/user-models.ts";
 import { ErrorCode, MolirisAppError } from "../../errors/app-errors.ts";
@@ -141,7 +141,7 @@ const createSftpTestServer = (
             sftp.name(reqid, entries as any);
           });
 
-          sftp.on("OPEN", (reqid: number, filename: string, pflags: number) => {
+          sftp.on("OPEN", (reqid: number, filename: string, _pflags: number) => {
             const norm = path.posix.normalize(filename);
             if (!remoteFiles[norm] && path.posix.dirname(norm) !== "/" && !remoteFiles[path.posix.dirname(norm)]) {
               return sftp.status(reqid, 2);

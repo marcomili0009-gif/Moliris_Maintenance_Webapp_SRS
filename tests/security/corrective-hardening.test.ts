@@ -21,7 +21,7 @@ import crypto from "crypto";
 import { MongoClient } from "mongodb";
 
 import { MongoCredentialProvider, type EncryptedCredentialDocument } from "../../backend/connection/mongo-credential-provider.ts";
-import { InMemoryCredentialProvider, type AuthenticationMaterial } from "../../backend/connection/credential-provider.ts";
+import { type AuthenticationMaterial } from "../../backend/connection/credential-provider.ts";
 import { loadMasterKeyFromFile } from "../../backend/connection/master-key.ts";
 import { loadAndValidateConfig } from "../../config/configuration.ts";
 import { reencryptAllCredentials } from "../../scripts/reencrypt-credentials.ts";
@@ -30,17 +30,13 @@ import { DefaultHostKeyVerifier, computeHostKeyFingerprint, isValidSha256Fingerp
 import { SessionManager } from "../../backend/auth/session-manager.ts";
 import { TerminalService } from "../../backend/terminal/terminal-service.ts";
 import { DEFAULT_TERMINAL_LIMITS } from "../../backend/terminal/terminal-limits.ts";
-import { type TerminalCloseReason } from "../../backend/terminal/terminal-models.ts";
-import { ErrorCode, ERROR_CATALOG, MolirisAppError } from "../../errors/app-errors.ts";
+import { ErrorCode, MolirisAppError } from "../../errors/app-errors.ts";
 import { MolirisLogger, redactSensitiveData } from "../../logging/logger.ts";
 import { toRobotDetailDto, toRobotSummaryDto } from "../../storage/dto/robot-dto.ts";
 import { InMemoryRobotRepository } from "../../storage/robot-repository.ts";
 import { InMemoryAuditRepository } from "../../storage/audit-repository.ts";
 import { InMemoryUserRepository } from "../../backend/auth/user-repository.ts";
 import { DEFAULT_ROLE_PERMISSIONS } from "../../backend/auth/permissions.ts";
-import { RobotConnectionManager } from "../../backend/connection/robot-connection-manager.ts";
-import { FleetService } from "../../backend/fleet/fleet-service.ts";
-import { ServerFilesystemService } from "../../storage/server-fs.ts";
 
 console.log("--> Esecuzione suite avanzata di Collaudo Correttivo e Hardening di Sicurezza...");
 
@@ -414,16 +410,11 @@ try {
   assert.strictEqual(termService.getActiveSessionCount(), 1);
 
   // Primo aggancio WebSocket -> consentito
-  let socket1Closed = false;
-  let socket1CloseCode = 0;
   const mockSocket1: any = {
     readyState: 1,
     on: () => {},
     send: () => {},
-    close: (code: number) => {
-      socket1Closed = true;
-      socket1CloseCode = code;
-    },
+    close: () => {},
     terminate: () => {},
     ping: () => {},
   };

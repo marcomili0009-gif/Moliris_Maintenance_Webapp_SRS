@@ -14,7 +14,6 @@ import { AuditOperation } from "../../storage/audit-models.ts";
 import { type AuthMiddleware } from "./auth-middleware.ts";
 import { hashPassword, verifyPassword, toUserProfileDto } from "./user-models.ts";
 import { getPathAuthorizationDefaultOperatorAllowedPaths } from "./path-authorization.ts";
-import { AppPermission } from "./permissions.ts";
 import { ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
 import { type PhysicalFileLogger, sanitizeLogText } from "../logging/physical-file-logger.ts";

@@ -18,7 +18,6 @@ import assert from "assert";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { Readable } from "stream";
 
 import { InMemoryRobotRepository } from "../../storage/robot-repository.ts";
 import { InMemoryAuditRepository } from "../../storage/audit-repository.ts";
@@ -27,14 +26,12 @@ import { DefaultHostKeyVerifier } from "../../backend/connection/host-key-verifi
 import { RobotConnectionManager } from "../../backend/connection/robot-connection-manager.ts";
 import { FleetService } from "../../backend/fleet/fleet-service.ts";
 import { ServerFilesystemService } from "../../storage/server-fs.ts";
-import { StandardRobotDirectoryNamingPolicy, type RobotEntity } from "../../storage/robot-models.ts";
+import { type RobotEntity } from "../../storage/robot-models.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
 import { ErrorCode, MolirisAppError } from "../../errors/app-errors.ts";
 import { AppPermission, DEFAULT_ROLE_PERMISSIONS } from "../../backend/auth/permissions.ts";
 import { type UserEntity } from "../../backend/auth/user-models.ts";
 import { type SystemConfiguration } from "../../config/configuration.ts";
-import { SessionManager } from "../../backend/auth/session-manager.ts";
-import { InMemoryUserRepository } from "../../backend/auth/user-repository.ts";
 
 console.log("--> Esecuzione suite di test Unicità Flotta, Isolamento Filesystem e Hardening Correttivo...");
 
@@ -49,16 +46,6 @@ const adminUser: UserEntity = {
   createdAt: new Date(),
   updatedAt: new Date(),
   passwordHash: "hash_admin",
-};
-
-const operatorUser: UserEntity = {
-  id: "operator-user",
-  username: "operator_test",
-  roles: ["operatore"],
-  enabled: true,
-  createdAt: new Date(),
-  updatedAt: new Date(),
-  passwordHash: "hash_op",
 };
 
 function buildFleetTestEnvironment(overrides: Partial<SystemConfiguration> = {}) {
@@ -206,7 +193,7 @@ try {
   // =========================================================================
   {
     console.log("  -> [Test 2] Naming directory <username>_<id>, zero collisioni e isolamento...");
-    const { fleetService, fsRoot, repo } = buildFleetTestEnvironment({ robotUsernameUniqueness: "per_host" });
+    const { fleetService, fsRoot } = buildFleetTestEnvironment({ robotUsernameUniqueness: "per_host" });
 
     const regA = await fleetService.registerRobot(adminUser, {
       id: "amr01",
@@ -392,7 +379,7 @@ try {
   // =========================================================================
   {
     console.log("  -> [Test 5] Invarianza operativa: uso del percorso persistito nel record...");
-    const { repo, serverFs, fsRoot, audit } = buildFleetTestEnvironment();
+    const { repo, serverFs, fsRoot } = buildFleetTestEnvironment();
 
     // Creiamo una directory con naming legacy/custom
     const customLegacyDir = path.join(fsRoot, "custom_legacy_path_for_robot");
@@ -586,7 +573,7 @@ try {
   // =========================================================================
   {
     console.log("  -> [Test 8] Isolamento directory .tmp, nomi riservati e audit di sicurezza...");
-    const { fleetService, serverFs, fsRoot, audit, repo } = buildFleetTestEnvironment();
+    const { fleetService, serverFs, audit, repo } = buildFleetTestEnvironment();
 
     const reg = await fleetService.registerRobot(adminUser, {
       id: "robot-tmp-test",

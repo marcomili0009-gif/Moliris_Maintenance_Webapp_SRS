@@ -17,13 +17,13 @@ import { AuditOperation } from "../../storage/audit-models.ts";
 import { ServerFilesystemService } from "../../storage/server-fs.ts";
 import { type UserEntity } from "../auth/user-models.ts";
 import { AppPermission, hasPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS } from "../auth/permissions.ts";
-import { type CredentialProvider, type InMemoryCredentialProvider } from "../connection/credential-provider.ts";
+import { type CredentialProvider } from "../connection/credential-provider.ts";
 import { type HostKeyVerifier, isValidSha256Fingerprint } from "../connection/host-key-verifier.ts";
 import { validateHostAndPort, DestinationValidator } from "../connection/connection-validator.ts";
 import { RobotConnectionManager } from "../connection/robot-connection-manager.ts";
 import { verifyRobotConnection } from "../connection/connection-verifier.ts";
 import { type SystemConfiguration } from "../../config/configuration.ts";
-import { MolirisLogger, redactSensitiveData } from "../../logging/logger.ts";
+import { MolirisLogger } from "../../logging/logger.ts";
 import { MolirisAppError, ErrorCode } from "../../errors/app-errors.ts";
 import {
   type RobotRegistrationInput,
@@ -762,9 +762,8 @@ export class FleetService {
     // 5. Fase 1 Protocollo a due fasi: salvataggio transitorio a database con flag persistito (Problema 3)
     candidateRobot.registrationState = "registrazione_incompleta";
     performedActions.push("fase1_persistenza_transitoria_database");
-    let candidateSaved: RobotEntity;
     try {
-      candidateSaved = await this.robotRepository.create(candidateRobot);
+      await this.robotRepository.create(candidateRobot);
     } catch (dbErr: any) {
       if (storedCredentialRef) {
         await this.credentialProvider.remove(candidateRobot.id).catch(() => {});

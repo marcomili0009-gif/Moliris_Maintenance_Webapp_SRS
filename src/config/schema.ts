@@ -213,6 +213,12 @@ export const AppConfigSchema = z.object({
     .default(30),
 
   /**
+   * 12. Abilita la ripresa (resume) dei trasferimenti Server <-> Robot interrotti riutilizzando
+   * il file temporaneo parziale (RF-TRF-010). Default: true.
+   */
+  transferResumeEnabled: z.boolean({ message: "transferResumeEnabled deve essere un booleano" }).default(true),
+
+  /**
    * Percorso del file da cui è stata caricata la configurazione (metadato informativo)
    */
   loadedConfigPath: z.string().optional(),

@@ -2119,7 +2119,7 @@ export class ServerFilesystemService {
 
   private async recordPathTraversalViolation(
     robotId: string,
-    attemptedPath: string,
+    _attemptedPath: string,
     reason: string
   ): Promise<void> {
     this.logger.error("Tentativo di violazione sicurezza percorsi (Path Traversal)", reason, { robotId });

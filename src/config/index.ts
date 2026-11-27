@@ -5,7 +5,7 @@ import fs from "fs";
 import path from "path";
 import { type FastifyInstance, type FastifyPluginAsync } from "fastify";
 import fp from "fastify-plugin";
-import { ZodError, type z } from "zod";
+import { type z } from "zod";
 import {
   AppConfigSchema,
   type AppConfig,
@@ -217,6 +217,12 @@ function extractEnvConfig(env: Record<string, string | undefined>): Record<strin
   if (rawTrfTimeout !== undefined && rawTrfTimeout.trim() !== "") {
     const n = Number(rawTrfTimeout);
     result.transferTimeoutMinutes = isNaN(n) ? rawTrfTimeout : n;
+  }
+
+  // 12. transferResumeEnabled
+  const rawTrfResume = (env["MOLIRIS_TRANSFER_RESUME_ENABLED"] ?? env["TRANSFER_RESUME_ENABLED"])?.trim().toLowerCase();
+  if (rawTrfResume === "true" || rawTrfResume === "false") {
+    result.transferResumeEnabled = rawTrfResume === "true";
   }
 
   return result;

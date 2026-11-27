@@ -109,19 +109,6 @@ const adminUser: UserEntity = {
   
 };
 
-const opUser: UserEntity = {
-  id: "op_01",
-  username: "operatore",
-  roles: ["operatore"],
-  enabled: true,
-    updatedAt: new Date(),
-    passwordHash: "mock_hash",
-  createdAt: new Date(),
-    
-    
-  
-};
-
 const opRestrictedUser: UserEntity = {
   id: "op_restricted",
   username: "operatore_limitato",
@@ -306,7 +293,7 @@ try {
     );
 
     // Caso 3b: Modalità differita -> registra il robot con stato esplicito 'ssh_non_verificata'
-    const { service: deferredService, repo: deferredRepo } = createService({ registrationMode: "differita" });
+    const { service: deferredService, } = createService({ registrationMode: "differita" });
     const deferredResult = await deferredService.registerRobot(adminUser, {
       id: "robot-deferred-ok",
       displayName: "Robot Deferred Test",

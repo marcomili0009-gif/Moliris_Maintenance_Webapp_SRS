@@ -7,7 +7,7 @@ import path from "path";
 import os from "os";
 import https from "https";
 import { execSync } from "child_process";
-import { hashPassword, verifyPassword, toUserProfileDto, type UserEntity } from "./user-models.ts";
+import { hashPassword, verifyPassword, type UserEntity } from "./user-models.ts";
 import { InMemoryUserRepository, MongoUserRepository } from "./user-repository.ts";
 import { MongoClient } from "mongodb";
 import { SessionManager, type SessionTerminationReason } from "./session-manager.ts";
@@ -18,7 +18,7 @@ import { createServer } from "../server.ts";
 import { loadConfig } from "../../src/config/index.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
 import { type SystemConfiguration } from "../../config/configuration.ts";
-import { ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
+import { ErrorCode } from "../../errors/app-errors.ts";
 
 console.log("--> Esecuzione test modulo autenticazione, sessioni, RBAC e audit...");
 
@@ -455,7 +455,6 @@ console.log("  PASS: Limitazione tentativi di login e intestazione Retry-After."
 
   // Calcolo soglia avviso: 5 minuti prima della scadenza (25 minuti trascorsi su 30)
   const timeoutMs = 30 * 60 * 1000;
-  const warningWindowMs = 5 * 60 * 1000;
 
   // Verifica progressione del conto alla rovescia: 5, 4, 3, 2, 1
   for (let minElapsed = 25; minElapsed < 30; minElapsed++) {
@@ -770,7 +769,7 @@ console.log("  PASS: Limitazione tentativi di login e intestazione Retry-After."
 
   // SCENARIO 5: Chiusura garantita risorse e terminazione listener (WebSocket, terminali, trasferimenti)
   // Invoca destroySessionsForUser per testare l'invalidazione immediata di massa in RAM
-  const dummySession = sessionManager.createSession(updatedAdmin);
+  sessionManager.createSession(updatedAdmin);
   const countDestroyed = sessionManager.destroySessionsForUser(resetUserId, "PASSWORD_RESET");
   assert(countDestroyed >= 1, "Scenario 5: destroySessionsForUser deve rimuovere le sessioni attive dell'utente");
   const matchingTermination = terminatedEvents.find((e) => e.userId === resetUserId && e.reason === "PASSWORD_RESET");

@@ -103,7 +103,7 @@ assert(!fs.existsSync(robotC.serverDirectoryPath), "Directory vuota creata ex-no
 const robotD = makeTestRobot("robot_D", "operator_d");
 const resCreateD = await serverFsService.ensureRobotDirectory(robotD);
 fs.writeFileSync(path.join(robotD.serverDirectoryPath, "important.dat"), "IMPORTANT");
-const rbD = await serverFsService.rollbackRobotDirectory(resCreateD);
+await serverFsService.rollbackRobotDirectory(resCreateD);
 assert.strictEqual(fs.existsSync(robotD.serverDirectoryPath), true, "Se contiene file, non deve essere cancellata");
 console.log("  PASS: Rollback selettivo sicuro a zero perdite dati (CA-ROB-008, CA-ROB-011).");
 

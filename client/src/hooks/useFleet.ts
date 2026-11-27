@@ -289,22 +289,46 @@ export function useFleet(isAuthenticated: boolean) {
 
     loadFleet();
 
-    // Polling automatico della flotta ogni 5 secondi (§16)
-    const pollIntervalMs = 5000;
-    const timer = setInterval(() => {
-      // Aggiornamento silenzioso dei dati senza flickering dello spinner
-      apiClient
-        .get("/api/robots")
-        .then(async (res) => {
-          if (res.ok) {
-            const data = await res.json();
-            setRobots(data.robots || []);
-          }
-        })
-        .catch(() => {});
-    }, pollIntervalMs);
+    // Polling automatico della flotta: intervallo letto da fleetPollingIntervalSeconds
+    // in /api/config/public (fallback 5 s; 0 = polling disattivato) (§16)
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
 
-    return () => clearInterval(timer);
+    const resolvePollIntervalMs = async (): Promise<number> => {
+      const fallbackSeconds = 5;
+      try {
+        const res = await apiClient.get("/api/config/public");
+        if (res.ok) {
+          const cfg = await res.json();
+          const seconds = Number(cfg?.fleetPollingIntervalSeconds);
+          if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+        }
+      } catch {
+        // Configurazione non raggiungibile: si usa il fallback
+      }
+      return fallbackSeconds * 1000;
+    };
+
+    void resolvePollIntervalMs().then((pollIntervalMs) => {
+      if (cancelled || pollIntervalMs <= 0) return;
+      timer = setInterval(() => {
+        // Aggiornamento silenzioso dei dati senza flickering dello spinner
+        apiClient
+          .get("/api/robots")
+          .then(async (res) => {
+            if (res.ok) {
+              const data = await res.json();
+              setRobots(data.robots || []);
+            }
+          })
+          .catch(() => {});
+      }, pollIntervalMs);
+    });
+
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
   }, [isAuthenticated, loadFleet]);
 
   return useMemo(

@@ -68,7 +68,6 @@ export class TransferService {
   private connectionManager: RobotConnectionManager;
   private sessionManager: SessionManager;
   private auditRepository: AuditRepository;
-  private roleMapping: RolePermissionMapping;
   private logger: MolirisLogger;
   private checksumAlgorithm: IChecksumAlgorithm;
 
@@ -119,7 +118,6 @@ export class TransferService {
   private batchTransferManager?: BatchTransferManager;
   private transferRepository: TransferRepository = new InMemoryTransferRepository();
   private readonly historyWrites = new Map<string, Promise<void>>();
-  private readonly failureLoggedRecords = new WeakSet<TransferRecord>();
 
   public setPhysicalFileLogger(logger: PhysicalFileLogger): void {
     this.physicalFileLogger = logger;
@@ -325,7 +323,7 @@ export class TransferService {
     sessionManager: SessionManager,
     auditRepository: AuditRepository,
     logger: MolirisLogger,
-    roleMapping: RolePermissionMapping = DEFAULT_ROLE_PERMISSIONS,
+    _roleMapping: RolePermissionMapping = DEFAULT_ROLE_PERMISSIONS,
     customChecksumAlgo?: IChecksumAlgorithm,
     connectionManager?: RobotConnectionManager
   ) {
@@ -336,7 +334,6 @@ export class TransferService {
     this.connectionManager = connectionManager || remoteFsService.getConnectionManager();
     this.sessionManager = sessionManager;
     this.auditRepository = auditRepository;
-    this.roleMapping = roleMapping;
     this.logger = logger;
     this.checksumAlgorithm = customChecksumAlgo || resolveChecksumAlgorithm(config.transferChecksumAlgorithm);
 
@@ -1311,7 +1308,7 @@ export class TransferService {
     robot: RobotEntity,
     req: StartServerRobotTransferRequest
   ): Promise<TransferDto> {
-    const { record, safeFilename, targetServerRelative, finalServerPath } = await this.prepareTransfer(
+    const { record, targetServerRelative, finalServerPath } = await this.prepareTransfer(
       context, this.describeTransferAttempt(TransferDirection.ROBOT_TO_SERVER, robot.id, req.remotePath, req.remotePath, req.serverRelativePath),
       async () => {
         // Verifica permessi: TRANSFER_SERVER_ROBOT + download robot + upload server
@@ -4044,36 +4041,6 @@ export class TransferService {
    * Pre-check preventivo dei conflitti di sovrascrittura per upload massivo multi-target (RF-TRF-009, RF-TRF-011).
    * Verifica le autorizzazioni, il jail dell'operatore e l'esistenza preventiva dei file sulle destinazioni.
    */
-  /**
-   * Normalizza un percorso directory relativo lato server (Archivio Generale o Directory Robot)
-   * rifiutando prima eventuali sequenze di path traversal o byte nulli (RNF-SEC-005),
-   * e rimuovendo eventuali slash iniziali usati dalla UI (es. "/upload" -> "upload", "/" -> "").
-   */
-  private normalizeRelativeServerDirectory(rawDir?: string): string {
-    let trimmed = (rawDir ?? "").trim();
-    if (trimmed === "~" || trimmed === "~/") {
-      return "";
-    }
-    if (trimmed.startsWith("~/")) {
-      trimmed = trimmed.slice(2).trim();
-    }
-    if (!trimmed || trimmed === "/" || trimmed === "\\" || trimmed === "." || trimmed === "./" || trimmed === ".\\") {
-      return "";
-    }
-    if (trimmed.includes("\0") || /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(trimmed) || /%2e%2e/i.test(trimmed)) {
-      throw new MolirisAppError(
-        ErrorCode.SERVER_DIR_INACCESSIBLE,
-        `Percorso non consentito: attraversamento directory non autorizzato (${trimmed}).`,
-        "Percorso non consentito: attraversamento directory non autorizzato."
-      );
-    }
-    const stripped = trimmed.replace(/^[/\\]+/, "").replace(/[/\\]+$/, "");
-    if (!stripped || stripped === ".") {
-      return "";
-    }
-    return stripped.replace(/\\/g, "/");
-  }
-
   public async checkBulkConflicts(
     context: AuthorizedContext,
     request: BulkPreCheckRequest

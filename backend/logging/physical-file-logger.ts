@@ -456,7 +456,6 @@ export class PhysicalFileLogger {
     totalFiles: number,
     entry: TransferLogEntry
   ): Promise<string> {
-    const ts = formatLogTimestamp(entry.timestamp || new Date());
     const details = sanitizeLogDetails(entry.details);
     const safeBatchId = sanitizeLogText(batchId);
     const filename = sanitizeLogText(entry.filename);

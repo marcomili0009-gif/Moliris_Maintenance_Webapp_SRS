@@ -7,7 +7,7 @@ import { type UserEntity } from "./user-models.ts";
 import { type AppPermission, type RolePermissionMapping, DEFAULT_ROLE_PERMISSIONS, hasPermission } from "./permissions.ts";
 import { type AuditRepository } from "../../storage/audit-repository.ts";
 import { AuditOperation } from "../../storage/audit-models.ts";
-import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
+import { ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
 import { MolirisLogger } from "../../logging/logger.ts";
 
 // Estensione dei tipi FastifyRequest per memorizzare utente e sessione autenticati

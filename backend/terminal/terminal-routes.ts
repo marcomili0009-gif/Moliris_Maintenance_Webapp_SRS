@@ -89,7 +89,6 @@ export function registerTerminalRoutes(
   );
 
   // STEP 1-Server – Apertura sessione terminale locale sul server Moliris (§9, riservato admin)
-  // Supporta entrambi i percorsi canonici /api/server/terminal/sessions e /api/terminal/server/sessions (Requisito #7)
   const handleServerTerminalOpen = async (req: FastifyRequest, reply: FastifyReply) => {
     try {
       const user = req.molirisUser!;
@@ -118,12 +117,6 @@ export function registerTerminalRoutes(
 
   app.post(
     "/api/server/terminal/sessions",
-    { preHandler: [authMiddleware.authenticate.bind(authMiddleware)] },
-    handleServerTerminalOpen
-  );
-
-  app.post(
-    "/api/terminal/server/sessions",
     { preHandler: [authMiddleware.authenticate.bind(authMiddleware)] },
     handleServerTerminalOpen
   );

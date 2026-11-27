@@ -7,7 +7,6 @@ import { type UserEntity } from "../../backend/auth/user-models.ts";
 import { AuditOperation } from "../../storage/audit-models.ts";
 import { InMemoryAuditRepository } from "../../storage/audit-repository.ts";
 import { TerminalService } from "../../backend/terminal/terminal-service.ts";
-import { DefaultDenyTerminalSessionSharingPolicy } from "../../backend/terminal/terminal-models.ts";
 import { EventEmitter } from "events";
 import { mock } from "node:test";
 
@@ -40,7 +39,7 @@ for (const check of [
   (manager: SessionManager, id: string) => manager.validate(id) === null,
   (manager: SessionManager, id: string) => !manager.touchSession(id),
   (manager: SessionManager, id: string) => manager.getRemainingInactivityMs(id) === null,
-  (manager: SessionManager, id: string) => {
+  (manager: SessionManager, _id: string) => {
     manager.purgeExpiredSessions();
     return manager.getActiveSessionsCount(testUser.id) === 0;
   },
@@ -95,11 +94,9 @@ console.log("  PASS: Tetto assoluto con trasferimenti attivi, heartbeat, task pe
 // =========================================================================
 {
   const sessionTimeoutMin = 30;
-  const warningPreavvisoMin = 5;
   const sm = new SessionManager(sessionTimeoutMin);
 
   const session = sm.createSession(testUser);
-  const now = Date.now();
 
   // A 24 minuti (6 minuti rimanenti): nessun avviso
   sm._simulateInactivity(session.sessionId, 24);
@@ -158,7 +155,7 @@ console.log("  PASS: Tetto assoluto con trasferimenti attivi, heartbeat, task pe
   let closedReason: string | null = null;
   let closedSessionId: string | null = null;
 
-  sm.onSessionTerminated((sId, uId, reason) => {
+  sm.onSessionTerminated((sId, _uId, reason) => {
     closedSessionId = sId;
     closedReason = reason;
   });
@@ -188,7 +185,7 @@ console.log("  PASS: Tetto assoluto con trasferimenti attivi, heartbeat, task pe
   const sm = new SessionManager(30);
   let expiredNotified = false;
 
-  sm.onSessionTerminated((sId, uId, reason) => {
+  sm.onSessionTerminated((_sId, _uId, reason) => {
     if (reason === "EXPIRED") expiredNotified = true;
   });
 
@@ -219,7 +216,7 @@ console.log("  PASS: Tetto assoluto con trasferimenti attivi, heartbeat, task pe
   sm.setActiveTransferChecker((sId) => activeTransfersRegister.get(sId) || 0);
 
   let suspendedEvents: Array<{ sessionId: string; activeTransfers: number }> = [];
-  sm.onSessionSuspendedForTransfer((sId, uId, active, ctx) => {
+  sm.onSessionSuspendedForTransfer((sId, _uId, active, _ctx) => {
     suspendedEvents.push({ sessionId: sId, activeTransfers: active });
   });
 

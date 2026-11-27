@@ -5,7 +5,6 @@ import { StatusBadge } from "../common/StatusBadge.tsx";
 
 interface FleetTableProps {
   robots: RobotSummaryDto[];
-  totalRobotsCount?: number;
   isFilterActive?: boolean;
   onResetFilters?: () => void;
   loading: boolean;
@@ -21,7 +20,6 @@ interface FleetTableProps {
 
 export const FleetTable: React.FC<FleetTableProps> = ({
   robots,
-  totalRobotsCount = 0,
   isFilterActive = false,
   onResetFilters,
   loading,
@@ -99,7 +97,6 @@ export const FleetTable: React.FC<FleetTableProps> = ({
     const menuWidth = 180;
     const estimatedMenuHeight = isAdmin ? 230 : 60;
     const spaceBelow = window.innerHeight - rect.bottom;
-    const spaceAbove = rect.top;
 
     // Apri sempre sopra se lo spazio sotto è insufficiente, indipendentemente dallo spazio sopra
     const shouldFlipTop = spaceBelow < estimatedMenuHeight + 8;

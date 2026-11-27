@@ -4,12 +4,12 @@
 import ssh2, { type Client, type ClientChannel, type SFTPWrapper } from "ssh2";
 import crypto from "crypto";
 import { type RobotEntity } from "../../storage/robot-models.ts";
-import { type CredentialProvider, type AuthenticationMaterial } from "./credential-provider.ts";
+import { type CredentialProvider } from "./credential-provider.ts";
 import { type HostKeyVerifier, computeHostKeyFingerprint } from "./host-key-verifier.ts";
 import { type DestinationValidator } from "./connection-validator.ts";
 import { type AuditRepository } from "../../storage/audit-repository.ts";
 import { AuditOperation } from "../../storage/audit-models.ts";
-import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
+import { MolirisAppError, ErrorCode } from "../../errors/app-errors.ts";
 import { MolirisLogger, redactSensitiveData } from "../../logging/logger.ts";
 
 export interface ManagedRobotConnection {
@@ -178,7 +178,6 @@ export class RobotConnectionManager {
     const pending = this.pendingConnections.get(connectionId);
     if (pending) pending.client = client;
 
-    let hostKeyVerified = false;
     let hostKeyError: Error | null = null;
 
     // Configurazione di connessione SSH2 con preferenza per cifrari veloci hardware-accelerati
@@ -209,7 +208,6 @@ export class RobotConnectionManager {
             robot.hostKeyVerification ?? {}
           );
           const matched = typeof res === "boolean" ? res : res.matched;
-          hostKeyVerified = matched;
           if (!matched) {
             const exp = typeof res === "object" ? res.expectedFingerprint : (robot.hostKeyVerification?.fingerprint || "");
             const rec = typeof res === "object" ? res.receivedFingerprint : computeHostKeyFingerprint(serverHostKey).openSshFormat;

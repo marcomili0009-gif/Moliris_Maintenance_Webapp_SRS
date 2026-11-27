@@ -15,7 +15,6 @@ import { BulkConflictsModal } from "../components/bulk/BulkConflictsModal.tsx";
 import { ConfirmDialog } from "../components/common/ConfirmDialog.tsx";
 import { DeleteFolderModal, type DeleteFolderTarget } from "../components/common/DeleteFolderModal.tsx";
 import { NotificationBanner } from "../components/common/NotificationBanner.tsx";
-import { Modal } from "../components/common/Modal.tsx";
 import { ToastHost, type ToastMessage } from "../components/common/ToastHost.tsx";
 import { IdleWarningModal } from "../components/common/IdleWarningModal.tsx";
 import { FleetFilterBar } from "../components/fleet/FleetFilterBar.tsx";
@@ -442,7 +441,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           />
           <FleetTable
             robots={filteredRobots}
-            totalRobotsCount={fleet.robots.length}
             isFilterActive={isFilterActive}
             onResetFilters={handleResetFilters}
             loading={fleet.loading}
