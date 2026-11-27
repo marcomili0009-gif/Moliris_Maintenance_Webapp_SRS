@@ -344,6 +344,37 @@ export class PhysicalFileLogger {
     return lines.slice(-limit);
   }
 
+  private async clearLogFiles(primaryPath: string, rotatedPattern: RegExp): Promise<void> {
+    await this.ensureInitialized();
+    await fs.promises.writeFile(primaryPath, "", { encoding: "utf-8", mode: 0o600 });
+    try {
+      await fs.promises.chmod(primaryPath, 0o600);
+    } catch {}
+
+    const entries = await fs.promises.readdir(this.logDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && rotatedPattern.test(entry.name)) {
+        await fs.promises.unlink(path.join(this.logDir, entry.name));
+      }
+    }
+  }
+
+  /**
+   * Svuota esclusivamente il registro access.log ed eventuali file ruotati access.log.<N>.
+   * Non modifica transfers.log.
+   */
+  public async clearAccessLogs(): Promise<void> {
+    await this.clearLogFiles(this.accessLogPath, /^access\.log\.\d+$/);
+  }
+
+  /**
+   * Svuota esclusivamente il registro transfers.log ed eventuali archivi ruotati transfers.log.<N>.
+   * Non modifica access.log.
+   */
+  public async clearTransferLogs(): Promise<void> {
+    await this.clearLogFiles(this.transfersLogPath, /^transfers\.log\.\d+$/);
+  }
+
   // Dall'archivio più recente a quello più vecchio, poi invertiti per il download.
   private async transferLogPaths(): Promise<string[]> {
     await this.ensureInitialized();

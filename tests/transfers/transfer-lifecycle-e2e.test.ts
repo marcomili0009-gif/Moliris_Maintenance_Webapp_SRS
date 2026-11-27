@@ -1050,6 +1050,7 @@ async function runTests() {
         const tds = Array.from(r.querySelectorAll('td'));
         return {
           file: tds[1]?.innerText?.trim() || '',
+          direction: tds[3]?.innerText?.trim() || '',
           outcome: tds[4]?.innerText?.trim() || '',
           details: tds[tds.length - 1]?.innerText?.trim() || '',
           text: r.innerText.replace(/\\s+/g, ' ').trim(),
@@ -1062,6 +1063,19 @@ async function runTests() {
     );
     assert.ok(failedLogRow, `Trasferimento fallito del batch ${failedBatchId} NON visibile nei LOG!`);
     assert.ok(failedLogRow.file.includes("Schermata_167kb.png"), "Nome file presente nei log");
+    assert.strictEqual(
+      failedLogRow.direction,
+      `Computer → Robot (${robotDisabled.id})`,
+      `Direzione nei log deve usare formato leggibile con robotId, ottenuto '${failedLogRow.direction}'`
+    );
+    assert.ok(
+      physicalLogRows.some((r: any) => r.direction === "Computer → Robot (robot-vm-02)"),
+      "Direzione nei log deve mostrare 'Computer → Robot (robot-vm-02)'"
+    );
+    assert.ok(
+      physicalLogRows.every((r: any) => !/^(?:CLIENT|SERVER|ROBOT)_TO_(?:CLIENT|SERVER|ROBOT)$/.test(r.direction)),
+      `La colonna Direzione nei log non deve mostrare codici grezzi tipo CLIENT_TO_ROBOT: ${physicalLogRows.map((r: any) => r.direction).join(" | ")}`
+    );
 
     const brokenDlLogRow = physicalLogRows.find((r: any) => r.file.includes("broken_remote.bin"));
     assert.ok(brokenDlLogRow, "Download fallito broken_remote.bin deve essere visibile nei LOG");
@@ -1097,6 +1111,174 @@ async function runTests() {
       "filtro FALLIMENTO su #table-transfer-logs"
     );
 
+    // Verifica rimozione intestazione "Registro Fisico Su Disco (transfers.log — ...)" in Log trasferimenti
+    const transferPanelText = await evalJs(`document.getElementById('panel-transfer-logs')?.innerText || ''`);
+    assert.ok(
+      !transferPanelText.includes("Registro Fisico Su Disco"),
+      "L'intestazione 'Registro Fisico Su Disco' non deve essere presente in Log trasferimenti"
+    );
+
+    // Verifica ordine barra pulsanti in Log trasferimenti: Aggiorna -> Scarica -> Elimina log (stile distruttivo)
+    const transferToolbar = await evalJs(`(() => {
+      const clearBtn = document.getElementById('btn-clear-transfer-logs');
+      const parent = clearBtn?.parentElement;
+      const children = parent ? Array.from(parent.children).map((el) => ({
+        id: el.id,
+        text: el.textContent?.trim() || '',
+        className: el.className,
+      })) : [];
+      return children;
+    })()`);
+    assert.deepStrictEqual(
+      transferToolbar.map((b: any) => b.id),
+      ["btn-refresh-transfer-logs", "btn-download-transfer-logs", "btn-clear-transfer-logs"],
+      "Ordine pulsanti Log trasferimenti deve essere Aggiorna -> Scarica -> Elimina log"
+    );
+    assert.strictEqual(transferToolbar[2].text, "Elimina log");
+    assert.ok(transferToolbar[2].className.includes("danger"), "Pulsante Elimina log deve usare stile distruttivo");
+
+    // Attendi il termine del trasferimento live così transfers.log non riceve nuove scritture durante il test di svuotamento
+    await liveUploadPromise;
+
+    // Reset filtro esito a ALL prima di verificare la finestra di conferma e lo svuotamento
+    await evalJs(`(() => {
+      const sel = document.getElementById('filter-transfer-outcome');
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+      setter.call(sel, 'ALL');
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await waitFor(`document.querySelectorAll('#table-transfer-logs tbody tr').length >= 5`, 10000, "ripristino filtro ALL log trasferimenti");
+
+    // Verifica RBAC: utente non admin (operatore) riceve 403 su DELETE /api/logs/access e /api/logs/transfers
+    const operatorUser = {
+      ...adminUser,
+      id: "user-operator-logs-rbac",
+      username: "operatore-logs",
+      roles: ["operatore"],
+    };
+    await userRepo.create(operatorUser);
+    const opSession = sessionManager.createSession(operatorUser);
+    for (const logType of ["access", "transfers"] as const) {
+      const deniedRes = await fetch(`${baseUrl}/api/logs/${logType}`, {
+        method: "DELETE",
+        headers: {
+          cookie: `__Host-moliris_session=${opSession.sessionId}`,
+          origin: baseUrl,
+        },
+      });
+      assert.strictEqual(deniedRes.status, 403, `DELETE /api/logs/${logType} deve essere 403 per non-admin`);
+    }
+
+    // Assicura almeno una voce in access.log per verificare l'isolamento tra i due registri
+    await physicalFileLogger.logAccess({
+      event: "LOGIN",
+      username: "admin",
+      role: "admin",
+      outcome: "SUCCESSO",
+      details: "Fixture accesso per test eliminazione log",
+    });
+    const rotatedTransferLogPath = `${physicalFileLogger.getTransferLogFilePath()}.1`;
+    fs.writeFileSync(
+      rotatedTransferLogPath,
+      "[2026-01-01 10:00:00] File: archivio_ruotato.bin | Utente: admin | Direzione: CLIENT_TO_SERVER | Esito: SUCCESSO | Dettagli: storico\n",
+      { mode: 0o600 }
+    );
+
+    // Verifica finestra di conferma e pulsante Annulla (nessuna eliminazione)
+    await evalJs(`document.getElementById('btn-clear-transfer-logs').click()`);
+    await waitFor(`Boolean(document.getElementById('clear-logs-modal'))`, 5000, "modale conferma eliminazione log trasferimenti");
+    const transferConfirmText = await evalJs(`document.getElementById('clear-logs-modal')?.innerText || ''`);
+    assert.ok(transferConfirmText.includes("Log trasferimenti"), `La finestra di conferma deve indicare il registro: ${transferConfirmText}`);
+    assert.ok(transferConfirmText.includes("Annulla") && transferConfirmText.includes("Elimina"));
+    await evalJs(`document.getElementById('btn-cancel-clear-logs').click()`);
+    await waitFor(`!document.getElementById('clear-logs-modal')`, 5000, "chiusura modale su Annulla");
+    assert.ok(fs.readFileSync(physicalFileLogger.getTransferLogFilePath(), "utf-8").trim().length > 0, "Annulla non deve svuotare transfers.log");
+
+    // Verifica gestione errore lato server: se l'eliminazione fallisce, mostra errore SENZA svuotare la vista
+    const rowsBeforeError = await evalJs(`document.querySelectorAll('#table-transfer-logs tbody tr').length`);
+    if (typeof process.getuid === "function" && process.getuid() !== 0) {
+      fs.chmodSync(physicalFileLogger.getTransferLogFilePath(), 0o400);
+      try {
+        await evalJs(`document.getElementById('btn-clear-transfer-logs').click()`);
+        await waitFor(`Boolean(document.getElementById('clear-logs-modal'))`, 5000, "modale conferma errore eliminazione");
+        await evalJs(`document.getElementById('btn-confirm-clear-logs').click()`);
+        await waitFor(`Boolean(document.querySelector('#panel-transfer-logs .alert-danger'))`, 5000, "alert errore eliminazione log trasferimenti");
+        const rowsAfterError = await evalJs(`document.querySelectorAll('#table-transfer-logs tbody tr').length`);
+        assert.strictEqual(rowsAfterError, rowsBeforeError, "In caso di errore la vista log non deve essere svuotata");
+      } finally {
+        fs.chmodSync(physicalFileLogger.getTransferLogFilePath(), 0o600);
+      }
+    }
+
+    // Conferma eliminazione Log trasferimenti -> svuota lato server (incluso ruotato), vista mostra "Nessun log disponibile", access.log intatto
+    const accessBeforeTransferClear = fs.readFileSync(physicalFileLogger.getAccessLogFilePath(), "utf-8");
+    await evalJs(`document.getElementById('btn-clear-transfer-logs').click()`);
+    await waitFor(`Boolean(document.getElementById('clear-logs-modal'))`, 5000, "modale conferma svuotamento trasferimenti");
+    await evalJs(`document.getElementById('btn-confirm-clear-logs').click()`);
+    await waitFor(
+      `!document.getElementById('clear-logs-modal') && (document.querySelector('#table-transfer-logs tbody')?.innerText || '').includes('Nessun log disponibile')`,
+      10000,
+      "stato vuoto 'Nessun log disponibile' dopo eliminazione log trasferimenti"
+    );
+    assert.strictEqual(fs.readFileSync(physicalFileLogger.getTransferLogFilePath(), "utf-8"), "", "transfers.log deve essere vuoto su disco");
+    assert.strictEqual(fs.existsSync(rotatedTransferLogPath), false, "Eventuali archivi ruotati transfers.log.1 devono essere rimossi");
+    assert.strictEqual(
+      fs.readFileSync(physicalFileLogger.getAccessLogFilePath(), "utf-8"),
+      accessBeforeTransferClear,
+      "Lo svuotamento di transfers.log non deve modificare access.log"
+    );
+
+    // Passa a Log di Accesso: verifica pulsanti, integrità dei log di accesso e svuotamento isolato
+    await evalJs(`document.getElementById('tab-access-logs').click()`);
+    await waitFor(`document.querySelectorAll('#table-access-logs tbody tr').length >= 1 && !(document.querySelector('#table-access-logs tbody')?.innerText || '').includes('Nessun log disponibile')`, 10000, "righe access.log ancora presenti");
+    const accessToolbar = await evalJs(`(() => {
+      const clearBtn = document.getElementById('btn-clear-access-logs');
+      const parent = clearBtn?.parentElement;
+      return parent ? Array.from(parent.children).map((el) => ({
+        id: el.id,
+        text: el.textContent?.trim() || '',
+        className: el.className,
+      })) : [];
+    })()`);
+    assert.deepStrictEqual(
+      accessToolbar.map((b: any) => b.id),
+      ["btn-refresh-access-logs", "btn-download-access-logs", "btn-clear-access-logs"],
+      "Ordine pulsanti Log accessi deve essere Aggiorna -> Scarica -> Elimina log"
+    );
+    assert.strictEqual(accessToolbar[2].text, "Elimina log");
+    assert.ok(accessToolbar[2].className.includes("danger"), "Pulsante Elimina log accessi deve usare stile distruttivo");
+
+    // Scrivi una nuova voce in transfers.log per verificare che svuotare access.log NON tocchi transfers.log
+    const transferMarkerAfterClear = await physicalFileLogger.logTransfer({
+      filename: "keep_after_access_clear.bin",
+      username: "admin",
+      direction: "CLIENT_TO_SERVER",
+      outcome: "SUCCESSO",
+      details: "Deve restare dopo clear access",
+    });
+
+    await evalJs(`document.getElementById('btn-clear-access-logs').click()`);
+    await waitFor(`Boolean(document.getElementById('clear-logs-modal'))`, 5000, "modale conferma svuotamento accessi");
+    const accessConfirmText = await evalJs(`document.getElementById('clear-logs-modal')?.innerText || ''`);
+    assert.ok(accessConfirmText.includes("Log accessi"), `La finestra di conferma deve indicare Log accessi: ${accessConfirmText}`);
+    await evalJs(`document.getElementById('btn-confirm-clear-logs').click()`);
+    await waitFor(
+      `!document.getElementById('clear-logs-modal') && (document.querySelector('#table-access-logs tbody')?.innerText || '').includes('Nessun log disponibile')`,
+      10000,
+      "stato vuoto 'Nessun log disponibile' dopo eliminazione log accessi"
+    );
+    assert.strictEqual(fs.readFileSync(physicalFileLogger.getAccessLogFilePath(), "utf-8"), "", "access.log deve essere vuoto su disco");
+    assert.ok(
+      fs.readFileSync(physicalFileLogger.getTransferLogFilePath(), "utf-8").includes(transferMarkerAfterClear),
+      "Lo svuotamento di access.log non deve modificare transfers.log"
+    );
+
+    // Verifica che i download continuino a rispondere 200 anche con registro vuoto
+    const dlAccessRes = await fetch(`${baseUrl}/api/logs/download/access`, { headers: authHeaders });
+    const dlTransferRes = await fetch(`${baseUrl}/api/logs/download/transfers`, { headers: authHeaders });
+    assert.strictEqual(dlAccessRes.status, 200);
+    assert.strictEqual(dlTransferRes.status, 200);
+
     // Verifica ZERO errori JS / eccezioni non gestite in console Chrome
     assert.strictEqual(pageErrors.length, 0, `Rilevate eccezioni JS in pagina: ${pageErrors.join(" | ")}`);
     assert.strictEqual(
@@ -1106,8 +1288,7 @@ async function runTests() {
     );
 
     ws.close();
-    await liveUploadPromise;
-    console.log("✔ TUTTI I 14 SCENARI + REGRESSIONE BATCH + CHROME E2E SUPERATI CON SUCCESSO!");
+    console.log("✔ TUTTI I 14 SCENARI + REGRESSIONE BATCH + ELIMINAZIONE LOG + CHROME E2E SUPERATI CON SUCCESSO!");
   } finally {
     if (chromeProc) {
       try { chromeProc.kill("SIGKILL"); } catch {}
