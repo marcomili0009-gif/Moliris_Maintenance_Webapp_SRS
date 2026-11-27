@@ -1,5 +1,6 @@
 // Requisiti soddisfatti: RF-SRVFS-002, RF-SRVFS-005, RF-AUTH-005, RNF-SEC-004, RNF-SEC-005, RNF-FS-003, RF-ROB-013, SRS §5.2, §5.6
 
+import fs from "fs";
 import path from "path";
 import { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
 import { type ServerFilesystemService } from "../storage/server-fs.ts";
@@ -708,6 +709,8 @@ export function registerServerFsRoutes(
 
       try {
         const robots = await robotRepository.list();
+        const resolvedCheckPath = await serverFsService.resolveGeneralPath(subPath || undefined);
+        const pathExists = fs.existsSync(resolvedCheckPath);
         const items = await serverFsService.listAggregateGeneralDirectory(context, robots, subPath);
         const mappedEntries = items.map((it: any) => ({
           name: it.name,
@@ -728,6 +731,7 @@ export function registerServerFsRoutes(
           scope: "general",
           currentPath: rawPath || "/",
           path: rawPath || "/",
+          exists: pathExists,
           items: items.map((it: any) => ({
             ...it,
             scope: it.scope || "general",

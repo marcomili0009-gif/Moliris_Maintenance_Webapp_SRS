@@ -185,6 +185,14 @@ const sftpServer = new ssh2.Server({ hostKeys: [serverHostKey.privateKey] }, (cl
           }
           return sftp.status(reqid, 2);
         });
+        sftp.on("MKDIR", (reqid: number, p: string) => {
+          const norm = path.posix.normalize(p);
+          const parent = path.posix.dirname(norm);
+          if (mockRemoteFs[norm] !== undefined) return sftp.status(reqid, 4);
+          if (parent !== "/" && mockRemoteFs[parent]?.toString() !== "DIR") return sftp.status(reqid, 2);
+          mockRemoteFs[norm] = Buffer.from("DIR");
+          sftp.status(reqid, 0);
+        });
         sftp.on("UNLINK", (reqid: number, p: string) => {
           delete mockRemoteFs[path.posix.normalize(p)];
           sftp.status(reqid, 0);
@@ -255,6 +263,8 @@ await userRepo.create({
 const robot1: RobotEntity = {
   id: "robot-bulk-1",
   displayName: "Robot Bulk Uno",
+  customerName: "Cliente Alfa",
+  plantName: "Impianto Nord",
   remoteUsername: "robot",
   host: "127.0.0.1",
   sshPort,
@@ -652,10 +662,158 @@ try {
     "Test 5: Robot -> Robot completato con successo"
   );
   assert.strictEqual(mockRemoteFs["/upload/from_robot.txt"]?.toString("utf8"), "Contenuto remoto dal robot");
+  await evalJs("document.querySelector('#btn-close-bulk-upload').click()");
+  await waitFor("!document.querySelector('#modal-bulk-upload')");
   console.log("  PASS Browser 5: Sorgente Robot Remoto (navigazione cartelle) -> Robot Remoto.");
 
+  // =========================================================================
+  // TEST 6: Passo 4 senza "Cartella comune sui robot remoti" + creazione cartella in FolderPickerModal su general/server/remote
+  // =========================================================================
+  await evalJs("document.querySelector('#btn-bulk-upload-open').click()");
+  await waitFor("document.querySelector('#modal-bulk-upload')");
+  await setFileInput("#bulk-files-input", [localFile1]);
+  await waitFor("!document.querySelector('#btn-bulk-next').disabled");
+  await evalJs("document.querySelector('#btn-bulk-next').click()"); // -> Step 2
+  // Abilita tutte e 3 le destinazioni (general + server_robots + remote_robots)
+  await evalJs(`(() => {
+    const labels = Array.from(document.querySelectorAll('#modal-bulk-upload .list-group-item'));
+    labels.find(l => l.textContent.includes('Archivio Generale Server')).querySelector('input').click();
+    labels.find(l => l.textContent.includes('Directory Server Associate')).querySelector('input').click();
+  })()`);
+  await evalJs("document.querySelector('#btn-bulk-next').click()"); // -> Step 3
+  await evalJs(`(() => {
+    const btn = Array.from(document.querySelectorAll('#modal-bulk-upload button')).find(b => b.textContent.trim() === 'Seleziona tutti');
+    btn.click();
+  })()`);
+  await evalJs("document.querySelector('#btn-bulk-next').click()"); // -> Step 4
+
+  const step4Audit = await evalJs(`(() => {
+    const modalText = document.querySelector('#modal-bulk-upload')?.textContent || '';
+    const remoteLabels = Array.from(document.querySelectorAll('label[for^="bulk-directory-remote-"]')).map(el => el.textContent?.trim() || '');
+    return {
+      hasCommonRemoteLabel: modalText.includes('Cartella comune sui robot remoti'),
+      hasCommonRemoteInput: Boolean(document.querySelector('#bulk-directory-remote')),
+      hasCommonServerInput: Boolean(document.querySelector('#bulk-directory-server')),
+      hasIndividualRemote1: Boolean(document.querySelector('#bulk-directory-remote-robot-bulk-1')),
+      hasIndividualRemote2: Boolean(document.querySelector('#bulk-directory-remote-robot-bulk-2')),
+      remoteLabels,
+    };
+  })()`);
+  assert.strictEqual(step4Audit.hasCommonRemoteLabel, false, "La scritta 'Cartella comune sui robot remoti' non deve più esistere");
+  assert.strictEqual(step4Audit.hasCommonRemoteInput, false, "L'input #bulk-directory-remote non deve più esistere");
+  assert.strictEqual(step4Audit.hasCommonServerInput, true, "La cartella comune server deve restare disponibile");
+  assert.strictEqual(step4Audit.hasIndividualRemote1, true, "Deve essere presente il campo individuale per robot-bulk-1");
+  assert.strictEqual(step4Audit.hasIndividualRemote2, true, "Deve essere presente il campo individuale per robot-bulk-2");
+  assert.deepStrictEqual(
+    step4Audit.remoteLabels,
+    ["robot-bulk-1", "robot-bulk-2"],
+    "Nel Caricamento Massivo devono essere mostrati gli ID dei robot al posto dei nomi"
+  );
+
+  // Verifica finestrella dettagli al passaggio del cursore sull'ID del robot
+  const hoverCoords = await evalJs(`(() => {
+    const el = document.querySelector('label[for="bulk-directory-remote-robot-bulk-1"] [data-robot-hover-id="robot-bulk-1"]');
+    el.scrollIntoView({ block: 'center' });
+    const rect = el.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: hoverCoords.x, y: hoverCoords.y });
+  await waitFor("Boolean(document.querySelector('#bulk-robot-hover-card'))", 5000, "finestrella dettagli robot hover");
+  const hoverCardText = await evalJs("document.querySelector('#bulk-robot-hover-card')?.innerText || ''");
+  for (const expected of ["Cliente", "Cliente Alfa", "Impianto", "Impianto Nord", "Nome Robot", "Robot Bulk Uno", "ID", "robot-bulk-1", "Username Remoto", "robot"]) {
+    assert.ok(hoverCardText.includes(expected), `Hover card deve contenere '${expected}', trovato: ${hoverCardText}`);
+  }
+  await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5 });
+  await waitFor("!document.querySelector('#bulk-robot-hover-card')", 5000, "chiusura hover card su mouseleave");
+
+  const createFolderViaPicker = async (openBtnSelector: string, folderName: string) => {
+    await evalJs(`document.querySelector(${JSON.stringify(openBtnSelector)}).click()`);
+    await waitFor("document.querySelector('#modal-folder-picker')", 5000, `apertura FolderPicker da ${openBtnSelector}`);
+    await waitFor(
+      "Boolean(document.querySelector('#btn-folder-picker-new-folder')) && !document.querySelector('#btn-folder-picker-new-folder').disabled",
+      5000,
+      "pulsante + Nuova Cartella pronto"
+    );
+    await evalJs("document.querySelector('#btn-folder-picker-new-folder').click()");
+    await waitFor("Boolean(document.querySelector('#input-folder-picker-new-name'))", 5000, "input nuova cartella");
+    await evalJs(`(() => {
+      const inp = document.querySelector('#input-folder-picker-new-name');
+      const setVal = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setVal.call(inp, ${JSON.stringify(folderName)});
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await waitFor("!document.querySelector('#btn-folder-picker-create')?.disabled", 3000, "bottone Crea abilitato");
+    await evalJs("document.querySelector('#btn-folder-picker-create').click()");
+    await waitFor(
+      `Array.from(document.querySelectorAll('#modal-folder-picker .list-group-item')).some(el => el.textContent.includes(${JSON.stringify(folderName)}))`,
+      6000,
+      `cartella '${folderName}' visibile dopo creazione`
+    );
+    await evalJs(`(() => {
+      const row = Array.from(document.querySelectorAll('#modal-folder-picker .list-group-item')).find(el => el.textContent.includes(${JSON.stringify(folderName)}));
+      row.click();
+    })()`);
+    await waitFor(
+      `document.querySelector('#modal-folder-picker .modal-footer')?.textContent?.includes(${JSON.stringify(folderName)}) && !document.querySelector('#btn-confirm-select-folder')?.disabled`,
+      6000,
+      `navigazione dentro '${folderName}'`
+    );
+    await evalJs("document.querySelector('#btn-confirm-select-folder').click()");
+    await waitFor("!document.querySelector('#modal-folder-picker')", 5000, "chiusura FolderPicker");
+  };
+
+  await createFolderViaPicker("#btn-open-folder-picker-general", "picker_gen_dir");
+  await createFolderViaPicker("#btn-browse-server-robot-bulk-1", "picker_srv_dir");
+  await createFolderViaPicker("#btn-browse-remote-robot-bulk-1", "picker_remote_dir");
+
+  assert.ok(fs.existsSync(path.join(generalFsRoot, "picker_gen_dir")), "Cartella creata in Archivio Generale dal FolderPicker");
+  assert.ok(fs.existsSync(path.join(robot1.serverDirectoryPath, "upload", "picker_srv_dir")), "Cartella creata in Server Robot dal FolderPicker");
+  assert.strictEqual(mockRemoteFs["/upload/picker_remote_dir"]?.toString(), "DIR", "Cartella creata sul Robot Remoto SFTP dal FolderPicker");
+  const selectedRemote1 = await evalJs("document.querySelector('#bulk-directory-remote-robot-bulk-1')?.value || ''");
+  assert.strictEqual(selectedRemote1, "/upload/picker_remote_dir");
+  await evalJs("document.querySelector('#btn-close-bulk-upload').click()");
+  await waitFor("!document.querySelector('#modal-bulk-upload')");
+  console.log("  PASS Browser 6: ID robot + hover card dettagli, rimossa Cartella comune remota e creazione cartelle in FolderPickerModal.");
+
+  // =========================================================================
+  // TEST 7: Gestione Trasferimenti -> pulsante "Elimina lista" vicino ad "Aggiorna Lista"
+  // Svuota solo la lista dei trasferimenti, preservando tutti i file trasferiti a destinazione!
+  // =========================================================================
+  await evalJs(`(() => {
+    const tab = Array.from(document.querySelectorAll('button[role="tab"], .fs-tab-btn, button')).find(b => /Gestione Trasferimenti/i.test(b.textContent || ''));
+    tab?.click();
+  })()`);
+  await waitFor("document.querySelectorAll('#fs-panel-transfers tr[data-transfer-id]').length >= 1", 8000, "righe trasferimenti visibili");
+  const transferToolbar = await evalJs(`(() => {
+    const refreshBtn = document.querySelector('#btn-refresh-transfers');
+    return refreshBtn?.parentElement
+      ? Array.from(refreshBtn.parentElement.children).map(el => ({ id: el.id, text: el.textContent?.trim() || '', disabled: el.disabled }))
+      : [];
+  })()`);
+  assert.deepStrictEqual(
+    transferToolbar.map((b: any) => b.id),
+    ["btn-refresh-transfers", "btn-clear-transfers-list"],
+    "Il tasto 'Elimina lista' deve essere subito accanto ad 'Aggiorna Lista'"
+  );
+  assert.strictEqual(transferToolbar[1].text, "Elimina lista");
+  assert.strictEqual(transferToolbar[1].disabled, false);
+
+  await evalJs("document.querySelector('#btn-clear-transfers-list').click()");
+  await waitFor("Boolean(document.querySelector('#transfers-empty-msg'))", 8000, "lista trasferimenti svuotata");
+  assert.strictEqual(
+    fs.readFileSync(path.join(robot1.serverDirectoryPath, "upload", "bulk_one.txt"), "utf8"),
+    "CONTENUTO_FILE_1",
+    "Elimina lista non deve eliminare alcun file trasferito sul server"
+  );
+  assert.strictEqual(
+    mockRemoteFs["/upload/bulk_one.txt"]?.toString("utf8"),
+    "CONTENUTO_FILE_1_AGGIORNATO",
+    "Elimina lista non deve eliminare alcun file trasferito sul robot"
+  );
+  console.log("  PASS Browser 7: Pulsante 'Elimina lista' svuota la lista trasferimenti mantenendo intatti i file a destinazione.");
+
   assert.strictEqual(jsErrors.length, 0, `Nessuna eccezione JS nel browser attesa, trovate: ${jsErrors.join("; ")}`);
-  console.log("PASS: Tutti i 5 test E2E Browser Chrome sul Caricamento Massivo completati con successo!");
+  console.log("PASS: Tutti i 7 test E2E Browser Chrome sul Caricamento Massivo e Gestione Trasferimenti completati con successo!");
 } finally {
   cdpWs.close();
   try {
