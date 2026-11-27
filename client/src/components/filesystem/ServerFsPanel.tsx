@@ -7,11 +7,15 @@ import { FsTable } from "./FsTable.tsx";
 import { FsBreadcrumb } from "./FsBreadcrumb.tsx";
 import { RobotCombobox } from "../common/RobotCombobox.tsx";
 import { NewFolderModal } from "../common/NewFolderModal.tsx";
+import { canPerformOperatorPathAction } from "../../utils/path-authorization.ts";
 
 interface ServerFsPanelProps {
   robotId: string;
   onRobotIdChange: (id: string) => void;
   robots?: RobotSummaryDto[];
+  isAdmin?: boolean;
+  isOperator?: boolean;
+  allowedPaths?: string[];
   currentPath: string;
   listing: DirectoryListing | null;
   loading: boolean;
@@ -32,6 +36,9 @@ export const ServerFsPanel: React.FC<ServerFsPanelProps> = ({
   robotId,
   onRobotIdChange,
   robots = [],
+  isAdmin = false,
+  isOperator = false,
+  allowedPaths,
   currentPath,
   listing,
   loading,
@@ -60,6 +67,7 @@ export const ServerFsPanel: React.FC<ServerFsPanelProps> = ({
 
   const entries = listing?.entries || (listing as any)?.items || [];
   const isRoot = !currentPath || currentPath === "/";
+  const canWriteCurrentPath = canPerformOperatorPathAction(currentPath || "/", Boolean(isOperator && !isAdmin), allowedPaths);
   const selectedRobot = robots.find((robot) => robot.id === robotId);
   const totalFiles = entries.filter((entry: any) => entry.type !== "directory").length;
   const totalFolders = entries.filter((entry: any) => entry.type === "directory").length;
@@ -185,9 +193,13 @@ export const ServerFsPanel: React.FC<ServerFsPanelProps> = ({
               type="button"
               id="btn-server-mkdir"
               className="btn btn-outline-primary btn-sm fs-toolbar-btn"
-              title="Crea una nuova cartella nel percorso corrente"
+              title={
+                !canWriteCurrentPath
+                  ? "Creazione cartella non consentita nel percorso corrente per l'operatore"
+                  : "Crea una nuova cartella nel percorso corrente"
+              }
               onClick={() => setIsNewFolderOpen(true)}
-              disabled={!robotId}
+              disabled={!robotId || !canWriteCurrentPath}
             >
               <FolderPlus size={15} aria-hidden="true" />
               Nuova Cartella
@@ -206,9 +218,13 @@ export const ServerFsPanel: React.FC<ServerFsPanelProps> = ({
             type="button"
             id="btn-fs-server-upload"
             className="btn btn-primary btn-sm fs-toolbar-btn"
-            title="Carica file dal computer al server"
+            title={
+              !canWriteCurrentPath
+                ? "Caricamento non consentito nel percorso corrente per l'operatore"
+                : "Carica file dal computer al server"
+            }
             onClick={() => fileInputRef.current?.click()}
-            disabled={!robotId}
+            disabled={!robotId || !canWriteCurrentPath}
           >
             <UploadCloud size={15} aria-hidden="true" />
             Carica sul Server
@@ -226,6 +242,10 @@ export const ServerFsPanel: React.FC<ServerFsPanelProps> = ({
         emptyMessage={emptyMessage}
         emptyHint={emptyHint}
         loading={loading}
+        isAdmin={isAdmin}
+        isOperator={isOperator}
+        allowedPaths={allowedPaths}
+        currentPath={currentPath || "/"}
         onNavigateDir={onNavigateDir}
         onDownload={onDownload}
         onTransfer={onTransferToRemote}

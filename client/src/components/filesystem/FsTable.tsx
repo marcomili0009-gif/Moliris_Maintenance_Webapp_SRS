@@ -16,6 +16,11 @@ import {
 } from "lucide-react";
 import type { FsEntry } from "../../types/filesystem.ts";
 import { StateFormatter } from "../../services/state-formatter.ts";
+import {
+  canPerformOperatorPathAction,
+  isPathOrAncestorAllowedForOperator,
+  joinClientPath,
+} from "../../utils/path-authorization.ts";
 
 interface FsTableProps {
   entries: FsEntry[];
@@ -24,6 +29,9 @@ interface FsTableProps {
   emptyHint?: string;
   loading?: boolean;
   isAdmin?: boolean;
+  isOperator?: boolean;
+  allowedPaths?: string[];
+  currentPath?: string;
   readOnlyMode?: boolean;
   onNavigateDir: (dirName: string) => void;
   /** Invocato quando l'utente apre una directory di robot dall'Archivio Generale aggregato. */
@@ -94,6 +102,9 @@ export const FsTable: React.FC<FsTableProps> = ({
   emptyHint,
   loading = false,
   isAdmin = false,
+  isOperator = false,
+  allowedPaths,
+  currentPath = "/",
   readOnlyMode = false,
   onNavigateDir,
   onOpenRobot,
@@ -168,6 +179,10 @@ export const FsTable: React.FC<FsTableProps> = ({
               const FileIcon = getFileIcon(entry.name);
               const modified = formatModified(entry.modifiedAt || entry.mtime);
               const rowKey = `${entry.scope || "general"}:${robotId || entry.name}:${entry.name}`;
+              const entryPath = joinClientPath(currentPath, entry.name);
+              const enforceOperator = Boolean(isOperator && !isAdmin && !isRobotEntry && !isDeletedRobotEntry);
+              const canAccessEntry = !enforceOperator || canPerformOperatorPathAction(entryPath, true, allowedPaths);
+              const canOpenDir = !enforceOperator || isPathOrAncestorAllowedForOperator(entryPath, allowedPaths);
 
               const openEntry = () => {
                 if (isDeletedRobotEntry && onOpenDeletedRobot) {
@@ -178,7 +193,7 @@ export const FsTable: React.FC<FsTableProps> = ({
                   onOpenRobot(robotId);
                   return;
                 }
-                if (isDir) {
+                if (isDir && canOpenDir) {
                   onNavigateDir(entry.name);
                 }
               };
@@ -286,12 +301,15 @@ export const FsTable: React.FC<FsTableProps> = ({
                           type="button"
                           className="fs-action fs-action-open"
                           onClick={openEntry}
+                          disabled={isDir && !canOpenDir}
                           title={
-                            isDeletedRobotEntry
-                              ? `Esplora i file residui di ${entry.name}`
-                              : isRobotEntry
-                              ? `Apri il robot ${robotId}`
-                              : `Apri ${entry.name}`
+                            !canOpenDir
+                              ? "Cartella esterna ai percorsi autorizzati per l'operatore"
+                              : isDeletedRobotEntry
+                                ? `Esplora i file residui di ${entry.name}`
+                                : isRobotEntry
+                                ? `Apri il robot ${robotId}`
+                                : `Apri ${entry.name}`
                           }
                         >
                           <ChevronRight size={15} strokeWidth={2.2} aria-hidden="true" />
@@ -313,7 +331,12 @@ export const FsTable: React.FC<FsTableProps> = ({
                           <button
                             type="button"
                             className="fs-action fs-action-danger"
-                            title="Elimina cartella"
+                            disabled={!canAccessEntry}
+                            title={
+                              !canAccessEntry
+                                ? "Operazione non consentita: percorso esterno ai percorsi autorizzati"
+                                : "Elimina cartella"
+                            }
                             onClick={() => onDeleteFolder(entry.name)}
                           >
                             <Trash2 size={14} strokeWidth={2} aria-hidden="true" />
@@ -326,7 +349,12 @@ export const FsTable: React.FC<FsTableProps> = ({
                         <button
                           type="button"
                           className="fs-action"
-                          title="Scarica file sul tuo computer"
+                          disabled={!canAccessEntry}
+                          title={
+                            !canAccessEntry
+                              ? "Download non consentito: percorso esterno ai percorsi autorizzati"
+                              : "Scarica file sul tuo computer"
+                          }
                           onClick={() => onDownload(entry.name)}
                         >
                           <Download size={14} strokeWidth={2} aria-hidden="true" />
@@ -337,7 +365,12 @@ export const FsTable: React.FC<FsTableProps> = ({
                           <button
                             type="button"
                             className="fs-action fs-action-primary"
-                            title={transferActionLabel}
+                            disabled={!canAccessEntry}
+                            title={
+                              !canAccessEntry
+                                ? "Trasferimento non consentito: percorso esterno ai percorsi autorizzati"
+                                : transferActionLabel
+                            }
                             onClick={() => onTransfer(entry.name, entry)}
                           >
                             <Send size={14} strokeWidth={2} aria-hidden="true" />
@@ -349,7 +382,12 @@ export const FsTable: React.FC<FsTableProps> = ({
                           <button
                             type="button"
                             className="fs-action fs-action-danger"
-                            title="Elimina file"
+                            disabled={!canAccessEntry}
+                            title={
+                              !canAccessEntry
+                                ? "Eliminazione non consentita: percorso esterno ai percorsi autorizzati"
+                                : "Elimina file"
+                            }
                             onClick={() => onDelete(entry.name)}
                           >
                             <Trash2 size={14} strokeWidth={2} aria-hidden="true" />

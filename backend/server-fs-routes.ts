@@ -707,6 +707,7 @@ export function registerServerFsRoutes(
       );
 
       try {
+        await authorizeOperatorPath(context, "server", undefined, rawPath || "/", undefined, { isListingRootAllowed: true });
         const robots = await robotRepository.list();
         const items = await serverFsService.listAggregateGeneralDirectory(context, robots, subPath);
         const mappedEntries = items.map((it: any) => ({

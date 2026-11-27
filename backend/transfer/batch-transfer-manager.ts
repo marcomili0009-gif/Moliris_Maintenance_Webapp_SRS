@@ -217,6 +217,11 @@ export class BatchTransferManager {
     }
   }
 
+  public async shutdown(): Promise<void> {
+    const active = this.listBatches().filter(({ status }) => status === "QUEUED" || status === "IN_PROGRESS");
+    await Promise.allSettled(active.map(({ batchId }) => this.cancelBatch(batchId)));
+  }
+
   /**
    * Cancellazione selettiva conforme al Requisito #9:
    * - File in QUEUED: imposta a CANCELLED ed espelli dalla coda

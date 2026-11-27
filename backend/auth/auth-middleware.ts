@@ -62,45 +62,41 @@ export class AuthMiddleware {
   /**
    * Guardia di autenticazione: verifica sessione valida e non scaduta (RF-AUTH-003, RF-AUTH-006).
    */
-  public async authenticate(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  public async authenticate(req: FastifyRequest, reply: FastifyReply): Promise<FastifyReply | void> {
     reply.header("Cache-Control", "no-store");
     const sessionId = this.extractSessionId(req);
 
     if (!sessionId) {
       await this.recordSecurityError("anonymous", undefined, "SESSION_MISSING");
       const errDef = ERROR_CATALOG[ErrorCode.INVALID_CREDENTIALS];
-      reply.status(401).send({
+      return reply.status(401).send({
         code: errDef.code,
         message: "Sessione di accesso non presente o non valida.",
         classification: errDef.classification,
       });
-      return;
     }
 
     const session = this.sessionManager.validate(sessionId);
     if (!session) {
       await this.recordSecurityError("anonymous", undefined, "SESSION_EXPIRED_OR_INVALID");
-      this.rejectExpiredSession(reply);
-      return;
+      return this.rejectExpiredSession(reply);
     }
 
     const user = await this.userRepository.findById(session.userId);
     const currentSession = this.sessionManager.validate(sessionId);
     if (!currentSession) {
-      this.rejectExpiredSession(reply);
-      return;
+      return this.rejectExpiredSession(reply);
     }
 
     if (!user || !user.enabled) {
       await this.recordSecurityError(session.username, undefined, "USER_DISABLED_OR_NOT_FOUND");
       this.sessionManager.destroySession(sessionId);
       const errDef = ERROR_CATALOG[ErrorCode.INVALID_CREDENTIALS];
-      reply.status(401).send({
+      return reply.status(401).send({
         code: errDef.code,
         message: "Utente disabilitato o non trovato.",
         classification: errDef.classification,
       });
-      return;
     }
 
     // Revoca atomica sessioni su reset/cambio password:
@@ -113,12 +109,11 @@ export class AuthMiddleware {
         await this.recordSecurityError(session.username, undefined, "SESSION_REVOKED_PASSWORD_CHANGED");
         this.sessionManager.destroySession(sessionId, "PASSWORD_RESET");
         const errDef = ERROR_CATALOG[ErrorCode.INVALID_CREDENTIALS];
-        reply.status(401).send({
+        return reply.status(401).send({
           code: errDef.code,
           message: "Sessione revocata a seguito del cambio password. Effettuare nuovamente il login.",
           classification: errDef.classification,
         });
-        return;
       }
     }
 
@@ -134,17 +129,16 @@ export class AuthMiddleware {
       (req.method === "POST" && /^\/api\/auth\/logout(?:\?.*)?$/.test(req.url));
 
     if (!isBackgroundOrPolling && !this.sessionManager.touchSession(sessionId)) {
-      this.rejectExpiredSession(reply);
-      return;
+      return this.rejectExpiredSession(reply);
     }
 
     req.molirisSession = currentSession;
     req.molirisUser = user;
   }
 
-  private rejectExpiredSession(reply: FastifyReply): void {
+  private rejectExpiredSession(reply: FastifyReply): FastifyReply {
     const errDef = ERROR_CATALOG[ErrorCode.INVALID_CREDENTIALS];
-    reply.status(401).send({
+    return reply.status(401).send({
       code: errDef.code,
       message: "Sessione scaduta o non valida. Effettuare nuovamente il login.",
       classification: errDef.classification,
@@ -159,11 +153,11 @@ export class AuthMiddleware {
     permission: AppPermission,
     robotIdExtractor?: (req: FastifyRequest) => string | undefined
   ) {
-    return async (req: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    return async (req: FastifyRequest, reply: FastifyReply): Promise<FastifyReply | void> => {
       // 1. Verifica autenticazione
       if (!req.molirisUser || !req.molirisSession) {
         await this.authenticate(req, reply);
-        if (reply.sent) return;
+        if (reply.sent) return reply;
       }
 
       const user = req.molirisUser!;
@@ -175,12 +169,11 @@ export class AuthMiddleware {
       if (!allowed) {
         await this.recordSecurityError(user.username, targetRobotId, `PERMISSION_DENIED_${permission}`);
         const errDef = ERROR_CATALOG[ErrorCode.INSUFFICIENT_PERMISSIONS];
-        reply.status(403).send({
+        return reply.status(403).send({
           code: errDef.code,
           message: errDef.userMessage,
           classification: errDef.classification,
         });
-        return;
       }
     };
   }

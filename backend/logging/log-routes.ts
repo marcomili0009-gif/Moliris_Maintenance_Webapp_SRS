@@ -1,11 +1,10 @@
 // Requisiti soddisfatti: Requisito #8, RF-AUTH-005, RNF-SEC-004, RNF-SEC-005
 
-import fs from "fs";
 import { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
 import { type PhysicalFileLogger } from "./physical-file-logger.ts";
 import { type AuthMiddleware } from "../auth/auth-middleware.ts";
 import { type TransferService } from "../transfer/transfer-service.ts";
-import { MolirisAppError, ErrorCode, ERROR_CATALOG } from "../../errors/app-errors.ts";
+import { ErrorCode } from "../../errors/app-errors.ts";
 
 export function registerLogRoutes(
   app: FastifyInstance,
@@ -13,15 +12,14 @@ export function registerLogRoutes(
   authMiddleware: AuthMiddleware,
   transferService?: TransferService
 ): void {
-  const requireAdmin = (req: FastifyRequest, reply: FastifyReply): boolean => {
+  const requireAdmin = async (req: FastifyRequest, reply: FastifyReply) => {
     const user = req.molirisUser;
     if (!user) {
-      reply.status(401).send({
+      return reply.status(401).send({
         code: ErrorCode.INSUFFICIENT_PERMISSIONS,
         message: "Autenticazione richiesta.",
         classification: "richiede_intervento_amministrativo",
       });
-      return false;
     }
 
     const roles = Array.isArray(user.roles) ? user.roles : [];
@@ -31,15 +29,13 @@ export function registerLogRoutes(
     });
 
     if (!isAdmin) {
-      reply.status(403).send({
+      return reply.status(403).send({
         code: ErrorCode.INSUFFICIENT_PERMISSIONS,
         message: "Accesso ai log di audit riservato esclusivamente agli amministratori.",
         classification: "richiede_intervento_amministrativo",
       });
-      return false;
     }
 
-    return true;
   };
 
   /**
@@ -48,10 +44,8 @@ export function registerLogRoutes(
    */
   app.get(
     "/api/logs/access",
-    { preHandler: [authMiddleware.authenticate.bind(authMiddleware)] },
+    { preHandler: [authMiddleware.authenticate.bind(authMiddleware), requireAdmin] },
     async (req: FastifyRequest, reply: FastifyReply) => {
-      if (!requireAdmin(req, reply)) return;
-
       const query = (req.query as any) || {};
       const limit = query.limit ? Number(query.limit) : 100;
       const user = typeof query.user === "string" ? query.user.trim() : undefined;
@@ -84,10 +78,8 @@ export function registerLogRoutes(
    */
   app.get(
     "/api/logs/transfers",
-    { preHandler: [authMiddleware.authenticate.bind(authMiddleware)] },
+    { preHandler: [authMiddleware.authenticate.bind(authMiddleware), requireAdmin] },
     async (req: FastifyRequest, reply: FastifyReply) => {
-      if (!requireAdmin(req, reply)) return;
-
       const query = (req.query as any) || {};
       const limit = query.limit ? Number(query.limit) : 200;
       const offset = query.offset ? Number(query.offset) : 0;
@@ -137,10 +129,8 @@ export function registerLogRoutes(
    */
   app.get(
     "/api/logs/download/:type",
-    { preHandler: [authMiddleware.authenticate.bind(authMiddleware)] },
+    { preHandler: [authMiddleware.authenticate.bind(authMiddleware), requireAdmin] },
     async (req: FastifyRequest, reply: FastifyReply) => {
-      if (!requireAdmin(req, reply)) return;
-
       const { type } = req.params as { type: string };
       if (type !== "access" && type !== "transfers") {
         return reply.status(400).send({
@@ -150,23 +140,9 @@ export function registerLogRoutes(
         });
       }
 
-      await fileLogger.ensureInitialized();
-      const filePath =
-        type === "access"
-          ? fileLogger.getAccessLogFilePath()
-          : fileLogger.getTransferLogFilePath();
-
-      if (!fs.existsSync(filePath)) {
-        return reply.status(404).send({
-          code: ErrorCode.SERVER_DIR_INACCESSIBLE,
-          message: `File di log '${type}.log' non presente.`,
-          classification: "recuperabile",
-        });
-      }
-
       const stream = type === "transfers"
         ? await fileLogger.openTransferLogDownload()
-        : fs.createReadStream(filePath);
+        : await fileLogger.openAccessLogDownload();
       reply.header("Content-Disposition", `attachment; filename="${type}.log"`);
       reply.header("Content-Type", "text/plain; charset=utf-8");
       return reply.send(stream);

@@ -232,3 +232,8 @@ Quando sposti l'applicazione e ripristini il database su un nuovo server:
    ```
 3. **Whitelist destinazioni SSH (`.env`)**: imposta `MOLIRIS_ALLOWED_DESTINATIONS` con gli IP/hostname reali dei robot separati da virgola (es. `192.168.32.50,192.168.32.51`).
 4. **MongoDB (`.env`)**: aggiorna `MOLIRIS_MONGODB_URI` con le credenziali e il database del nuovo server.
+
+## Runbook di consegna
+
+- [Aggiornamento manuale NEANTE](docs/NEANTE-MANUAL-UPDATE.md)
+- [Backup e ripristino](docs/BACKUP-RESTORE.md)

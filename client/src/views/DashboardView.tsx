@@ -462,6 +462,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <FsBrowserSection
             robots={fleet.robots}
             isAdmin={isAdmin}
+            isOperator={user.roles.includes("operatore") && !isAdmin}
+            allowedPaths={user.allowedPaths}
             activeSubTab={activeSubTab}
             onSubTabChange={handleSubTabChange}
             onOpenBulkUpload={() => setIsBulkUploadOpen(true)}
@@ -723,6 +725,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         isOpen={isBulkUploadOpen}
         onClose={() => setIsBulkUploadOpen(false)}
         robots={fleet.robots.filter((r) => r.anagraphicState === "attivo")}
+        isOperator={user.roles.includes("operatore") && !isAdmin}
+        allowedPaths={user.allowedPaths}
         onPreCheck={transfers.preCheckBulkUpload}
         onExecuteUpload={handleBulkExecute}
         onConflictsDetected={(conflicts, files, destinations) => {

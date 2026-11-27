@@ -16,6 +16,7 @@ import { InMemoryAuditRepository } from "../storage/audit-repository.ts";
 import { InMemoryUserRepository } from "../backend/auth/user-repository.ts";
 import { hashPassword } from "../backend/auth/user-models.ts";
 import { PhysicalFileLogger } from "../backend/logging/physical-file-logger.ts";
+import type { TransferService } from "../backend/transfer/transfer-service.ts";
 import type { TerminalService } from "../backend/terminal/terminal-service.ts";
 import { SessionManager } from "../backend/auth/session-manager.ts";
 import { ServerFilesystemService } from "../storage/server-fs.ts";
@@ -244,7 +245,15 @@ const testConfig: SystemConfiguration = {
   defaultSshPort: 22,
 };
 
-const logger = new MolirisLogger();
+const duplicateLogReplies: string[] = [];
+const logger = new class extends MolirisLogger {
+  override error(message: string, detail?: string, meta?: Record<string, unknown>): void {
+    if (meta?.code === "ERR_HTTP_HEADERS_SENT" && String(meta.url).startsWith("/api/logs/")) {
+      duplicateLogReplies.push(String(meta.url));
+    }
+    super.error(message, detail, meta);
+  }
+}();
 const robotRepo = new InMemoryRobotRepository();
 const auditRepo = new InMemoryAuditRepository();
 const userRepo = new InMemoryUserRepository();
@@ -978,6 +987,8 @@ async function testRestrictedLogsNavigation(): Promise<void> {
   await waitForBrowser(logs);
   await click("btn-logout");
   await waitForBrowser(publicLogin);
+  await waitForBrowser("fetch('/api/auth/me').then(response => response.status === 401)");
+  assert.deepEqual(await evaluateInBrowser(requestLogRoutes), logRoutes.map(() => [401, null]));
 
   await evaluateInBrowser(`{
     window.sawRestrictedLogs = false;
@@ -1030,6 +1041,7 @@ async function testRestrictedLogsNavigation(): Promise<void> {
   await waitForBrowser(`location.hash === '#logs' && ${logs}`);
   await evaluateInBrowser("history.forward()");
   await waitForBrowser(`(${fleet}) && !location.hash`);
+  assert.deepEqual(duplicateLogReplies, [], "Le richieste Logs devono generare una sola risposta");
   console.log("  PASS: Navigazione Logs in Chrome con cambio account, URL, cronologia, refresh e controlli HTTP per entrambi i ruoli.");
 }
 
@@ -1904,9 +1916,18 @@ try {
   assert.equal(await evaluateInBrowser("document.querySelector('#terminal-session-status').textContent"), "Connesso");
   assert.deepEqual(await evaluateInBrowser("window.__termSessions"), capturedSessions);
   assert.equal(liveTerminalSockets.size, 1);
-  await sendCdpCommand("Input.dispatchMouseEvent", {
-    type: "mouseWheel", x: 400, y: 300, deltaX: 0, deltaY: -450,
-  });
+  const scrollPoint = await evaluateInBrowser<{ x: number; y: number }>(`(() => {
+    const { left, top, width, height } = document.querySelector('#terminal-container .xterm-screen').getBoundingClientRect();
+    return { x: left + width / 2, y: top + height / 2 };
+  })()`);
+  // xterm maps each wheel event to a few rows, irrespective of a large delta.
+  // Scroll the real viewport far enough to make the pre-hide output visible.
+  for (let step = 0; step < 4; step++) {
+    await sendCdpCommand("Input.dispatchMouseEvent", {
+      type: "mouseWheel", ...scrollPoint, deltaX: 0, deltaY: -450,
+    });
+    await evaluateInBrowser("new Promise(resolve => requestAnimationFrame(() => resolve(true)))");
+  }
   await waitForTerminalOutput("ALPHA_LINE");
 
   const jobPidFile = path.join(tmpDir, "terminal-job-pid");
@@ -2330,6 +2351,33 @@ try {
 
   console.log("  PASS: Regressione superata: entrambe le sequenze (Logo -> Trasferimenti -> Logs e Logs -> Logo -> Logs -> Trasferimenti) verificate con successo.");
 
+  // Keep the transfer at a known point while the real client receives an SSE snapshot.
+  const { cookies } = await sendCdpCommand("Network.getCookies", { urls: [serverBaseUrl] });
+  const browserSession = sessionManager.getSession(cookies.find(
+    (cookie: { name: string }) => cookie.name === "__Host-moliris_session",
+  )?.value || "");
+  assert.ok(browserSession);
+  const browserUser = await userRepo.findById(browserSession.userId);
+  assert.ok(browserUser);
+  const transferContext = sessionManager.createAuthorizedContext(browserSession, browserUser);
+  const transferService = (server as typeof server & { transferService: TransferService }).transferService;
+  const progressFixture = await transferService.registerBulkStagingTransfer(
+    transferContext, "chrome-progress-fixture.bin", 10_000, undefined, "chrome-progress-fixture",
+  );
+  try {
+    transferService.updateBulkStagingTransfer(progressFixture, 3_500, 1_000, 7);
+    const selector = `tr[data-transfer-id="${progressFixture.transferId}"] [role="progressbar"]`;
+    await waitForBrowser(`document.querySelector(${JSON.stringify(selector)})?.getAttribute('aria-valuenow') === '35'`, 6_000);
+    assert.equal(await evaluateInBrowser(`document.querySelector(${JSON.stringify(selector)})?.firstElementChild.style.width`), "35%");
+    console.log("  PASS: CA-TRF-002 - Chrome visualizza il 35% nella barra di avanzamento ricevuta dal backend.");
+  } finally {
+    await transferService.cancelTransfer(progressFixture.transferId, browserUser.id);
+  }
+  // The next test expects inactivity to resume. Wait until the browser has
+  // observed the cancellation, rather than just the backend completing it.
+  const progressRow = `tr[data-transfer-id="${progressFixture.transferId}"]`;
+  await waitForBrowser(`document.querySelector(${JSON.stringify(progressRow)})?.getAttribute('data-status') === 'CANCELLED'`, 6_000);
+
   // Torna alla vista Flotta per preservare lo stato dei test successivi
   await evaluateInBrowser<void>(`
     const fleetNavBtn = document.getElementById('nav-fleet') || document.querySelector('button[data-view="fleet"]');
@@ -2344,7 +2392,7 @@ try {
       window._molirisSimulateInactivity(28); // 28 minuti trascorsi su 30 -> 2 minuti rimanenti
     }
   `);
-  await new Promise((r) => setTimeout(r, 600));
+  await waitForBrowser("Boolean(document.getElementById('modal-idle-warning'))");
 
   const warningModal = await evaluateInBrowser<{
     exists: boolean;

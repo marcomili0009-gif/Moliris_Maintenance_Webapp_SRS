@@ -5,6 +5,7 @@ import type { FormattedError } from "../../types/error.ts";
 import { FsTable } from "./FsTable.tsx";
 import { FsBreadcrumb } from "./FsBreadcrumb.tsx";
 import { NewFolderModal } from "../common/NewFolderModal.tsx";
+import { canPerformOperatorPathAction } from "../../utils/path-authorization.ts";
 
 interface GeneralFsPanelProps {
   currentPath: string;
@@ -12,6 +13,8 @@ interface GeneralFsPanelProps {
   loading: boolean;
   error: FormattedError | null;
   isAdmin?: boolean;
+  isOperator?: boolean;
+  allowedPaths?: string[];
   deletedRobotFolder?: string | null;
   onLoad: (path?: string) => void;
   onUp: () => void;
@@ -36,6 +39,8 @@ export const GeneralFsPanel: React.FC<GeneralFsPanelProps> = ({
   loading,
   error,
   isAdmin = false,
+  isOperator = false,
+  allowedPaths,
   deletedRobotFolder = null,
   onLoad,
   onUp,
@@ -74,6 +79,7 @@ export const GeneralFsPanel: React.FC<GeneralFsPanelProps> = ({
   const entries = listing?.entries || (listing as any)?.items || [];
   const isRoot = !deletedRobotFolder && (!currentPath || currentPath === "/");
   const isViewingDeletedRobot = Boolean(deletedRobotFolder);
+  const canWriteCurrentPath = canPerformOperatorPathAction(currentPath || "/", Boolean(isOperator && !isAdmin), allowedPaths);
   const robotEntries = entries.filter((entry: any) => entry.scope === "robot");
   const deletedRobotEntries = entries.filter((entry: any) => entry.scope === "deleted_robot" || entry.isDeletedRobot);
   const sharedEntries = entries.filter(
@@ -202,9 +208,13 @@ export const GeneralFsPanel: React.FC<GeneralFsPanelProps> = ({
                   type="button"
                   id="btn-general-mkdir"
                   className="btn btn-outline-primary btn-sm fs-toolbar-btn"
-                  title="Crea una nuova cartella"
+                  title={
+                    !canWriteCurrentPath
+                      ? "Creazione cartella non consentita nel percorso corrente per l'operatore"
+                      : "Crea una nuova cartella"
+                  }
                   onClick={() => setIsNewFolderOpen(true)}
-                  disabled={loading}
+                  disabled={loading || !canWriteCurrentPath}
                 >
                   <FolderPlus size={15} aria-hidden="true" />
                   Nuova Cartella
@@ -222,9 +232,13 @@ export const GeneralFsPanel: React.FC<GeneralFsPanelProps> = ({
                   type="button"
                   id="btn-general-upload"
                   className="btn btn-primary btn-sm fs-toolbar-btn"
-                  title="Carica file dal computer nell'archivio generale"
+                  title={
+                    !canWriteCurrentPath
+                      ? "Caricamento non consentito nel percorso corrente per l'operatore"
+                      : "Carica file dal computer nell'archivio generale"
+                  }
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={loading}
+                  disabled={loading || !canWriteCurrentPath}
                 >
                   <UploadCloud size={15} aria-hidden="true" />
                   Carica File
@@ -252,6 +266,9 @@ export const GeneralFsPanel: React.FC<GeneralFsPanelProps> = ({
         emptyHint={emptyHint}
         loading={loading}
         isAdmin={isAdmin}
+        isOperator={isOperator}
+        allowedPaths={allowedPaths}
+        currentPath={currentPath || "/"}
         readOnlyMode={isViewingDeletedRobot}
         onNavigateDir={onNavigateDir}
         onOpenRobot={onOpenRobot}

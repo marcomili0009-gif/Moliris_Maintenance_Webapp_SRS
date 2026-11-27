@@ -602,6 +602,13 @@ export function registerTransferRoutes(
    * Stream SSE delle snapshot dei trasferimenti. Ogni snapshot include lo storico
    * recente così il client può ripristinare la lista anche dopo un reload.
    */
+  const transferStreams = new Set<() => void>();
+  let drainingTransferStreams = false;
+  app.addHook("preClose", async () => {
+    drainingTransferStreams = true;
+    for (const end of transferStreams) end();
+  });
+
   app.get(
     "/api/transfers/stream",
     {
@@ -616,6 +623,10 @@ export function registerTransferRoutes(
         undefined,
         roleMapping
       );
+
+      if (drainingTransferStreams) {
+        return reply.status(503).send({ message: "Servizio in arresto." });
+      }
 
       reply.hijack();
       reply.raw.writeHead(200, {
@@ -634,6 +645,7 @@ export function registerTransferRoutes(
         closed = true;
         clearInterval(interval);
         unsubscribe();
+        transferStreams.delete(end);
       };
       const end = () => {
         if (closed) return;
@@ -643,6 +655,7 @@ export function registerTransferRoutes(
       const unsubscribe = sessionManager.onSessionTerminated((sessionId) => {
         if (sessionId === context.sessionId) end();
       });
+      transferStreams.add(end);
       reply.raw.once("close", stop);
       const sendSnapshot = () => {
         if (closed || reply.raw.destroyed) return;
@@ -787,7 +800,7 @@ export function registerTransferRoutes(
           robot.id,
           roleMapping
         );
-        const dto = await startInBackground((hooks) =>
+        const dto = await startInBackground(transferService, (hooks) =>
           transferService.retryTransfer(transferId, context, robot, hooks)
         );
         return reply.status(202).send(dto);
@@ -1425,7 +1438,7 @@ async function runServerRobotTransfer(
     const dto = await transferService.executeServerRobotTransfer(context, robot, body);
     return reply.status(200).send(dto);
   }
-  return reply.status(202).send(await startInBackground((hooks) =>
+  return reply.status(202).send(await startInBackground(transferService, (hooks) =>
     transferService.executeServerRobotTransfer(context, robot, { ...body, ...hooks })
   ));
 }
@@ -1437,6 +1450,7 @@ type BackgroundHooks = {
 
 /** Esegue un trasferimento in background restituendo il DTO non appena "preso in carico". */
 async function startInBackground(
+  service: TransferService,
   start: (hooks: BackgroundHooks) => Promise<TransferDto>
 ): Promise<TransferDto> {
   let queuedDto: TransferDto | null = null;
@@ -1444,25 +1458,26 @@ async function startInBackground(
   const acceptedPromise = new Promise<TransferDto>((resolve) => {
     resolveAccepted = resolve;
   });
-  const running = start({
+  const running = service.trackBackgroundTransfer(start({
     onQueued: (dto) => {
       queuedDto = dto;
     },
     onAccepted: (dto) => resolveAccepted(dto),
-  });
+  }));
   // Un fallimento successivo alla presa in carico è già tracciato nel record e nell'audit.
   const settled = running.then(
     (dto) => ({ kind: "done" as const, dto }),
     (err) => ({ kind: "failed" as const, err })
   );
-  const timeout = new Promise<{ kind: "timeout" }>((resolve) =>
-    setTimeout(() => resolve({ kind: "timeout" }), BACKGROUND_ACCEPT_TIMEOUT_MS)
-  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<{ kind: "timeout" }>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: "timeout" }), BACKGROUND_ACCEPT_TIMEOUT_MS);
+  });
   const first = await Promise.race([
     acceptedPromise.then((dto) => ({ kind: "accepted" as const, dto })),
     settled,
     timeout,
-  ]);
+  ]).finally(() => clearTimeout(timer));
   if (first.kind === "failed") throw first.err;
   if (first.kind === "timeout") {
     if (queuedDto) return queuedDto;
