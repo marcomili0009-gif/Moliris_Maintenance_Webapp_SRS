@@ -4,12 +4,7 @@ import { StateFormatter } from "../services/state-formatter.ts";
 import type { User } from "../types/auth.ts";
 import type { TransferLogRecord } from "../types/transfer.ts";
 import {
-  DIRECTION_LABELS,
-  STATUS_LABELS,
-  formatDurationMs,
   formatSpeed,
-  formatSpeedWithArrow,
-  formatTransferEndpoints,
   isGeneralArchiveTransfer,
 } from "../utils/transfer-format.ts";
 
@@ -467,36 +462,6 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
     });
   }, [rawTransferLogs]);
 
-  const filteredTransferRecords = useMemo(() => {
-    const userNeedle = transferUserFilter.trim().toLowerCase();
-    const fileNeedle = transferFileFilter.trim().toLowerCase();
-    const batchNeedle = transferBatchFilter.trim().toLowerCase();
-    return transferRecords.filter((rec) => {
-      if (userNeedle) {
-        const u = `${rec.username || ""} ${rec.userId || ""}`.toLowerCase();
-        if (!u.includes(userNeedle)) return false;
-      }
-      if (fileNeedle && !(rec.filename || "").toLowerCase().includes(fileNeedle)) {
-        return false;
-      }
-      if (batchNeedle && !(rec.batchId || "").toLowerCase().includes(batchNeedle)) {
-        return false;
-      }
-      if (transferOutcomeFilter !== "ALL") {
-        if (transferOutcomeFilter === "SUCCESSO") {
-          if (rec.status !== "COMPLETED") return false;
-        } else if (transferOutcomeFilter === "FALLIMENTO") {
-          if (rec.status !== "FAILED" && rec.status !== "INTEGRITY_FAILED") return false;
-        } else if (transferOutcomeFilter === "ANNULLATO" || transferOutcomeFilter === "CANCELLED") {
-          if (rec.status !== "CANCELLED") return false;
-        } else if (rec.status !== transferOutcomeFilter) {
-          return false;
-        }
-      }
-      return true;
-    });
-  }, [transferRecords, transferUserFilter, transferFileFilter, transferBatchFilter, transferOutcomeFilter]);
-
   const filteredTransferLogs = useMemo(() => {
     const userNeedle = transferUserFilter.trim().toLowerCase();
     const fileNeedle = transferFileFilter.trim().toLowerCase();
@@ -630,7 +595,7 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
             role="tab"
             aria-selected={activeTab === "transfers"}
           >
-            Log Trasferimenti File ({filteredTransferRecords.length > 0 ? filteredTransferRecords.length : filteredTransferLogs.length})
+            Log Trasferimenti File ({filteredTransferLogs.length})
           </button>
         </li>
       </ul>
@@ -811,14 +776,10 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
                     value={transferOutcomeFilter}
                     onChange={(e) => setTransferOutcomeFilter(e.target.value)}
                   >
-                    <option value="ALL">Tutti gli stati / esiti</option>
-                    <option value="SUCCESSO">SUCCESSO (Completati)</option>
-                    <option value="FALLIMENTO">FALLIMENTO (Falliti / Errori)</option>
-                    <option value="ANNULLATO">ANNULLATO (Annullati)</option>
-                    <option value="IN_PROGRESS">In corso</option>
-                    <option value="PAUSED">In pausa</option>
-                    <option value="QUEUED">In coda</option>
-                    <option value="INTEGRITY_FAILED">Integrità fallita</option>
+                    <option value="ALL">Tutti gli esiti</option>
+                    <option value="SUCCESSO">SUCCESSO</option>
+                    <option value="FALLIMENTO">FALLIMENTO</option>
+                    <option value="ANNULLATO">ANNULLATO</option>
                   </select>
                 </div>
                 <div className="col-6 col-md-2 text-md-end">
@@ -844,143 +805,6 @@ export const LogsView: React.FC<LogsViewProps> = ({ user }) => {
               {transferError}
             </div>
           )}
-
-          {/* TABELLA STORICO COMPLETO TRASFERIMENTI (tutti gli esiti: Completati, Falliti, Annullati, In corso, In coda, In pausa) */}
-          <div className="card shadow-sm border-0 mb-4">
-            <div className="card-header bg-white d-flex justify-content-between align-items-center py-2">
-              <span className="fw-semibold small">
-                Storico Completo Trasferimenti ({filteredTransferRecords.length}) — include completati, falliti, annullati, in corso e in coda
-              </span>
-            </div>
-            <div className="table-responsive">
-              <table className="table table-hover align-middle mb-0" id="table-transfer-history-records">
-                <thead className="table-light small">
-                  <tr>
-                    <th scope="col" style={{ minWidth: "200px" }}>File / ID</th>
-                    <th scope="col" style={{ minWidth: "220px" }}>Origine → Destinazione</th>
-                    <th scope="col" style={{ minWidth: "155px" }}>Inizio / Fine</th>
-                    <th scope="col" style={{ minWidth: "140px" }}>Dimensione / %</th>
-                    <th scope="col" style={{ minWidth: "115px" }}>Velocità</th>
-                    <th scope="col" style={{ minWidth: "115px" }}>Stato</th>
-                    <th scope="col" style={{ minWidth: "200px" }}>Errore / Dettagli</th>
-                  </tr>
-                </thead>
-                <tbody className="small">
-                  {filteredTransferRecords.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} className="text-center py-3 text-muted">
-                        {transferLoading
-                          ? "Caricamento storico trasferimenti..."
-                          : "Nessun trasferimento strutturato corrisponde ai filtri selezionati."}
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredTransferRecords.map((rec) => {
-                      const endpoint = formatTransferEndpoints({
-                        direction: rec.direction,
-                        robotId: rec.robotId,
-                        sourcePath: rec.sourcePath,
-                        destinationPath: rec.destinationPath,
-                      });
-                      const totalBytes = Number(rec.totalBytes ?? 0);
-                      const transferredBytes = Number(rec.transferredBytes ?? 0);
-                      const pct =
-                        rec.percent !== null && rec.percent !== undefined
-                          ? Number(rec.percent)
-                          : totalBytes > 0
-                          ? Math.min(100, Math.round((transferredBytes / totalBytes) * 10000) / 100)
-                          : rec.status === "COMPLETED" && totalBytes === 0 && transferredBytes === 0
-                          ? 100
-                          : 0;
-                      const speedVal =
-                        rec.status === "IN_PROGRESS"
-                          ? rec.currentSpeedBytesPerSec
-                          : rec.averageSpeedBytesPerSec;
-                      const speedText = formatSpeedWithArrow(rec.direction, speedVal);
-                      const badgeClass =
-                        rec.status === "COMPLETED"
-                          ? "text-bg-success"
-                          : rec.status === "FAILED" || rec.status === "INTEGRITY_FAILED"
-                          ? "text-bg-danger"
-                          : rec.status === "CANCELLED"
-                          ? "text-bg-secondary"
-                          : rec.status === "PAUSED"
-                          ? "text-bg-warning text-dark"
-                          : "text-bg-primary";
-                      const isFailedRow = rec.status === "FAILED" || rec.status === "INTEGRITY_FAILED";
-
-                      return (
-                        <tr
-                          key={rec.transferId}
-                          data-log-transfer-id={rec.transferId}
-                          data-log-batch-id={rec.batchId || ""}
-                          data-log-status={rec.status}
-                          className={isFailedRow ? "table-danger-subtle" : ""}
-                        >
-                          <td className="text-break">
-                            <div className="fw-semibold">{rec.filename}</div>
-                            <div className="text-muted" style={{ fontSize: "11px" }}>
-                              ID: <code>{rec.transferId.slice(0, 8)}</code>
-                              {rec.username ? ` · Utente: ${rec.username}` : ""}
-                            </div>
-                            {rec.batchId && (
-                              <div className="text-muted" style={{ fontSize: "11px" }}>
-                                Batch: <code>{rec.batchId}</code>
-                              </div>
-                            )}
-                          </td>
-                          <td className="text-break">
-                            <span className="badge text-bg-light text-dark border mb-1">
-                              {DIRECTION_LABELS[rec.direction] || rec.direction}
-                            </span>
-                            <div className="text-muted" style={{ fontSize: "11px" }}>
-                              {endpoint.label}
-                            </div>
-                          </td>
-                          <td className="text-monospace text-secondary" style={{ fontSize: "11px" }}>
-                            <div>Inizio: {formatLogTime(rec.startedAt)}</div>
-                            <div>Fine: {rec.completedAt ? formatLogTime(rec.completedAt) : "—"}</div>
-                            {rec.durationMs !== null && rec.durationMs !== undefined && (
-                              <div>Durata: {formatDurationMs(rec.durationMs)}</div>
-                            )}
-                          </td>
-                          <td>
-                            <div>
-                              {StateFormatter.formatBytes(transferredBytes)} /{" "}
-                              {rec.totalBytes !== null && rec.totalBytes !== undefined
-                                ? StateFormatter.formatBytes(totalBytes)
-                                : "—"}
-                            </div>
-                            <div className="fw-semibold text-secondary">{pct.toFixed(pct % 1 === 0 ? 0 : 1)}%</div>
-                          </td>
-                          <td className="fw-semibold text-nowrap">{speedText}</td>
-                          <td>
-                            <span className={`badge ${badgeClass}`}>
-                              {STATUS_LABELS[rec.status] || rec.status}
-                            </span>
-                          </td>
-                          <td className="text-break">
-                            {rec.error ? (
-                              <span className="text-danger fw-semibold">{compactErrorMessage(rec.error)}</span>
-                            ) : rec.status === "COMPLETED" ? (
-                              <span
-                                className="text-muted"
-                                title={rec.checksum ? `SHA-256: ${rec.checksum}` : rec.integrityLabel || undefined}
-                              >
-                                {rec.checksum ? "Checksum verificato" : "Completato"}
-                              </span>
-                            ) : (
-                              <span className="text-muted">—</span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
 
           <div className="card shadow-sm border-0">
             <div className="card-header bg-white py-2">

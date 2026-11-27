@@ -1033,56 +1033,51 @@ async function runTests() {
       `Atteso endpoint 'Computer → Archivio Generale Server', trovati: ${endpointAudit.endpoints.join(" | ")}`
     );
 
-    // Scenario 12: Apri sezione Logs -> scheda Log Trasferimenti File e verifica visibilità trasferimenti falliti!
+    // Scenario 12: Apri sezione Logs -> scheda Log Trasferimenti File e verifica visibilità trasferimenti falliti/annullati!
     await evalJs(`(() => {
       const btn = Array.from(document.querySelectorAll('button, a')).find((el) => el.textContent && el.textContent.trim() === 'Logs');
       if (btn) btn.click();
     })()`);
     await waitFor(`Boolean(document.getElementById('tab-transfer-logs'))`, 10000, "LogsView");
     await evalJs(`document.getElementById('tab-transfer-logs').click()`);
-    await waitFor(`document.querySelectorAll('#table-transfer-history-records tbody tr[data-log-transfer-id]').length >= 5`, 10000, "tabella storico trasferimenti nei Log");
+    await waitFor(`document.querySelectorAll('#table-transfer-logs tbody tr').length >= 5`, 10000, "tabella log trasferimenti");
 
-    const logHistoryRows = await evalJs(`(() => {
-      return Array.from(document.querySelectorAll('#table-transfer-history-records tbody tr[data-log-transfer-id]')).map((r) => ({
-        id: r.getAttribute('data-log-transfer-id'),
-        batchId: r.getAttribute('data-log-batch-id'),
-        status: r.getAttribute('data-log-status'),
-        text: r.innerText.replace(/\\s+/g, ' ').trim(),
-      }));
-    })()`);
+    const hasDeprecatedHistoryTable = await evalJs(`Boolean(document.getElementById('table-transfer-history-records'))`);
+    assert.strictEqual(hasDeprecatedHistoryTable, false, "La tabella 'Storico Completo Trasferimenti' non deve essere presente nei Log");
 
-    const failedLogRow = logHistoryRows.find(
-      (r: any) => r.batchId === failedBatchId && r.status === "FAILED"
-    );
-    assert.ok(failedLogRow, `Trasferimento fallito del batch ${failedBatchId} NON visibile nei LOG!`);
-    assert.ok(failedLogRow.text.includes("Schermata_167kb.png"), "Nome file presente nei log");
-    assert.ok(failedLogRow.text.includes(failedBatchId), "Batch ID presente nei log");
-    assert.ok(failedLogRow.text.includes("Fallito"), "Badge Fallito presente nei log");
-
-    const brokenDlLogRow = logHistoryRows.find((r: any) => r.text.includes("broken_remote.bin"));
-    assert.ok(brokenDlLogRow, "Download fallito broken_remote.bin deve essere visibile nei LOG");
-    assert.ok(
-      brokenDlLogRow.status === "FAILED" || brokenDlLogRow.status === "INTEGRITY_FAILED",
-      "Stato fallito visibile nei LOG"
-    );
-
-    const cancelledLogRow = logHistoryRows.find((r: any) => r.text.includes("cancelled_midway.bin"));
-    assert.ok(cancelledLogRow && cancelledLogRow.status === "CANCELLED", "Trasferimento annullato visibile nei LOG");
-
-    // Verifica Miglioramento #4: colonna Dettagli in #table-transfer-logs compatta (zero UUID/checksum hex nella cella principale)
-    const physicalLogDetails = await evalJs(`(() => {
-      return Array.from(document.querySelectorAll('#table-transfer-logs tbody tr')).map((tr) => {
-        const tds = tr.querySelectorAll('td');
-        return tds[tds.length - 1]?.innerText?.trim() || '';
+    const physicalLogRows = await evalJs(`(() => {
+      return Array.from(document.querySelectorAll('#table-transfer-logs tbody tr')).map((r) => {
+        const tds = Array.from(r.querySelectorAll('td'));
+        return {
+          file: tds[1]?.innerText?.trim() || '',
+          outcome: tds[4]?.innerText?.trim() || '',
+          details: tds[tds.length - 1]?.innerText?.trim() || '',
+          text: r.innerText.replace(/\\s+/g, ' ').trim(),
+        };
       });
     })()`);
-    assert.ok(physicalLogDetails.length > 0, "Righe transfers.log visibili in tabella");
-    for (const det of physicalLogDetails) {
-      assert.ok(!det.includes("transferId:"), `Dettagli visibili non devono mostrare 'transferId:': ${det}`);
-      assert.ok(!/[0-9a-f]{64}/i.test(det), `Dettagli visibili non devono mostrare checksum SHA-256 integrale: ${det}`);
+
+    const failedLogRow = physicalLogRows.find(
+      (r: any) => r.details.includes(failedBatchId) && r.outcome === "FALLIMENTO"
+    );
+    assert.ok(failedLogRow, `Trasferimento fallito del batch ${failedBatchId} NON visibile nei LOG!`);
+    assert.ok(failedLogRow.file.includes("Schermata_167kb.png"), "Nome file presente nei log");
+
+    const brokenDlLogRow = physicalLogRows.find((r: any) => r.file.includes("broken_remote.bin"));
+    assert.ok(brokenDlLogRow, "Download fallito broken_remote.bin deve essere visibile nei LOG");
+    assert.strictEqual(brokenDlLogRow.outcome, "FALLIMENTO", "Esito FALLIMENTO visibile nei LOG");
+
+    const cancelledLogRow = physicalLogRows.find((r: any) => r.file.includes("cancelled_midway.bin"));
+    assert.ok(cancelledLogRow && cancelledLogRow.outcome === "ANNULLATO", "Trasferimento annullato visibile nei LOG");
+
+    // Verifica Miglioramento #4: colonna Dettagli in #table-transfer-logs compatta (zero UUID/checksum hex nella cella principale)
+    assert.ok(physicalLogRows.length > 0, "Righe transfers.log visibili in tabella");
+    for (const row of physicalLogRows) {
+      assert.ok(!row.details.includes("transferId:"), `Dettagli visibili non devono mostrare 'transferId:': ${row.details}`);
+      assert.ok(!/[0-9a-f]{64}/i.test(row.details), `Dettagli visibili non devono mostrare checksum SHA-256 integrale: ${row.details}`);
     }
     assert.ok(
-      physicalLogDetails.some((d: string) => d.includes("Checksum verificato")),
+      physicalLogRows.some((r: any) => r.details.includes("Checksum verificato")),
       "I trasferimenti completati nei log devono mostrare 'Checksum verificato' in forma compatta"
     );
 
@@ -1093,11 +1088,14 @@ async function runTests() {
       setter.call(sel, 'FALLIMENTO');
       sel.dispatchEvent(new Event('change', { bubbles: true }));
     })()`);
-    await new Promise((r) => setTimeout(r, 150));
-    const filteredFailedCount = await evalJs(
-      `document.querySelectorAll('#table-transfer-history-records tbody tr[data-log-transfer-id]').length`
+    await waitFor(
+      `(() => {
+        const rows = Array.from(document.querySelectorAll('#table-transfer-logs tbody tr'));
+        return rows.length >= 2 && rows.every((r) => (r.querySelectorAll('td')[4]?.innerText?.trim() || '') === 'FALLIMENTO');
+      })()`,
+      10000,
+      "filtro FALLIMENTO su #table-transfer-logs"
     );
-    assert.ok(filteredFailedCount >= 2, `Il filtro FALLIMENTO deve mostrare almeno 2 errori, mostrati ${filteredFailedCount}`);
 
     // Verifica ZERO errori JS / eccezioni non gestite in console Chrome
     assert.strictEqual(pageErrors.length, 0, `Rilevate eccezioni JS in pagina: ${pageErrors.join(" | ")}`);
